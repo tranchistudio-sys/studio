@@ -1,0 +1,59 @@
+modules = ["nodejs-24", "python-3.11", "postgresql-16"]
+
+[[artifacts]]
+id = "artifacts/api-server"
+
+[[artifacts]]
+id = "artifacts/mockup-sandbox"
+
+[deployment]
+router = "application"
+deploymentTarget = "autoscale"
+
+[deployment.postBuild]
+args = ["pnpm", "store", "prune"]
+env = { "CI" = "true" }
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "test"
+
+[[workflows.workflow]]
+name = "test"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "pnpm --filter @workspace/api-server test"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[agent]
+stack = "PNPM_WORKSPACE"
+expertMode = true
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 20000
+
+[nix]
+channel = "stable-25_05"
+packages = ["photofield"]
+
+[userenv]
+
+[userenv.development]
+ENABLE_AI_TEST_FOLLOWUP = "true"
+
+[userenv.shared]
+VAPID_PUBLIC_KEY = "BE8WARUXqXspGH0VJiz2kJlSqcFHeo2SgFaKbrz7lus3XEZbw5KnGYJOSBKxVEGxcVoDI5be5SQXBWfE8iu_ZvY"
+VAPID_EMAIL = "mailto:admin@amazingstudio.vn"

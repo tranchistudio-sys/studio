@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Amazing Studio"
+version = "1.0.0"
+id = "artifacts/amazing-studio"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 24230
+
+[services.development]
+run = "pnpm --filter @workspace/amazing-studio run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/amazing-studio", "run", "build" ]
+publicDir = "artifacts/amazing-studio/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "24230"
+BASE_PATH = "/"

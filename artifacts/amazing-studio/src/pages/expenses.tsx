@@ -84,6 +84,10 @@ type Expense = {
   createdAt: string;
   status?: string | null;
   createdByStaffId?: number | null;
+  bookingOrderCode?: string | null;
+  bookingCustomerName?: string | null;
+  bookingServiceLabel?: string | null;
+  bookingShootDate?: string | null;
 };
 
 const COST_CLASS_OPTIONS = [
@@ -528,6 +532,31 @@ export default function ExpensesPage() {
                               </span>
                             )}
                           </div>
+
+                            {e.bookingId ? (
+                              <div className="mt-1.5 flex items-start gap-1.5 px-2 py-1.5 rounded-lg border border-amber-200 bg-amber-50/80 dark:bg-amber-950/20 dark:border-amber-800/60">
+                                <Receipt className="w-3.5 h-3.5 text-amber-600 flex-shrink-0 mt-0.5" />
+                                <div className="min-w-0 text-[11px] leading-snug">
+                                  <span className="font-bold text-amber-800 dark:text-amber-300">
+                                    {e.bookingOrderCode || `#${e.bookingId}`}
+                                  </span>
+                                  {e.bookingCustomerName && (
+                                    <span className="text-foreground font-semibold"> · {e.bookingCustomerName}</span>
+                                  )}
+                                  {(e.bookingServiceLabel || e.bookingShootDate) && (
+                                    <div className="text-muted-foreground truncate">
+                                      {e.bookingServiceLabel}
+                                      {e.bookingServiceLabel && e.bookingShootDate ? " · " : ""}
+                                      {e.bookingShootDate ? new Date(e.bookingShootDate + "T00:00:00").toLocaleDateString("vi-VN") : ""}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="mt-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-muted text-[10px] text-muted-foreground font-medium">
+                                <Building2 className="w-3 h-3" /> Chi vận hành studio
+                              </div>
+                            )}
                         </div>
                         <div className="text-right flex-shrink-0">
                           <p className="font-bold text-red-600 text-base">-{vnd(e.amount)}</p>
@@ -904,6 +933,37 @@ export default function ExpensesPage() {
             </div>
             <div className="p-5 space-y-3">
               {/* Amount */}
+              {viewDetail.bookingId ? (
+                <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 mb-2">
+                  <Receipt className="w-4 h-4 text-amber-600 flex-shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[11px] text-amber-700 dark:text-amber-400 font-semibold uppercase">Chi cho đơn / show</div>
+                    <div className="text-sm font-bold truncate">
+                      {viewDetail.bookingOrderCode || `#${viewDetail.bookingId}`}
+                      {viewDetail.bookingCustomerName && <span className="text-muted-foreground font-normal"> · {viewDetail.bookingCustomerName}</span>}
+                    </div>
+                    {(viewDetail.bookingServiceLabel || viewDetail.bookingShootDate) && (
+                      <div className="text-[11px] text-muted-foreground truncate">
+                        {viewDetail.bookingServiceLabel}
+                        {viewDetail.bookingServiceLabel && viewDetail.bookingShootDate ? " · " : ""}
+                        {viewDetail.bookingShootDate ? new Date(viewDetail.bookingShootDate + "T00:00:00").toLocaleDateString("vi-VN") : ""}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { setViewDetail(null); setLocation(`/bookings?bookingId=${viewDetail.bookingId}`); }}
+                    className="text-[11px] font-semibold text-amber-700 hover:text-amber-900 px-2 py-1 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/30 flex-shrink-0"
+                  >
+                    Xem đơn
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-border bg-muted/30 mb-2 text-sm text-muted-foreground">
+                  <Building2 className="w-4 h-4" /> Chi vận hành studio (không gắn đơn)
+                </div>
+              )}
+
               <div className="text-center py-4">
                 <p className="text-3xl font-black text-red-600">-{vnd(viewDetail.amount)}</p>
                 <div className="flex flex-wrap items-center justify-center gap-1.5 mt-2">

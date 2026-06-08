@@ -12,6 +12,48 @@ const fmt = (e: { amount: string; receiptUrls?: unknown; [key: string]: unknown 
   receiptUrls: Array.isArray(e.receiptUrls) ? e.receiptUrls : [],
 });
 
+type BookingInfoRow = {
+  id: number;
+  order_code: string | null;
+  service_label: string | null;
+  package_type: string | null;
+  shoot_date: string | null;
+  customer_name: string | null;
+};
+
+async function enrichExpensesWithBookingInfo<T extends { bookingId?: number | null }>(
+  rows: T[],
+): Promise<(ReturnType<typeof fmt> & {
+  bookingOrderCode: string | null;
+  bookingCustomerName: string | null;
+  bookingServiceLabel: string | null;
+  bookingShootDate: string | null;
+})[]> {
+  const ids = [...new Set(rows.map((r) => r.bookingId).filter((id): id is number => id != null))];
+  const bookingMap = new Map<number, BookingInfoRow>();
+  if (ids.length > 0) {
+    const result = await pool.query<BookingInfoRow>(
+      `SELECT b.id, b.order_code, b.service_label, b.package_type, b.shoot_date, c.name AS customer_name
+       FROM bookings b
+       LEFT JOIN customers c ON c.id = b.customer_id
+       WHERE b.id = ANY($1::int[])`,
+      [ids],
+    );
+    for (const row of result.rows) bookingMap.set(row.id, row);
+  }
+  return rows.map((row) => {
+    const base = fmt(row as { amount: string; receiptUrls?: unknown; [key: string]: unknown });
+    const bk = row.bookingId != null ? bookingMap.get(row.bookingId) : undefined;
+    return {
+      ...base,
+      bookingOrderCode: bk?.order_code ?? null,
+      bookingCustomerName: bk?.customer_name ?? null,
+      bookingServiceLabel: bk?.service_label ?? bk?.package_type ?? null,
+      bookingShootDate: bk?.shoot_date ?? null,
+    };
+  });
+}
+
 function genCode() {
   const now = new Date();
   const y = now.getFullYear().toString().slice(-2);
@@ -99,7 +141,8 @@ router.get("/expenses", async (req, res) => {
     }
   }
 
-  res.json(filtered.map(fmt));
+  const enriched = await enrichExpensesWithBookingInfo(filtered);
+  res.json(enriched);
 });
 
 router.get("/expenses/stats", async (req, res) => {
@@ -149,7 +192,8 @@ router.get("/expenses/:id", async (req, res) => {
   if (!e) return res.status(404).json({ error: "Không tìm thấy" });
   // Staff can only see their own expense detail
   if (!isAdmin && e.createdByStaffId !== callerId) return res.status(403).json({ error: "Không có quyền xem chi phí này" });
-  res.json(fmt(e));
+  const [enriched] = await enrichExpensesWithBookingInfo([e]);
+  res.json(enriched);
 });
 
 router.post("/expenses", async (req, res) => {

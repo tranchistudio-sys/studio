@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
@@ -161,6 +161,69 @@ export default function ExpensesPage() {
       : rows,
     refetchInterval: 30000,
   });
+
+  const bookingIdsForLookup = useMemo(
+    () => [
+      ...new Set(
+        expenses
+          .map((e) => (e.bookingId != null ? Number(e.bookingId) : null))
+          .filter((id): id is number => id != null && !Number.isNaN(id)),
+      ),
+    ],
+    [expenses],
+  );
+
+  type BookingLookup = {
+    orderCode: string | null;
+    customerName: string | null;
+    serviceLabel: string | null;
+    shootDate: string | null;
+  };
+
+  const { data: bookingLookup = {} } = useQuery<Record<number, BookingLookup>>({
+    queryKey: ["expense-booking-lookup", bookingIdsForLookup.join(",")],
+    queryFn: async () => {
+      const map: Record<number, BookingLookup> = {};
+      await Promise.all(
+        bookingIdsForLookup.map(async (id) => {
+          try {
+            const r = await fetch(`${BASE}/api/bookings/${id}`, { headers: authHeaders });
+            if (!r.ok) return;
+            const b = await r.json();
+            map[id] = {
+              orderCode: b.orderCode ?? null,
+              customerName: b.customerName ?? null,
+              serviceLabel: b.serviceLabel ?? b.packageType ?? null,
+              shootDate: b.shootDate ?? null,
+            };
+          } catch {
+            /* ignore */
+          }
+        }),
+      );
+      return map;
+    },
+    enabled: bookingIdsForLookup.length > 0,
+    staleTime: 60_000,
+  });
+
+  const resolveBookingInfo = (e: Expense) => {
+    const bid = e.bookingId != null ? Number(e.bookingId) : null;
+    if (bid == null || Number.isNaN(bid)) return null;
+    const fromApi = {
+      orderCode: e.bookingOrderCode ?? null,
+      customerName: e.bookingCustomerName ?? null,
+      serviceLabel: e.bookingServiceLabel ?? null,
+      shootDate: e.bookingShootDate ?? null,
+    };
+    const fromLookup = bookingLookup[bid];
+    return {
+      orderCode: fromApi.orderCode || fromLookup?.orderCode || null,
+      customerName: fromApi.customerName || fromLookup?.customerName || null,
+      serviceLabel: fromApi.serviceLabel || fromLookup?.serviceLabel || null,
+      shootDate: fromApi.shootDate || fromLookup?.shootDate || null,
+    };
+  };
 
   const { data: stats } = useQuery<Stats>({
     queryKey: ["expense-stats"],
@@ -500,71 +563,81 @@ export default function ExpensesPage() {
                       {e.paymentMethod === "bank" ? <CreditCard className="w-4 h-4 text-red-500" /> : <Banknote className="w-4 h-4 text-red-500" />}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex-1 min-w-0">
-                          <p className="font-semibold text-sm truncate">{e.description}</p>
-                          <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${catColor(e.category)}`}>
-                              {e.category}
-                            </span>
-                            {(() => {
-                              const meta = costClassMeta(e.costClass || (e.bookingId ? "direct" : "operating"));
-                              return meta ? (
-                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${meta.color}`} title={meta.desc}>
-                                  {meta.short}
-                                </span>
-                              ) : null;
-                            })()}
-                            {e.status && (
-                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                                e.status === "submitted" ? "bg-yellow-100 text-yellow-700" :
-                                e.status === "paid" ? "bg-blue-100 text-blue-700" :
-                                e.status === "rejected" ? "bg-red-100 text-red-700" :
-                                "bg-green-100 text-green-700"
-                              }`}>
-                                {e.status === "submitted" ? "⏳ Chờ duyệt" : e.status === "paid" ? "✓ Đã thanh toán" : e.status === "rejected" ? "✗ Từ chối" : "✓ Đã duyệt"}
+                      {(() => {
+                        const bk = resolveBookingInfo(e);
+                        const shootLabel = bk?.shootDate
+                          ? new Date(bk.shootDate + "T00:00:00").toLocaleDateString("vi-VN")
+                          : null;
+                        return (
+                      <div className="space-y-2">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex-1 min-w-0">
+                            <p className="font-bold text-sm text-foreground leading-snug">{e.description || "—"}</p>
+                            <p className="text-[11px] text-muted-foreground mt-0.5">
+                              <span className="font-medium text-foreground/70">Lý do chi:</span> {e.description}
+                            </p>
+                          </div>
+                          <div className="text-right flex-shrink-0">
+                            <p className="font-black text-red-600 text-lg leading-none">-{vnd(e.amount)}</p>
+                            <p className="text-[10px] text-muted-foreground mt-1">{fmtDateTime(e.expenseAt, e.expenseDate)}</p>
+                          </div>
+                        </div>
+
+                        {bk ? (
+                          <div className="rounded-xl border border-amber-300/80 bg-amber-50 px-3 py-2.5 dark:bg-amber-950/25 dark:border-amber-800/70 space-y-1">
+                            <div className="flex items-center gap-1.5 text-sm font-bold text-foreground">
+                              <User className="w-4 h-4 text-amber-700 flex-shrink-0" />
+                              <span className="truncate">{bk.customerName || "Khách chưa rõ tên"}</span>
+                            </div>
+                            <div className="flex items-center gap-1.5 text-[12px] font-semibold text-amber-900 dark:text-amber-200">
+                              <Receipt className="w-3.5 h-3.5 flex-shrink-0" />
+                              <span className="truncate">
+                                Đơn: {bk.orderCode || `#${e.bookingId}`}
+                                {bk.serviceLabel ? ` · ${bk.serviceLabel}` : ""}
                               </span>
-                            )}
-                            <span className="text-[10px] text-muted-foreground font-mono">{e.expenseCode}</span>
-                            {e.createdBy && (
-                              <span className="text-[10px] text-muted-foreground flex items-center gap-0.5">
-                                <User className="w-2.5 h-2.5" />{e.createdBy}
-                              </span>
+                            </div>
+                            {shootLabel && (
+                              <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+                                <Calendar className="w-3.5 h-3.5 flex-shrink-0" />
+                                <span>Ngày show: {shootLabel}</span>
+                              </div>
                             )}
                           </div>
+                        ) : (
+                          <div className="rounded-xl border border-border bg-muted/40 px-3 py-2 text-[12px] text-muted-foreground flex items-center gap-2">
+                            <Building2 className="w-4 h-4 flex-shrink-0" />
+                            <span>Chi vận hành studio — không gắn khách / đơn hàng</span>
+                          </div>
+                        )}
 
-                            {e.bookingId ? (
-                              <div className="mt-1.5 flex items-start gap-1.5 px-2 py-1.5 rounded-lg border border-amber-200 bg-amber-50/80 dark:bg-amber-950/20 dark:border-amber-800/60">
-                                <Receipt className="w-3.5 h-3.5 text-amber-600 flex-shrink-0 mt-0.5" />
-                                <div className="min-w-0 text-[11px] leading-snug">
-                                  <span className="font-bold text-amber-800 dark:text-amber-300">
-                                    {e.bookingOrderCode || `#${e.bookingId}`}
-                                  </span>
-                                  {e.bookingCustomerName && (
-                                    <span className="text-foreground font-semibold"> · {e.bookingCustomerName}</span>
-                                  )}
-                                  {(e.bookingServiceLabel || e.bookingShootDate) && (
-                                    <div className="text-muted-foreground truncate">
-                                      {e.bookingServiceLabel}
-                                      {e.bookingServiceLabel && e.bookingShootDate ? " · " : ""}
-                                      {e.bookingShootDate ? new Date(e.bookingShootDate + "T00:00:00").toLocaleDateString("vi-VN") : ""}
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="mt-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-muted text-[10px] text-muted-foreground font-medium">
-                                <Building2 className="w-3 h-3" /> Chi vận hành studio
-                              </div>
-                            )}
-                        </div>
-                        <div className="text-right flex-shrink-0">
-                          <p className="font-bold text-red-600 text-base">-{vnd(e.amount)}</p>
-                          <p className="text-[10px] text-muted-foreground mt-0.5">
-                            {fmtDateTime(e.expenseAt, e.expenseDate)}
-                          </p>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${catColor(e.category)}`}>{e.category}</span>
+                          {(() => {
+                            const meta = costClassMeta(e.costClass || (e.bookingId ? "direct" : "operating"));
+                            return meta ? (
+                              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${meta.color}`} title={meta.desc}>{meta.short}</span>
+                            ) : null;
+                          })()}
+                          {e.status && (
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                              e.status === "submitted" ? "bg-yellow-100 text-yellow-700" :
+                              e.status === "paid" ? "bg-blue-100 text-blue-700" :
+                              e.status === "rejected" ? "bg-red-100 text-red-700" :
+                              "bg-green-100 text-green-700"
+                            }`}>
+                              {e.status === "submitted" ? "⏳ Chờ duyệt" : e.status === "paid" ? "✓ Đã thanh toán" : e.status === "rejected" ? "✗ Từ chối" : "✓ Đã duyệt"}
+                            </span>
+                          )}
+                          <span className="text-[10px] text-muted-foreground font-mono">{e.expenseCode}</span>
+                          {e.createdBy && (
+                            <span className="text-[10px] text-muted-foreground flex items-center gap-0.5">
+                              <User className="w-2.5 h-2.5" />{e.createdBy}
+                            </span>
+                          )}
                         </div>
                       </div>
+                        );
+                      })()}
                       {e.notes && (
                         <p className="text-xs text-muted-foreground mt-1.5 line-clamp-1">{e.notes}</p>
                       )}
@@ -933,32 +1006,39 @@ export default function ExpensesPage() {
             </div>
             <div className="p-5 space-y-3">
               {/* Amount */}
-              {viewDetail.bookingId ? (
-                <div className="flex items-center gap-2 px-3 py-2.5 rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 mb-2">
-                  <Receipt className="w-4 h-4 text-amber-600 flex-shrink-0" />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-[11px] text-amber-700 dark:text-amber-400 font-semibold uppercase">Chi cho đơn / show</div>
-                    <div className="text-sm font-bold truncate">
-                      {viewDetail.bookingOrderCode || `#${viewDetail.bookingId}`}
-                      {viewDetail.bookingCustomerName && <span className="text-muted-foreground font-normal"> · {viewDetail.bookingCustomerName}</span>}
-                    </div>
-                    {(viewDetail.bookingServiceLabel || viewDetail.bookingShootDate) && (
-                      <div className="text-[11px] text-muted-foreground truncate">
-                        {viewDetail.bookingServiceLabel}
-                        {viewDetail.bookingServiceLabel && viewDetail.bookingShootDate ? " · " : ""}
-                        {viewDetail.bookingShootDate ? new Date(viewDetail.bookingShootDate + "T00:00:00").toLocaleDateString("vi-VN") : ""}
-                      </div>
-                    )}
+              {viewDetail.bookingId ? (() => {
+                const bk = resolveBookingInfo(viewDetail);
+                const shootLabel = bk?.shootDate ? new Date(bk.shootDate + "T00:00:00").toLocaleDateString("vi-VN") : null;
+                return (
+                <div className="rounded-xl border border-amber-300 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800 mb-2 px-3 py-2.5 space-y-1.5">
+                  <div className="text-[11px] text-amber-700 dark:text-amber-400 font-semibold uppercase">Chi cho khách / đơn hàng</div>
+                  <div className="flex items-center gap-2 text-base font-bold text-foreground">
+                    <User className="w-4 h-4 text-amber-700" />
+                    {bk?.customerName || "Khách chưa rõ tên"}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => { setViewDetail(null); setLocation(`/bookings?bookingId=${viewDetail.bookingId}`); }}
-                    className="text-[11px] font-semibold text-amber-700 hover:text-amber-900 px-2 py-1 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/30 flex-shrink-0"
-                  >
-                    Xem đơn
-                  </button>
+                  <div className="flex items-center gap-2 text-sm font-semibold text-amber-900 dark:text-amber-200">
+                    <Receipt className="w-4 h-4" />
+                    Đơn: {bk?.orderCode || `#${viewDetail.bookingId}`}
+                    {bk?.serviceLabel ? ` · ${bk.serviceLabel}` : ""}
+                  </div>
+                  {shootLabel && (
+                    <div className="text-[11px] text-muted-foreground">Ngày show: {shootLabel}</div>
+                  )}
+                  <div className="text-[11px] text-muted-foreground">
+                    <span className="font-medium">Lý do chi:</span> {viewDetail.description}
+                  </div>
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => { setViewDetail(null); setLocation(`/bookings?bookingId=${viewDetail.bookingId}`); }}
+                      className="text-[11px] font-semibold text-amber-700 hover:text-amber-900 px-2 py-1 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/30 flex-shrink-0"
+                    >
+                      Xem đơn
+                    </button>
+                  </div>
                 </div>
-              ) : (
+                );
+              })() : (
                 <div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-border bg-muted/30 mb-2 text-sm text-muted-foreground">
                   <Building2 className="w-4 h-4" /> Chi vận hành studio (không gắn đơn)
                 </div>

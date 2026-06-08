@@ -29,7 +29,13 @@ async function enrichExpensesWithBookingInfo<T extends { bookingId?: number | nu
   bookingServiceLabel: string | null;
   bookingShootDate: string | null;
 })[]> {
-  const ids = [...new Set(rows.map((r) => r.bookingId).filter((id): id is number => id != null))];
+  const ids = [
+    ...new Set(
+      rows
+        .map((r) => (r.bookingId != null ? Number(r.bookingId) : null))
+        .filter((id): id is number => id != null && !Number.isNaN(id)),
+    ),
+  ];
   const bookingMap = new Map<number, BookingInfoRow>();
   if (ids.length > 0) {
     const result = await pool.query<BookingInfoRow>(
@@ -43,7 +49,8 @@ async function enrichExpensesWithBookingInfo<T extends { bookingId?: number | nu
   }
   return rows.map((row) => {
     const base = fmt(row as { amount: string; receiptUrls?: unknown; [key: string]: unknown });
-    const bk = row.bookingId != null ? bookingMap.get(row.bookingId) : undefined;
+    const bid = row.bookingId != null ? Number(row.bookingId) : null;
+    const bk = bid != null && !Number.isNaN(bid) ? bookingMap.get(bid) : undefined;
     return {
       ...base,
       bookingOrderCode: bk?.order_code ?? null,

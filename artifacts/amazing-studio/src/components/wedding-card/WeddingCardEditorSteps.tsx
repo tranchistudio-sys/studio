@@ -29,8 +29,8 @@ export function WeddingCardEditorSteps({
             className={cn(
               "wc-step-dot flex h-8 w-8 items-center justify-center rounded-full text-[10px] font-bold border-2 transition-all",
               done[s.key]
-                ? "is-done bg-rose-600 border-rose-600 text-white"
-                : "bg-white border-neutral-200 text-neutral-400",
+                ? "is-done bg-[var(--wc-bt-taupe,#8e7c68)] border-[var(--wc-bt-taupe,#8e7c68)] text-white"
+                : "bg-white border-[var(--wc-bt-border,#e8e0d8)] text-[var(--wc-bt-muted,#6b6560)]",
             )}
           >
             {i + 1}
@@ -38,7 +38,9 @@ export function WeddingCardEditorSteps({
           <span
             className={cn(
               "text-[9px] uppercase tracking-wide truncate w-full text-center",
-              done[s.key] ? "text-rose-700 font-semibold" : "text-neutral-400",
+              done[s.key]
+                ? "text-[var(--wc-bt-taupe-dark,#7d6b5d)] font-semibold"
+                : "text-[var(--wc-bt-muted,#6b6560)]",
             )}
           >
             {s.label}

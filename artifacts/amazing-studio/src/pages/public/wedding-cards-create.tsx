@@ -201,7 +201,7 @@ export default function WeddingCardsCreatePage() {
   const hasNames = !!(groomName.trim() && brideName.trim());
 
   return (
-    <div className="wc-mobile-page min-h-screen bg-neutral-100/80 flex flex-col">
+    <div className="wc-bt-editor-page wc-mobile-page min-h-screen flex flex-col">
       {create.isPending && (
         <WeddingCardOverlay message="Đang tạo link thiệp..." sub="Chỉ vài giây nữa thôi ✨" />
       )}
@@ -214,17 +214,17 @@ export default function WeddingCardsCreatePage() {
         />
       )}
 
-      <header className="shrink-0 border-b border-neutral-200/80 bg-white px-4 py-3 flex items-center justify-between gap-3 wc-fade-in">
-        <Link href="/thiep-cuoi-online" className="text-xs text-neutral-500 hover:text-neutral-800 whitespace-nowrap">
+      <header className="shrink-0 border-b border-[var(--wc-bt-border,#e8e0d8)] bg-white px-4 py-3 flex items-center justify-between gap-3 wc-fade-in">
+        <Link href="/thiep-cuoi-online" className="text-xs text-[var(--wc-bt-muted)] hover:text-[var(--wc-bt-text)] whitespace-nowrap">
           ← Mẫu thiệp
         </Link>
-        <p className="text-sm font-medium text-neutral-800 truncate">
+        <p className="text-sm font-medium text-[var(--wc-bt-text)] truncate">
           <span className="font-serif">{display.title}</span>
         </p>
         <div className="w-12" />
       </header>
 
-      <div className="wc-card-shell px-3 border-b border-neutral-200/60 bg-white/80">
+      <div className="wc-bt-container px-3 border-b border-[var(--wc-bt-border,#e8e0d8)] bg-white/90 max-w-none">
         <WeddingCardEditorSteps hasPhoto={hasPhoto} hasNames={hasNames} />
         <p className="text-center text-[10px] text-neutral-400 pb-2 -mt-1">
           Chọn mẫu → Up hình → Sửa chữ → Lấy link
@@ -232,8 +232,8 @@ export default function WeddingCardsCreatePage() {
       </div>
 
       <div className="flex-1 flex flex-col lg:flex-row lg:items-start w-full max-w-7xl mx-auto">
-        <div className="wc-fade-in order-1 lg:order-2 lg:flex-1 lg:sticky lg:top-0 flex flex-col items-center bg-gradient-to-b from-rose-50/50 via-neutral-100/40 to-neutral-100/60 px-2 py-4 sm:py-6 lg:py-10 lg:min-h-[calc(100vh-120px)]">
-          <p className="text-[10px] tracking-[0.25em] uppercase text-rose-400/90 mb-2 flex items-center gap-1">
+        <div className="wc-bt-editor-preview wc-fade-in order-1 lg:order-2 lg:flex-1 lg:sticky lg:top-0 flex flex-col items-center px-2 py-4 sm:py-6 lg:py-10 lg:min-h-[calc(100vh-120px)]">
+          <p className="text-[10px] tracking-[0.25em] uppercase text-[var(--wc-bt-taupe)] mb-2 flex items-center gap-1">
             <Sparkles className="h-3 w-3" />
             Xem trước thiệp
           </p>
@@ -260,7 +260,7 @@ export default function WeddingCardsCreatePage() {
           </div>
         </div>
 
-        <div className="wc-fade-in order-2 lg:order-1 w-full lg:w-[min(400px,38vw)] lg:shrink-0 lg:border-r border-neutral-200/80 bg-[var(--public-cream,#faf8f5)] px-3 sm:px-4 py-4 pb-28 lg:pb-8 lg:max-h-[calc(100vh-120px)] lg:overflow-y-auto">
+        <div className="wc-fade-in order-2 lg:order-1 w-full lg:w-[min(420px,40vw)] lg:shrink-0 lg:border-r border-[var(--wc-bt-border,#e8e0d8)] bg-[var(--wc-bt-cream,#fdfbf9)] px-3 sm:px-4 py-4 pb-28 lg:pb-8 lg:max-h-[calc(100vh-120px)] lg:overflow-y-auto">
           <WeddingCardEditorPanel
             form={form}
             setters={{
@@ -312,7 +312,7 @@ export default function WeddingCardsCreatePage() {
             type="button"
             onClick={onCreate}
             disabled={create.isPending}
-            className="hidden lg:flex mt-6 w-full items-center justify-center gap-2 py-4 rounded-xl bg-gradient-to-r from-rose-600 to-rose-500 hover:from-rose-700 hover:to-rose-600 text-white text-sm font-bold shadow-lg shadow-rose-200/60 disabled:opacity-60 wc-btn-glow"
+            className="hidden lg:flex mt-6 w-full items-center justify-center gap-2 wc-bt-btn wc-bt-btn-primary rounded-xl disabled:opacity-60"
           >
             <Sparkles className="h-4 w-4" />
             Tạo thiệp & lấy link
@@ -320,12 +320,12 @@ export default function WeddingCardsCreatePage() {
         </div>
       </div>
 
-      <div className="lg:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-neutral-200 bg-white/95 backdrop-blur-md p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+      <div className="lg:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-[var(--wc-bt-border,#e8e0d8)] bg-white/95 backdrop-blur-md p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
         <button
           type="button"
           onClick={onCreate}
           disabled={create.isPending}
-          className="wc-touch-btn wc-btn-glow w-full flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-rose-600 to-rose-500 text-white text-base font-bold disabled:opacity-60 shadow-lg shadow-rose-200/50"
+          className="wc-bt-btn wc-bt-btn-primary w-full flex items-center justify-center gap-2 rounded-xl disabled:opacity-60"
         >
           <Sparkles className="h-4 w-4" />
           Tạo thiệp & lấy link

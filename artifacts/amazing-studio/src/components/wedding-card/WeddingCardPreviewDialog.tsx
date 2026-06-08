@@ -1,7 +1,7 @@
 import { X } from "lucide-react";
 import { WeddingCardRenderer } from "./WeddingCardRenderer";
 import { WeddingCardPhoneFrame } from "./WeddingCardPhoneFrame";
-import { DEMO_CARD } from "./wedding-card-config";
+import { buildDemoCard } from "./wedding-card-config";
 import type { WeddingCardTemplate } from "@/hooks/use-wedding-cards";
 
 export function WeddingCardPreviewDialog({
@@ -15,11 +15,7 @@ export function WeddingCardPreviewDialog({
 }) {
   if (!open || !template) return null;
 
-  const card = {
-    ...DEMO_CARD,
-    templateSlug: template.slug,
-    themeKey: template.themeKey,
-  };
+  const card = buildDemoCard(template);
 
   return (
     <div
@@ -29,15 +25,15 @@ export function WeddingCardPreviewDialog({
       onClick={onClose}
     >
       <div
-        className="wc-success-pop w-full sm:max-w-md bg-[#faf8f5] rounded-t-2xl sm:rounded-2xl max-h-[92vh] overflow-hidden flex flex-col"
+        className="wc-success-pop w-full sm:max-w-md bg-[var(--wc-bt-cream,#fdfbf9)] rounded-t-2xl sm:rounded-2xl max-h-[92vh] overflow-hidden flex flex-col"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-200/80">
-          <p className="text-sm font-medium text-neutral-800">Xem mẫu thiệp</p>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--wc-bt-border,#e8e0d8)]">
+          <p className="text-sm font-medium text-[var(--wc-bt-text)]">Xem mẫu thiệp</p>
           <button
             type="button"
             onClick={onClose}
-            className="p-2 rounded-full hover:bg-neutral-200/60"
+            className="p-2 rounded-full hover:bg-[var(--wc-bt-cream-2,#f5f0eb)]"
             aria-label="Đóng"
           >
             <X className="h-5 w-5" />
@@ -47,6 +43,14 @@ export function WeddingCardPreviewDialog({
           <WeddingCardPhoneFrame variant="bare">
             <WeddingCardRenderer card={card} embed />
           </WeddingCardPhoneFrame>
+        </div>
+        <div className="p-4 border-t border-[var(--wc-bt-border,#e8e0d8)]">
+          <a
+            href={`/thiep-cuoi-online/tao?template=${template.slug}`}
+            className="wc-bt-btn wc-bt-btn-primary w-full"
+          >
+            Dùng mẫu này
+          </a>
         </div>
       </div>
     </div>

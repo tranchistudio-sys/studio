@@ -146,14 +146,18 @@ router.get("/storage/objects/*path", async (req: Request, res: Response) => {
     const wildcardPath = Array.isArray(raw) ? raw.join("/") : raw;
     const objectPath = `/objects/${wildcardPath}`;
 
-    if (useLocalObjectStorage() && await localObjectExists(objectPath)) {
-      const local = await readLocalObject(objectPath);
-      if (local) {
-        res.setHeader("Content-Type", local.contentType);
-        res.setHeader("Cache-Control", "public, max-age=3600");
-        res.send(local.body);
-        return;
+    if (useLocalObjectStorage()) {
+      if (await localObjectExists(objectPath)) {
+        const local = await readLocalObject(objectPath);
+        if (local) {
+          res.setHeader("Content-Type", local.contentType);
+          res.setHeader("Cache-Control", "public, max-age=3600");
+          res.send(local.body);
+          return;
+        }
       }
+      res.status(404).json({ error: "Object not found" });
+      return;
     }
 
     const objectFile = await objectStorageService.getObjectEntityFile(objectPath);

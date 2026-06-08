@@ -1,10 +1,33 @@
-import { useState } from "react";
-import { Copy, Home, Share2 } from "lucide-react";
-import { Link } from "wouter";
+import { useEffect, useState } from "react";
+import { Copy, Gift, Heart, Images, MapPin, Share2 } from "lucide-react";
+
+const NAV = [
+  { id: "wc-section-wishes", label: "Gửi lời chúc", icon: Heart },
+  { id: "wc-section-album", label: "Album", icon: Images },
+  { id: "wc-section-gift", label: "Quà tặng", icon: Gift },
+  { id: "wc-section-map", label: "Bản đồ", icon: MapPin },
+] as const;
+
+function scrollTo(id: string) {
+  const el = document.getElementById(id);
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
 
 export function WeddingCardFloatingActions({ shareUrl }: { shareUrl: string }) {
   const [copied, setCopied] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [visible, setVisible] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    const check = () => {
+      const next: Record<string, boolean> = {};
+      for (const { id } of NAV) next[id] = !!document.getElementById(id);
+      setVisible(next);
+    };
+    check();
+    const t = setTimeout(check, 400);
+    return () => clearTimeout(t);
+  }, []);
 
   const copyLink = async () => {
     try {
@@ -31,14 +54,10 @@ export function WeddingCardFloatingActions({ shareUrl }: { shareUrl: string }) {
   return (
     <>
       {shareOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-black/25 wc-overlay-in"
-          onClick={() => setShareOpen(false)}
-          aria-hidden
-        />
+        <div className="fixed inset-0 z-40 bg-black/25" onClick={() => setShareOpen(false)} aria-hidden />
       )}
       {shareOpen && (
-        <div className="fixed bottom-[5.5rem] left-1/2 -translate-x-1/2 z-50 flex gap-2 bg-white rounded-2xl shadow-xl border p-2 max-w-[calc(100vw-2rem)] wc-success-pop">
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-50 flex gap-2 bg-white rounded-2xl shadow-xl border p-2 max-w-[calc(100vw-2rem)] wc-success-pop">
           <a
             href={`https://zalo.me/share?url=${encodeURIComponent(shareUrl)}`}
             target="_blank"
@@ -57,37 +76,32 @@ export function WeddingCardFloatingActions({ shareUrl }: { shareUrl: string }) {
           </a>
         </div>
       )}
-      <div
-        className="fixed bottom-4 right-4 z-50 flex flex-col gap-3 items-end pb-[env(safe-area-inset-bottom)]"
-        role="toolbar"
-        aria-label="Thao tác thiệp"
-      >
-        <Link
-          href="/thiep-cuoi-online"
-          className="wc-touch-btn flex h-12 w-12 items-center justify-center rounded-full bg-white shadow-lg border border-neutral-200/90 text-neutral-700 active:scale-95 transition-transform"
-          title="Trang chủ thiệp"
-          aria-label="Trang chủ"
-        >
-          <Home className="h-5 w-5" />
-        </Link>
-        <button
-          type="button"
-          onClick={shareNative}
-          className="wc-touch-btn flex h-12 w-12 items-center justify-center rounded-full bg-neutral-900 text-white shadow-lg active:scale-95 transition-transform"
-          title="Chia sẻ"
-          aria-label="Chia sẻ"
-        >
-          <Share2 className="h-5 w-5" />
+
+      <nav className="wc-bt-float-nav" aria-label="Điều hướng thiệp">
+        {NAV.map(({ id, label, icon: Icon }) => {
+          if (!visible[id]) return null;
+          return (
+            <button
+              key={id}
+              type="button"
+              onClick={() => scrollTo(id)}
+              className="wc-bt-float-nav-btn"
+              title={label}
+            >
+              <Icon className="h-4 w-4 shrink-0" />
+              <span>{label}</span>
+            </button>
+          );
+        })}
+        <button type="button" onClick={shareNative} className="wc-bt-float-nav-btn" title="Chia sẻ">
+          <Share2 className="h-4 w-4 shrink-0" />
+          <span>Chia sẻ</span>
         </button>
-        <button
-          type="button"
-          onClick={copyLink}
-          className="wc-touch-btn flex h-12 min-w-[8.5rem] items-center justify-center gap-2 rounded-full bg-rose-600 text-white shadow-lg px-4 text-sm font-semibold active:scale-95 transition-transform"
-        >
+        <button type="button" onClick={copyLink} className="wc-bt-float-nav-btn wc-bt-float-nav-btn--accent" title="Copy link">
           <Copy className="h-4 w-4 shrink-0" />
-          {copied ? "Đã copy" : "Copy link"}
+          <span>{copied ? "Đã copy" : "Copy link"}</span>
         </button>
-      </div>
+      </nav>
     </>
   );
 }

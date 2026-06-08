@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { API_BASE } from "@/lib/api-base";
-import { FALLBACK_WEDDING_TEMPLATES } from "@/components/wedding-card/wedding-card-config";
+import { FALLBACK_WEDDING_TEMPLATES, resolveTemplatePreviewUrls } from "@/components/wedding-card/wedding-card-config";
 
 const WC_BASE = `${API_BASE}/api/wedding-cards`;
 
@@ -116,6 +116,17 @@ function normalizeTemplates(raw: unknown): WeddingCardTemplate[] {
     .filter((t) => t.slug.length > 0);
 }
 
+function enrichTemplateWithSamples(t: WeddingCardTemplate): WeddingCardTemplate {
+  const urls = resolveTemplatePreviewUrls(t);
+  return {
+    ...t,
+    mockupImageUrl: t.mockupImageUrl ?? urls.mockup,
+    previewImageUrl: t.previewImageUrl ?? urls.mockup,
+    defaultBackgroundUrl: t.defaultBackgroundUrl ?? urls.cover,
+    thumbnailUrl: t.thumbnailUrl ?? urls.couple,
+  };
+}
+
 async function fetchTemplates(): Promise<{
   templates: WeddingCardTemplate[];
   fromApi: boolean;
@@ -146,7 +157,7 @@ async function fetchTemplates(): Promise<{
     if (list.length === 0) {
       return { templates: FALLBACK_WEDDING_TEMPLATES, fromApi: false, apiError: "API trả mảng rỗng" };
     }
-    return { templates: list, fromApi: true };
+    return { templates: list.map(enrichTemplateWithSamples), fromApi: true };
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Network error";
     if (import.meta.env.DEV) {

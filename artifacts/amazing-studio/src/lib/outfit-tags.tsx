@@ -90,15 +90,17 @@ export function OutfitTagBadge({
   className = "",
 }: {
   tag: string | null | undefined;
-  size?: "xs" | "sm";
+  size?: "xxs" | "xs" | "sm";
   className?: string;
 }) {
   const t = getOutfitTag(tag);
   if (!t) return null;
   const sizing =
-    size === "xs"
-      ? "text-[9px] px-1.5 py-[2px]"
-      : "text-[10px] px-2 py-[3px]";
+    size === "xxs"
+      ? "text-[7px] px-1 py-px leading-none"
+      : size === "xs"
+        ? "text-[9px] px-1.5 py-[2px]"
+        : "text-[10px] px-2 py-[3px]";
   return (
     <span
       className={`inline-flex items-center rounded-full font-semibold uppercase tracking-wider whitespace-nowrap ${sizing} ${t.className} ${className}`}

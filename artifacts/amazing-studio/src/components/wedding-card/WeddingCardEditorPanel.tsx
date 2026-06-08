@@ -1,15 +1,17 @@
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion";
+import { useState } from "react";
 import { getImageSrc } from "@/lib/imageUtils";
 import { WeddingCardImageUploader } from "./WeddingCardImageUploader";
 import { X } from "lucide-react";
+import { cn } from "@/lib/utils";
 
-const inputClass =
-  "w-full border border-neutral-200 rounded-lg px-3 py-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-rose-200 focus:border-rose-300";
+const TABS = [
+  { key: "photos", label: "Ảnh" },
+  { key: "info", label: "Thông tin" },
+  { key: "venue", label: "Địa điểm" },
+  { key: "message", label: "Lời mời" },
+] as const;
+
+type TabKey = (typeof TABS)[number]["key"];
 
 export interface EditorFormState {
   groomName: string;
@@ -68,234 +70,215 @@ export function WeddingCardEditorPanel({
   onRemoveAlbum?: (index: number) => void;
   uploadingAlbum?: boolean;
 }) {
+  const [tab, setTab] = useState<TabKey>("photos");
+
   return (
-    <div className="space-y-4">
-      <div className="rounded-xl bg-gradient-to-br from-rose-50 to-amber-50/80 border border-rose-100 p-4">
-        <p className="text-sm font-semibold text-neutral-900">Ảnh cưới của bạn</p>
-        <p className="text-xs text-neutral-600 mt-1 mb-3">
-          Tải ảnh lên — thiệp bên phải đổi ngay. Nên có ảnh bìa và ảnh cặp đôi.
-        </p>
-        <div className="grid grid-cols-2 gap-3">
-          <WeddingCardImageUploader
-            slot="cover"
-            label="Ảnh bìa"
-            hint="Ảnh nền đầu thiệp"
-            tall
-            imageUrl={form.coverImageUrl}
-            uploading={uploading === "cover"}
-            onPick={(f) => onUpload(f, "cover")}
-            onClear={onClearCover}
-          />
-          <WeddingCardImageUploader
-            slot="couple"
-            label="Ảnh cặp đôi"
-            hint="Cô dâu & chú rể"
-            tall
-            imageUrl={form.coupleImageUrl}
-            uploading={uploading === "couple"}
-            onPick={(f) => onUpload(f, "couple")}
-            onClear={onClearCouple}
-          />
-        </div>
-        {onUploadAlbum && (
-          <div className="mt-3">
-            <WeddingCardImageUploader
-              slot="extra"
-              label="Album phụ"
-              hint="Thêm ảnh kỷ niệm — xem ngay dưới preview"
-              imageUrl={null}
-              uploading={uploadingAlbum}
-              onPick={onUploadAlbum}
-            />
-            {albumImageUrls.length > 0 && (
-              <div className="flex flex-wrap gap-2 mt-3">
-                {albumImageUrls.map((url, i) => {
-                  const src = getImageSrc(url);
-                  if (!src) return null;
-                  return (
-                    <div key={`${url}-${i}`} className="relative h-16 w-16 rounded-lg overflow-hidden">
-                      <img src={src} alt="" className="h-full w-full object-cover" />
-                      {onRemoveAlbum && (
-                        <button
-                          type="button"
-                          onClick={() => onRemoveAlbum(i)}
-                          className="absolute top-0.5 right-0.5 rounded-full bg-black/55 p-0.5 text-white"
-                        >
-                          <X className="h-3 w-3" />
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
+    <div className="space-y-3">
+      <div className="wc-bt-tabs" role="tablist">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.key}
+            className={cn("wc-bt-tab", tab === t.key && "is-active")}
+            onClick={() => setTab(t.key)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "photos" && (
+        <div className="space-y-4 wc-fade-in">
+          <div className="rounded-xl bg-white border border-[var(--wc-bt-border,#e8e0d8)] p-4">
+            <p className="text-sm font-semibold text-[var(--wc-bt-text)]">Ảnh cưới của bạn</p>
+            <p className="text-xs text-[var(--wc-bt-muted)] mt-1 mb-3">
+              Tải ảnh lên — thiệp bên cạnh đổi ngay. Nên có ảnh bìa và ảnh cặp đôi.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <WeddingCardImageUploader
+                slot="cover"
+                label="Ảnh bìa"
+                hint="Ảnh nền đầu thiệp"
+                tall
+                imageUrl={form.coverImageUrl}
+                uploading={uploading === "cover"}
+                onPick={(f) => onUpload(f, "cover")}
+                onClear={onClearCover}
+              />
+              <WeddingCardImageUploader
+                slot="couple"
+                label="Ảnh cặp đôi"
+                hint="Cô dâu & chú rể"
+                tall
+                imageUrl={form.coupleImageUrl}
+                uploading={uploading === "couple"}
+                onPick={(f) => onUpload(f, "couple")}
+                onClear={onClearCouple}
+              />
+            </div>
+            {onUploadAlbum && (
+              <div className="mt-3">
+                <WeddingCardImageUploader
+                  slot="extra"
+                  label="Album phụ"
+                  hint="Thêm ảnh kỷ niệm"
+                  imageUrl={null}
+                  uploading={uploadingAlbum}
+                  onPick={onUploadAlbum}
+                />
+                {albumImageUrls.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    {albumImageUrls.map((url, i) => {
+                      const src = getImageSrc(url);
+                      if (!src) return null;
+                      return (
+                        <div key={`${url}-${i}`} className="relative h-16 w-16 rounded-lg overflow-hidden">
+                          <img src={src} alt="" className="h-full w-full object-cover" />
+                          {onRemoveAlbum && (
+                            <button
+                              type="button"
+                              onClick={() => onRemoveAlbum(i)}
+                              className="absolute top-0.5 right-0.5 rounded-full bg-black/55 p-0.5 text-white"
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
-      <Accordion
-        type="single"
-        collapsible
-        defaultValue="couple"
-        className="wc-accordion bg-white rounded-xl border border-neutral-200/80 px-1 shadow-sm"
-      >
-        <AccordionItem value="couple" className="px-3 border-neutral-100">
-          <AccordionTrigger className="text-sm font-semibold hover:no-underline py-3.5 min-h-[48px]">
-            Thông tin cô dâu chú rể
-          </AccordionTrigger>
-          <AccordionContent className="wc-acc-content space-y-3 pb-4">
-            <div>
-              <label className="text-xs text-neutral-500">Tên chú rể *</label>
-              <input
-                className={inputClass + " mt-1"}
-                value={form.groomName}
-                onChange={(e) => setters.setGroomName(e.target.value)}
-                placeholder="VD: Nguyễn Văn A"
-              />
-            </div>
-            <div>
-              <label className="text-xs text-neutral-500">Tên cô dâu *</label>
-              <input
-                className={inputClass + " mt-1"}
-                value={form.brideName}
-                onChange={(e) => setters.setBrideName(e.target.value)}
-                placeholder="VD: Trần Thị B"
-              />
-            </div>
-            <div>
-              <label className="text-xs text-neutral-500">Số điện thoại liên hệ</label>
-              <input
-                className={inputClass + " mt-1"}
-                value={form.contactPhone}
-                onChange={(e) => setters.setContactPhone(e.target.value)}
-                placeholder="Gọi cho cô dâu chú rể"
-              />
-            </div>
-          </AccordionContent>
-        </AccordionItem>
-
-        <AccordionItem value="datetime" className="px-3 border-neutral-100">
-          <AccordionTrigger className="text-sm font-semibold hover:no-underline py-3.5 min-h-[48px]">
-            Ngày giờ
-          </AccordionTrigger>
-          <AccordionContent className="wc-acc-content space-y-3 pb-4">
-            <div>
-              <label className="text-xs text-neutral-500">Ngày cưới</label>
-              <input
-                type="date"
-                className={inputClass + " mt-1"}
-                value={form.weddingDate}
-                onChange={(e) => setters.setWeddingDate(e.target.value)}
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs text-neutral-500">Giờ lễ</label>
-                <input
-                  className={inputClass + " mt-1"}
-                  value={form.ceremonyTime}
-                  onChange={(e) => setters.setCeremonyTime(e.target.value)}
-                  placeholder="09:00"
-                />
-              </div>
-              <div>
-                <label className="text-xs text-neutral-500">Giờ tiệc</label>
-                <input
-                  className={inputClass + " mt-1"}
-                  value={form.receptionTime}
-                  onChange={(e) => setters.setReceptionTime(e.target.value)}
-                  placeholder="17:00"
-                />
-              </div>
-            </div>
-          </AccordionContent>
-        </AccordionItem>
-
-        <AccordionItem value="venue" className="px-3 border-neutral-100">
-          <AccordionTrigger className="text-sm font-semibold hover:no-underline py-3.5 min-h-[48px]">
-            Địa điểm
-          </AccordionTrigger>
-          <AccordionContent className="wc-acc-content space-y-3 pb-4">
+      {tab === "info" && (
+        <div className="space-y-3 wc-fade-in rounded-xl bg-white border border-[var(--wc-bt-border,#e8e0d8)] p-4">
+          <div>
+            <label className="text-xs text-[var(--wc-bt-muted)]">Tên chú rể *</label>
             <input
-              className={inputClass}
-              placeholder="Nhà trai"
+              className="wc-bt-input mt-1"
+              value={form.groomName}
+              onChange={(e) => setters.setGroomName(e.target.value)}
+              placeholder="VD: Nguyễn Văn A"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-[var(--wc-bt-muted)]">Tên cô dâu *</label>
+            <input
+              className="wc-bt-input mt-1"
+              value={form.brideName}
+              onChange={(e) => setters.setBrideName(e.target.value)}
+              placeholder="VD: Trần Thị B"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-[var(--wc-bt-muted)]">Số điện thoại liên hệ</label>
+            <input
+              className="wc-bt-input mt-1"
+              value={form.contactPhone}
+              onChange={(e) => setters.setContactPhone(e.target.value)}
+              placeholder="Gọi cho cô dâu chú rể"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-[var(--wc-bt-muted)]">Ngày cưới</label>
+            <input
+              type="date"
+              className="wc-bt-input mt-1"
+              value={form.weddingDate}
+              onChange={(e) => setters.setWeddingDate(e.target.value)}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-[var(--wc-bt-muted)]">Giờ lễ</label>
+              <input
+                className="wc-bt-input mt-1"
+                value={form.ceremonyTime}
+                onChange={(e) => setters.setCeremonyTime(e.target.value)}
+                placeholder="09:00"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-[var(--wc-bt-muted)]">Giờ tiệc</label>
+              <input
+                className="wc-bt-input mt-1"
+                value={form.receptionTime}
+                onChange={(e) => setters.setReceptionTime(e.target.value)}
+                placeholder="17:00"
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === "venue" && (
+        <div className="space-y-3 wc-fade-in rounded-xl bg-white border border-[var(--wc-bt-border,#e8e0d8)] p-4">
+          <div>
+            <label className="text-xs text-[var(--wc-bt-muted)]">Nhà trai</label>
+            <input
+              className="wc-bt-input mt-1"
+              placeholder="Địa chỉ nhà trai"
               value={form.venueGroom}
               onChange={(e) => setters.setVenueGroom(e.target.value)}
             />
+          </div>
+          <input
+            className="wc-bt-input"
+            placeholder="Link Google Maps (tùy chọn)"
+            value={form.mapsUrlGroom}
+            onChange={(e) => setters.setMapsUrlGroom(e.target.value)}
+          />
+          <div>
+            <label className="text-xs text-[var(--wc-bt-muted)]">Nhà gái</label>
             <input
-              className={inputClass}
-              placeholder="Link Google Maps (tùy chọn)"
-              value={form.mapsUrlGroom}
-              onChange={(e) => setters.setMapsUrlGroom(e.target.value)}
-            />
-            <input
-              className={inputClass}
-              placeholder="Nhà gái"
+              className="wc-bt-input mt-1"
+              placeholder="Địa chỉ nhà gái"
               value={form.venueBride}
               onChange={(e) => setters.setVenueBride(e.target.value)}
             />
+          </div>
+          <input
+            className="wc-bt-input"
+            placeholder="Link Maps nhà gái"
+            value={form.mapsUrlBride}
+            onChange={(e) => setters.setMapsUrlBride(e.target.value)}
+          />
+          <div>
+            <label className="text-xs text-[var(--wc-bt-muted)]">Địa điểm tiệc cưới</label>
             <input
-              className={inputClass}
-              placeholder="Link Maps nhà gái"
-              value={form.mapsUrlBride}
-              onChange={(e) => setters.setMapsUrlBride(e.target.value)}
-            />
-            <input
-              className={inputClass}
-              placeholder="Địa điểm tiệc cưới"
+              className="wc-bt-input mt-1"
+              placeholder="Nhà hàng / sảnh tiệc"
               value={form.venueReception}
               onChange={(e) => setters.setVenueReception(e.target.value)}
             />
-            <input
-              className={inputClass}
-              placeholder="Link Maps tiệc"
-              value={form.mapsUrlReception}
-              onChange={(e) => setters.setMapsUrlReception(e.target.value)}
-            />
-          </AccordionContent>
-        </AccordionItem>
+          </div>
+          <input
+            className="wc-bt-input"
+            placeholder="Link Maps tiệc"
+            value={form.mapsUrlReception}
+            onChange={(e) => setters.setMapsUrlReception(e.target.value)}
+          />
+        </div>
+      )}
 
-        <AccordionItem value="photos" className="px-3 border-neutral-100">
-          <AccordionTrigger className="text-sm font-semibold hover:no-underline py-3.5 min-h-[48px]">
-            Hình ảnh
-          </AccordionTrigger>
-          <AccordionContent className="wc-acc-content space-y-3 pb-4">
-            <WeddingCardImageUploader
-              slot="cover"
-              label="Ảnh bìa chính"
-              imageUrl={form.coverImageUrl}
-              uploading={uploading === "cover"}
-              onPick={(f) => onUpload(f, "cover")}
-              onClear={onClearCover}
-              tall
-            />
-            <WeddingCardImageUploader
-              slot="couple"
-              label="Ảnh cặp đôi"
-              imageUrl={form.coupleImageUrl}
-              uploading={uploading === "couple"}
-              onPick={(f) => onUpload(f, "couple")}
-              onClear={onClearCouple}
-              tall
-            />
-          </AccordionContent>
-        </AccordionItem>
-
-        <AccordionItem value="message" className="px-3 border-neutral-100">
-          <AccordionTrigger className="text-sm font-semibold hover:no-underline py-3.5 min-h-[48px]">
-            Lời mời
-          </AccordionTrigger>
-          <AccordionContent className="wc-acc-content pb-4">
-            <textarea
-              className={inputClass + " resize-none min-h-[100px]"}
-              rows={4}
-              placeholder="Lời mời trân trọng gửi tới quý khách…"
-              value={form.invitationMessage}
-              onChange={(e) => setters.setInvitationMessage(e.target.value)}
-            />
-          </AccordionContent>
-        </AccordionItem>
-      </Accordion>
+      {tab === "message" && (
+        <div className="wc-fade-in rounded-xl bg-white border border-[var(--wc-bt-border,#e8e0d8)] p-4">
+          <label className="text-xs text-[var(--wc-bt-muted)]">Lời mời</label>
+          <textarea
+            className="wc-bt-input mt-1 resize-none min-h-[120px]"
+            rows={5}
+            placeholder="Lời mời trân trọng gửi tới quý khách…"
+            value={form.invitationMessage}
+            onChange={(e) => setters.setInvitationMessage(e.target.value)}
+          />
+        </div>
+      )}
     </div>
   );
 }

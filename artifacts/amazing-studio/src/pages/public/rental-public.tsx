@@ -3,13 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { LazyImage, CMS_BASE } from "@/components/cms-shared";
 import { formatVND, cn } from "@/lib/utils";
-import { Sparkles, Shirt } from "lucide-react";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
+import { Sparkles, Shirt, X } from "lucide-react";
 import { OUTFIT_TAGS, OutfitTagBadge, type OutfitTagKey } from "@/lib/outfit-tags";
 import { RENTAL_PAGE } from "@/lib/public-site-config";
 import { PublicReveal, PublicRevealItem } from "@/components/public/PublicReveal";
@@ -126,7 +120,6 @@ export default function PublicRentalPage() {
   const [draftTags, setDraftTags] = useState<Set<string>>(new Set());
   const [draftOutfitTags, setDraftOutfitTags] = useState<Set<OutfitTagKey>>(new Set());
   const smartFilterRef = useRef<HTMLDivElement>(null);
-  const isMobileViewport = useIsMobileViewport();
 
   const { data: cats = [], isLoading: catsLoading } = useQuery<PublicCategory[]>({
     queryKey: ["public-categories-dress-tree"],
@@ -428,7 +421,11 @@ export default function PublicRentalPage() {
     setDraftOutfitTags(new Set(selectedOutfitTags));
   }
 
-  function openSmartFilter() {
+  function toggleSmartFilter() {
+    if (smartFilterOpen) {
+      setSmartFilterOpen(false);
+      return;
+    }
     syncDraftFromApplied();
     setSmartFilterOpen(true);
   }
@@ -439,7 +436,6 @@ export default function PublicRentalPage() {
     setSelectedColors(new Set(draftColors));
     setSelectedTags(new Set(draftTags));
     setSelectedOutfitTags(new Set(draftOutfitTags));
-    setSmartFilterOpen(false);
     setVisibleCount(PAGE_SIZE);
   }
 
@@ -458,19 +454,8 @@ export default function PublicRentalPage() {
     setSelectedColors(new Set());
     setSelectedTags(new Set());
     setSelectedOutfitTags(new Set());
-    setSmartFilterOpen(false);
     setVisibleCount(PAGE_SIZE);
   }
-
-  useEffect(() => {
-    if (!smartFilterOpen || isMobileViewport) return;
-    const onPointerDown = (e: MouseEvent) => {
-      if (smartFilterRef.current?.contains(e.target as Node)) return;
-      setSmartFilterOpen(false);
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
-  }, [smartFilterOpen, isMobileViewport]);
 
   const breadcrumbLabel = useMemo(() => {
     if (selectedNodeId == null) return "Catalog";
@@ -516,13 +501,13 @@ export default function PublicRentalPage() {
   );
 
   return (
-    <div className="pb-20 sm:pb-28">
+    <div className="pb-16 sm:pb-28">
       <RentalHero />
 
-      <div className="max-w-7xl mx-auto px-5 sm:px-8 pt-10 sm:pt-14 pb-6">
+      <div className="max-w-7xl mx-auto px-3 sm:px-8 pt-5 sm:pt-14 pb-4 sm:pb-6">
         {loading ? (
           <>
-            <div className="flex gap-3 overflow-hidden mb-10">
+            <div className="flex gap-2 sm:gap-3 overflow-hidden mb-6 sm:mb-10">
               {Array.from({ length: 3 }).map((_, i) => (
                 <div key={i} className="gallery-skeleton h-24 w-52 rounded-xl flex-shrink-0" />
               ))}
@@ -536,7 +521,7 @@ export default function PublicRentalPage() {
           </div>
         ) : (
           <>
-            <PublicReveal className="mb-8 sm:mb-10">
+            <PublicReveal className="mb-4 sm:mb-10">
               <div
                 className="flex gap-3 sm:gap-4 overflow-x-auto pb-2 -mx-1 px-1 snap-x snap-mandatory"
                 style={{ WebkitOverflowScrolling: "touch" }}
@@ -549,13 +534,13 @@ export default function PublicRentalPage() {
                       type="button"
                       onClick={() => pickTier1(tab.id)}
                       className={cn(
-                        "gallery-tab snap-start flex items-center gap-3 min-w-[168px] sm:min-w-[220px] max-w-[260px] px-3 py-2.5 sm:px-4 sm:py-3 text-left",
+                        "gallery-tab snap-start flex items-center gap-2 sm:gap-3 min-w-[132px] sm:min-w-[220px] max-w-[200px] sm:max-w-[260px] px-2.5 py-2 sm:px-4 sm:py-3 text-left",
                         active && "is-active",
                       )}
                     >
                       <div
                         className={cn(
-                          "w-12 h-12 sm:w-14 sm:h-14 flex-shrink-0 rounded-lg overflow-hidden border",
+                          "w-9 h-9 sm:w-14 sm:h-14 flex-shrink-0 rounded-lg overflow-hidden border",
                           active ? "border-white/30" : "border-neutral-200/80 bg-neutral-100",
                         )}
                       >
@@ -575,7 +560,7 @@ export default function PublicRentalPage() {
                       <div className="min-w-0 flex-1">
                         <div
                           className={cn(
-                            "text-sm font-medium leading-snug line-clamp-2",
+                            "text-xs sm:text-sm font-medium leading-snug line-clamp-2",
                             active ? "text-white" : "text-neutral-800",
                           )}
                         >
@@ -596,14 +581,14 @@ export default function PublicRentalPage() {
               </div>
             </PublicReveal>
 
-            <div ref={smartFilterRef} className="relative mb-8">
-              <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
+            <div ref={smartFilterRef} className="mb-4 sm:mb-8">
+              <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 items-stretch sm:items-center">
                 <input
                   type="search"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
                   placeholder="Tìm theo tên, mã, tag, màu, size…"
-                  className="rental-search-input flex-1 h-10 px-4 text-sm text-neutral-900 placeholder:text-neutral-400"
+                  className="rental-search-input flex-1 h-9 sm:h-10 px-3 sm:px-4 text-sm text-neutral-900 placeholder:text-neutral-400"
                 />
                 <div className="flex gap-2 flex-shrink-0">
                   <label className="flex items-center gap-2 text-xs text-neutral-500 flex-1 sm:flex-initial">
@@ -613,7 +598,7 @@ export default function PublicRentalPage() {
                     <select
                       value={sortMode}
                       onChange={(e) => setSortMode(e.target.value as SortMode)}
-                      className="rental-search-input h-10 px-3 text-sm text-neutral-900 flex-1 sm:min-w-[140px]"
+                      className="rental-search-input h-9 sm:h-10 px-2.5 sm:px-3 text-sm text-neutral-900 flex-1 sm:min-w-[140px]"
                     >
                       {SORT_OPTIONS.map((o) => (
                         <option key={o.value} value={o.value}>
@@ -624,14 +609,15 @@ export default function PublicRentalPage() {
                   </label>
                   <button
                     type="button"
-                    onClick={openSmartFilter}
+                    onClick={toggleSmartFilter}
                     className={cn(
-                      "rental-smart-filter-btn inline-flex items-center justify-center gap-2 h-10 px-4 text-xs sm:text-sm whitespace-nowrap",
+                      "rental-smart-filter-btn inline-flex items-center justify-center gap-1.5 sm:gap-2 h-9 sm:h-10 px-3 sm:px-4 text-[11px] sm:text-sm whitespace-nowrap",
                       (smartFilterOpen || advancedFilterCount > 0) && "is-active",
                     )}
                   >
                     <Sparkles className="w-3.5 h-3.5 flex-shrink-0" />
-                    <span>Tìm kiếm thông minh</span>
+                    <span className="sm:hidden">Lọc</span>
+                    <span className="hidden sm:inline">Tìm kiếm thông minh</span>
                     {advancedFilterCount > 0 && (
                       <span className="min-w-[1.25rem] h-5 px-1.5 rounded-full bg-white/25 text-[10px] font-semibold flex items-center justify-center">
                         {advancedFilterCount}
@@ -642,7 +628,7 @@ export default function PublicRentalPage() {
               </div>
 
               {tier2.length > 0 && (
-                <div className="flex flex-wrap justify-center gap-2 mt-4">
+                <div className="flex flex-wrap justify-center gap-1.5 sm:gap-2 mt-3 sm:mt-4">
                   <SubCategoryChip
                     active={tier2Id == null}
                     onClick={() => pickTier2(null)}
@@ -660,7 +646,7 @@ export default function PublicRentalPage() {
               )}
 
               {tier3.length > 0 && (
-                <div className="flex flex-wrap justify-center gap-2 mt-3">
+                <div className="flex flex-wrap justify-center gap-1.5 sm:gap-2 mt-2 sm:mt-3">
                   <SubCategoryChip
                     active={tier3Id == null}
                     onClick={() => pickTier3(null)}
@@ -677,32 +663,31 @@ export default function PublicRentalPage() {
                 </div>
               )}
 
-              {smartFilterOpen && !isMobileViewport && (
+              {smartFilterOpen && (
                 <div
-                  className="hidden sm:block absolute right-0 top-full mt-2 z-50 w-full max-w-md rounded-xl border border-neutral-200/80 bg-white shadow-xl overflow-hidden"
-                  role="dialog"
+                  className="rental-smart-filter-panel mt-3 sm:mt-4 rounded-xl border border-neutral-200/80 bg-white shadow-sm overflow-hidden"
+                  role="region"
                   aria-label="Tìm kiếm thông minh"
                 >
+                  <div className="rental-smart-filter-head flex items-center justify-between px-2 py-1.5 sm:px-2.5 sm:py-2 border-b border-neutral-100 bg-[var(--public-cream,#faf8f5)]">
+                    <p className="rental-smart-filter-title font-serif font-light text-neutral-900">
+                      Tìm kiếm thông minh
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => setSmartFilterOpen(false)}
+                      className="p-1 rounded-full hover:bg-neutral-200/60 text-neutral-500"
+                      aria-label="Thu gọn bộ lọc"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
                   {advancedFilterPanel}
                 </div>
               )}
             </div>
 
-            <Sheet open={smartFilterOpen && isMobileViewport} onOpenChange={setSmartFilterOpen}>
-              <SheetContent
-                side="bottom"
-                className="sm:hidden max-h-[min(85vh,640px)] rounded-t-2xl p-0 flex flex-col gap-0"
-              >
-                <SheetHeader className="px-5 pt-5 pb-3 border-b border-neutral-100 text-left">
-                  <SheetTitle className="font-serif text-lg font-light">
-                    Tìm kiếm thông minh
-                  </SheetTitle>
-                </SheetHeader>
-                <div className="flex-1 overflow-y-auto">{advancedFilterPanel}</div>
-              </SheetContent>
-            </Sheet>
-
-            <p className="text-center text-xs tracking-[0.2em] uppercase text-neutral-500 mb-6">
+            <p className="text-center text-[10px] sm:text-xs tracking-[0.15em] sm:tracking-[0.2em] uppercase text-neutral-500 mb-3 sm:mb-6">
               {breadcrumbLabel}
               <span className="text-neutral-400 mx-2">—</span>
               <span className="text-neutral-700">{sortedDresses.length} mẫu</span>
@@ -731,7 +716,7 @@ export default function PublicRentalPage() {
               </div>
             ) : (
               <PublicReveal stagger>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-6 lg:gap-8">
+                <div className="rental-product-grid grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-6 lg:gap-8">
                   {shownDresses.map((d) => (
                     <PublicRevealItem key={d.id}>
                       <RentalDressCard
@@ -769,15 +754,15 @@ function toggleSet<T>(prev: Set<T>, value: T): Set<T> {
 
 function RentalHero() {
   return (
-    <section className="gallery-hero px-5 sm:px-8 pt-14 sm:pt-20 pb-16 sm:pb-24">
+    <section className="gallery-hero px-3 sm:px-8 pt-8 sm:pt-20 pb-8 sm:pb-24">
       <div className="gallery-hero-watermark" aria-hidden>
         {RENTAL_PAGE.watermark}
       </div>
       <div className="relative z-10 max-w-4xl mx-auto text-center hero-content hero-ready">
-        <p className="text-[10px] sm:text-[11px] tracking-[0.35em] text-neutral-500 uppercase mb-5">
+        <p className="text-[10px] sm:text-[11px] tracking-[0.35em] text-neutral-500 uppercase mb-3 sm:mb-5">
           {RENTAL_PAGE.eyebrow}
         </p>
-        <h1 className="font-serif text-4xl sm:text-5xl lg:text-[3.25rem] font-light text-neutral-900 leading-tight mb-4">
+        <h1 className="font-serif text-3xl sm:text-5xl lg:text-[3.25rem] font-light text-neutral-900 leading-tight mb-2 sm:mb-4">
           {RENTAL_PAGE.title}
         </h1>
         <p className="text-neutral-600 text-sm sm:text-base max-w-lg mx-auto leading-relaxed">
@@ -786,20 +771,6 @@ function RentalHero() {
       </div>
     </section>
   );
-}
-
-function useIsMobileViewport() {
-  const [mobile, setMobile] = useState(() =>
-    typeof window !== "undefined" ? window.matchMedia("(max-width: 639px)").matches : false,
-  );
-  useEffect(() => {
-    const mq = window.matchMedia("(max-width: 639px)");
-    const onChange = () => setMobile(mq.matches);
-    mq.addEventListener("change", onChange);
-    onChange();
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
-  return mobile;
 }
 
 function AdvancedFiltersBody({
@@ -844,10 +815,10 @@ function AdvancedFiltersBody({
     tagOptions.length > 0;
 
   return (
-    <div className="flex flex-col max-h-[min(70vh,520px)]">
-      <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
+    <div className="flex flex-col rental-smart-filter-body">
+      <div className="rental-smart-filter-scroll overflow-y-auto px-2 py-1.5 sm:px-2.5 sm:py-2 space-y-1">
         {!hasAnyOption ? (
-          <p className="text-sm text-neutral-500 text-center py-6">
+          <p className="text-xs text-neutral-500 text-center py-3">
             Chưa có tuỳ chọn lọc cho danh mục này.
           </p>
         ) : (
@@ -878,9 +849,9 @@ function AdvancedFiltersBody({
             />
           </>
         )}
-        <div>
-          <p className="text-[10px] tracking-[0.25em] uppercase text-neutral-500 mb-2">Nhãn</p>
-          <div className="flex flex-wrap gap-2">
+        <div className="rental-smart-filter-group">
+          <p className="rental-smart-filter-label">Nhãn</p>
+          <div className="rental-smart-filter-row rental-smart-filter-tags rental-smart-filter-tags--scroll">
             {OUTFIT_TAGS.map((t) => {
               const active = draftOutfitTags.has(t.key);
               return (
@@ -889,32 +860,32 @@ function AdvancedFiltersBody({
                   type="button"
                   onClick={() => onToggleOutfitTag(t.key)}
                   className={cn(
-                    "rounded-full transition-all",
+                    "rounded-full transition-all shrink-0",
                     active
-                      ? "ring-2 ring-[var(--public-nude,#c4a882)] ring-offset-2"
-                      : "opacity-80 hover:opacity-100",
+                      ? "ring-1 ring-[var(--public-nude,#c4a882)] ring-offset-1"
+                      : "opacity-75 hover:opacity-100",
                   )}
                   title={t.label}
                 >
-                  <OutfitTagBadge tag={t.key} size="sm" />
+                  <OutfitTagBadge tag={t.key} size="xxs" />
                 </button>
               );
             })}
           </div>
         </div>
       </div>
-      <div className="flex-shrink-0 flex gap-2 p-4 border-t border-neutral-100 bg-[var(--public-cream,#faf8f5)]">
+      <div className="rental-smart-filter-actions flex gap-1 px-2 py-1.5 sm:px-2.5 sm:py-2 border-t border-neutral-100 bg-[var(--public-cream,#faf8f5)]">
         <button
           type="button"
           onClick={onClear}
-          className="flex-1 h-10 rounded-lg border border-neutral-200 text-sm text-neutral-600 hover:bg-white transition-colors"
+          className="rental-smart-filter-action-btn flex-1 rounded border border-neutral-200 text-neutral-600 hover:bg-white transition-colors"
         >
           Xóa lọc
         </button>
         <button
           type="button"
           onClick={onApply}
-          className="flex-1 h-10 rounded-lg text-sm font-medium text-white bg-gradient-to-r from-[var(--public-nude,#c4a882)] to-[#b8956f] hover:opacity-95 transition-opacity shadow-sm"
+          className="rental-smart-filter-action-btn flex-1 rounded font-medium text-white bg-gradient-to-r from-[var(--public-nude,#c4a882)] to-[#b8956f] hover:opacity-95 transition-opacity"
         >
           Áp dụng
         </button>
@@ -936,9 +907,9 @@ function FilterGroup({
 }) {
   if (options.length === 0) return null;
   return (
-    <div>
-      <p className="text-[10px] tracking-[0.25em] uppercase text-neutral-500 mb-2">{label}</p>
-      <div className="flex flex-wrap gap-2">
+    <div className="rental-smart-filter-group">
+      <p className="rental-smart-filter-label">{label}</p>
+      <div className="rental-smart-filter-row">
         {options.map((s) => (
           <FilterPill key={s} label={s} active={selected.has(s)} onClick={() => onToggle(s)} />
         ))}
@@ -960,7 +931,7 @@ function FilterPill({
     <button
       type="button"
       onClick={onClick}
-      className={cn("rental-filter-pill px-3 py-1 text-xs", active && "is-active")}
+      className={cn("rental-filter-pill rental-filter-pill--compact", active && "is-active")}
     >
       {label}
     </button>
@@ -981,7 +952,7 @@ function SubCategoryChip({
       type="button"
       onClick={onClick}
       className={cn(
-        "px-4 py-1.5 rounded-full text-xs tracking-widest uppercase border transition-all duration-300",
+        "px-3 py-1 sm:px-4 sm:py-1.5 rounded-full text-[10px] sm:text-xs tracking-wide sm:tracking-widest uppercase border transition-all duration-300",
         active
           ? "bg-[var(--public-nude,#c4a882)] border-transparent text-white shadow-md"
           : "bg-white border-neutral-200 text-neutral-600 hover:border-[var(--public-nude,#c4a882)] hover:text-neutral-900",
@@ -1016,11 +987,11 @@ function RentalDressCard({
         }
       }}
       className={cn(
-        "gallery-card concept-card group",
+        "gallery-card concept-card rental-dress-card group",
         d.slug && "cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--public-nude,#c4a882)]",
       )}
     >
-      <div className="relative aspect-[3/4] bg-neutral-100 overflow-hidden">
+      <div className="relative aspect-[4/5] sm:aspect-[3/4] bg-neutral-100 overflow-hidden">
         {d.coverImageUrl ? (
           <>
             <LazyImage
@@ -1057,27 +1028,27 @@ function RentalDressCard({
           </div>
         )}
         {d.outfitTag && (
-          <div className="absolute top-3 left-3 z-10">
+          <div className="absolute top-1.5 left-1.5 sm:top-3 sm:left-3 z-10 scale-90 sm:scale-100 origin-top-left">
             <OutfitTagBadge tag={d.outfitTag} size="sm" />
           </div>
         )}
       </div>
 
-      <div className="px-4 py-3 border-t border-neutral-100/80 bg-white">
-        <p className="font-serif text-lg text-neutral-900 leading-snug line-clamp-2">{d.name}</p>
-        <p className="text-[11px] text-neutral-500 font-mono mt-0.5 truncate">{d.code}</p>
+      <div className="px-2 py-2 sm:px-4 sm:py-3 border-t border-neutral-100/80 bg-white">
+        <p className="font-serif text-xs sm:text-lg text-neutral-900 leading-snug line-clamp-2">{d.name}</p>
+        <p className="text-[9px] sm:text-[11px] text-neutral-500 font-mono mt-0.5 truncate">{d.code}</p>
         {d.rentalPrice > 0 && (
-          <p className="text-sm text-neutral-800 mt-2">
-            <span className="text-neutral-500 text-xs">Giá thuê </span>
-            <span className="font-medium">{formatVND(d.rentalPrice)}</span>
+          <p className="text-[11px] sm:text-sm text-neutral-800 mt-1 sm:mt-2 leading-tight">
+            <span className="text-neutral-500 text-[10px] sm:text-xs">Giá thuê </span>
+            <span className="font-semibold sm:font-medium">{formatVND(d.rentalPrice)}</span>
           </p>
         )}
         {(sizeTags.length > 0 || colorTags.length > 0) && (
-          <div className="flex flex-wrap gap-1.5 mt-2">
+          <div className="flex flex-wrap gap-1 sm:gap-1.5 mt-1 sm:mt-2">
             {sizeTags.map((t) => (
               <span
                 key={`s-${t}`}
-                className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--public-cream-deep,#f3efe8)] text-neutral-600"
+                className="text-[8px] sm:text-[10px] px-1.5 sm:px-2 py-px sm:py-0.5 rounded-full bg-[var(--public-cream-deep,#f3efe8)] text-neutral-600"
               >
                 {t}
               </span>
@@ -1085,7 +1056,7 @@ function RentalDressCard({
             {colorTags.map((t) => (
               <span
                 key={`c-${t}`}
-                className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--public-cream-deep,#f3efe8)] text-neutral-600"
+                className="text-[8px] sm:text-[10px] px-1.5 sm:px-2 py-px sm:py-0.5 rounded-full bg-[var(--public-cream-deep,#f3efe8)] text-neutral-600"
               >
                 {t}
               </span>
@@ -1099,13 +1070,13 @@ function RentalDressCard({
 
 function RentalGridSkeleton() {
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-6 lg:gap-8">
+    <div className="rental-product-grid grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-6 lg:gap-8">
       {Array.from({ length: 6 }).map((_, i) => (
         <div key={i} className="rounded-[0.625rem] overflow-hidden bg-white shadow-sm">
-          <div className="gallery-skeleton aspect-[3/4] w-full" />
-          <div className="p-4 space-y-2">
-            <div className="gallery-skeleton h-4 w-3/4 rounded" />
-            <div className="gallery-skeleton h-3 w-1/2 rounded" />
+          <div className="gallery-skeleton aspect-[4/5] sm:aspect-[3/4] w-full" />
+          <div className="p-2 sm:p-4 space-y-1.5 sm:space-y-2">
+            <div className="gallery-skeleton h-3 sm:h-4 w-3/4 rounded" />
+            <div className="gallery-skeleton h-2.5 sm:h-3 w-1/2 rounded" />
           </div>
         </div>
       ))}

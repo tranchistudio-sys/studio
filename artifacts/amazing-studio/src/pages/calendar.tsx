@@ -726,6 +726,7 @@ function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRa
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const uploadingConcept = uploadProgress !== null;
   const [uploadConceptError, setUploadConceptError] = useState<string | null>(null);
+  const [descExpanded, setDescExpanded] = useState(false);
   const conceptImgRef = useRef<HTMLInputElement>(null);
 
   const selectedSvc = line.serviceKey ? services.find(s => s.key === line.serviceKey) : null;
@@ -733,6 +734,10 @@ function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRa
 
   // Extract packageId from serviceKey (format: "pkg-{id}")
   const packageId = selectedSvc?.key?.startsWith("pkg-") ? parseInt(selectedSvc.key.replace("pkg-", "")) : null;
+
+  useEffect(() => {
+    setDescExpanded(false);
+  }, [line.serviceKey]);
 
   const staffRatesForResolve = useMemo(
     () => allStaffRates.map(r => ({ staffId: r.staffId, role: r.role, taskKey: r.taskKey, rate: r.rate })),
@@ -909,20 +914,39 @@ function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRa
         );
       })()}
 
-      {/* Gói: description + notes panel */}
+      {/* Gói: description + notes panel — thu gọn mặc định */}
       {isPkg && selectedSvc?.description && (
         <div className="bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2">
-          <p className="text-[10px] font-semibold text-amber-800 mb-1">📋 Mô tả dịch vụ</p>
-          <div className="space-y-1">
-            {selectedSvc.description.split("\n").filter(Boolean).map((line, i) => (
-              <p key={i} className="text-[10px] text-amber-700 leading-relaxed">{line}</p>
-            ))}
-          </div>
-          {selectedSvc.notes && (
-            <div className="mt-1.5 pt-1.5 border-t border-amber-200">
-              <p className="text-[10px] font-semibold text-amber-900 mb-0.5">⚠️ Lưu ý</p>
-              <p className="text-[10px] text-amber-800">{selectedSvc.notes}</p>
-            </div>
+          <button
+            type="button"
+            onClick={() => setDescExpanded((v) => !v)}
+            className="w-full flex items-center justify-between gap-2 text-left hover:opacity-80 transition-opacity"
+            aria-expanded={descExpanded}
+          >
+            <p className="text-[10px] font-semibold text-amber-800">📋 Mô tả dịch vụ</p>
+            <ChevronDown
+              className={`w-3.5 h-3.5 text-amber-700 flex-shrink-0 transition-transform duration-200 ${descExpanded ? "rotate-180" : ""}`}
+            />
+          </button>
+          {!descExpanded && (
+            <p className="text-[10px] text-amber-600/80 mt-1 line-clamp-1 italic">
+              {selectedSvc.description.split("\n").filter(Boolean)[0] || "Bấm mũi tên để xem chi tiết"}
+            </p>
+          )}
+          {descExpanded && (
+            <>
+              <div className="space-y-1 mt-1.5">
+                {selectedSvc.description.split("\n").filter(Boolean).map((descLine, i) => (
+                  <p key={i} className="text-[10px] text-amber-700 leading-relaxed">{descLine}</p>
+                ))}
+              </div>
+              {selectedSvc.notes && (
+                <div className="mt-1.5 pt-1.5 border-t border-amber-200">
+                  <p className="text-[10px] font-semibold text-amber-900 mb-0.5">⚠️ Lưu ý</p>
+                  <p className="text-[10px] text-amber-800">{selectedSvc.notes}</p>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

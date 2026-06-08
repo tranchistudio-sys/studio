@@ -1,5 +1,93 @@
 import type { PublicWeddingCard, WeddingCardTemplate } from "@/hooks/use-wedding-cards";
 
+/**
+ * Ảnh mẫu do Amazing Studio chuẩn bị — CHỈ dùng minh họa trên landing / preview / mẫu thiệp.
+ * Khách tạo thiệp vẫn upload ảnh riêng; các URL này không ghi vào thiệp của khách.
+ *
+ * Cách thêm ảnh mới:
+ * 1. Copy file vào public/uploads/wedding-samples/ (webp/jpg, nên < 500KB)
+ * 2. Khai báo đường dẫn bên dưới (bắt đầu bằng /uploads/wedding-samples/...)
+ * 3. F5 trang /thiep-cuoi-online — mockup hero & kho mẫu đổi ngay
+ *
+ * Hoặc upload qua CMS → Mẫu thiệp → trường Mockup / Ảnh nền mặc định (ưu tiên hơn file tĩnh).
+ */
+export const WEDDING_SAMPLE_IMAGES = {
+  /** Demo chung — ô preview hero landing */
+  demoCover: "/uploads/wedding-samples/demo-cover.webp",
+  demoCouple: "/uploads/wedding-samples/demo-couple.webp",
+  /** Theo từng mẫu — kho giao diện + dialog Xem mẫu */
+  byTemplate: {
+    classic: {
+      mockup: "/uploads/wedding-samples/classic-mockup.webp",
+      cover: "/uploads/wedding-samples/demo-cover.webp",
+      couple: "/uploads/wedding-samples/demo-couple.webp",
+    },
+    modern: {
+      mockup: "/uploads/wedding-samples/modern-mockup.webp",
+      cover: "/uploads/wedding-samples/modern-mockup.webp",
+      couple: "/uploads/wedding-samples/demo-couple.webp",
+    },
+    romantic: {
+      mockup: "/uploads/wedding-samples/romantic-mockup.webp",
+      cover: "/uploads/wedding-samples/romantic-mockup.webp",
+      couple: "/uploads/wedding-samples/demo-couple.webp",
+    },
+  },
+} as const;
+
+export type WeddingSampleSlug = keyof typeof WEDDING_SAMPLE_IMAGES.byTemplate;
+
+export function getTemplateSampleImages(slug: string) {
+  const key = slug as WeddingSampleSlug;
+  return WEDDING_SAMPLE_IMAGES.byTemplate[key] ?? null;
+}
+
+/** Gộp ảnh mẫu studio + ảnh từ CMS/API (CMS ưu tiên hơn file tĩnh). */
+export function resolveTemplatePreviewUrls(template: Pick<
+  WeddingCardTemplate,
+  "slug" | "mockupImageUrl" | "previewImageUrl" | "thumbnailUrl" | "defaultBackgroundUrl"
+>) {
+  const samples = getTemplateSampleImages(template.slug);
+  return {
+    mockup:
+      template.mockupImageUrl ??
+      template.previewImageUrl ??
+      samples?.mockup ??
+      null,
+    cover:
+      template.defaultBackgroundUrl ??
+      template.mockupImageUrl ??
+      samples?.cover ??
+      WEDDING_SAMPLE_IMAGES.demoCover,
+    couple:
+      template.thumbnailUrl ??
+      samples?.couple ??
+      WEDDING_SAMPLE_IMAGES.demoCouple,
+  };
+}
+
+/** Thiệp demo trên landing — luôn có ảnh mẫu studio, không dùng ảnh khách. */
+export function buildDemoCard(
+  template?: Pick<WeddingCardTemplate, "slug" | "themeKey" | "mockupImageUrl" | "previewImageUrl" | "thumbnailUrl" | "defaultBackgroundUrl"> | null,
+): PublicWeddingCard {
+  const slug = template?.slug ?? "classic";
+  const urls = template
+    ? resolveTemplatePreviewUrls(template)
+    : {
+        mockup: null,
+        cover: WEDDING_SAMPLE_IMAGES.demoCover,
+        couple: WEDDING_SAMPLE_IMAGES.demoCouple,
+      };
+
+  return {
+    ...DEMO_CARD,
+    templateSlug: slug,
+    themeKey: template?.themeKey ?? slug,
+    coverImageUrl: urls.cover,
+    coupleImageUrl: urls.couple,
+  };
+}
+
 /** Hiển thị ngay khi API lỗi hoặc trả rỗng — slug khớp DB. */
 export const FALLBACK_WEDDING_TEMPLATES: WeddingCardTemplate[] = [
   {
@@ -8,10 +96,10 @@ export const FALLBACK_WEDDING_TEMPLATES: WeddingCardTemplate[] = [
     name: "Hàn Quốc",
     description: "Tối giản pastel, chữ thanh lịch — phong cách thiệp Hàn",
     category: "Hàn Quốc",
-    thumbnailUrl: null,
-    previewImageUrl: null,
-    mockupImageUrl: null,
-    defaultBackgroundUrl: null,
+    thumbnailUrl: WEDDING_SAMPLE_IMAGES.byTemplate.classic.couple,
+    previewImageUrl: WEDDING_SAMPLE_IMAGES.byTemplate.classic.mockup,
+    mockupImageUrl: WEDDING_SAMPLE_IMAGES.byTemplate.classic.mockup,
+    defaultBackgroundUrl: WEDDING_SAMPLE_IMAGES.byTemplate.classic.cover,
     themeColor: "#e8dfd4",
     themeKey: "classic",
     sortOrder: 1,
@@ -22,10 +110,10 @@ export const FALLBACK_WEDDING_TEMPLATES: WeddingCardTemplate[] = [
     name: "Hiện Đại",
     description: "Trắng đen, layout gọn — nét đương đại",
     category: "Hiện Đại",
-    thumbnailUrl: null,
-    previewImageUrl: null,
-    mockupImageUrl: null,
-    defaultBackgroundUrl: null,
+    thumbnailUrl: WEDDING_SAMPLE_IMAGES.byTemplate.modern.couple,
+    previewImageUrl: WEDDING_SAMPLE_IMAGES.byTemplate.modern.mockup,
+    mockupImageUrl: WEDDING_SAMPLE_IMAGES.byTemplate.modern.mockup,
+    defaultBackgroundUrl: WEDDING_SAMPLE_IMAGES.byTemplate.modern.cover,
     themeColor: "#171717",
     themeKey: "modern",
     sortOrder: 2,
@@ -36,10 +124,10 @@ export const FALLBACK_WEDDING_TEMPLATES: WeddingCardTemplate[] = [
     name: "Burgundy",
     description: "Đỏ rượu vang, ấm áp và sang trọng",
     category: "Burgundy",
-    thumbnailUrl: null,
-    previewImageUrl: null,
-    mockupImageUrl: null,
-    defaultBackgroundUrl: null,
+    thumbnailUrl: WEDDING_SAMPLE_IMAGES.byTemplate.romantic.couple,
+    previewImageUrl: WEDDING_SAMPLE_IMAGES.byTemplate.romantic.mockup,
+    mockupImageUrl: WEDDING_SAMPLE_IMAGES.byTemplate.romantic.mockup,
+    defaultBackgroundUrl: WEDDING_SAMPLE_IMAGES.byTemplate.romantic.cover,
     themeColor: "#8B2942",
     themeKey: "romantic",
     sortOrder: 3,

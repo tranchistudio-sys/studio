@@ -237,6 +237,25 @@
   transform: translateY(0);
 }
 
+
+/* Rental product grid — compact 2-col on mobile */
+@media (max-width: 639px) {
+  .rental-product-grid {
+    gap: 0.5rem;
+  }
+  .rental-dress-card {
+    border-radius: 0.5rem;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  }
+  .rental-dress-card:hover,
+  .rental-dress-card:focus-within {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  }
+  .rental-dress-card .concept-card-image {
+    transform: none !important;
+  }
+}
+
 /* Mobile: always show title under image */
 @media (max-width: 767px) {
   .concept-card .concept-card-title-hover {
@@ -289,3 +308,86 @@
     transform: none !important;
   }
 }
+
+.rental-smart-filter-panel{animation:rental-filter-in .28s ease-out both;}
+@keyframes rental-filter-in{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+
+/* Smart filter — compact inline panel (~50% smaller text/space) */
+.rental-smart-filter-panel {
+  border-radius: 0.5rem;
+}
+
+.rental-smart-filter-title {
+  font-size: 11px;
+  line-height: 1.2;
+}
+
+@media (min-width: 640px) {
+  .rental-smart-filter-title {
+    font-size: 12px;
+  }
+}
+
+.rental-smart-filter-scroll {
+  max-height: min(16vh, 108px);
+}
+
+@media (min-width: 640px) {
+  .rental-smart-filter-scroll {
+    max-height: min(20vh, 132px);
+  }
+}
+
+.rental-smart-filter-label {
+  font-size: 7px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #737373;
+  margin-bottom: 2px;
+  line-height: 1.1;
+}
+
+.rental-smart-filter-group + .rental-smart-filter-group {
+  margin-top: 0;
+}
+
+.rental-smart-filter-row {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 3px;
+  overflow-x: auto;
+  padding-bottom: 1px;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.rental-smart-filter-row::-webkit-scrollbar {
+  display: none;
+}
+
+.rental-smart-filter-tags--scroll {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  gap: 3px;
+}
+
+.rental-smart-filter-tags button {
+  transform: scale(0.92);
+  transform-origin: left center;
+}
+
+.rental-filter-pill--compact {
+  padding: 1px 5px;
+  font-size: 8px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.rental-smart-filter-action-btn {
+  min-height: 26px;
+  font-size: 10px;
+  line-height: 1.2;
+  padding: 0 6px;
+}
+

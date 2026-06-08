@@ -1,13 +1,11 @@
 import { Link } from "wouter";
-import { getImageSrc } from "@/lib/imageUtils";
 import { HERO, HERO_IMAGE_URL, ABOUT } from "@/lib/public-site-config";
-import { usePublicHomeContent } from "@/hooks/use-public-cms";
+import { usePublicGalleryAlbums, usePublicHomeContent } from "@/hooks/use-public-cms";
 import {
   PLACEHOLDER_ABOUT,
   PLACEHOLDER_FEATURED_CONCEPT,
   PLACEHOLDER_FEATURED_SERVICE,
   PLACEHOLDER_FOOTER_BANNER,
-  PLACEHOLDER_HERO,
 } from "@/lib/cms-placeholders";
 import { PublicHero } from "@/components/public/PublicHero";
 import { PublicReveal } from "@/components/public/PublicReveal";
@@ -17,21 +15,29 @@ import { PublicPricingTeaser } from "@/components/public/PublicPricingTeaser";
 import { PublicTestimonials } from "@/components/public/PublicTestimonials";
 import { PublicContactStrip } from "@/components/public/PublicContactStrip";
 import { PublicCta } from "@/components/public/PublicCta";
+import { ResilientImage } from "@/components/public/ResilientImage";
 import { usePublicDresses, usePublicPackages } from "@/hooks/use-public-cms";
-
-function pickImage(cmsUrl: string | null | undefined, placeholder: string) {
-  const trimmed = cmsUrl?.trim();
-  if (trimmed) return getImageSrc(trimmed) ?? placeholder;
-  return placeholder;
-}
 
 export default function PublicHomePage() {
   const { data: homeCms } = usePublicHomeContent();
+  const { data: albums = [] } = usePublicGalleryAlbums();
   const { data: packages = [] } = usePublicPackages();
   const { data: dresses = [] } = usePublicDresses();
 
+  const galleryCovers = albums
+    .map((a) => a.coverImageUrl)
+    .filter((u): u is string => !!u?.trim());
+  const dressCovers = dresses
+    .map((d) => d.coverImageUrl)
+    .filter((u): u is string => !!u?.trim());
+  const imageFallbacks = [...galleryCovers, ...dressCovers];
+
+  const cmsHero = homeCms?.heroImageUrl?.trim() || null;
   const heroImageUrl =
-    homeCms?.heroImageUrl?.trim() ||
+    (cmsHero && !(cmsHero.startsWith("/objects/") && imageFallbacks.length > 0)
+      ? cmsHero
+      : null) ||
+    imageFallbacks[0] ||
     (HERO_IMAGE_URL ? HERO_IMAGE_URL : null);
 
   const heroCopy = {
@@ -50,11 +56,6 @@ export default function PublicHomePage() {
     href: homeCms?.ctaSecondaryHref?.trim() || HERO.ctaSecondary.href,
   };
 
-  const aboutSrc = pickImage(homeCms?.aboutImageUrl, PLACEHOLDER_ABOUT);
-  const conceptSrc = pickImage(homeCms?.featuredConceptImageUrl, PLACEHOLDER_FEATURED_CONCEPT);
-  const serviceSrc = pickImage(homeCms?.featuredServiceImageUrl, PLACEHOLDER_FEATURED_SERVICE);
-  const footerBannerSrc = pickImage(homeCms?.footerBannerImageUrl, PLACEHOLDER_FOOTER_BANNER);
-
   const footerTitle = homeCms?.footerCtaTitle?.trim() || "Sẵn sàng lưu giữ khoảnh khắc?";
   const footerSubtitle =
     homeCms?.footerCtaSubtitle?.trim() || "Liên hệ tư vấn miễn phí — Amazing Studio đồng hành cùng bạn.";
@@ -65,6 +66,7 @@ export default function PublicHomePage() {
     <>
       <PublicHero
         heroImageUrl={heroImageUrl}
+        heroFallbacks={imageFallbacks}
         copy={heroCopy}
         ctaPrimary={ctaPrimary}
         ctaSecondary={ctaSecondary}
@@ -87,8 +89,10 @@ export default function PublicHomePage() {
               ))}
             </div>
             <div className="aspect-[4/5] overflow-hidden rounded-2xl bg-neutral-100 shadow-sm">
-              <img
-                src={aboutSrc}
+              <ResilientImage
+                src={homeCms?.aboutImageUrl}
+                fallbacks={[imageFallbacks[2], imageFallbacks[0], imageFallbacks[1]]}
+                placeholder={PLACEHOLDER_ABOUT}
                 alt="Amazing Studio"
                 className="w-full h-full object-cover"
               />
@@ -111,8 +115,10 @@ export default function PublicHomePage() {
               className="group block rounded-2xl overflow-hidden border border-neutral-200/80 bg-white shadow-sm hover:shadow-md transition-shadow"
             >
               <div className="aspect-[16/10] overflow-hidden">
-                <img
-                  src={conceptSrc}
+                <ResilientImage
+                  src={homeCms?.featuredConceptImageUrl}
+                  fallbacks={[imageFallbacks[0], imageFallbacks[1]]}
+                  placeholder={PLACEHOLDER_FEATURED_CONCEPT}
                   alt="Concept ảnh nổi bật"
                   className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-500"
                 />
@@ -127,8 +133,10 @@ export default function PublicHomePage() {
               className="group block rounded-2xl overflow-hidden border border-neutral-200/80 bg-white shadow-sm hover:shadow-md transition-shadow"
             >
               <div className="aspect-[16/10] overflow-hidden">
-                <img
-                  src={serviceSrc}
+                <ResilientImage
+                  src={homeCms?.featuredServiceImageUrl}
+                  fallbacks={[imageFallbacks[1], imageFallbacks[0], imageFallbacks[2]]}
+                  placeholder={PLACEHOLDER_FEATURED_SERVICE}
                   alt="Dịch vụ nổi bật"
                   className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-500"
                 />
@@ -147,8 +155,10 @@ export default function PublicHomePage() {
       <PublicTestimonials />
 
       <PublicReveal className="relative py-20 sm:py-28 overflow-hidden">
-        <img
-          src={footerBannerSrc}
+        <ResilientImage
+          src={homeCms?.footerBannerImageUrl}
+          fallbacks={[imageFallbacks[1], imageFallbacks[0]]}
+          placeholder={PLACEHOLDER_FOOTER_BANNER}
           alt=""
           className="absolute inset-0 w-full h-full object-cover"
         />

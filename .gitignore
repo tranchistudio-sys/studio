@@ -67,3 +67,6 @@ Thumbs.db
 downloads/*.sql
 downloads/*.sql.gz
 downloads/*.zip
+
+# Local uploaded files (runtime)
+artifacts/data/object-storage/uploads/

@@ -1,4 +1,8 @@
 import { WeddingCardGuestSection } from "./WeddingCardGuestSection";
+import { WeddingCardMapsEmbed } from "./WeddingCardMapsEmbed";
+import { WeddingCardCountdown } from "./WeddingCardCountdown";
+import { WeddingCardAlbumSection } from "./WeddingCardAlbumSection";
+import { WeddingCardGiftSection } from "./WeddingCardGiftSection";
 import { WeddingCardReveal } from "./WeddingCardReveal";
 import type { PublicWeddingCard } from "@/hooks/use-wedding-cards";
 import { Calendar, Heart, MapPin } from "lucide-react";
@@ -20,35 +24,50 @@ function formatDate(d: string | null) {
 export function WeddingCardViewExtras({ card }: { card: PublicWeddingCard }) {
   const dateLabel = formatDate(card.weddingDate);
   const hasVenue = card.venueGroom || card.venueBride || card.venueReception;
+  const hasMap =
+    card.venueGroom ||
+    card.venueBride ||
+    card.venueReception ||
+    card.mapsUrlGroom ||
+    card.mapsUrlBride ||
+    card.mapsUrlReception;
 
   return (
-    <div className="w-full px-3 pb-28 space-y-3">
-      <WeddingCardReveal className="rounded-xl bg-white/95 border border-neutral-200/80 p-4 shadow-sm w-full">
-        <h2 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-neutral-500 mb-3">
-          <Heart className="h-3.5 w-3.5 text-rose-400" />
-          Cặp đôi
+    <div className="wc-bt-view-sections">
+      <WeddingCardCountdown weddingDate={card.weddingDate} ceremonyTime={card.ceremonyTime} />
+
+      <WeddingCardReveal>
+        <WeddingCardAlbumSection
+          coverImageUrl={card.coverImageUrl}
+          coupleImageUrl={card.coupleImageUrl}
+        />
+      </WeddingCardReveal>
+
+      <WeddingCardReveal className="wc-bt-view-section">
+        <p className="wc-bt-section-eyebrow">Cặp đôi</p>
+        <h2 className="wc-bt-section-title font-serif">
+          {card.groomName} <span className="text-[var(--wc-bt-rose-text)]">&</span> {card.brideName}
         </h2>
-        <p className="font-serif text-xl text-neutral-900">
-          {card.groomName} <span className="text-rose-400">&</span> {card.brideName}
-        </p>
         {card.contactPhone && (
           <a
             href={`tel:${card.contactPhone.replace(/\s/g, "")}`}
-            className="mt-2 inline-block text-sm text-rose-600 font-medium"
+            className="mt-3 inline-block text-sm text-[var(--wc-bt-taupe)] font-medium"
           >
             {card.contactPhone}
           </a>
         )}
+        {card.invitationMessage && (
+          <p className="wc-bt-section-desc mt-4 whitespace-pre-line">{card.invitationMessage}</p>
+        )}
       </WeddingCardReveal>
 
       {(dateLabel || card.ceremonyTime || card.receptionTime) && (
-        <WeddingCardReveal className="rounded-xl bg-white/95 border border-neutral-200/80 p-4 shadow-sm w-full">
-          <h2 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-neutral-500 mb-2">
-            <Calendar className="h-3.5 w-3.5" />
-            Thời gian
-          </h2>
-          {dateLabel && <p className="text-sm text-neutral-800">{dateLabel}</p>}
-          <div className="mt-1 text-xs text-neutral-600 space-y-0.5">
+        <WeddingCardReveal className="wc-bt-view-section">
+          <p className="wc-bt-section-eyebrow flex items-center justify-center gap-2">
+            <Calendar className="h-3.5 w-3.5" /> Thời gian
+          </p>
+          {dateLabel && <p className="wc-bt-section-title text-lg">{dateLabel}</p>}
+          <div className="mt-2 text-sm text-[var(--wc-bt-muted)] space-y-1">
             {card.ceremonyTime && <p>Lễ: {card.ceremonyTime}</p>}
             {card.receptionTime && <p>Tiệc: {card.receptionTime}</p>}
           </div>
@@ -56,35 +75,33 @@ export function WeddingCardViewExtras({ card }: { card: PublicWeddingCard }) {
       )}
 
       {hasVenue && (
-        <WeddingCardReveal className="rounded-xl bg-white/95 border border-neutral-200/80 p-4 shadow-sm w-full">
-          <h2 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-neutral-500 mb-2">
-            <MapPin className="h-3.5 w-3.5" />
-            Địa điểm
-          </h2>
-          <ul className="text-sm text-neutral-700 space-y-2">
-            {card.venueGroom && (
-              <li>
-                <span className="text-neutral-400 text-xs block">Nhà trai</span>
-                {card.venueGroom}
-              </li>
-            )}
-            {card.venueBride && (
-              <li>
-                <span className="text-neutral-400 text-xs block">Nhà gái</span>
-                {card.venueBride}
-              </li>
-            )}
-            {card.venueReception && (
-              <li>
-                <span className="text-neutral-400 text-xs block">Tiệc</span>
-                {card.venueReception}
-              </li>
-            )}
-          </ul>
+        <WeddingCardReveal className="wc-bt-view-section" id="wc-section-map">
+          <p className="wc-bt-section-eyebrow flex items-center justify-center gap-2">
+            <MapPin className="h-3.5 w-3.5" /> Địa điểm
+          </p>
+          <div className="space-y-6 text-left mt-4">
+            <WeddingCardMapsEmbed label="Nhà trai" address={card.venueGroom} mapsUrl={card.mapsUrlGroom} />
+            <WeddingCardMapsEmbed label="Nhà gái" address={card.venueBride} mapsUrl={card.mapsUrlBride} />
+            <WeddingCardMapsEmbed label="Tiệc cưới" address={card.venueReception} mapsUrl={card.mapsUrlReception} />
+          </div>
         </WeddingCardReveal>
       )}
 
-      <WeddingCardReveal className="rounded-xl bg-white/95 border border-neutral-200/80 overflow-hidden shadow-sm w-full">
+      {!hasMap && (
+        <div id="wc-section-map" className="sr-only" aria-hidden />
+      )}
+
+      <WeddingCardGiftSection
+        groomName={card.groomName}
+        brideName={card.brideName}
+        contactPhone={card.contactPhone}
+      />
+
+      <WeddingCardReveal className="wc-bt-view-section wc-bt-view-wishes" id="wc-section-wishes">
+        <p className="wc-bt-section-eyebrow flex items-center justify-center gap-2">
+          <Heart className="h-3.5 w-3.5" /> Lời chúc
+        </p>
+        <h2 className="wc-bt-section-title">Gửi lời chúc & xác nhận</h2>
         <WeddingCardGuestSection slug={card.slug} compact />
       </WeddingCardReveal>
     </div>

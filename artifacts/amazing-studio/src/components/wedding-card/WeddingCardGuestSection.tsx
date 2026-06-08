@@ -25,24 +25,22 @@ export function WeddingCardGuestSection({ slug, compact }: { slug: string; compa
     }
   };
 
+  const inputClass = "wc-bt-input";
+
   return (
-    <section className={compact ? "p-4" : "mx-auto max-w-lg px-6 py-12 border-t border-neutral-200/60 bg-white/80"}>
-      <h2
-        className={
-          compact
-            ? "text-xs font-bold uppercase tracking-wider text-neutral-500 mb-3"
-            : "font-serif text-xl text-center text-neutral-800 mb-6"
-        }
-      >
-        {compact ? "Lời chúc & RSVP" : "Lời chúc & xác nhận tham dự"}
-      </h2>
-      <form onSubmit={onSubmit} className="space-y-3 text-sm">
+    <section className={compact ? "mt-4" : "mx-auto max-w-lg px-6 py-12"}>
+      {!compact && (
+        <h2 className="font-serif text-xl text-center text-[var(--wc-bt-text)] mb-6">
+          Lời chúc & xác nhận tham dự
+        </h2>
+      )}
+      <form onSubmit={onSubmit} className="space-y-3 text-sm text-left">
         <input
           type="text"
           placeholder="Tên của bạn"
           value={guestName}
           onChange={(e) => setGuestName(e.target.value)}
-          className="w-full border border-neutral-200 rounded-lg px-3 py-2.5"
+          className={inputClass}
           maxLength={120}
         />
         <textarea
@@ -50,7 +48,7 @@ export function WeddingCardGuestSection({ slug, compact }: { slug: string; compa
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           rows={3}
-          className="w-full border border-neutral-200 rounded-lg px-3 py-2.5 resize-none"
+          className={inputClass + " resize-none"}
           maxLength={2000}
         />
         <div className="flex flex-wrap gap-2">
@@ -59,15 +57,17 @@ export function WeddingCardGuestSection({ slug, compact }: { slug: string; compa
               key={v}
               type="button"
               onClick={() => setAttendance(v)}
-              className={`px-3 py-1.5 rounded-full text-xs border ${
-                attendance === v ? "bg-neutral-900 text-white border-neutral-900" : "border-neutral-300"
+              className={`px-3 py-1.5 rounded-full text-xs border transition-colors ${
+                attendance === v
+                  ? "bg-[var(--wc-bt-taupe)] text-white border-[var(--wc-bt-taupe)]"
+                  : "border-[var(--wc-bt-border)] text-[var(--wc-bt-muted)]"
               }`}
             >
               {v === "yes" ? "Tham dự" : v === "no" ? "Không tham dự" : "Chưa rõ"}
             </button>
           ))}
         </div>
-        <label className="flex items-center gap-2 text-neutral-600">
+        <label className="flex items-center gap-2 text-[var(--wc-bt-muted)]">
           Số người
           <input
             type="number"
@@ -75,25 +75,25 @@ export function WeddingCardGuestSection({ slug, compact }: { slug: string; compa
             max={20}
             value={guestCount}
             onChange={(e) => setGuestCount(Number(e.target.value) || 1)}
-            className="w-16 border border-neutral-200 rounded px-2 py-1"
+            className="w-16 wc-bt-input py-1"
           />
         </label>
         <button
           type="submit"
           disabled={submit.isPending}
-          className="w-full py-3 rounded-lg bg-neutral-900 text-white text-sm font-medium disabled:opacity-60"
+          className="wc-bt-btn wc-bt-btn-primary w-full disabled:opacity-60"
         >
           {submit.isPending ? "Đang gửi…" : done ? "Đã gửi!" : "Gửi lời chúc"}
         </button>
       </form>
       {entries.length > 0 && (
-        <ul className={compact ? "mt-4 space-y-2 max-h-40 overflow-y-auto" : "mt-10 space-y-4"}>
+        <ul className={compact ? "mt-6 space-y-3 max-h-48 overflow-y-auto text-left" : "mt-10 space-y-4"}>
           {entries.map((e) => (
-            <li key={e.id} className="border-b border-neutral-100 pb-3">
-              <p className="font-medium text-neutral-800">{e.guestName || "Khách"}</p>
-              {e.message && <p className="text-neutral-600 text-sm mt-1">{e.message}</p>}
+            <li key={e.id} className="border-b border-[var(--wc-bt-border)] pb-3">
+              <p className="font-medium text-[var(--wc-bt-text)]">{e.guestName || "Khách"}</p>
+              {e.message && <p className="text-[var(--wc-bt-muted)] text-sm mt-1">{e.message}</p>}
               {e.attendance !== "unknown" && (
-                <p className="text-[10px] uppercase tracking-wider text-neutral-400 mt-1">
+                <p className="text-[10px] uppercase tracking-wider text-[var(--wc-bt-taupe)] mt-1">
                   {e.attendance === "yes" ? "Tham dự" : "Không tham dự"}
                   {e.guestCount > 1 ? ` · ${e.guestCount} người` : ""}
                 </p>

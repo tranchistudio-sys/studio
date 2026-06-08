@@ -1,9 +1,10 @@
 import { useMemo } from "react";
-import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { Phone, MessageCircle, Loader2 } from "lucide-react";
 import { CMS_BASE } from "@/components/cms-shared";
 import { formatVND } from "@/lib/utils";
+import { CONSULTANTS, STUDIO_PHONE, STUDIO_PHONE_DISPLAY } from "@/lib/public-site-config";
+import { openZalo } from "@/lib/public-zalo";
 
 interface PublicPackage {
   id: number;
@@ -14,13 +15,6 @@ interface PublicPackage {
   description: string | null;
   products: string[];
   groupName: string | null;
-}
-
-const STUDIO_PHONE = "0392817079";
-
-function toZaloNumber(phone: string): string {
-  const cleaned = phone.replace(/\D/g, "");
-  return cleaned.startsWith("0") ? "84" + cleaned.slice(1) : cleaned;
 }
 
 function usePublicPackages() {
@@ -34,12 +28,72 @@ function usePublicPackages() {
   });
 }
 
+function ZaloConsultButton({
+  phone = STUDIO_PHONE,
+  label = "Tư vấn miễn phí",
+  className = "",
+}: {
+  phone?: string;
+  label?: string;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => openZalo(phone)}
+      className={`inline-flex items-center justify-center gap-2 px-8 py-3.5 bg-[#0068ff] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity ${className}`}
+    >
+      <MessageCircle className="w-4 h-4" />
+      {label}
+    </button>
+  );
+}
+
+function PricingZaloFallback({ message }: { message: string }) {
+  return (
+    <div className="max-w-md mx-auto text-center py-12 px-4">
+      <p className="text-neutral-600 leading-relaxed mb-8">{message}</p>
+      <ZaloConsultButton className="w-full sm:w-auto" />
+      <p className="mt-4 text-sm text-neutral-500">
+        Hoặc gọi{" "}
+        <a href={`tel:${STUDIO_PHONE}`} className="text-neutral-900 font-medium hover:underline">
+          {STUDIO_PHONE_DISPLAY}
+        </a>
+      </p>
+      <div className="mt-10 space-y-3 text-left border-t border-neutral-200 pt-8">
+        <p className="text-[10px] tracking-[0.3em] uppercase text-neutral-500 text-center">Nhân viên tư vấn</p>
+        {CONSULTANTS.map((c) => (
+          <div
+            key={c.phone}
+            className="flex flex-wrap items-center justify-between gap-3 py-3 border-b border-neutral-100"
+          >
+            <div>
+              <p className="text-sm font-medium text-neutral-900">{c.name}</p>
+              <a href={`tel:${c.phone}`} className="text-sm text-neutral-500 hover:text-neutral-900">
+                {c.phone}
+              </a>
+            </div>
+            <button
+              type="button"
+              onClick={() => openZalo(c.phone)}
+              className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#0068ff] text-white rounded-xl text-xs font-semibold hover:opacity-90"
+            >
+              <MessageCircle className="w-3.5 h-3.5" />
+              Zalo
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function PublicPricingPage() {
   const { data: packages = [], isLoading, error } = usePublicPackages();
 
   const grouped = useMemo(() => {
     const m = new Map<string, PublicPackage[]>();
-    packages.forEach(p => {
+    packages.forEach((p) => {
       const k = p.groupName ?? "Khác";
       if (!m.has(k)) m.set(k, []);
       m.get(k)!.push(p);
@@ -69,15 +123,11 @@ export default function PublicPricingPage() {
       )}
 
       {error && (
-        <div className="text-center py-16 text-neutral-500">
-          Không thể tải bảng giá. Vui lòng thử lại sau.
-        </div>
+        <PricingZaloFallback message="Không thể tải bảng giá lúc này. Nhắn Zalo để xem báo giá và được tư vấn miễn phí." />
       )}
 
       {!isLoading && !error && packages.length === 0 && (
-        <div className="text-center py-16 text-neutral-500">
-          Bảng giá đang được cập nhật. Vui lòng liên hệ trực tiếp để được tư vấn.
-        </div>
+        <PricingZaloFallback message="Bảng giá đang được cập nhật. Nhắn Zalo để xem báo giá chi tiết và được tư vấn miễn phí." />
       )}
 
       <div className="space-y-10">
@@ -87,7 +137,7 @@ export default function PublicPricingPage() {
               {groupName}
             </h2>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {pkgs.map(p => (
+              {pkgs.map((p) => (
                 <div
                   key={p.id}
                   className="border border-neutral-200 rounded-2xl p-5 sm:p-6 hover:border-neutral-400 transition-colors bg-white"
@@ -107,9 +157,7 @@ export default function PublicPricingPage() {
                   </div>
 
                   {p.shortDescription && (
-                    <p className="text-sm text-neutral-600 mb-3 leading-relaxed">
-                      {p.shortDescription}
-                    </p>
+                    <p className="text-sm text-neutral-600 mb-3 leading-relaxed">{p.shortDescription}</p>
                   )}
 
                   {p.products && p.products.length > 0 && (
@@ -136,15 +184,14 @@ export default function PublicPricingPage() {
                       <Phone className="w-3.5 h-3.5" />
                       Gọi
                     </a>
-                    <a
-                      href={`https://zalo.me/${toZaloNumber(STUDIO_PHONE)}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
+                    <button
+                      type="button"
+                      onClick={() => openZalo(STUDIO_PHONE)}
                       className="flex-1 flex items-center justify-center gap-1.5 py-2.5 bg-[#0068ff] text-white rounded-xl text-xs sm:text-sm font-medium hover:opacity-90 transition-opacity"
                     >
                       <MessageCircle className="w-3.5 h-3.5" />
-                      Zalo
-                    </a>
+                      Tư vấn miễn phí
+                    </button>
                   </div>
                 </div>
               ))}
@@ -154,13 +201,11 @@ export default function PublicPricingPage() {
       </div>
 
       {!isLoading && !error && packages.length > 0 && (
-        <div className="text-center mt-12">
-          <Link
-            href="/lien-he"
-            className="inline-block text-xs tracking-widest uppercase border border-neutral-900 px-8 py-3 hover:bg-neutral-900 hover:text-white transition-colors"
-          >
-            Liên hệ tư vấn chi tiết
-          </Link>
+        <div className="text-center mt-12 flex flex-col items-center gap-4">
+          <ZaloConsultButton />
+          <p className="text-sm text-neutral-500">
+            Xem báo giá chi tiết và đặt lịch qua Zalo — miễn phí tư vấn
+          </p>
         </div>
       )}
     </div>

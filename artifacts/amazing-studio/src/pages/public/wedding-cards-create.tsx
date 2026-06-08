@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Loader2, Sparkles } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import {
   useCreateWeddingCard,
   useWeddingCardTemplate,
@@ -10,13 +10,15 @@ import {
 } from "@/hooks/use-wedding-cards";
 import { getImageSrc } from "@/lib/imageUtils";
 import { uploadWeddingCardImage } from "@/hooks/use-wedding-card-upload";
-import { WeddingCardFullPreview } from "@/components/wedding-card/WeddingCardFullPreview";
+import { WeddingCardRenderer } from "@/components/wedding-card/WeddingCardRenderer";
 import { WeddingCardPhoneFrame } from "@/components/wedding-card/WeddingCardPhoneFrame";
 import { WeddingCardEditorPanel } from "@/components/wedding-card/WeddingCardEditorPanel";
 import { WeddingCardSuccessModal } from "@/components/wedding-card/WeddingCardSuccessModal";
 import { WeddingCardOverlay } from "@/components/wedding-card/WeddingCardOverlay";
 import { WeddingCardEnvelope } from "@/components/wedding-card/WeddingCardEnvelope";
 import { WeddingCardEditorSteps } from "@/components/wedding-card/WeddingCardEditorSteps";
+import { WeddingCardViewExtras } from "@/components/wedding-card/WeddingCardViewExtras";
+import { WeddingCardPetals } from "@/components/wedding-card/WeddingCardPetals";
 import { getTemplateDisplay } from "@/components/wedding-card/wedding-card-config";
 import { cn } from "@/lib/utils";
 
@@ -83,8 +85,6 @@ export default function WeddingCardsCreatePage() {
   const themeKey = templates.find((t) => t.slug === templateSlug)?.themeKey ?? templateSlug;
   const display = getTemplateDisplay(templateSlug);
 
-
-
   useEffect(() => {
     if (!templateDetail || templateSeeded) return;
     const bg = templateDetail.defaultBackgroundUrl;
@@ -120,6 +120,16 @@ export default function WeddingCardsCreatePage() {
     if (previewPulseTimer.current) clearTimeout(previewPulseTimer.current);
     setPreviewPulse(true);
     previewPulseTimer.current = setTimeout(() => setPreviewPulse(false), 450);
+  };
+
+  const handleInlineGroomName = (value: string) => {
+    setGroomName(value);
+    bumpPreview();
+  };
+
+  const handleInlineBrideName = (value: string) => {
+    setBrideName(value);
+    bumpPreview();
   };
 
   const form = {
@@ -215,7 +225,7 @@ export default function WeddingCardsCreatePage() {
   return (
     <div className="wc-bt-editor-page wc-mobile-page min-h-screen flex flex-col">
       {create.isPending && (
-        <WeddingCardOverlay message="Đang tạo link thiệp..." sub="Chỉ vài giây nữa thôi ✨" />
+        <WeddingCardOverlay message="Đang tạo link thiệp..." sub="Chỉ vài giây nữa thôi" />
       )}
 
       {createdSlug && (
@@ -252,7 +262,20 @@ export default function WeddingCardsCreatePage() {
           <p className="text-[10px] text-[var(--wc-bt-muted)] mb-3 shrink-0">Cuộn để xem toàn bộ thiệp ↓</p>
           <div className={cn("rounded-xl transition-shadow w-full", previewPulse && "wc-preview-pulse")}>
             <WeddingCardPhoneFrame variant="bare" fullLength>
-              <WeddingCardFullPreview card={previewCard} />
+              <div className="wc-bt-full-preview relative">
+                <WeddingCardPetals />
+                <div className="relative z-10">
+                  <WeddingCardRenderer
+                    card={previewCard}
+                    embed={false}
+                    onGroomNameChange={handleInlineGroomName}
+                    onBrideNameChange={handleInlineBrideName}
+                    onCoverImageClick={() => document.getElementById("wc-cover-upload-input")?.click()}
+                    onCoupleImageClick={() => document.getElementById("wc-couple-upload-input")?.click()}
+                  />
+                  <WeddingCardViewExtras card={previewCard} preview />
+                </div>
+              </div>
             </WeddingCardPhoneFrame>
             {albumImageUrls.length > 0 && (
               <div className="mt-4 w-full max-w-[280px] flex gap-2 overflow-x-auto pb-1 px-1">
@@ -332,6 +355,29 @@ export default function WeddingCardsCreatePage() {
           </button>
         </div>
       </div>
+
+      <input
+        id="wc-cover-upload-input"
+        type="file"
+        accept="image/*"
+        className="sr-only"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) uploadImage(file, "cover");
+          e.currentTarget.value = "";
+        }}
+      />
+      <input
+        id="wc-couple-upload-input"
+        type="file"
+        accept="image/*"
+        className="sr-only"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) uploadImage(file, "couple");
+          e.currentTarget.value = "";
+        }}
+      />
 
       <div className="lg:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-[var(--wc-bt-border,#e8e0d8)] bg-white/95 backdrop-blur-md p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
         <button

@@ -1,7 +1,9 @@
-import { WeddingCardPreviewImage } from "../WeddingCardPreviewImage";
+﻿import { WeddingCardPreviewImage } from "../WeddingCardPreviewImage";
 import { WeddingCardBrandingFooter } from "../WeddingCardBrandingFooter";
 import type { WeddingCardTemplateProps } from "../wedding-card-types";
 import { cn } from "@/lib/utils";
+import { ImagePlus } from "lucide-react";
+import type { FormEvent } from "react";
 
 function formatDate(d: string | null) {
   if (!d) return null;
@@ -16,8 +18,83 @@ function formatDate(d: string | null) {
   }
 }
 
-/** Hiện Đại */
-export function WeddingCardModern({ card, coverSrc, coupleSrc, embed }: WeddingCardTemplateProps) {
+function EditableName({
+  value,
+  onChange,
+  className,
+  placeholder,
+}: {
+  value: string;
+  onChange?: (value: string) => void;
+  className: string;
+  placeholder: string;
+}) {
+  const editable = !!onChange;
+  const handleInput = (event: FormEvent<HTMLHeadingElement>) => {
+    if (!onChange) return;
+    onChange(event.currentTarget.textContent?.replace(/\s+/g, " ").trim() || "");
+  };
+  return (
+    <span
+      className={cn(className, editable && "cursor-text rounded-md px-1 py-0.5 outline-none focus:ring-2 focus:ring-neutral-300")}
+      contentEditable={editable}
+      suppressContentEditableWarning
+      spellCheck={false}
+      onInput={handleInput}
+    >
+      {value || placeholder}
+    </span>
+  );
+}
+
+function ClickablePhoto({
+  src,
+  onClick,
+  className,
+}: {
+  src?: string | null;
+  onClick?: () => void;
+  className: string;
+}) {
+  const clickable = !!onClick;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!clickable}
+      className={cn(
+        className,
+        "relative overflow-hidden",
+        clickable && "group cursor-pointer focus:outline-none focus:ring-2 focus:ring-neutral-400",
+        !clickable && "cursor-default",
+      )}
+    >
+      {src ? (
+        <WeddingCardPreviewImage src={src} className="w-full h-full object-cover" />
+      ) : (
+        <div className="w-full h-full bg-neutral-200" />
+      )}
+      {clickable && (
+        <span className="absolute inset-0 bg-black/0 group-hover:bg-black/15 group-focus:bg-black/15 transition-colors flex items-center justify-center">
+          <span className="rounded-full bg-black/55 p-2 text-white opacity-0 group-hover:opacity-100 group-focus:opacity-100 transition-opacity">
+            <ImagePlus className="h-4 w-4" />
+          </span>
+        </span>
+      )}
+    </button>
+  );
+}
+
+export function WeddingCardModern({
+  card,
+  coverSrc,
+  coupleSrc,
+  embed,
+  onGroomNameChange,
+  onBrideNameChange,
+  onCoverImageClick,
+  onCoupleImageClick,
+}: WeddingCardTemplateProps) {
   const dateLabel = formatDate(card.weddingDate);
 
   return (
@@ -25,24 +102,24 @@ export function WeddingCardModern({ card, coverSrc, coupleSrc, embed }: WeddingC
       <header className="px-5 pt-8 pb-5 border-b border-neutral-100">
         <p className="text-[9px] font-bold tracking-[0.4em] uppercase text-neutral-400">Wedding</p>
         <h1 className="mt-3 text-2xl font-bold tracking-tight leading-tight">
-          {card.groomName}
+          <EditableName value={card.groomName} onChange={onGroomNameChange} placeholder="Tên chú rể" className="inline" />
           <span className="text-neutral-300 font-light mx-1.5">/</span>
-          {card.brideName}
+          <EditableName value={card.brideName} onChange={onBrideNameChange} placeholder="Tên cô dâu" className="inline" />
         </h1>
         {dateLabel && <p className="mt-2 text-base font-semibold tabular-nums">{dateLabel}</p>}
       </header>
-      <div className={cn("w-full bg-neutral-100", embed ? "aspect-[4/5]" : "aspect-[3/4] max-h-[50vh]")}>
-        {coverSrc ? (
-          <WeddingCardPreviewImage src={coverSrc} className="w-full h-full object-cover" />
-        ) : (
-          <div className="w-full h-full bg-neutral-200" />
-        )}
-      </div>
+      <ClickablePhoto
+        src={coverSrc}
+        onClick={onCoverImageClick}
+        className={cn("w-full bg-neutral-100", embed ? "aspect-[4/5]" : "aspect-[3/4] max-h-[50vh]")}
+      />
       <div className={cn("px-5 py-6", embed ? "pb-4" : "pb-28 max-w-lg mx-auto")}>
         {coupleSrc && (
-          <div className="w-full max-w-[200px] mx-auto aspect-square bg-neutral-100 mb-6">
-            <WeddingCardPreviewImage src={coupleSrc} className="w-full h-full object-cover" />
-          </div>
+          <ClickablePhoto
+            src={coupleSrc}
+            onClick={onCoupleImageClick}
+            className="w-full max-w-[200px] mx-auto aspect-square bg-neutral-100 mb-6"
+          />
         )}
         {(card.ceremonyTime || card.receptionTime) && (
           <div className="grid grid-cols-2 gap-2 text-xs mb-6">

@@ -288,7 +288,12 @@ function RouterRoot() {
     return <LoginRoute />;
   }
 
-  // Public routes — "/" luôn là landing (kể cả khi đã đăng nhập).
+  // Nhân viên/admin đã đăng nhập: vào "/" thấy Lịch Chụp; khách lạ vẫn thấy trang chủ web.
+  if ((location === "/" || location === "/trang-chu") && viewer) {
+    return <Redirect to="/calendar" />;
+  }
+
+  // Public routes — khách lạ / link ẩn (chưa đăng nhập).
   if (isPublicPath(location)) {
     return <PublicRouter />;
   }

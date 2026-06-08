@@ -171,9 +171,11 @@ export default function ExpensesPage() {
         headers: authHeaders,
         body: JSON.stringify(data),
       }).then(r => r.json()),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: ["expenses"] });
       qc.invalidateQueries({ queryKey: ["expense-stats"] });
+      const bid = variables.bookingId as number | null | undefined;
+      if (bid) qc.invalidateQueries({ queryKey: ["booking-full", bid] });
       resetForm();
     },
   });
@@ -185,9 +187,11 @@ export default function ExpensesPage() {
         headers: authHeaders,
         body: JSON.stringify(data),
       }).then(r => r.json()),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: ["expenses"] });
       qc.invalidateQueries({ queryKey: ["expense-stats"] });
+      const bid = variables.data?.bookingId as number | null | undefined;
+      if (bid) qc.invalidateQueries({ queryKey: ["booking-full", bid] });
       resetForm();
     },
   });

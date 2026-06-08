@@ -2283,6 +2283,12 @@ function ShowFormPanel({
                       value={sub.serviceLabel}
                       onChange={e => updateSubDraft(sub.id, { serviceLabel: e.target.value })}
                     />
+                    {subTotal > 0 && (
+                      <div className="text-right flex-shrink-0 px-1">
+                        <p className="text-xs font-bold text-primary tabular-nums leading-tight">{formatVND(subTotal)}</p>
+                        <p className="text-[9px] text-muted-foreground">Thành tiền</p>
+                      </div>
+                    )}
                     {subDrafts.length > 1 && (
                       <button type="button" onClick={() => setSubDrafts(p => p.filter(s => s.id !== sub.id))} className="p-1 text-muted-foreground hover:text-destructive transition-colors" title="Xoá dịch vụ này">
                         <X className="w-3.5 h-3.5" />
@@ -3632,7 +3638,7 @@ function ShowDetailPanel({
               </button>
               <button
                 type="button"
-                onClick={() => setLocation(`/expenses?bookingId=${booking.parentId || booking.id}&new=1`)}
+                onClick={() => setLocation(`/expenses?bookingId=${booking.id}&new=1`)}
                 className="flex items-center gap-2 px-3 py-2.5 rounded-lg bg-card border border-border hover:bg-muted/50 active:scale-[0.98] transition-all text-sm font-semibold text-foreground"
                 title="Ghi chi phí mua đồ / chi cho show này — sẽ trừ vào lợi nhuận"
               >
@@ -3798,6 +3804,7 @@ function ShowDetailPanel({
                         const extrasReadOnly=svcExtras.length>0;
                         const svcAddonNames = svcItems[0] ? resolveAddons(svcItems[0]) : [];
                         const svcFirstItem = svcItems[0];
+                        const svcLineTotal = Number(svc.totalAmount ?? 0) || svcBasePrice;
                         const isCurrent = svc.id === booking.id;
                         const canNavigate = !isCurrent && onNavigate;
                         const svcSt = STATUS[svc.status as keyof typeof STATUS] ?? STATUS.pending;
@@ -3823,6 +3830,12 @@ function ShowDetailPanel({
                                   </div>
                                 )}
                               </div>
+                              {svcLineTotal > 0 && (
+                                <div className="text-right flex-shrink-0 px-1 self-center">
+                                  <p className="text-xs font-bold text-primary tabular-nums leading-tight">{fmtVND(svcLineTotal)}</p>
+                                  <p className="text-[9px] text-muted-foreground">Thành tiền</p>
+                                </div>
+                              )}
                               {isAdmin && siblings.length > 1 && (
                                 <button
                                   type="button"
@@ -4118,6 +4131,84 @@ function ShowDetailPanel({
                           </div>
                         </div>
                       )}
+
+                      {/* Lịch sử chi tiền của đơn này — kế lịch sử thanh toán */}
+                      {isAdmin && (() => {
+                        type BookingExpenseRow = {
+                          id: number;
+                          description: string;
+                          category: string;
+                          costClass?: string | null;
+                          amount: number;
+                          expenseDate?: string;
+                          expenseAt?: string;
+                          createdBy?: string | null;
+                        };
+                        const expenseRows: BookingExpenseRow[] = Array.isArray(
+                          (fullDetail as { expenses?: BookingExpenseRow[] } | undefined)?.expenses,
+                        )
+                          ? (fullDetail as { expenses: BookingExpenseRow[] }).expenses
+                          : [];
+                        const costClassShort = (v?: string | null) => {
+                          if (v === "direct") return "Trực tiếp";
+                          if (v === "operating") return "Vận hành";
+                          return v || "—";
+                        };
+                        const expenseDateStr = (ex: BookingExpenseRow) => {
+                          if (ex.expenseAt) return safeFormatDate(ex.expenseAt);
+                          if (ex.expenseDate) return safeFormatDate(ex.expenseDate);
+                          return "—";
+                        };
+                        const totalExpenseAmt = expenseRows.reduce((s, x) => s + (x.amount || 0), 0);
+                        return (
+                          <div className="px-3 py-2.5 space-y-2 border-t border-border/30">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-foreground/60">
+                              💸 Lịch sử chi tiền của đơn này
+                              {expenseRows.length > 0 ? ` (${expenseRows.length})` : ""}
+                            </p>
+                            {expenseRows.length === 0 ? (
+                              <p className="text-xs text-muted-foreground italic py-2">
+                                Chưa có khoản chi nào cho đơn này.
+                              </p>
+                            ) : (
+                              <div className="overflow-x-auto -mx-1">
+                                <table className="w-full text-xs min-w-[420px]">
+                                  <thead>
+                                    <tr className="border-b border-border/40">
+                                      <th className="text-left py-1.5 pr-2 font-semibold text-muted-foreground">Ngày</th>
+                                      <th className="text-left py-1.5 pr-2 font-semibold text-muted-foreground">Nội dung</th>
+                                      <th className="text-left py-1.5 pr-2 font-semibold text-muted-foreground">Nhóm chi</th>
+                                      <th className="text-left py-1.5 pr-2 font-semibold text-muted-foreground">Người chi</th>
+                                      <th className="text-right py-1.5 font-semibold text-muted-foreground">Số tiền</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {expenseRows.map((ex) => (
+                                      <tr key={ex.id} className="border-b border-border/20">
+                                        <td className="py-1.5 pr-2 text-muted-foreground whitespace-nowrap">{expenseDateStr(ex)}</td>
+                                        <td className="py-1.5 pr-2 font-medium text-foreground">{ex.description}</td>
+                                        <td className="py-1.5 pr-2 text-muted-foreground">
+                                          {ex.category}
+                                          {ex.costClass ? ` / ${costClassShort(ex.costClass)}` : ""}
+                                        </td>
+                                        <td className="py-1.5 pr-2 text-muted-foreground">{ex.createdBy || "—"}</td>
+                                        <td className="py-1.5 text-right font-semibold text-red-600">-{fmtVND(ex.amount || 0)}</td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                  <tfoot>
+                                    <tr className="border-t border-border/40">
+                                      <td colSpan={4} className="py-1.5 font-bold text-foreground">Tổng chi đơn này</td>
+                                      <td className="py-1.5 text-right font-bold text-red-600">-{fmtVND(totalExpenseAmt)}</td>
+                                    </tr>
+                                  </tfoot>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()}
+
                     </div>
                   </div>
                 );

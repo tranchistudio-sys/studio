@@ -62,6 +62,24 @@ router.get("/expenses", async (req, res) => {
     filtered = filtered.filter(e => e.createdByStaffId === callerId);
   }
 
+  const bookingIdFilter = req.query.bookingId as string | undefined;
+  if (bookingIdFilter) {
+    const bid = parseInt(bookingIdFilter, 10);
+    if (!Number.isNaN(bid)) {
+      const includeChildren = req.query.includeChildren === "1" || req.query.includeChildren === "true";
+      if (includeChildren) {
+        const childR = await pool.query<{ id: number }>(
+          `SELECT id FROM bookings WHERE parent_id = $1`,
+          [bid],
+        );
+        const ids = new Set([bid, ...childR.rows.map((r) => r.id)]);
+        filtered = filtered.filter((row) => row.bookingId != null && ids.has(row.bookingId));
+      } else {
+        filtered = filtered.filter((row) => row.bookingId === bid);
+      }
+    }
+  }
+
   if (category) filtered = filtered.filter(e => e.category === category);
   if (createdBy) filtered = filtered.filter(e => e.createdBy === createdBy);
   if (statusFilter) filtered = filtered.filter(e => e.status === statusFilter);

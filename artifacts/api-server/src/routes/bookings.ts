@@ -694,7 +694,31 @@ router.get("/bookings/:id", async (req, res) => {
 
   const paymentBookingId = row.parentId ?? id;
   const payments = await db.select().from(paymentsTable).where(eq(paymentsTable.bookingId, paymentBookingId));
-  const expenses = await db.select().from(expensesTable).where(eq(expensesTable.bookingId, id));
+
+  // Expenses: child/standalone = this booking only; parent contract = parent + all children
+  let expenseBookingIds: number[] = [id];
+  let children: unknown[] = [];
+  if (row.isParentContract) {
+    const childRows = await db
+      .select(bookingFields)
+      .from(bookingsTable)
+      .innerJoin(customersTable, eq(bookingsTable.customerId, customersTable.id))
+      .where(eq(bookingsTable.parentId, id))
+      .orderBy(bookingsTable.shootDate);
+    expenseBookingIds = [id, ...childRows.map((c) => c.id)];
+    children = childRows.map((c) => ({
+      ...c,
+      items: normalizeItemStaff(c.items),
+      totalAmount: parseFloat(c.totalAmount),
+      depositAmount: parseFloat(c.depositAmount),
+    }));
+  }
+
+  const expenses = expenseBookingIds.length === 1
+    ? await db.select().from(expensesTable).where(eq(expensesTable.bookingId, id))
+        .orderBy(desc(expensesTable.expenseAt), desc(expensesTable.expenseDate), desc(expensesTable.createdAt))
+    : await db.select().from(expensesTable).where(inArray(expensesTable.bookingId, expenseBookingIds))
+        .orderBy(desc(expensesTable.expenseAt), desc(expensesTable.expenseDate), desc(expensesTable.createdAt));
   const tasks = await db
     .select({
       id: tasksTable.id, title: tasksTable.title, category: tasksTable.category,
@@ -793,22 +817,7 @@ router.get("/bookings/:id", async (req, res) => {
     }
   }
 
-  // ── If this booking is the parent, fetch children ──
-  let children: unknown[] = [];
-  if (row.isParentContract) {
-    const childRows = await db
-      .select(bookingFields)
-      .from(bookingsTable)
-      .innerJoin(customersTable, eq(bookingsTable.customerId, customersTable.id))
-      .where(eq(bookingsTable.parentId, id))
-      .orderBy(bookingsTable.shootDate);
-    children = childRows.map(c => ({
-      ...c,
-      items: normalizeItemStaff(c.items),
-      totalAmount: parseFloat(c.totalAmount),
-      depositAmount: parseFloat(c.depositAmount),
-    }));
-  }
+  // children populated above when isParentContract
 
   // taskAssignees — chỉ những task có assignee
   const taskAssignees = tasks

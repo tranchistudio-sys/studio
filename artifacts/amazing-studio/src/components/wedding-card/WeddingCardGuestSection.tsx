@@ -1,8 +1,22 @@
 import { useState } from "react";
 import { useSubmitGuestEntry, useWeddingCardGuestEntries } from "@/hooks/use-wedding-cards";
 
-export function WeddingCardGuestSection({ slug, compact }: { slug: string; compact?: boolean }) {
-  const { data: entries = [] } = useWeddingCardGuestEntries(slug);
+const DEMO_WISHES = [
+  { id: 1, guestName: "BT Studio", message: "Chúc hai bạn trăm năm hạnh phúc! 💕", attendance: "yes" as const, guestCount: 2 },
+  { id: 2, guestName: "Ngọc Anh", message: "Mãi mãi yêu thương nhau nhé!", attendance: "unknown" as const, guestCount: 1 },
+];
+
+export function WeddingCardGuestSection({
+  slug,
+  compact,
+  preview = false,
+}: {
+  slug: string;
+  compact?: boolean;
+  preview?: boolean;
+}) {
+  const { data: apiEntries = [] } = useWeddingCardGuestEntries(preview ? undefined : slug);
+  const entries = preview ? DEMO_WISHES : apiEntries;
   const submit = useSubmitGuestEntry(slug);
   const [guestName, setGuestName] = useState("");
   const [message, setMessage] = useState("");
@@ -12,6 +26,7 @@ export function WeddingCardGuestSection({ slug, compact }: { slug: string; compa
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (preview) return;
     try {
       await submit.mutateAsync({ guestName: guestName || null, message: message || null, attendance, guestCount });
       setGuestName("");
@@ -29,6 +44,9 @@ export function WeddingCardGuestSection({ slug, compact }: { slug: string; compa
 
   return (
     <section className={compact ? "mt-4" : "mx-auto max-w-lg px-6 py-12"}>
+      {preview && (
+        <p className="text-center text-xs text-[var(--wc-bt-muted)] mb-4">2 lời chúc đã được gửi (mẫu)</p>
+      )}
       {!compact && (
         <h2 className="font-serif text-xl text-center text-[var(--wc-bt-text)] mb-6">
           Lời chúc & xác nhận tham dự
@@ -37,14 +55,14 @@ export function WeddingCardGuestSection({ slug, compact }: { slug: string; compa
       <form onSubmit={onSubmit} className="space-y-3 text-sm text-left">
         <input
           type="text"
-          placeholder="Tên của bạn"
+          placeholder="Tên của bạn..."
+          className={inputClass + " wc-bt-guest-pill"}
           value={guestName}
           onChange={(e) => setGuestName(e.target.value)}
-          className={inputClass}
           maxLength={120}
         />
         <textarea
-          placeholder="Lời chúc"
+          placeholder="Gửi lời chúc yêu thương..."
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           rows={3}
@@ -83,7 +101,7 @@ export function WeddingCardGuestSection({ slug, compact }: { slug: string; compa
           disabled={submit.isPending}
           className="wc-bt-btn wc-bt-btn-primary w-full disabled:opacity-60"
         >
-          {submit.isPending ? "Đang gửi…" : done ? "Đã gửi!" : "Gửi lời chúc"}
+          {submit.isPending ? "Đang gửi…" : done ? "Đã gửi!" : "Gửi"}
         </button>
       </form>
       {entries.length > 0 && (

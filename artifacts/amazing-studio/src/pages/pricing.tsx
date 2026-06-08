@@ -34,6 +34,10 @@ function groupAllRequirePostProduction(pkgs: ServicePackage[]): boolean {
   return pkgs.length > 0 && pkgs.every(p => p.requiresPostProduction !== false);
 }
 
+function groupAllRequirePrinting(pkgs: ServicePackage[]): boolean {
+  return pkgs.length > 0 && pkgs.every(p => p.requiresPrinting === true);
+}
+
 function defaultRequiresPostProductionByGroupName(groupName: string | null | undefined): boolean {
   if (!groupName) return false;
   const n = groupName.trim().toUpperCase();
@@ -41,6 +45,12 @@ function defaultRequiresPostProductionByGroupName(groupName: string | null | und
   if (falseGroups.includes(n) || n.includes("COMBO")) return false;
   const trueGroups = ["CHỤP CỔNG TẠI STUDIO", "ALBUM TẠI STUDIO", "ALBUM NGOẠI CẢNH", "CHỤP TIỆC CƯỚI", "BEAUTY / THỜI TRANG", "CHỤP GIA ĐÌNH", "QUAY PHIM"];
   return trueGroups.includes(n);
+}
+
+function defaultRequiresPrintingByGroupName(groupName: string | null | undefined): boolean {
+  if (!groupName) return false;
+  const n = groupName.trim().toUpperCase();
+  return ["ALBUM TẠI STUDIO", "ALBUM NGOẠI CẢNH", "IN ẢNH"].includes(n);
 }
 
 
@@ -59,6 +69,7 @@ type ServicePackage = {
   // Task #383 Bước 2: số ngày hậu kỳ mặc định cho gói (null = chưa cấu hình)
   defaultEditingDays?: number | null;
   requiresPostProduction?: boolean;
+  requiresPrinting?: boolean;
 };
 type ServiceGroup = { id: number; name: string; description: string; isActive: boolean; sortOrder: number };
 type Surcharge = { id: number; name: string; category: string; price: number; unit: string; description: string; isActive: boolean; sortOrder: number };
@@ -69,6 +80,32 @@ function formatVNDShort(n: number) {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}tr`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(0)}k`;
   return `${n}`;
+}
+
+function getAuthToken(token: string | null): string | null {
+  return token ?? (typeof localStorage !== "undefined" ? localStorage.getItem("amazingStudioToken_v2") : null);
+}
+
+function normalizeServicePackage(p: ServicePackage & { requires_printing?: boolean | null }): ServicePackage {
+  const rawPrint = p.requiresPrinting ?? p.requires_printing;
+  return {
+    ...p,
+    requiresPrinting: rawPrint === true || rawPrint === 1 || rawPrint === "1",
+    requiresPostProduction: p.requiresPostProduction !== false && p.requiresPostProduction !== 0,
+  };
+}
+
+function mergePackagesIntoCache(
+  qc: ReturnType<typeof useQueryClient>,
+  updatedList: ServicePackage[],
+) {
+  const map = new Map(updatedList.map(p => [p.id, normalizeServicePackage(p)]));
+  qc.setQueryData<ServicePackage[]>(["service-packages"], (old) =>
+    (old ?? []).map(p => {
+      const u = map.get(p.id);
+      return u ? { ...p, ...u } : p;
+    }),
+  );
 }
 
 export default function PricingPage() {
@@ -115,7 +152,9 @@ export default function PricingPage() {
   });
   const { data: packages = [], isLoading: pkgLoading } = useQuery<ServicePackage[]>({
     queryKey: ["service-packages"],
-    queryFn: () => fetch(`${BASE}/api/service-packages`, { headers: authHeaders }).then(r => r.json()),
+    queryFn: () => fetch(`${BASE}/api/service-packages`, { headers: authHeaders })
+      .then(r => r.json())
+      .then((rows: ServicePackage[]) => Array.isArray(rows) ? rows.map(normalizeServicePackage) : []),
   });
   const { data: surcharges = [] } = useQuery<Surcharge[]>({
     queryKey: ["surcharges"],
@@ -176,8 +215,11 @@ export default function PricingPage() {
   const updatePkgInline = useMutation({
     mutationFn: (payload: { id: number; [key: string]: unknown }) => {
       const { id, ...data } = payload;
+      const tok = getAuthToken(token);
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (tok) headers.Authorization = `Bearer ${tok}`;
       return fetch(`${BASE}/api/service-packages/${id}`, {
-        method: "PUT", headers: authHeaders,
+        method: "PUT", headers,
         body: JSON.stringify(data),
       }).then(async r => {
         if (!r.ok) {
@@ -188,24 +230,79 @@ export default function PricingPage() {
           }
           throw new Error(`Lỗi lưu gói (${r.status})`);
         }
-        return r.json();
+        return r.json() as Promise<ServicePackage>;
       });
     },
+    onMutate: async (payload) => {
+      const { id, ...data } = payload;
+      await qc.cancelQueries({ queryKey: ["service-packages"] });
+      const prev = qc.getQueryData<ServicePackage[]>(["service-packages"]);
+      qc.setQueryData<ServicePackage[]>(["service-packages"], (old) =>
+        (old ?? []).map(p => p.id === id ? { ...p, ...data } : p),
+      );
+      if (selectedPkg?.id === id) setSelectedPkg(sp => sp ? { ...sp, ...data } : sp);
+      return { prev };
+    },
     onSuccess: (updated: ServicePackage) => {
-      qc.invalidateQueries({ queryKey: ["service-packages"] });
-      setSelectedPkg(updated);
+      mergePackagesIntoCache(qc, [normalizeServicePackage(updated)]);
+      setSelectedPkg(normalizeServicePackage(updated));
       setInlineEdit(null);
     },
-    onError: (err: Error) => {
+    onError: (err: Error, _vars, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["service-packages"], ctx.prev);
+      alert("Lưu thất bại: " + err.message);
+    },
+  });
+
+  const toggleGroupPrinting = useMutation({
+    mutationFn: async ({ packageIds, enable }: { packageIds: number[]; enable: boolean }) => {
+      const tok = getAuthToken(token);
+      if (!tok) throw new Error("Chưa đăng nhập — vui lòng đăng nhập lại");
+      if (packageIds.length === 0) throw new Error("Nhóm không có gói dịch vụ");
+      const headers = { "Content-Type": "application/json", Authorization: `Bearer ${tok}` };
+      return Promise.all(packageIds.map(id =>
+        fetch(`${BASE}/api/service-packages/${id}`, {
+          method: "PUT", headers,
+          body: JSON.stringify({ requiresPrinting: enable }),
+        }).then(async r => {
+          if (!r.ok) {
+            const ct = r.headers.get("content-type") ?? "";
+            if (ct.includes("application/json")) {
+              const body = await r.json().catch(() => ({})) as Record<string, unknown>;
+              throw new Error(String(body.error ?? "Lỗi lưu gói"));
+            }
+            throw new Error(`Lỗi lưu gói (${r.status})`);
+          }
+          return r.json() as Promise<ServicePackage>;
+        }),
+      ));
+    },
+    onMutate: async ({ packageIds, enable }) => {
+      await qc.cancelQueries({ queryKey: ["service-packages"] });
+      const prev = qc.getQueryData<ServicePackage[]>(["service-packages"]);
+      qc.setQueryData<ServicePackage[]>(["service-packages"], (old) =>
+        (old ?? []).map(p => packageIds.includes(p.id) ? { ...p, requiresPrinting: enable } : p),
+      );
+      if (selectedPkg && packageIds.includes(selectedPkg.id)) {
+        setSelectedPkg(sp => sp ? { ...sp, requiresPrinting: enable } : sp);
+      }
+      return { prev };
+    },
+    onSuccess: (results: ServicePackage[]) => {
+      mergePackagesIntoCache(qc, results.map(normalizeServicePackage));
+    },
+    onError: (err, _vars, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["service-packages"], ctx.prev);
       alert("Lưu thất bại: " + err.message);
     },
   });
 
   const toggleGroupPostProduction = useMutation({
     mutationFn: async ({ packageIds, groupId, enable }: { packageIds: number[]; groupId: number; enable: boolean }) => {
-      if (!token) throw new Error("Chưa đăng nhập — vui lòng đăng nhập lại");
+      const tok = getAuthToken(token);
+      if (!tok) throw new Error("Chưa đăng nhập — vui lòng đăng nhập lại");
       if (packageIds.length === 0) throw new Error("Nhóm không có gói dịch vụ");
-      const headers = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
+      const headers = { "Content-Type": "application/json", Authorization: `Bearer ${tok}` };
       const results = await Promise.all(packageIds.map(id =>
         fetch(`${BASE}/api/service-packages/${id}`, {
           method: "PUT", headers,
@@ -235,9 +332,9 @@ export default function PricingPage() {
       }
       return { prev };
     },
-    onSuccess: ({ groupId, enable }) => {
+    onSuccess: ({ groupId, enable, results }) => {
+      mergePackagesIntoCache(qc, (results as ServicePackage[]).map(normalizeServicePackage));
       setSelectedPkg(prev => prev && prev.groupId === groupId ? { ...prev, requiresPostProduction: enable } : prev);
-      qc.invalidateQueries({ queryKey: ["service-packages"] });
     },
     onError: (err: Error, _vars, ctx) => {
       if (ctx?.prev) qc.setQueryData(["service-packages"], ctx.prev);
@@ -393,6 +490,8 @@ export default function PricingPage() {
                 const allPkgsInGroup = packages.filter(p => p.groupId === group.id);
                 const groupHasPostProduction = groupAllRequirePostProduction(allPkgsInGroup);
                 const groupPostMixed = allPkgsInGroup.some(p => p.requiresPostProduction === false) && allPkgsInGroup.some(p => p.requiresPostProduction !== false);
+                const groupHasPrinting = groupAllRequirePrinting(allPkgsInGroup);
+                const groupPrintMixed = allPkgsInGroup.some(p => p.requiresPrinting !== true) && allPkgsInGroup.some(p => p.requiresPrinting === true);
                 return (
                   <div key={group.id} className="border border-border rounded-xl overflow-hidden bg-card">
                     <div className="flex items-center justify-between px-4 py-3 bg-muted/20 hover:bg-muted/40 transition-colors gap-3">
@@ -413,7 +512,7 @@ export default function PricingPage() {
                         {expanded ? <ChevronDown className="w-4 h-4 text-muted-foreground flex-shrink-0" /> : <ChevronRight className="w-4 h-4 text-muted-foreground flex-shrink-0" />}
                       </button>
                       {effectiveIsAdmin && pkgsInGroup.length > 0 && (
-                        <div className="flex items-center gap-2 flex-shrink-0 pl-2 border-l border-border/60">
+                        <div className="relative z-10 flex items-center gap-2 flex-shrink-0 pl-2 border-l border-border/60">
                           <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium hidden sm:inline ${
                             groupPostMixed ? "bg-amber-100 text-amber-800" : groupHasPostProduction ? "bg-sky-100 text-sky-700" : "bg-muted text-muted-foreground"
                           }`}>
@@ -424,7 +523,7 @@ export default function PricingPage() {
                             role="switch"
                             aria-checked={groupHasPostProduction}
                             aria-label={`Bật tắt hậu kỳ cho nhóm ${group.name}`}
-                            disabled={toggleGroupPostProduction.isPending || !token}
+                            disabled={toggleGroupPostProduction.isPending}
                             onClick={(e) => {
                               e.stopPropagation();
                               e.preventDefault();
@@ -438,8 +537,35 @@ export default function PricingPage() {
                               groupHasPostProduction ? "bg-primary" : "bg-muted-foreground/30"
                             }`}
                           >
-                            <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform mt-1 ${
+                            <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform mt-1 ${
                               groupHasPostProduction ? "translate-x-6" : "translate-x-1"
+                            }`} />
+                          </button>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium hidden md:inline ${
+                            groupPrintMixed ? "bg-amber-100 text-amber-800" : groupHasPrinting ? "bg-rose-100 text-rose-700" : "bg-muted text-muted-foreground"
+                          }`} title="Có in hình / chỉ chỉnh ảnh">
+                            {groupPrintMixed ? "In lẫn" : groupHasPrinting ? "Có in" : "Không in"}
+                          </span>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={groupHasPrinting}
+                            aria-label={`Bật tắt in hình cho nhóm ${group.name}`}
+                            disabled={toggleGroupPrinting.isPending}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              toggleGroupPrinting.mutate({
+                                packageIds: allPkgsInGroup.map(p => p.id),
+                                enable: !groupHasPrinting,
+                              });
+                            }}
+                            className={`relative inline-flex h-7 w-12 flex-shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+                              groupHasPrinting ? "bg-rose-400" : "bg-muted-foreground/30"
+                            }`}
+                          >
+                            <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform mt-1 ${
+                              groupHasPrinting ? "translate-x-6" : "translate-x-1"
                             }`} />
                           </button>
                         </div>
@@ -715,7 +841,7 @@ export default function PricingPage() {
                     selectedPkg.requiresPostProduction !== false ? "bg-primary" : "bg-muted-foreground/30"
                   }`}
                 >
-                  <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform mt-1 ${
+                  <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform mt-1 ${
                     selectedPkg.requiresPostProduction !== false ? "translate-x-6" : "translate-x-1"
                   }`} />
                 </button>
@@ -724,6 +850,46 @@ export default function PricingPage() {
                   selectedPkg.requiresPostProduction !== false ? "bg-sky-100 text-sky-700" : "bg-muted text-muted-foreground"
                 }`}>
                   {selectedPkg.requiresPostProduction !== false ? "Hậu kỳ" : "Không HK"}
+                </span>
+              )}
+            </div>
+
+            {/* Có in hình — bật/tắt nhanh tại panel chi tiết */}
+            <div className="flex items-center justify-between p-4 bg-muted/30 rounded-xl border border-border">
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground">🖨️ Có in hình</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  {selectedPkg.requiresPrinting === true
+                    ? "Đơn cần theo dõi xuất in"
+                    : "Chỉ chỉnh ảnh — không cần in"}
+                </p>
+                <p className="text-[10px] text-muted-foreground/80 mt-1">
+                  Tiến độ HK {selectedPkg.requiresPrinting === true ? "hiện" : "ẩn"} mục「Đã xuất in / hoàn thành」
+                </p>
+              </div>
+              {effectiveIsAdmin ? (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={selectedPkg.requiresPrinting === true}
+                  disabled={updatePkgInline.isPending}
+                  onClick={() => updatePkgInline.mutate({
+                    id: selectedPkg.id,
+                    requiresPrinting: selectedPkg.requiresPrinting !== true,
+                  })}
+                  className={`relative inline-flex h-7 w-12 flex-shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+                    selectedPkg.requiresPrinting === true ? "bg-rose-400" : "bg-muted-foreground/30"
+                  }`}
+                >
+                  <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform mt-1 ${
+                    selectedPkg.requiresPrinting === true ? "translate-x-6" : "translate-x-1"
+                  }`} />
+                </button>
+              ) : (
+                <span className={`text-[10px] px-2 py-1 rounded-full font-medium ${
+                  selectedPkg.requiresPrinting === true ? "bg-rose-100 text-rose-700" : "bg-muted text-muted-foreground"
+                }`}>
+                  {selectedPkg.requiresPrinting === true ? "Có in" : "Không in"}
                 </span>
               )}
             </div>
@@ -984,6 +1150,7 @@ function PackageModal({
     // Task #383 Bước 2: rỗng → fallback theo logic cũ (10/15 ngày theo tên)
     defaultEditingDays: pkg?.defaultEditingDays != null ? String(pkg.defaultEditingDays) : "",
     requiresPostProduction: pkg?.requiresPostProduction !== false,
+    requiresPrinting: pkg?.requiresPrinting === true,
   });
   const [items, setItems] = useState<PackageItem[]>(
     pkg?.items.length ? pkg.items : []
@@ -1020,6 +1187,7 @@ function PackageModal({
             ? parseInt(form.defaultEditingDays)
             : null),
         requiresPostProduction: form.requiresPostProduction,
+        requiresPrinting: form.requiresPrinting,
         items: items.filter(it => it.name.trim()).map((it, i) => ({ ...it, sortOrder: i })),
       };
       const url = pkg ? `/api/service-packages/${pkg.id}` : `/api/service-packages`;
@@ -1070,7 +1238,13 @@ function PackageModal({
                   const gid = e.target.value;
                   const g = groups.find(x => String(x.id) === gid);
                   const defPts = g ? defaultRequiresPostProductionByGroupName(g.name) : false;
-                  setForm(f => ({ ...f, groupId: gid, requiresPostProduction: pkg ? f.requiresPostProduction : defPts }));
+                  const defPrint = g ? defaultRequiresPrintingByGroupName(g.name) : false;
+                  setForm(f => ({
+                    ...f,
+                    groupId: gid,
+                    requiresPostProduction: pkg ? f.requiresPostProduction : defPts,
+                    requiresPrinting: pkg ? f.requiresPrinting : defPrint,
+                  }));
                 }}
               >
                 <option value="">-- Chọn nhóm --</option>
@@ -1188,7 +1362,25 @@ function PackageModal({
               onClick={() => setForm(f => ({ ...f, requiresPostProduction: !f.requiresPostProduction }))}
               className={`relative inline-flex h-7 w-12 flex-shrink-0 rounded-full transition-colors ${form.requiresPostProduction ? "bg-primary" : "bg-muted-foreground/30"}`}
             >
-              <span className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform mt-1 ${form.requiresPostProduction ? "translate-x-6" : "translate-x-1"}`} />
+              <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform mt-1 ${form.requiresPostProduction ? "translate-x-6" : "translate-x-1"}`} />
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between p-3 bg-muted/30 rounded-xl border border-border">
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground">🖨️ Có in hình</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                {form.requiresPrinting ? "Theo dõi xuất in trên Tiến độ HK" : "Chỉ chỉnh ảnh — không cần in"}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={form.requiresPrinting}
+              onClick={() => setForm(f => ({ ...f, requiresPrinting: !f.requiresPrinting }))}
+              className={`relative inline-flex h-7 w-12 flex-shrink-0 rounded-full transition-colors ${form.requiresPrinting ? "bg-rose-400" : "bg-muted-foreground/30"}`}
+            >
+              <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform mt-1 ${form.requiresPrinting ? "translate-x-6" : "translate-x-1"}`} />
             </button>
           </div>
 

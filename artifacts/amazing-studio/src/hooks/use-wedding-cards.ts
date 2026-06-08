@@ -223,7 +223,7 @@ export function useWeddingCardGuestEntries(slug: string | undefined) {
   return useQuery({
     queryKey: ["wedding-card-guests", slug],
     queryFn: () => fetchJson<GuestEntry[]>(`${WC_BASE}/public/${slug}/guest-entries`),
-    enabled: !!slug,
+    enabled: !!slug && slug !== "preview",
   });
 }
 

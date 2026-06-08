@@ -6,19 +6,27 @@ export function WeddingCardPhoneFrame({
   className,
   label,
   variant = "bare",
+  fullLength = false,
 }: {
   children: React.ReactNode;
   className?: string;
   label?: string;
   variant?: "bare" | "device";
+  /** Thiệp dài như BT — không cắt chiều cao */
+  fullLength?: boolean;
 }) {
+  const scrollClass = fullLength
+    ? "overflow-visible"
+    : "max-h-[min(85vh,780px)] overflow-y-auto overflow-x-hidden overscroll-contain";
+
   const shell = (
     <div
       className={cn(
-        "wc-card-shell overflow-hidden bg-white",
+        "wc-card-shell bg-white",
+        fullLength ? "overflow-visible rounded-xl shadow-md border border-neutral-200/60" : "overflow-hidden",
         variant === "device"
           ? "rounded-[1.75rem] border border-neutral-200/90 shadow-2xl shadow-neutral-300/40"
-          : "rounded-xl shadow-md border border-neutral-200/60",
+          : !fullLength && "rounded-xl shadow-md border border-neutral-200/60",
       )}
     >
       {variant === "device" && (
@@ -28,9 +36,7 @@ export function WeddingCardPhoneFrame({
           <span className="w-1 h-1 rounded-full bg-white/30" />
         </div>
       )}
-      <div className="max-h-[min(85vh,780px)] overflow-y-auto overflow-x-hidden overscroll-contain">
-        {children}
-      </div>
+      <div className={cn(scrollClass, fullLength && "wc-bt-phone-full-inner")}>{children}</div>
     </div>
   );
 
@@ -45,7 +51,7 @@ export function WeddingCardPhoneFrame({
           <div className="relative">{shell}</div>
         </div>
       ) : (
-        shell
+        <div className={cn("w-full max-w-[430px]", fullLength && "wc-bt-phone-full-wrap")}>{shell}</div>
       )}
     </div>
   );

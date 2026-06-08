@@ -3,6 +3,9 @@ import { WeddingCardMapsEmbed } from "./WeddingCardMapsEmbed";
 import { WeddingCardCountdown } from "./WeddingCardCountdown";
 import { WeddingCardAlbumSection } from "./WeddingCardAlbumSection";
 import { WeddingCardGiftSection } from "./WeddingCardGiftSection";
+import { WeddingCardFamiliesSection } from "./WeddingCardFamiliesSection";
+import { WeddingCardStorySection } from "./WeddingCardStorySection";
+import { WeddingCardThankYouSection } from "./WeddingCardThankYouSection";
 import { WeddingCardReveal } from "./WeddingCardReveal";
 import type { PublicWeddingCard } from "@/hooks/use-wedding-cards";
 import { Calendar, Heart, MapPin } from "lucide-react";
@@ -21,7 +24,13 @@ function formatDate(d: string | null) {
   }
 }
 
-export function WeddingCardViewExtras({ card }: { card: PublicWeddingCard }) {
+export function WeddingCardViewExtras({
+  card,
+  preview = false,
+}: {
+  card: PublicWeddingCard;
+  preview?: boolean;
+}) {
   const dateLabel = formatDate(card.weddingDate);
   const hasVenue = card.venueGroom || card.venueBride || card.venueReception;
   const hasMap =
@@ -36,12 +45,13 @@ export function WeddingCardViewExtras({ card }: { card: PublicWeddingCard }) {
     <div className="wc-bt-view-sections">
       <WeddingCardCountdown weddingDate={card.weddingDate} ceremonyTime={card.ceremonyTime} />
 
-      <WeddingCardReveal>
-        <WeddingCardAlbumSection
+      <WeddingCardFamiliesSection card={card} />
+      <WeddingCardStorySection card={card} />
+
+      <WeddingCardAlbumSection
           coverImageUrl={card.coverImageUrl}
           coupleImageUrl={card.coupleImageUrl}
         />
-      </WeddingCardReveal>
 
       <WeddingCardReveal className="wc-bt-view-section">
         <p className="wc-bt-section-eyebrow">Cặp đôi</p>
@@ -102,8 +112,10 @@ export function WeddingCardViewExtras({ card }: { card: PublicWeddingCard }) {
           <Heart className="h-3.5 w-3.5" /> Lời chúc
         </p>
         <h2 className="wc-bt-section-title">Gửi lời chúc & xác nhận</h2>
-        <WeddingCardGuestSection slug={card.slug} compact />
+        <WeddingCardGuestSection slug={card.slug} compact preview={preview} />
       </WeddingCardReveal>
+
+      <WeddingCardThankYouSection card={card} />
     </div>
   );
 }

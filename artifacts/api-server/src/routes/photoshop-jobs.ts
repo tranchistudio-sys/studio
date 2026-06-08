@@ -538,6 +538,7 @@ router.get("/photoshop-jobs/booking-view", async (req, res) => {
         sp.notes          AS package_notes,
         sp.default_editing_days AS package_default_editing_days,
         sp.requires_post_production AS package_requires_post_production,
+        sp.requires_printing AS package_requires_printing,
         sp.group_id       AS package_group_id,
         sg.name           AS package_group_name,
         (
@@ -876,6 +877,7 @@ router.get("/photoshop-jobs/deep-link", async (req, res) => {
         sp.notes          AS package_notes,
         sp.default_editing_days AS package_default_editing_days,
         sp.requires_post_production AS package_requires_post_production,
+        sp.requires_printing AS package_requires_printing,
         sp.group_id       AS package_group_id,
         sg.name           AS package_group_name,
         (SELECT json_agg(pi ORDER BY pi.sort_order) FROM package_items pi WHERE pi.package_id = sp.id) AS package_items_list

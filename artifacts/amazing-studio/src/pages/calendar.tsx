@@ -5598,7 +5598,7 @@ function DayView({
 
                     {/* Booking cards */}
                     {hasBookings && (
-                      <div className="flex flex-col sm:flex-row sm:flex-wrap gap-1 p-1">
+                      <div className="flex flex-col sm:flex-row sm:flex-wrap gap-1.5 p-1 items-stretch content-start">
                         {hourBookings.map(b => {
                           const { dot: staffDot } = getStaffColors(b, allStaff);
                           const item = b.items?.[0];
@@ -5611,103 +5611,141 @@ function DayView({
                           const serviceName = getServiceDetailLine(b, item);
                           const groupName = b.servicePackageId ? pkgGroupMap?.get(b.servicePackageId) : undefined;
                           const isHighlighted = highlightedBookingId === b.id;
-                          const isMultiContract = !!b.parentId;
                           const isVip = isPriorityRank(b.customerRank);
+
+                          const isPartOfMerged = b.isParentContract || !!b.parentId;
+                          const avatarUrl = b.customerId ? customerAvatarMap.get(b.customerId) : undefined;
+                          const dateLabel = b.shootDate
+                            ? new Date(b.shootDate).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" })
+                            : "";
+                          const timeLabelCard = formatBookingDuration(b.shootTime, b.shootDuration) ?? b.shootTime?.slice(0, 5) ?? "";
+                          const noteText = item?.notes || b.notes;
 
                           return (
                             <button
                               key={b.id}
                               onClick={e => { e.stopPropagation(); onEventClick(b); }}
-                              className={`w-full sm:flex-1 sm:min-w-[200px] rounded-lg px-2 py-1.5 sm:px-2.5 text-left shadow-sm hover:shadow-md hover:bg-muted/40 transition-all border border-l-4 bg-card text-foreground touch-manipulation ${isHighlighted ? "ring-2 ring-offset-1 ring-primary animate-pulse" : isVip ? "ring-1 ring-amber-300/60" : ""}`}
+                              className={`w-full sm:flex-[1_1_160px] sm:min-w-[140px] sm:max-w-[min(100%,340px)] rounded-xl px-2 py-2 sm:px-2.5 text-left shadow-sm hover:shadow-md hover:bg-muted/30 transition-all border border-l-4 bg-card text-foreground touch-manipulation ${isHighlighted ? "ring-2 ring-offset-1 ring-primary animate-pulse" : isVip ? "ring-1 ring-amber-300/60" : ""}`}
                               style={{ borderLeftColor: staffDot }}
                             >
-                              <div className="flex gap-2 items-center">
-                                <div className="flex-1 min-w-0">
-                              {/* Dòng 1: tên + giờ + VIP */}
-                              <div className="flex items-center justify-between gap-1 mb-0.5">
-                                <span className="font-bold text-sm truncate flex items-center gap-1 min-w-0">
-                                  {b.customerId && customerAvatarMap.get(b.customerId) && (
-                                    <img src={customerAvatarMap.get(b.customerId)!} alt={b.customerName || "avatar"} className="hidden sm:block w-10 h-10 rounded-full object-cover border border-border flex-shrink-0 self-center" />
+                              <div className="flex gap-2 items-start">
+                                {/* Cột ngày/giờ — giao diện cũ */}
+                                <div className="flex flex-col items-center justify-start flex-shrink-0 w-[52px] pt-0.5 text-center leading-tight">
+                                  {dateLabel && (
+                                    <span className="text-[9px] font-bold text-muted-foreground tabular-nums">{dateLabel}</span>
                                   )}
-                                  <span className="truncate self-center">{b.customerName}</span>
-                                  {isVip && <Crown className="w-3 h-3 text-amber-500 flex-shrink-0" />}
-                                  {b.customerRank && b.customerRank !== "new" && <RankBadge rank={b.customerRank} size="xs" />}
-                                </span>
-                                <span className="text-[11px] font-mono flex-shrink-0 flex items-center gap-1 text-foreground font-bold">
-                                  <Clock className="w-3 h-3" />
-                                  {b.shootDate && <span className="hidden sm:inline">{new Date(b.shootDate).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" })}</span>}
-                                  {formatBookingDuration(b.shootTime, b.shootDuration) ?? b.shootTime?.slice(0, 5)}
-                                </span>
-                              </div>
-
-                              {/* Dòng 2: nhóm dịch vụ — desktop */}
-                              <div className="hidden sm:flex items-center gap-1 text-[10px] font-medium text-foreground mb-0.5">
-                                  <Package2 className="w-2.5 h-2.5 flex-shrink-0" />
-                                <span className="truncate">{groupName ? `${groupName} · ${serviceName}` : serviceName}</span>
-                                {isMultiContract && (
-                                  <span className="text-[8px] font-bold px-1 py-0.5 rounded-full border border-blue-400 text-foreground whitespace-nowrap flex-shrink-0">
-                                    📋 Gộp
-                                  </span>
-                                )}
-                              </div>
-                              {(item?.notes || b.notes) && (
-                                <div className="hidden sm:block text-[9px] text-foreground border border-amber-300 rounded px-1 py-0.5 truncate mb-0.5">
-                                  📝 {item?.notes || b.notes}
+                                  <span className="text-sm sm:text-base font-black tabular-nums text-foreground">{timeLabelCard}</span>
                                 </div>
-                              )}
-                              {b.location && (
-                                <div className="hidden sm:flex items-center gap-0.5 text-[9px] text-foreground mb-0.5 truncate">
-                                  <MapPin className="w-2.5 h-2.5 flex-shrink-0" />{b.location}
-                                </div>
-                              )}
 
-                              {/* Dòng 3: nhân sự badges */}
-                              <div className="hidden sm:flex flex-wrap gap-0.5 text-[10px]">
-                                {isAssigned ? (
-                                  <>
-                                    {hasPhoto && (
-                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-blue-400 text-foreground font-medium">
-                                        <Camera className="w-2.5 h-2.5 text-blue-500" />Nhiếp ảnh: {photoDisplay}
-                                      </span>
-                                    )}
-                                    {hasMakeup && (
-                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-blue-300 text-foreground font-medium">
-                                        <Sparkles className="w-2.5 h-2.5 text-blue-400" />Makeup: {makeupDisplay}
-                                      </span>
-                                    )}
-                                    {hasSale && (
-                                      <span className="px-1.5 py-0.5 rounded border border-blue-300 text-foreground font-medium">
-                                        Sale: {saleDisplay}
-                                      </span>
-                                    )}
-                                    {timelineExtras.map(ex => (
-                                      <span key={ex} className="px-1 py-0.5 rounded border border-blue-200 text-foreground font-semibold text-[9px]">
-                                        {ex}
-                                      </span>
-                                    ))}
-                                    {!isFullyAssigned && (
-                                      <span className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded border border-red-300 text-foreground font-semibold">
-                                        <AlertCircle className="w-2.5 h-2.5 text-red-500" />Thiếu
-                                      </span>
-                                    )}
-                                  </>
+                                {/* Avatar — luôn hiện */}
+                                {avatarUrl ? (
+                                  <img
+                                    src={avatarUrl}
+                                    alt={b.customerName || "avatar"}
+                                    className="w-9 h-9 sm:w-10 sm:h-10 rounded-full object-cover border border-border flex-shrink-0"
+                                  />
                                 ) : (
-                                  <span className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded-full font-semibold border border-red-300 text-red-600 dark:text-red-400">
-                                    <AlertCircle className="w-2.5 h-2.5" />Chưa giao việc
-                                  </span>
+                                  <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-muted border border-border flex items-center justify-center flex-shrink-0">
+                                    <User className="w-4 h-4 text-muted-foreground" />
+                                  </div>
                                 )}
-                              </div>
+
+                                <div className="flex-1 min-w-0">
+                                  {/* Tên + VIP + mã đơn */}
+                                  <div className="flex items-start justify-between gap-1 mb-0.5">
+                                    <div className="flex items-center gap-1 min-w-0 flex-wrap">
+                                      <span className="font-bold text-sm leading-tight break-words">{b.customerName || "(Chưa có tên)"}</span>
+                                      {isVip && <Crown className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />}
+                                      {b.customerRank && b.customerRank !== "new" && <RankBadge rank={b.customerRank} size="xs" />}
+                                      {isPartOfMerged && (
+                                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-blue-400 text-blue-700 bg-blue-50 whitespace-nowrap">
+                                          HĐ gộp
+                                        </span>
+                                      )}
+                                    </div>
+                                    {b.orderCode && (
+                                      <span className="text-[9px] font-mono font-bold text-muted-foreground bg-muted px-1.5 py-0.5 rounded flex-shrink-0">
+                                        {b.orderCode}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  {/* SĐT */}
+                                  {b.customerPhone && (
+                                    <div className="flex items-center gap-1 text-[11px] text-muted-foreground mb-0.5">
+                                      <Phone className="w-3 h-3 text-emerald-500 flex-shrink-0" />
+                                      <span className="font-medium tabular-nums">{b.customerPhone}</span>
+                                    </div>
+                                  )}
+
+                                  {/* Dịch vụ */}
+                                  <div className="flex items-start gap-1 text-[10px] sm:text-[11px] font-medium text-foreground mb-0.5">
+                                    <Package2 className="w-3 h-3 flex-shrink-0 mt-0.5" />
+                                    <span className="break-words leading-snug">{groupName ? `${groupName} · ${serviceName}` : serviceName}</span>
+                                  </div>
+
+                                  {/* Ghi chú */}
+                                  {noteText && (
+                                    <div className="text-[10px] text-foreground border border-amber-300 bg-amber-50/50 rounded px-1.5 py-0.5 mb-0.5 break-words leading-snug">
+                                      📝 {noteText}
+                                    </div>
+                                  )}
+
+                                  {/* Địa điểm */}
+                                  {b.location && (
+                                    <div className="flex items-center gap-0.5 text-[10px] text-muted-foreground mb-0.5 truncate">
+                                      <MapPin className="w-3 h-3 flex-shrink-0" />{b.location}
+                                    </div>
+                                  )}
+
+                                  {/* Nhân sự */}
+                                  <div className="flex flex-wrap gap-0.5 text-[10px] mt-0.5">
+                                    {isAssigned ? (
+                                      <>
+                                        {hasPhoto && (
+                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-sky-300 text-foreground font-medium">
+                                            <Camera className="w-2.5 h-2.5 text-sky-500" />Nhiếp ảnh: {photoDisplay}
+                                          </span>
+                                        )}
+                                        {hasMakeup && (
+                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-pink-300 text-foreground font-medium">
+                                            <Sparkles className="w-2.5 h-2.5 text-pink-500" />Makeup: {makeupDisplay}
+                                          </span>
+                                        )}
+                                        {hasSale && (
+                                          <span className="px-1.5 py-0.5 rounded border border-violet-300 text-foreground font-medium">
+                                            Sale: {saleDisplay}
+                                          </span>
+                                        )}
+                                        {timelineExtras.map(ex => (
+                                          <span key={ex} className="px-1 py-0.5 rounded border border-blue-200 text-foreground font-semibold text-[9px]">
+                                            {ex}
+                                          </span>
+                                        ))}
+                                        {!isFullyAssigned && (
+                                          <span className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded border border-red-300 text-red-600 font-semibold">
+                                            <AlertCircle className="w-2.5 h-2.5" />Thiếu
+                                          </span>
+                                        )}
+                                      </>
+                                    ) : (
+                                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full font-semibold border border-red-300 text-red-600 dark:text-red-400">
+                                        <AlertCircle className="w-2.5 h-2.5" />Chưa giao việc
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
+
                                 {(() => {
                                   const thumbs = collectConceptImageUrls(item?.conceptImages, item?.serviceImages, item?.attachedImages, item?.images, item?.gallery).slice(0, 2);
                                   return thumbs.length > 0 ? (
-                                    <div className="flex gap-1 self-center flex-shrink-0">
+                                    <div className="flex gap-1 self-start flex-shrink-0">
                                       {thumbs.map((src, idx) => (
                                         <button
                                           key={src}
                                           type="button"
                                           onClick={(e) => { e.stopPropagation(); setPreviewImg(src); }}
-                                          className="relative w-12 h-12 sm:w-14 sm:h-14 rounded-lg overflow-hidden border border-border bg-muted shrink-0"
+                                          className="relative w-10 h-10 sm:w-12 sm:h-12 rounded-lg overflow-hidden border border-border bg-muted shrink-0"
                                           title={`Concept ${idx + 1}`}
                                         >
                                           <ConceptImage src={src} alt={`concept ${idx + 1}`} className="w-full h-full object-cover" />

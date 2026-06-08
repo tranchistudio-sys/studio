@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import { WeddingCardRenderer } from "./WeddingCardRenderer";
+import { WeddingCardFullPreview } from "./WeddingCardFullPreview";
 import { WeddingCardPhoneFrame } from "./WeddingCardPhoneFrame";
 import { buildDemoCard } from "./wedding-card-config";
 import type { WeddingCardTemplate } from "@/hooks/use-wedding-cards";
@@ -40,8 +40,8 @@ export function WeddingCardPreviewDialog({
           </button>
         </div>
         <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-          <WeddingCardPhoneFrame variant="bare">
-            <WeddingCardRenderer card={card} embed />
+          <WeddingCardPhoneFrame variant="bare" fullLength>
+            <WeddingCardFullPreview card={card} />
           </WeddingCardPhoneFrame>
         </div>
         <div className="p-4 border-t border-[var(--wc-bt-border,#e8e0d8)]">

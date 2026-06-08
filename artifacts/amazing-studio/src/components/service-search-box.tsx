@@ -2,6 +2,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Search, X, ChevronDown, Sparkles, ListFilter, Package2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { searchServiceOptions } from "@/lib/service-package-search";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 const fetchJson = (url: string) => fetch(`${BASE}${url}`).then(r => r.json());
@@ -187,13 +188,7 @@ export function ServiceSearchBox({
     if (!q.trim()) { setMode("suggestions"); setSearchResults([]); return; }
     setMode("search");
     timer.current = setTimeout(() => {
-      const lq = q.toLowerCase();
-      const filtered = allOptions.filter(o =>
-        o.name.toLowerCase().includes(lq) ||
-        o.groupName.toLowerCase().includes(lq) ||
-        (o.serviceType && o.serviceType.toLowerCase().includes(lq))
-      );
-      setSearchResults(filtered.slice(0, 20));
+      setSearchResults(searchServiceOptions(allOptions, q, 20));
     }, 150);
   }, [allOptions]);
 
@@ -329,7 +324,7 @@ export function ServiceSearchBox({
           {/* Footer hint */}
           {mode === "suggestions" && listItems.length > 0 && (
             <div className="px-3 py-1.5 bg-muted/30 border-t border-border/40 text-[10px] text-muted-foreground text-center">
-              Gõ để tìm kiếm • Ví dụ: "tiệc", "beauty", "album"
+              Gõ để tìm kiếm • Ví dụ: "tiệc", "3tr", "5700", "5tr7"
             </div>
           )}
         </div>

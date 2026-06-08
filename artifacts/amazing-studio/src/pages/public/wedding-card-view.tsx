@@ -5,7 +5,7 @@ import { WeddingCardRenderer } from "@/components/wedding-card/WeddingCardRender
 import { WeddingCardViewExtras } from "@/components/wedding-card/WeddingCardViewExtras";
 import { WeddingCardFloatingActions } from "@/components/wedding-card/WeddingCardFloatingActions";
 import { WeddingCardPetals } from "@/components/wedding-card/WeddingCardPetals";
-import { WeddingCardReveal } from "@/components/wedding-card/WeddingCardReveal";
+import { WeddingCardEnvelope } from "@/components/wedding-card/WeddingCardEnvelope";
 import { buildShareUrl } from "@/components/wedding-card/wedding-card-config";
 
 export default function WeddingCardViewPage() {
@@ -30,16 +30,20 @@ export default function WeddingCardViewPage() {
     );
   }
 
+  const storageKey = slug ? `wc-envelope-${slug}` : undefined;
+
   return (
     <div className="wc-bt-view-page wc-mobile-page min-h-screen relative">
       <WeddingCardPetals />
-      <div className="wc-bt-view-shell relative z-10">
-        <WeddingCardReveal className="wc-bt-view-cover">
-          <WeddingCardRenderer card={card} embed={false} />
-        </WeddingCardReveal>
-        <WeddingCardViewExtras card={card} />
-      </div>
-      {shareUrl && <WeddingCardFloatingActions shareUrl={shareUrl} />}
+      <WeddingCardEnvelope card={card} storageKey={storageKey}>
+        <div className="wc-bt-view-shell relative z-10">
+          <div className="wc-bt-view-cover">
+            <WeddingCardRenderer card={card} embed={false} />
+          </div>
+          <WeddingCardViewExtras card={card} />
+        </div>
+        {shareUrl && <WeddingCardFloatingActions shareUrl={shareUrl} />}
+      </WeddingCardEnvelope>
     </div>
   );
 }

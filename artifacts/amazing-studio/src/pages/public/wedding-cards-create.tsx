@@ -10,11 +10,12 @@ import {
 } from "@/hooks/use-wedding-cards";
 import { getImageSrc } from "@/lib/imageUtils";
 import { uploadWeddingCardImage } from "@/hooks/use-wedding-card-upload";
-import { WeddingCardRenderer } from "@/components/wedding-card/WeddingCardRenderer";
+import { WeddingCardFullPreview } from "@/components/wedding-card/WeddingCardFullPreview";
 import { WeddingCardPhoneFrame } from "@/components/wedding-card/WeddingCardPhoneFrame";
 import { WeddingCardEditorPanel } from "@/components/wedding-card/WeddingCardEditorPanel";
 import { WeddingCardSuccessModal } from "@/components/wedding-card/WeddingCardSuccessModal";
 import { WeddingCardOverlay } from "@/components/wedding-card/WeddingCardOverlay";
+import { WeddingCardEnvelope } from "@/components/wedding-card/WeddingCardEnvelope";
 import { WeddingCardEditorSteps } from "@/components/wedding-card/WeddingCardEditorSteps";
 import { getTemplateDisplay } from "@/components/wedding-card/wedding-card-config";
 import { cn } from "@/lib/utils";
@@ -54,6 +55,7 @@ export default function WeddingCardsCreatePage() {
   const create = useCreateWeddingCard();
 
   const [opening, setOpening] = useState(true);
+  const [envelopeDone, setEnvelopeDone] = useState(false);
   const [templateSlug] = useState(initialTemplate);
   const { data: templateDetail } = useWeddingCardTemplate(templateSlug);
   const [groomName, setGroomName] = useState("");
@@ -81,10 +83,7 @@ export default function WeddingCardsCreatePage() {
   const themeKey = templates.find((t) => t.slug === templateSlug)?.themeKey ?? templateSlug;
   const display = getTemplateDisplay(templateSlug);
 
-  useEffect(() => {
-    const t = setTimeout(() => setOpening(false), 520);
-    return () => clearTimeout(t);
-  }, []);
+
 
   useEffect(() => {
     if (!templateDetail || templateSeeded) return;
@@ -193,8 +192,21 @@ export default function WeddingCardsCreatePage() {
     }
   };
 
-  if (opening) {
-    return <WeddingCardOverlay message="Đang mở mẫu thiệp..." sub="Chuẩn bị không gian thiết kế cho bạn" />;
+  if (opening && !envelopeDone) {
+    return (
+      <div className="wc-bt-envelope-create-page min-h-screen">
+        <WeddingCardEnvelope
+          card={previewCard}
+          autoOpen={false}
+          onOpened={() => {
+            setEnvelopeDone(true);
+            setOpening(false);
+          }}
+        >
+          <div />
+        </WeddingCardEnvelope>
+      </div>
+    );
   }
 
   const hasPhoto = !!(coverImageUrl || coupleImageUrl);
@@ -232,14 +244,15 @@ export default function WeddingCardsCreatePage() {
       </div>
 
       <div className="flex-1 flex flex-col lg:flex-row lg:items-start w-full max-w-7xl mx-auto">
-        <div className="wc-bt-editor-preview wc-fade-in order-1 lg:order-2 lg:flex-1 lg:sticky lg:top-0 flex flex-col items-center px-2 py-4 sm:py-6 lg:py-10 lg:min-h-[calc(100vh-120px)]">
-          <p className="text-[10px] tracking-[0.25em] uppercase text-[var(--wc-bt-taupe)] mb-2 flex items-center gap-1">
+        <div className="wc-bt-editor-preview wc-fade-in order-1 lg:order-2 lg:flex-1 flex flex-col items-center px-2 py-4 sm:py-6 lg:py-6 lg:sticky lg:top-0 lg:self-start lg:max-h-screen lg:overflow-y-auto">
+          <p className="text-[10px] tracking-[0.25em] uppercase text-[var(--wc-bt-taupe)] mb-2 flex items-center gap-1 shrink-0">
             <Sparkles className="h-3 w-3" />
             Xem trước thiệp
           </p>
-          <div className={cn("rounded-xl transition-shadow", previewPulse && "wc-preview-pulse")}>
-            <WeddingCardPhoneFrame variant="bare">
-              <WeddingCardRenderer card={previewCard} embed />
+          <p className="text-[10px] text-[var(--wc-bt-muted)] mb-3 shrink-0">Cuộn để xem toàn bộ thiệp ↓</p>
+          <div className={cn("rounded-xl transition-shadow w-full", previewPulse && "wc-preview-pulse")}>
+            <WeddingCardPhoneFrame variant="bare" fullLength>
+              <WeddingCardFullPreview card={previewCard} />
             </WeddingCardPhoneFrame>
             {albumImageUrls.length > 0 && (
               <div className="mt-4 w-full max-w-[280px] flex gap-2 overflow-x-auto pb-1 px-1">

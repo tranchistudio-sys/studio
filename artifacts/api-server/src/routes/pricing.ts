@@ -5,7 +5,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, asc } from "drizzle-orm";
 import { verifyToken } from "./auth";
-import { defaultRequiresPostProductionForGroupId } from "../lib/post-production-eligibility";
+import { defaultRequiresPostProductionForGroupId, defaultRequiresPrintingForGroupId } from "../lib/post-production-eligibility";
 
 const router: IRouter = Router();
 
@@ -25,6 +25,12 @@ function toRequiresPostProductionFlag(v: unknown): boolean {
   return false;
 }
 
+function toRequiresPrintingFlag(v: unknown): boolean {
+  if (v === false || v === 0 || v === "0") return false;
+  if (v === true || v === 1 || v === "1") return true;
+  return false;
+}
+
 const fmtGroup = (g: { isActive: number; [k: string]: unknown }) => ({
   ...g, isActive: Boolean(g.isActive),
 });
@@ -37,6 +43,7 @@ const fmtPkg = (p: {
   includedRetouchedPhotos?: number | null;
   defaultEditingDays?: number | null;
   requiresPostProduction?: number | null;
+  requiresPrinting?: number | null;
   [k: string]: unknown
 }) => {
   const printCost = parseFloat((p.printCost as string) ?? "0");
@@ -58,6 +65,9 @@ const fmtPkg = (p: {
     // Task #383 Bước 2: nullable — null = chưa cấu hình → fallback logic cũ
     defaultEditingDays: p.defaultEditingDays ?? null,
     requiresPostProduction: toRequiresPostProductionFlag(p.requiresPostProduction),
+    requiresPrinting: toRequiresPrintingFlag(
+      p.requiresPrinting ?? (p as { requires_printing?: unknown }).requires_printing,
+    ),
   };
 };
 
@@ -1027,6 +1037,7 @@ router.post("/service-packages", async (req, res) => {
     serviceType, photoCount, includesMakeup, includedRetouchedPhotos,
     defaultEditingDays,
     requiresPostProduction,
+    requiresPrinting,
   } = req.body;
   const parseEditingDays = (v: unknown): number | null => {
     if (v == null || v === "") return null;
@@ -1052,10 +1063,15 @@ router.post("/service-packages", async (req, res) => {
     includedRetouchedPhotos: includedRetouchedPhotos ? parseInt(String(includedRetouchedPhotos)) : 0,
     defaultEditingDays: parseEditingDays(defaultEditingDays),
     requiresPostProduction: requiresPostProduction === false || requiresPostProduction === 0
-      ? 0
+      ? false
       : (requiresPostProduction === true || requiresPostProduction === 1
-        ? 1
-        : (groupId ? ((await defaultRequiresPostProductionForGroupId(parseInt(String(groupId)))) ? 1 : 0) : 0)),
+        ? true
+        : (groupId ? await defaultRequiresPostProductionForGroupId(parseInt(String(groupId))) : false)),
+    requiresPrinting: requiresPrinting === false || requiresPrinting === 0
+      ? false
+      : (requiresPrinting === true || requiresPrinting === 1
+        ? true
+        : (groupId ? await defaultRequiresPrintingForGroupId(parseInt(String(groupId))) : false)),
   }).returning();
 
   if (items.length > 0) {
@@ -1087,6 +1103,7 @@ router.put("/service-packages/:id", async (req, res) => {
       serviceType, photoCount, includesMakeup, includedRetouchedPhotos,
       defaultEditingDays,
       requiresPostProduction,
+      requiresPrinting,
     } = req.body;
 
     const update: Record<string, unknown> = {};
@@ -1117,7 +1134,10 @@ router.put("/service-packages/:id", async (req, res) => {
       }
     }
     if (requiresPostProduction !== undefined) {
-      update.requiresPostProduction = toRequiresPostProductionFlag(requiresPostProduction) ? 1 : 0;
+      update.requiresPostProduction = toRequiresPostProductionFlag(requiresPostProduction);
+    }
+    if (requiresPrinting !== undefined) {
+      update.requiresPrinting = toRequiresPrintingFlag(requiresPrinting);
     }
 
     let pkg: (typeof servicePackagesTable.$inferSelect) | undefined;

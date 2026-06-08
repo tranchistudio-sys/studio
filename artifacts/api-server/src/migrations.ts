@@ -655,6 +655,28 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
       );
     }
 
+    await client.query(`ALTER TABLE service_packages ADD COLUMN IF NOT EXISTS requires_printing BOOLEAN NOT NULL DEFAULT false`);
+    const { rows: printSeedRows } = await client.query(
+      `SELECT 1 FROM settings WHERE key = 'requires_printing_seeded_v1' LIMIT 1`,
+    );
+    if (printSeedRows.length === 0) {
+      await client.query(`
+        UPDATE service_packages sp
+           SET requires_printing = true
+          FROM service_groups sg
+         WHERE sp.group_id = sg.id
+           AND UPPER(sg.name) IN ('ALBUM TẠI STUDIO', 'ALBUM NGOẠI CẢNH', 'IN ẢNH')
+      `);
+      await client.query(`
+        UPDATE service_packages
+           SET requires_printing = true
+         WHERE CAST(print_cost AS numeric) > 0
+      `);
+      await client.query(
+        `INSERT INTO settings (key, value) VALUES ('requires_printing_seeded_v1', '1') ON CONFLICT (key) DO NOTHING`,
+      );
+    }
+
 
     // ── Partial unique index: chỉ một job active mỗi booking ─────────────────
     await client.query(`
@@ -902,6 +924,33 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
     throw err;
   } finally {
     client.release();
+  }
+
+  // Hotfix: đảm bảo cột requires_printing tồn tại kể cả khi transaction cũ đã commit
+  try {
+    await pool.query(`ALTER TABLE service_packages ADD COLUMN IF NOT EXISTS requires_printing BOOLEAN NOT NULL DEFAULT false`);
+    const { rows: seeded } = await pool.query(
+      `SELECT 1 FROM settings WHERE key = 'requires_printing_seeded_v1' LIMIT 1`,
+    );
+    if (seeded.length === 0) {
+      await pool.query(`
+        UPDATE service_packages sp
+           SET requires_printing = true
+          FROM service_groups sg
+         WHERE sp.group_id = sg.id
+           AND UPPER(sg.name) IN ('ALBUM TẠI STUDIO', 'ALBUM NGOẠI CẢNH', 'IN ẢNH')
+      `);
+      await pool.query(`
+        UPDATE service_packages SET requires_printing = true
+         WHERE CAST(print_cost AS numeric) > 0
+      `);
+      await pool.query(
+        `INSERT INTO settings (key, value) VALUES ('requires_printing_seeded_v1', '1') ON CONFLICT (key) DO NOTHING`,
+      );
+    }
+    console.log("[migrations] requires_printing_hotfix_v1 OK");
+  } catch (err) {
+    console.error("[migrations] requires_printing_hotfix_v1:", err);
   }
 
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_customers_facebook ON customers (facebook)`);

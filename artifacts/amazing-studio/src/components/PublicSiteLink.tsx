@@ -1,5 +1,5 @@
 import * as React from "react";
-import { getPublicPageUrl, openPublicSite } from "@/lib/public-site-url";
+import { getPublicPreviewUrl, openPublicSite } from "@/lib/public-site-url";
 
 type PublicSiteLinkProps = React.ComponentPropsWithoutRef<"a"> & {
   path?: string;
@@ -7,7 +7,7 @@ type PublicSiteLinkProps = React.ComponentPropsWithoutRef<"a"> & {
 
 /** Link that always opens the customer-facing website (never internal /calendar). */
 export function PublicSiteLink({ path = "/", href, onClick, children, ...rest }: PublicSiteLinkProps) {
-  const url = href ?? getPublicPageUrl(path);
+  const url = href ?? getPublicPreviewUrl(path);
   return (
     <a
       {...rest}

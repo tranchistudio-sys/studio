@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, MessageSquare, Send, UserPlus, RefreshCw, Settings, ChevronLeft, Plus, X, Paperclip, AlertTriangle, Download, ZoomIn, Pencil, Bell, BellOff } from "lucide-react";
+import { Bot, MessageSquare, Send, UserPlus, RefreshCw, Settings, ChevronLeft, Plus, X, Paperclip, AlertTriangle, Download, ZoomIn, Pencil, Bell, BellOff, Search, MoreHorizontal } from "lucide-react";
 import { Link } from "wouter";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -64,6 +64,90 @@ function statusLabel(s: string | null) {
   return STATUS_OPTIONS.find((o) => o.value === s) ?? { label: s ?? "?", cls: "bg-gray-100 text-gray-500" };
 }
 
+const AI_MODE_OPTIONS = [
+  { value: "active", label: "AI tự trả lời", short: "AI bật", dot: "bg-green-500" },
+  { value: "paused", label: "Tạm dừng AI", short: "Tạm dừng", dot: "bg-gray-400" },
+  { value: "takeover", label: "NV takeover", short: "Takeover", dot: "bg-red-500" },
+] as const;
+
+type InboxQuickFilter = "all" | "unread" | "ai_on" | "takeover" | "new";
+
+const QUICK_FILTERS: { key: InboxQuickFilter; label: string }[] = [
+  { key: "all", label: "Tất cả" },
+  { key: "unread", label: "Chưa trả lời" },
+  { key: "ai_on", label: "AI bật" },
+  { key: "takeover", label: "Takeover" },
+  { key: "new", label: "Mới" },
+];
+
+function isGenericFbName(name?: string | null): boolean {
+  if (!name?.trim()) return true;
+  return name.startsWith("Khách Facebook ") || /^Khách\s/i.test(name);
+}
+
+function displayThreadName(lead: LeadInfo | null, psid: string): string {
+  if (lead?.name && !isGenericFbName(lead.name)) return lead.name;
+  return `FB · …${psid.slice(-4)}`;
+}
+
+function avatarFallbackLabel(name: string, psid?: string): string {
+  if (isGenericFbName(name) && psid) return psid.slice(-3).toUpperCase();
+  const t = name.trim();
+  if (t.length >= 2) return t.slice(0, 2).toUpperCase();
+  return t[0]?.toUpperCase() ?? "FB";
+}
+
+function formatMessagePreview(msg: string, outgoing = false): string {
+  if (/^\[image:/i.test(msg)) return "📷 Hình ảnh";
+  if (/^\[sticker:/i.test(msg)) return "😊 Sticker";
+  if (/^\[(file|attachment):/i.test(msg)) return "📎 Tệp đính kèm";
+  const text = msg.trim();
+  if (!text) return "…";
+  return outgoing ? `Bạn: ${text}` : text;
+}
+
+function threadNeedsAttention(t: Thread): boolean {
+  return t.lastDirection === "incoming" && t.lastAiDecision !== "auto_replied";
+}
+
+function aiModeMeta(mode: string) {
+  return AI_MODE_OPTIONS.find((o) => o.value === mode) ?? AI_MODE_OPTIONS[1];
+}
+
+function buildThreadInsight(lead: LeadInfo | null): string | null {
+  if (!lead) return null;
+  const parts: string[] = [];
+  if (lead.phone?.trim()) parts.push(`📞 ${lead.phone.trim()}`);
+  if (lead.scriptName?.trim()) parts.push(`🎯 ${lead.scriptName.trim()}`);
+  return parts.length ? parts.join(" · ") : null;
+}
+
+function matchesQuickFilter(t: Thread, filter: InboxQuickFilter, globalAiOn: boolean): boolean {
+  if (filter === "all") return true;
+  if (filter === "unread") return threadNeedsAttention(t);
+  if (filter === "new") return (t.lead?.status ?? "new") === "new";
+  if (filter === "takeover") return (t.lead?.aiMode ?? "active") === "takeover";
+  if (filter === "ai_on") return globalAiOn && (t.lead?.aiMode ?? "active") === "active";
+  return true;
+}
+
+function matchesSearchQuery(t: Thread, q: string): boolean {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return true;
+  const name = displayThreadName(t.lead, t.psid).toLowerCase();
+  const rawName = (t.lead?.name ?? "").toLowerCase();
+  const phone = (t.lead?.phone ?? "").toLowerCase();
+  const psid = t.psid.toLowerCase();
+  const preview = formatMessagePreview(t.lastMessage, t.lastDirection === "outgoing").toLowerCase();
+  return (
+    name.includes(needle) ||
+    rawName.includes(needle) ||
+    phone.includes(needle) ||
+    psid.includes(needle) ||
+    preview.includes(needle)
+  );
+}
+
 const AVATAR_PALETTE = [
   { bg: "#DBEAFE", fg: "#1E40AF" },
   { bg: "#FEE2E2", fg: "#991B1B" },
@@ -87,8 +171,7 @@ function Avatar({ url, name, size = 36, psid }: { url: string | null; name: stri
   const [imgError, setImgError] = useState(false);
   useEffect(() => { setImgError(false); }, [url]);
   const style = { width: size, height: size, minWidth: size, minHeight: size, borderRadius: "50%" };
-  const isGeneric = !name?.trim() || name.startsWith("Khách Facebook ");
-  const initial = isGeneric ? "K" : name.trim()[0].toUpperCase();
+  const initial = avatarFallbackLabel(name, psid);
   const { bg, fg } = hashAvatarColor(psid || name || "K");
 
   if (url && !imgError) {
@@ -128,7 +211,7 @@ function LeadInfoPanel({ lead, psid, onOpenCustomer, onOpenLead, onSave }: { lea
   const [zalo, setZalo] = useState(lead.zalo ?? "");
   const [notes, setNotes] = useState(lead.notes ?? "");
   useEffect(() => { setName(lead.name ?? ""); setPhone(lead.phone ?? ""); setZalo(lead.zalo ?? ""); setNotes(lead.notes ?? ""); }, [lead]);
-  const isGenericName = lead.name.startsWith("Khách Facebook ");
+  const isGenericName = isGenericFbName(lead.name);
 
   const { data: fu, refetch: refetchFu } = useQuery<FollowUpStatus>({
     queryKey: ["fb-follow-up", psid],
@@ -167,7 +250,7 @@ function LeadInfoPanel({ lead, psid, onOpenCustomer, onOpenLead, onSave }: { lea
         <div className="min-w-0 flex-1">
           <p className={`font-semibold text-sm truncate ${isGenericName ? "text-muted-foreground italic" : ""}`}>{lead.name}</p>
           <p className="text-[11px] text-muted-foreground">PSID: {psid.slice(-10)}</p>
-          <span className="mt-1 inline-flex text-[10px] font-medium px-2 py-0.5 rounded-full bg-white border">{lead.status ?? "new"}</span>
+          <span className={`mt-1 inline-flex text-[10px] font-medium px-2 py-0.5 rounded-full ${statusLabel(lead.status).cls}`}>{statusLabel(lead.status).label}</span>
         </div>
       </div>
       {(() => {
@@ -250,11 +333,17 @@ function LeadInfoPanel({ lead, psid, onOpenCustomer, onOpenLead, onSave }: { lea
 
 function timeAgo(iso: string) {
   const d = new Date(iso);
-  const now = Date.now();
-  const diff = Math.floor((now - d.getTime()) / 1000);
+  const now = new Date();
+  const diff = Math.floor((Date.now() - d.getTime()) / 1000);
   if (diff < 60) return "Vừa xong";
   if (diff < 3600) return `${Math.floor(diff / 60)} phút`;
   if (diff < 86400) return `${Math.floor(diff / 3600)} giờ`;
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const startMsg = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const dayDiff = Math.round((startToday - startMsg) / 86400000);
+  if (dayDiff === 1) return "Hôm qua";
+  if (dayDiff === 2) return "2 ngày trước";
+  if (dayDiff > 2 && dayDiff < 7) return `${dayDiff} ngày trước`;
   return d.toLocaleDateString("vi-VN");
 }
 
@@ -374,6 +463,10 @@ export default function FacebookInboxAiPage() {
     try { return localStorage.getItem("fb_inbox_sound") !== "off"; } catch { return true; }
   });
   const [staffFilter, setStaffFilter] = useState<string>("");
+  const [quickFilter, setQuickFilter] = useState<InboxQuickFilter>("all");
+  const [threadSearch, setThreadSearch] = useState("");
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
+  const headerMenuRef = useRef<HTMLDivElement>(null);
   const seenRef = useRef<Map<string, string>>(new Map());
   const initializedRef = useRef(false);
 
@@ -384,7 +477,32 @@ export default function FacebookInboxAiPage() {
   const messages = useMemo(() => messagesData ?? [], [messagesData]);
   const { data: aiStatus } = useQuery<AiStatus>({ queryKey: ["fb-ai-status"], queryFn: async () => { const r = await authFetch(`${BASE}/api/fb-ai/status`); if (!r.ok) return { autoReplyEnabled: false, hasConfig: false }; return r.json(); }, refetchInterval: 30000 });
 
+  const globalAiOn = !!(aiStatus?.autoReplyEnabled && aiStatus?.hasConfig);
+
+  const filteredThreads = useMemo(() => {
+    return threads
+      .filter((t) => matchesQuickFilter(t, quickFilter, globalAiOn))
+      .filter((t) => matchesSearchQuery(t, threadSearch))
+      .sort((a, b) => {
+        const aNeed = threadNeedsAttention(a);
+        const bNeed = threadNeedsAttention(b);
+        if (aNeed !== bNeed) return aNeed ? -1 : 1;
+        return new Date(b.lastAt).getTime() - new Date(a.lastAt).getTime();
+      });
+  }, [threads, quickFilter, threadSearch, globalAiOn]);
+
   const selectedThread = threads.find((t) => t.psid === selectedPsid) ?? null;
+
+  useEffect(() => {
+    if (!showHeaderMenu) return;
+    const onDoc = (e: MouseEvent) => {
+      if (headerMenuRef.current && !headerMenuRef.current.contains(e.target as Node)) {
+        setShowHeaderMenu(false);
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [showHeaderMenu]);
   useEffect(() => { if (messagesEndRef.current) messagesEndRef.current.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
   const pendingPreviewUrlsRef = useRef<string[]>([]);
@@ -415,8 +533,8 @@ export default function FacebookInboxAiPage() {
       if (isNew) {
         if (soundEnabled) playNotificationSound();
         if (notifPermission === "granted" && document.visibilityState !== "visible") {
-          const name = t.lead?.name ?? `Khách ${t.psid.slice(-6)}`;
-          const preview = t.lastMessage.startsWith("[image:") ? "📷 Hình ảnh" : t.lastMessage;
+          const name = displayThreadName(t.lead, t.psid);
+          const preview = formatMessagePreview(t.lastMessage, t.lastDirection === "outgoing");
           try {
             new Notification(`Tin nhắn mới từ ${name}`, {
               body: preview.length > 80 ? `${preview.slice(0, 80)}…` : preview,
@@ -562,34 +680,76 @@ export default function FacebookInboxAiPage() {
 
       {/* Page header — hidden on mobile when viewing a chat */}
       <div className={`${selectedPsid ? "hidden md:flex" : "flex"} bg-card border border-border rounded-2xl px-4 py-3 items-center justify-between gap-3`}>
-        <div className="flex items-center gap-3">
-          <div>
-            <h2 className="font-semibold text-base flex items-center gap-2"><MessageSquare className="w-4 h-4" />Inbox Facebook AI</h2>
-            <p className="text-xs text-muted-foreground mt-0.5">Quản lý hội thoại Fanpage, hỗ trợ sale trực page</p>
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="min-w-0">
+            <h2 className="font-semibold text-base flex items-center gap-2">
+              <MessageSquare className="w-4 h-4 shrink-0" />
+              Inbox Facebook AI
+              {unreadCount > 0 && (
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-blue-600 text-white">{unreadCount}</span>
+              )}
+            </h2>
+            <p className="text-xs text-muted-foreground mt-0.5 truncate">Quản lý hội thoại Fanpage, hỗ trợ sale trực page</p>
           </div>
-          {aiStatus && <button onClick={() => globalAiMutation.mutate(!aiStatus.autoReplyEnabled)} disabled={globalAiMutation.isPending} className={`ml-2 text-xs font-medium px-2 py-0.5 rounded-full disabled:opacity-60 cursor-pointer ${aiStatus.autoReplyEnabled && aiStatus.hasConfig ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}>{aiStatus.autoReplyEnabled && aiStatus.hasConfig ? "Global AI: Bật" : "Global AI: Tắt"}</button>}
+          {aiStatus && (
+            <button
+              onClick={() => globalAiMutation.mutate(!aiStatus.autoReplyEnabled)}
+              disabled={globalAiMutation.isPending}
+              className={`shrink-0 text-xs font-medium px-2.5 py-1 rounded-full disabled:opacity-60 cursor-pointer ${aiStatus.autoReplyEnabled && aiStatus.hasConfig ? "bg-green-100 text-green-700" : "bg-gray-100 text-gray-500"}`}
+            >
+              {aiStatus.autoReplyEnabled && aiStatus.hasConfig ? "AI: Bật" : "AI: Tắt"}
+            </button>
+          )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="hidden md:flex items-center gap-2 shrink-0">
           <button
             onClick={toggleSound}
-            title={soundEnabled ? "Tắt âm thanh thông báo" : "Bật âm thanh thông báo"}
+            title={soundEnabled ? "Tắt âm thanh" : "Bật âm thanh"}
             className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium hover:bg-muted ${soundEnabled ? "text-foreground" : "text-muted-foreground"}`}
           >
             {soundEnabled ? <Bell className="w-3.5 h-3.5" /> : <BellOff className="w-3.5 h-3.5" />}
-            <span className="hidden sm:inline">{soundEnabled ? "Âm thanh: Bật" : "Âm thanh: Tắt"}</span>
+            {soundEnabled ? "Âm thanh" : "Im lặng"}
           </button>
           {typeof Notification !== "undefined" && notifPermission !== "granted" && (
-            <button
-              onClick={requestNotifPermission}
-              title="Bật thông báo trình duyệt khi có tin nhắn mới"
-              className="inline-flex items-center gap-1.5 rounded-xl border border-blue-300 bg-blue-50 text-blue-700 px-3 py-1.5 text-xs font-medium hover:bg-blue-100"
-            >
-              <Bell className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Bật thông báo</span>
+            <button onClick={requestNotifPermission} className="inline-flex items-center gap-1.5 rounded-xl border border-blue-300 bg-blue-50 text-blue-700 px-3 py-1.5 text-xs font-medium hover:bg-blue-100">
+              <Bell className="w-3.5 h-3.5" /> Thông báo
             </button>
           )}
-          <button onClick={() => syncProfilesMutation.mutate()} disabled={syncProfilesMutation.isPending} className="inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50"><RefreshCw className={`w-3.5 h-3.5 ${syncProfilesMutation.isPending ? "animate-spin" : ""}`} />{syncProfilesMutation.isPending ? "Đang đồng bộ..." : "Đồng bộ tên/avatar"}</button>
-          <Link href="/settings" className="inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium hover:bg-muted"><Settings className="w-3.5 h-3.5" />Cài đặt</Link>
+          <button onClick={() => syncProfilesMutation.mutate()} disabled={syncProfilesMutation.isPending} className="inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium hover:bg-muted disabled:opacity-50">
+            <RefreshCw className={`w-3.5 h-3.5 ${syncProfilesMutation.isPending ? "animate-spin" : ""}`} />
+            {syncProfilesMutation.isPending ? "Đang đồng bộ..." : "Đồng bộ"}
+          </button>
+          <Link href="/settings" className="inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-medium hover:bg-muted">
+            <Settings className="w-3.5 h-3.5" /> Cài đặt
+          </Link>
+        </div>
+        <div className="md:hidden relative shrink-0" ref={headerMenuRef}>
+          <button
+            onClick={() => setShowHeaderMenu((v) => !v)}
+            className="inline-flex items-center justify-center w-9 h-9 rounded-xl border hover:bg-muted"
+            aria-label="Tùy chọn"
+          >
+            <MoreHorizontal className="w-5 h-5" />
+          </button>
+          {showHeaderMenu && (
+            <div className="absolute right-0 top-full mt-1 z-50 w-52 rounded-xl border border-border bg-card shadow-xl py-1 text-sm">
+              <button onClick={() => { toggleSound(); setShowHeaderMenu(false); }} className="w-full text-left px-3 py-2 hover:bg-muted flex items-center gap-2">
+                {soundEnabled ? <Bell className="w-4 h-4" /> : <BellOff className="w-4 h-4" />}
+                {soundEnabled ? "Tắt âm thanh" : "Bật âm thanh"}
+              </button>
+              {typeof Notification !== "undefined" && notifPermission !== "granted" && (
+                <button onClick={() => { void requestNotifPermission(); setShowHeaderMenu(false); }} className="w-full text-left px-3 py-2 hover:bg-muted flex items-center gap-2">
+                  <Bell className="w-4 h-4" /> Bật thông báo
+                </button>
+              )}
+              <button onClick={() => { syncProfilesMutation.mutate(); setShowHeaderMenu(false); }} disabled={syncProfilesMutation.isPending} className="w-full text-left px-3 py-2 hover:bg-muted flex items-center gap-2 disabled:opacity-50">
+                <RefreshCw className={`w-4 h-4 ${syncProfilesMutation.isPending ? "animate-spin" : ""}`} /> Đồng bộ tên/avatar
+              </button>
+              <Link href="/settings" onClick={() => setShowHeaderMenu(false)} className="block px-3 py-2 hover:bg-muted flex items-center gap-2">
+                <Settings className="w-4 h-4" /> Cài đặt webhook
+              </Link>
+            </div>
+          )}
         </div>
       </div>
 
@@ -601,7 +761,36 @@ export default function FacebookInboxAiPage() {
         {/* Thread list column — mobile: hidden when chat is open */}
         <div className={`${selectedPsid ? "hidden md:flex" : "flex"} bg-card border border-border rounded-2xl flex-col overflow-hidden flex-1 md:flex-none`}>
           <div className="px-3 pt-3 pb-2 border-b border-border shrink-0 flex flex-col gap-2">
-            <p className="text-sm font-semibold text-muted-foreground">Hội thoại ({threads.length}){staffFilter ? " · đã lọc" : ""}</p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-semibold text-foreground">
+                Hội thoại
+                <span className="text-muted-foreground font-normal"> ({filteredThreads.length}{filteredThreads.length !== threads.length ? `/${threads.length}` : ""})</span>
+              </p>
+              {unreadCount > 0 && (
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">{unreadCount} chưa trả lời</span>
+              )}
+            </div>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground pointer-events-none" />
+              <input
+                value={threadSearch}
+                onChange={(e) => setThreadSearch(e.target.value)}
+                placeholder="Tìm tên, SĐT, PSID..."
+                className="w-full border rounded-xl pl-8 pr-3 py-2 text-xs bg-background focus:outline-none focus:ring-1 focus:ring-primary/40"
+              />
+            </div>
+            <div className="flex gap-1 overflow-x-auto pb-0.5 -mx-0.5 px-0.5 scrollbar-none">
+              {QUICK_FILTERS.map((tab) => (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => setQuickFilter(tab.key)}
+                  className={`shrink-0 text-[10px] font-semibold px-2.5 py-1 rounded-full border transition-colors ${quickFilter === tab.key ? "bg-primary text-primary-foreground border-primary" : "bg-background text-muted-foreground border-border hover:bg-muted"}`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
             <select
               value={staffFilter}
               onChange={(e) => setStaffFilter(e.target.value)}
@@ -615,33 +804,52 @@ export default function FacebookInboxAiPage() {
           </div>
           <div className="flex-1 overflow-y-auto p-2 space-y-1">
             {threads.length === 0 && (
+              <div className="text-center mt-10 px-4 space-y-3">
+                <MessageSquare className="w-10 h-10 mx-auto text-muted-foreground/30" />
+                <p className="text-sm text-muted-foreground">Chưa có hội thoại Facebook.</p>
+                <Link href="/settings" className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-2 rounded-xl bg-primary text-primary-foreground hover:opacity-90">
+                  <Settings className="w-3.5 h-3.5" /> Cấu hình webhook
+                </Link>
+              </div>
+            )}
+            {threads.length > 0 && filteredThreads.length === 0 && (
               <p className="text-sm text-muted-foreground text-center mt-8 px-4">
-                {staffFilter
-                  ? `Không có hội thoại nào do ${staffFilter} xử lý.`
-                  : <>Chưa có hội thoại Facebook.<br />Cấu hình webhook trong Cài đặt để bắt đầu.</>}
+                Không có hội thoại khớp bộ lọc hiện tại.
               </p>
             )}
-            {threads.map((t) => {
-              const name = t.lead?.name ?? `Khách ${t.psid.slice(-6)}`;
+            {filteredThreads.map((t) => {
+              const name = displayThreadName(t.lead, t.psid);
+              const rawGeneric = isGenericFbName(t.lead?.name);
               const st = statusLabel(t.lead?.status ?? null);
               const isSelected = selectedPsid === t.psid;
-              const needsAttention = t.lastDirection === "incoming" && t.lastAiDecision !== "auto_replied";
+              const needsAttention = threadNeedsAttention(t);
               const tAiMode = t.lead?.aiMode ?? "active";
-              const aiDotCls = !aiStatus?.autoReplyEnabled ? "bg-gray-400" : tAiMode === "active" ? "bg-green-500" : tAiMode === "takeover" ? "bg-red-500" : "bg-gray-400";
+              const aiMeta = aiModeMeta(tAiMode);
+              const insight = buildThreadInsight(t.lead);
+              const preview = formatMessagePreview(t.lastMessage, t.lastDirection === "outgoing");
               return (
-                <button key={t.psid} onClick={() => handleSelectThread(t.psid)} className={`w-full text-left rounded-xl px-3 py-2.5 flex items-start gap-2.5 transition-colors ${isSelected ? "bg-primary/10 border border-primary/30" : "hover:bg-muted border border-transparent"}`}>
+                <button
+                  key={t.psid}
+                  onClick={() => handleSelectThread(t.psid)}
+                  className={`relative w-full text-left rounded-xl pl-3 pr-3 py-2.5 flex items-start gap-2.5 transition-colors overflow-hidden ${needsAttention ? "border-l-[3px] border-l-blue-500" : "border-l-[3px] border-l-transparent"} ${isSelected ? "bg-primary/10 border border-primary/30" : "hover:bg-muted/80 border border-transparent"}`}
+                >
                   <div className="relative shrink-0 mt-0.5">
-                    <Avatar url={t.lead?.avatarUrl ?? null} name={name} size={40} psid={t.psid} />
-                    {needsAttention && <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-blue-500 rounded-full border-2 border-background" />}
-                    <span className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 ${aiDotCls} rounded-full border-2 border-background`} title={`AI: ${tAiMode}`} />
+                    <Avatar url={t.lead?.avatarUrl ?? null} name={t.lead?.name ?? name} size={42} psid={t.psid} />
+                    <span className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 ${!globalAiOn ? "bg-gray-400" : aiMeta.dot} rounded-full border-2 border-background`} title={aiMeta.label} />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="flex items-center justify-between gap-1">
-                      <p className="font-medium text-sm truncate">{name}</p>
-                      <p className="text-[10px] text-muted-foreground shrink-0">{timeAgo(t.lastAt)}</p>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <p className={`text-sm truncate flex-1 min-w-0 ${needsAttention ? "font-bold text-foreground" : "font-medium text-foreground/90"}`}>{name}</p>
+                      <span className={`shrink-0 text-[9px] font-semibold px-1.5 py-0.5 rounded-full ${st.cls}`}>{st.label}</span>
+                      <p className={`text-[10px] shrink-0 ${needsAttention ? "text-blue-600 font-semibold" : "text-muted-foreground"}`}>{timeAgo(t.lastAt)}</p>
                     </div>
-                    <p className="text-xs text-muted-foreground truncate mt-0.5">{t.lastDirection === "outgoing" ? "→ " : ""}{t.lastMessage}</p>
-                    <span className={`mt-1 inline-block text-[10px] font-medium px-1.5 py-0.5 rounded-full ${st.cls}`}>{st.label}</span>
+                    {rawGeneric && (
+                      <p className="text-[9px] text-orange-600/90 mt-0.5">Chưa đồng bộ tên</p>
+                    )}
+                    <p className={`text-xs truncate mt-0.5 ${needsAttention ? "text-foreground/80 font-medium" : "text-muted-foreground"}`}>{preview}</p>
+                    {insight && (
+                      <p className="text-[10px] text-muted-foreground truncate mt-1">{insight}</p>
+                    )}
                   </div>
                 </button>
               );
@@ -664,9 +872,9 @@ export default function FacebookInboxAiPage() {
                   <button onClick={handleBack} className="shrink-0 w-8 h-8 flex items-center justify-center rounded-full hover:bg-muted transition-colors">
                     <ChevronLeft className="w-5 h-5" />
                   </button>
-                  <Avatar url={lead?.avatarUrl ?? null} name={lead?.name ?? `Khách ${selectedPsid.slice(-6)}`} size={34} psid={selectedPsid} />
+                  <Avatar url={lead?.avatarUrl ?? null} name={lead?.name ?? displayThreadName(lead, selectedPsid)} size={34} psid={selectedPsid} />
                   <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-sm truncate leading-tight">{lead?.name ?? `Khách ${selectedPsid.slice(-6)}`}</p>
+                    <p className="font-semibold text-sm truncate leading-tight">{displayThreadName(lead, selectedPsid)}</p>
                     <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
                       <select
                         value={threadAiMode}
@@ -675,9 +883,9 @@ export default function FacebookInboxAiPage() {
                         className="text-[10px] border rounded-md px-1 py-0.5 bg-background leading-tight disabled:opacity-50"
                         style={{ maxWidth: 118 }}
                       >
-                        <option value="active">🟢 Active</option>
-                        <option value="paused">⚫ Tạm ngưng</option>
-                        <option value="takeover">🔴 Takeover</option>
+                        <option value="active">AI tự trả lời</option>
+                        <option value="paused">Tạm dừng AI</option>
+                        <option value="takeover">NV takeover</option>
                       </select>
                       <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium ${statusLabel(lead?.status ?? null).cls}`}>{statusLabel(lead?.status ?? null).label}</span>
                     </div>
@@ -704,13 +912,13 @@ export default function FacebookInboxAiPage() {
                 <div className="hidden md:block px-4 py-3 border-b border-border shrink-0">
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-3 min-w-0">
-                      <Avatar url={lead?.avatarUrl ?? null} name={lead?.name ?? `Khách ${selectedPsid.slice(-6)}`} size={36} psid={selectedPsid} />
-                      <div className="min-w-0"><p className="font-semibold text-sm truncate">{lead?.name ?? `Khách ${selectedPsid.slice(-6)}`}</p><p className="text-xs text-muted-foreground">PSID: {selectedPsid.slice(-8)}</p></div>
+                      <Avatar url={lead?.avatarUrl ?? null} name={lead?.name ?? displayThreadName(lead, selectedPsid)} size={36} psid={selectedPsid} />
+                      <div className="min-w-0"><p className="font-semibold text-sm truncate">{displayThreadName(lead, selectedPsid)}</p><p className="text-xs text-muted-foreground">PSID: {selectedPsid.slice(-8)}{isGenericFbName(lead?.name) ? " · Chưa đồng bộ" : ""}</p></div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
                       <div className="text-[11px] font-medium px-2 py-1 rounded-full border bg-white leading-tight"><div className={aiStatus?.autoReplyEnabled && aiStatus.hasConfig ? "text-green-700" : "text-gray-500"}>Global AI: {aiStatus?.autoReplyEnabled && aiStatus.hasConfig ? "BẬT" : "TẮT"}</div><div className={effectiveAi ? "text-green-700" : "text-red-700"}>Hiệu lực: {effectiveAi ? "BẬT" : "TẮT"}</div></div>
                       {lead && <select value={lead.status ?? "new"} onChange={(e) => statusMutation.mutate({ leadId: lead.id, status: e.target.value })} className="text-xs border rounded-lg px-2 py-1.5 bg-background" disabled={statusMutation.isPending}>{STATUS_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>}
-                      {lead && <div className="flex items-center gap-1"><Bot className={`w-3.5 h-3.5 ${effectiveAi ? "text-green-600" : "text-gray-400"}`} /><select value={threadAiMode} onChange={(e) => aiModeMutation.mutate({ psid: selectedPsid, aiMode: e.target.value })} className="text-xs border rounded-lg px-2 py-1.5 bg-background" disabled={aiModeMutation.isPending} title="Chế độ AI cho hội thoại này"><option value="active">🟢 AI: Active</option><option value="paused">⚫ AI: Tạm ngưng</option><option value="takeover">🔴 Takeover (NV xử lý)</option></select></div>}
+                      {lead && <div className="flex items-center gap-1"><Bot className={`w-3.5 h-3.5 ${effectiveAi ? "text-green-600" : "text-gray-400"}`} /><select value={threadAiMode} onChange={(e) => aiModeMutation.mutate({ psid: selectedPsid, aiMode: e.target.value })} className="text-xs border rounded-lg px-2 py-1.5 bg-background" disabled={aiModeMutation.isPending} title="Chế độ AI cho hội thoại này"><option value="active">AI tự trả lời</option><option value="paused">Tạm dừng AI</option><option value="takeover">NV takeover</option></select></div>}
                       {lead && <button onClick={() => { setShowModal(true); setHint(""); }} className="inline-flex items-center gap-1.5 border rounded-xl px-3 py-1.5 text-xs font-medium hover:bg-muted bg-green-50 border-green-200 text-green-700"><UserPlus className="w-3.5 h-3.5" />Tạo KH</button>}
                     </div>
                   </div>
@@ -995,7 +1203,7 @@ export default function FacebookInboxAiPage() {
           <div className="absolute inset-0 bg-black/50" onClick={() => setShowActionSheet(false)} />
           <div className="relative bg-card rounded-t-2xl shadow-2xl">
             <div className="flex items-center justify-between px-4 pt-4 pb-2">
-              <p className="font-semibold text-sm">{lead?.name ?? `Khách ${selectedPsid.slice(-6)}`}</p>
+              <p className="font-semibold text-sm">{displayThreadName(lead, selectedPsid)}</p>
               <button onClick={() => setShowActionSheet(false)} className="w-7 h-7 flex items-center justify-center rounded-full hover:bg-muted">
                 <X className="w-4 h-4" />
               </button>
@@ -1006,7 +1214,7 @@ export default function FacebookInboxAiPage() {
                 <div>
                   <p className="text-xs font-medium text-muted-foreground mb-2">Chế độ AI cho khách này</p>
                   <div className="grid grid-cols-3 gap-2">
-                    {([ { mode: "active", emoji: "🟢", label: "Active", sub: "AI tự trả lời" }, { mode: "paused", emoji: "⚫", label: "Tạm ngưng", sub: "AI im lặng" }, { mode: "takeover", emoji: "🔴", label: "NV xử lý", sub: "Takeover" } ] as { mode: "active"|"paused"|"takeover"; emoji: string; label: string; sub: string }[]).map(({ mode, emoji, label, sub }) => (
+                    {([ { mode: "active", emoji: "🟢", label: "AI tự trả lời", sub: "Tự động trả khách" }, { mode: "paused", emoji: "⚫", label: "Tạm dừng AI", sub: "AI im lặng" }, { mode: "takeover", emoji: "🔴", label: "NV takeover", sub: "Nhân viên xử lý" } ] as { mode: "active"|"paused"|"takeover"; emoji: string; label: string; sub: string }[]).map(({ mode, emoji, label, sub }) => (
                       <button
                         key={mode}
                         onClick={() => { aiModeMutation.mutate({ psid: selectedPsid!, aiMode: mode }); setShowActionSheet(false); }}

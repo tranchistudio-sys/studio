@@ -33,6 +33,8 @@ export const servicePackagesTable = pgTable("service_packages", {
   defaultEditingDays: integer("default_editing_days"),
   /** When true, booking creates a post-production (photoshop) job. */
   requiresPostProduction: boolean("requires_post_production").notNull().default(false),
+  /** When true, job shows "Đã xuất in" tracking (physical print). */
+  requiresPrinting: boolean("requires_printing").notNull().default(false),
   isActive: integer("is_active").notNull().default(1),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),

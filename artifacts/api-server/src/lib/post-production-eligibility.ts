@@ -12,6 +12,12 @@ const TRUE_GROUP_NAMES = new Set([
   "QUAY PHIM",
 ]);
 
+const PRINT_TRUE_GROUP_NAMES = new Set([
+  "ALBUM TẠI STUDIO",
+  "ALBUM NGOẠI CẢNH",
+  "IN ẢNH",
+]);
+
 const FALSE_GROUP_NAMES = new Set([
   "MAKEUP LẺ",
   "IN ẢNH",
@@ -20,6 +26,12 @@ const FALSE_GROUP_NAMES = new Set([
   "COMBO TRANG PHỤC CƯỚI - CÓ MAKEUP",
   "COMBO TRANG PHỤC CƯỚI - KHÔNG MAKEUP",
 ]);
+
+export function defaultRequiresPrintingByGroupName(groupName: string | null | undefined): boolean {
+  if (!groupName) return false;
+  const n = groupName.trim().toUpperCase();
+  return PRINT_TRUE_GROUP_NAMES.has(n);
+}
 
 export function defaultRequiresPostProductionByGroupName(groupName: string | null | undefined): boolean {
   if (!groupName) return false;
@@ -83,6 +95,12 @@ export async function defaultRequiresPostProductionForGroupId(groupId: number | 
   if (!groupId) return false;
   const [g] = await db.select({ name: serviceGroupsTable.name }).from(serviceGroupsTable).where(eq(serviceGroupsTable.id, groupId));
   return defaultRequiresPostProductionByGroupName(g?.name);
+}
+
+export async function defaultRequiresPrintingForGroupId(groupId: number | null | undefined): Promise<boolean> {
+  if (!groupId) return false;
+  const [g] = await db.select({ name: serviceGroupsTable.name }).from(serviceGroupsTable).where(eq(serviceGroupsTable.id, groupId));
+  return defaultRequiresPrintingByGroupName(g?.name);
 }
 
 /** SQL snippet: booking linked to at least one package with requires_post_production = true */

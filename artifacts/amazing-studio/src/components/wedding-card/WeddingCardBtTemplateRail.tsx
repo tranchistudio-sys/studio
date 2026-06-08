@@ -4,6 +4,7 @@ import { getTemplateDisplay, resolveTemplatePreviewUrls } from "./wedding-card-c
 import type { WeddingCardTemplate } from "@/hooks/use-wedding-cards";
 import { getImageSrc } from "@/lib/imageUtils";
 import { weddingTemplatePlaceholder } from "@/lib/cms-placeholders";
+import { WeddingCardBtReveal } from "./WeddingCardBtReveal";
 
 function templateImage(template: WeddingCardTemplate): string {
   const urls = resolveTemplatePreviewUrls(template);
@@ -23,31 +24,40 @@ export function WeddingCardBtTemplateRail({
   onPreview: (t: WeddingCardTemplate) => void;
   variant?: "gallery" | "demo";
 }) {
-  const railClass = variant === "demo" ? "wc-bt-demo-row" : "wc-bt-rail";
+  if (variant === "demo") {
+    const loop = templates.length > 1 ? [...templates, ...templates] : templates;
+    return (
+      <WeddingCardBtReveal className="wc-bt-demo-wrap">
+        <div className={`wc-bt-demo-row ${templates.length > 2 ? "wc-bt-demo-row--marquee" : ""}`}>
+          {loop.map((template, i) => {
+            const display = getTemplateDisplay(template.slug, template.name);
+            const imgSrc = templateImage(template);
+            return (
+              <div key={`${template.slug}-${i}`} className="wc-bt-demo-card">
+                <div className="wc-bt-mockup-phone">
+                  <img src={imgSrc} alt={template.name} className="w-full h-full object-cover" draggable={false} />
+                </div>
+                <p className="wc-bt-demo-names">{display.coupleNames || display.title}</p>
+                <p className="wc-bt-demo-date">Wedding Invitation</p>
+              </div>
+            );
+          })}
+        </div>
+      </WeddingCardBtReveal>
+    );
+  }
 
   return (
-    <div className={railClass}>
-      {templates.map((template) => {
+    <div className="wc-bt-rail">
+      {templates.map((template, i) => {
         const display = getTemplateDisplay(template.slug, template.name);
         const href = `/thiep-cuoi-online/tao?template=${template.slug}`;
         const imgSrc = templateImage(template);
 
-        if (variant === "demo") {
-          return (
-            <div key={template.slug} className="wc-bt-demo-card wc-fade-in">
-              <div className="wc-bt-mockup-phone">
-                <img src={imgSrc} alt={template.name} className="w-full h-full object-cover" />
-              </div>
-              <p className="wc-bt-demo-names">{display.title}</p>
-              <p className="wc-bt-demo-date">Wedding Invitation</p>
-            </div>
-          );
-        }
-
         return (
-          <article key={template.slug} className="wc-bt-rail-item wc-fade-in">
+          <WeddingCardBtReveal key={template.slug} as="article" className="wc-bt-rail-item" delay={i * 80}>
             <div className="wc-bt-rail-preview">
-              <img src={imgSrc} alt={template.name} loading="lazy" />
+              <img src={imgSrc} alt={template.name} loading="lazy" draggable={false} />
             </div>
             <p className="wc-bt-rail-cat">{template.category || display.title}</p>
             <p className="wc-bt-rail-name">{template.name || display.title}</p>
@@ -67,7 +77,7 @@ export function WeddingCardBtTemplateRail({
                 Xem mẫu
               </button>
             </div>
-          </article>
+          </WeddingCardBtReveal>
         );
       })}
     </div>

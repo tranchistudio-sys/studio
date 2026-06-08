@@ -140,6 +140,8 @@ export const TEMPLATE_DISPLAY: Record<
   {
     title: string;
     subtitle: string;
+    coupleNames?: string;
+    styleTag?: string;
     badge?: "popular" | "new";
     previewGradient: string;
     previewAccent: string;
@@ -148,6 +150,8 @@ export const TEMPLATE_DISPLAY: Record<
   classic: {
     title: "Hàn Quốc",
     subtitle: "Tối giản pastel, chữ thanh lịch — phong cách thiệp Hàn",
+    coupleNames: "Trung Kiên & Thu Hương",
+    styleTag: "Thanh lịch, hiện đại",
     badge: "popular",
     previewGradient: "from-[#f8f4f0] via-[#efe8e0] to-[#e8dfd4]",
     previewAccent: "text-stone-600",
@@ -155,6 +159,8 @@ export const TEMPLATE_DISPLAY: Record<
   modern: {
     title: "Hiện Đại",
     subtitle: "Trắng đen, layout gọn — nét đương đại",
+    coupleNames: "Anh Khoa & Ngọc Linh",
+    styleTag: "Tối giản, sang trọng",
     badge: "new",
     previewGradient: "from-neutral-900 via-neutral-800 to-neutral-700",
     previewAccent: "text-white/90",
@@ -162,6 +168,8 @@ export const TEMPLATE_DISPLAY: Record<
   romantic: {
     title: "Burgundy",
     subtitle: "Đỏ rượu vang, ấm áp và sang trọng",
+    coupleNames: "Phú Đạt & Kim Oanh",
+    styleTag: "Ấm áp, lãng mạn",
     previewGradient: "from-[#4a1525] via-[#6b2d3e] to-[#8b3d52]",
     previewAccent: "text-rose-50/95",
   },

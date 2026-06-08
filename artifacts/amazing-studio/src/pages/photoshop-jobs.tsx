@@ -119,6 +119,7 @@ type BookingEditRow = {
   package_print_cost?: number | null;
   package_operating_cost?: number | null;
   package_requires_post_production?: boolean | null;
+  package_requires_printing?: boolean | null;
   // Bước 3: nhóm dịch vụ của gói (lấy từ service_groups qua sp.group_id)
   package_group_id?: number | null;
   package_group_name?: string | null;
@@ -502,6 +503,7 @@ function Section({ icon: Icon, title, children, open, onToggle, summary }: {
 }
 
 const DETAIL_SECTION_KEYS = [
+  "package",
   "staff",
 ] as const;
 type DetailSectionKey = typeof DETAIL_SECTION_KEYS[number];
@@ -537,7 +539,7 @@ function ConceptGallery({ images }: { images: string[] }) {
 }
 
 // ── Gói dịch vụ (y chang bảng giá) ───────────────────────────────────────────
-function PackagePriceSnapshot({ row }: { row: BookingEditRow }) {
+function PackagePriceSnapshot({ row, compact = false }: { row: BookingEditRow; compact?: boolean }) {
   const pkgName = (row.package_name ?? "").trim() || getRowServiceName(row);
   const pkgPrice = Number(row.package_price ?? 0);
   const printCost = Number(row.package_print_cost ?? 0);
@@ -549,8 +551,21 @@ function PackagePriceSnapshot({ row }: { row: BookingEditRow }) {
   const listPrice = pkgPrice > 0 ? pkgPrice : total;
   const needsHK = row.package_requires_post_production !== false;
 
+  if (compact) {
+    return (
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+        <span className="font-semibold text-foreground">{pkgName}</span>
+        {row.package_code && <span className="text-[10px] text-muted-foreground">{row.package_code}</span>}
+        <span className="font-bold text-primary">{formatVND(listPrice)}</span>
+        {needsHK
+          ? <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-700 font-medium">Hậu kỳ</span>
+          : <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground font-medium">Không HK</span>}
+      </div>
+    );
+  }
+
   return (
-    <div className="rounded-xl border border-border bg-card p-3 space-y-2 shadow-sm">
+    <div className="rounded-xl border border-border bg-card p-2.5 sm:p-3 space-y-1.5 shadow-sm">
       <div className="flex items-start justify-between gap-2">
         <p className="font-semibold text-sm leading-snug text-foreground flex-1">{pkgName}</p>
         {needsHK
@@ -558,7 +573,7 @@ function PackagePriceSnapshot({ row }: { row: BookingEditRow }) {
           : <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground font-medium shrink-0">Không HK</span>}
       </div>
       {row.package_code && <p className="text-xs text-muted-foreground">{row.package_code}</p>}
-      <p className="text-2xl font-bold text-primary leading-none">{formatVND(listPrice)}</p>
+      <p className="text-xl sm:text-2xl font-bold text-primary leading-none">{formatVND(listPrice)}</p>
       {(printCost > 0 || opCost > 0) && (
         <div className="space-y-0.5 text-[11px] text-muted-foreground">
           {printCost > 0 && <p>🖨️ In ấn: {formatVNDShort(printCost)}</p>}
@@ -567,7 +582,7 @@ function PackagePriceSnapshot({ row }: { row: BookingEditRow }) {
         </div>
       )}
       {desc ? (
-        <div className="bg-amber-50 dark:bg-amber-950/30 rounded-lg px-2.5 py-2 border border-amber-100 dark:border-amber-900/40">
+        <div className="bg-amber-50 dark:bg-amber-950/30 rounded-lg px-2.5 py-2 border border-amber-100 dark:border-amber-900/40 max-h-36 sm:max-h-48 overflow-y-auto">
           <p className="text-[10px] font-semibold text-amber-800 dark:text-amber-200 mb-1">📋 Mô tả</p>
           <div className="space-y-0.5">
             {desc.split("\n").filter(Boolean).map((line, i) => (
@@ -842,10 +857,10 @@ function DetailModal({ row, onClose, staffList, isAdmin, viewerId, viewerName }:
   return (
     <>
     <div className="fixed inset-0 bg-black/60 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4" onClick={onClose}>
-      <div className="bg-background rounded-t-2xl sm:rounded-2xl w-full sm:max-w-lg max-h-[95vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
+      <div className="bg-background rounded-t-2xl sm:rounded-2xl w-full sm:max-w-lg max-h-[min(88dvh,720px)] sm:max-h-[92vh] flex flex-col shadow-2xl" onClick={e => e.stopPropagation()}>
 
         {/* Header — gói bảng giá + khách */}
-        <div className={`px-4 pt-3 pb-3 rounded-t-2xl ${headerBg} shrink-0 border-b border-border/50 space-y-3`}>
+        <div className={`px-3 sm:px-4 pt-2 sm:pt-3 pb-2 sm:pb-3 rounded-t-2xl ${headerBg} shrink-0 border-b border-border/50 space-y-2`}>
           <div className="flex items-start justify-between gap-2">
             <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wide">
               Đơn hậu kỳ · <span className="text-foreground font-bold">{orderDisplay.code}</span>
@@ -853,7 +868,7 @@ function DetailModal({ row, onClose, staffList, isAdmin, viewerId, viewerName }:
             <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-black/10 shrink-0"><X size={18} /></button>
           </div>
 
-          <PackagePriceSnapshot row={row} />
+          <PackagePriceSnapshot row={row} compact />
 
           <div className="space-y-1">
             <p className="text-sm">
@@ -884,9 +899,16 @@ function DetailModal({ row, onClose, staffList, isAdmin, viewerId, viewerName }:
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto min-h-0">
+        <div className="flex-1 overflow-y-auto min-h-0 overscroll-contain">
+        <div className="px-3 pt-2 space-y-2">
+          <Section icon={Package} title="📦 Gói & bảng giá"
+            open={sectionsOpen.package} onToggle={() => toggleSection("package")}
+            summary={(row.package_name ?? getRowServiceName(row)).slice(0, 28)}>
+            <PackagePriceSnapshot row={row} />
+          </Section>
+        </div>
         {/* ── Làm việc: deadline · ảnh · concept · in ấn ── */}
-        <div className="px-3 pt-3 space-y-3 border-b border-border bg-muted/20">
+        <div className="px-3 pt-2 pb-3 space-y-3 border-b border-border bg-muted/20">
           {(photographer || makeupArtist) && (
             <p className="text-[11px] text-muted-foreground px-0.5">
               {photographer && <>📷 {getStaffDisplayName(photographer)}</>}
@@ -1033,17 +1055,23 @@ function DetailModal({ row, onClose, staffList, isAdmin, viewerId, viewerName }:
               className="w-full py-2 rounded-lg border border-border bg-background hover:bg-muted text-xs font-semibold disabled:opacity-50">
               Lưu link & tiến độ
             </button>
-            <label className={`flex items-center gap-2 select-none ${isAdmin ? "cursor-pointer" : "cursor-not-allowed opacity-80"}`}>
-              <input type="checkbox" checked={form.daXuatIn}
-                onChange={isAdmin ? (e => { setForm(f => ({ ...f, daXuatIn: e.target.checked })); setHeroFlash(""); }) : undefined}
-                disabled={!isAdmin}
-                className="w-4 h-4 rounded border-border accent-emerald-600" />
-              <span className="text-sm font-medium">Đã xuất in / hoàn thành</span>
-              {form.driveLink && !form.daXuatIn && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">Chưa đánh dấu</span>
-              )}
-              {form.daXuatIn && <CheckCircle2 size={14} className="text-emerald-600" />}
-            </label>
+            {row.package_requires_printing === true ? (
+              <label className={`flex items-center gap-2 select-none ${isAdmin ? "cursor-pointer" : "cursor-not-allowed opacity-80"}`}>
+                <input type="checkbox" checked={form.daXuatIn}
+                  onChange={isAdmin ? (e => { setForm(f => ({ ...f, daXuatIn: e.target.checked })); setHeroFlash(""); }) : undefined}
+                  disabled={!isAdmin}
+                  className="w-4 h-4 rounded border-border accent-emerald-600" />
+                <span className="text-sm font-medium">Đã xuất in / hoàn thành</span>
+                {form.driveLink && !form.daXuatIn && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">Chưa đánh dấu</span>
+                )}
+                {form.daXuatIn && <CheckCircle2 size={14} className="text-emerald-600" />}
+              </label>
+            ) : (
+              <span className="text-xs text-muted-foreground px-2 py-1 rounded-lg bg-muted/50 border border-border">
+                📁 Gói chỉ chỉnh ảnh — không theo dõi xuất in
+              </span>
+            )}
             {heroFlash && <p className="text-[11px] text-emerald-600 font-medium">{heroFlash}</p>}
           </div>
         </div>
@@ -1253,9 +1281,59 @@ function CustomerAvatar({ name, avatar, size = 40 }: { name: string; avatar: str
   );
 }
 
+
+function patchBookingRowPrintFlag(
+  qc: ReturnType<typeof useQueryClient>,
+  bookingId: number,
+  daXuatIn: boolean,
+) {
+  qc.setQueriesData<{ rows: BookingEditRow[]; summary: Stats }>(
+    { queryKey: ["photoshop-booking-view"] },
+    (old) => {
+      if (!old) return old;
+      return {
+        ...old,
+        rows: old.rows.map((r2) =>
+          r2.booking_id === bookingId ? { ...r2, da_xuat_in: daXuatIn } : r2,
+        ),
+      };
+    },
+  );
+}
+
 // ── Booking card ──────────────────────────────────────────────────────────────
-function BookingCard({ row, onClick }: { row: BookingEditRow; onClick: () => void }) {
+function BookingCard({ row, onClick, isAdmin }: { row: BookingEditRow; onClick: () => void; isAdmin: boolean }) {
+  const qc = useQueryClient();
+  const [printSaving, setPrintSaving] = useState(false);
   const urgency = getCardUrgency(row);
+
+  const needsPrint = row.package_requires_printing === true;
+
+  const toggleDaXuatIn = async (e: React.MouseEvent | React.ChangeEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    if (!needsPrint || !isAdmin || !row.job_id || printSaving) return;
+    const next = !row.da_xuat_in;
+    setPrintSaving(true);
+    patchBookingRowPrintFlag(qc, row.booking_id, next);
+    try {
+      const r = await authFetch(`/api/photoshop-jobs/${row.job_id}`, {
+        method: "PUT",
+        body: JSON.stringify({ daXuatIn: next }),
+      });
+      if (!r.ok) throw new Error("Lỗi lưu");
+      const updated = await r.json();
+      patchBookingRowPrintFlag(
+        qc,
+        row.booking_id,
+        !!(updated.daXuatIn ?? updated.da_xuat_in ?? next),
+      );
+    } catch {
+      patchBookingRowPrintFlag(qc, row.booking_id, !!row.da_xuat_in);
+    } finally {
+      setPrintSaving(false);
+    }
+  };
   const isActive = !DONE_FE.includes(row.status ?? "") && row.status !== "tam_hoan";
   const orderDisplay = getOrderDisplay(row);
 
@@ -1272,8 +1350,12 @@ function BookingCard({ row, onClick }: { row: BookingEditRow; onClick: () => voi
     : null;
 
   return (
-    <button onClick={onClick}
-      className={`w-full text-left rounded-xl border shadow-sm p-3 transition-all hover:shadow-md ${URGENCY_STYLE[urgency]}`}>
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onClick(); }}
+      className={`w-full text-left rounded-xl border shadow-sm p-3 transition-all hover:shadow-md cursor-pointer ${URGENCY_STYLE[urgency]}`}>
       <div className="flex items-start justify-between gap-2">
         {/* Avatar khách */}
         <CustomerAvatar name={row.customer_name} avatar={row.customer_avatar} />
@@ -1302,13 +1384,19 @@ function BookingCard({ row, onClick }: { row: BookingEditRow; onClick: () => voi
               </span>
             )}
             {/* Badge trạng thái in ấn — luôn hiển thị */}
-            {row.da_xuat_in ? (
-              <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 font-medium flex items-center gap-0.5">
-                <CheckCircle2 size={8} />Đã in
-              </span>
+            {needsPrint ? (
+              row.da_xuat_in ? (
+                <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 font-medium flex items-center gap-0.5">
+                  <CheckCircle2 size={8} />Đã in
+                </span>
+              ) : (
+                <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400 font-medium flex items-center gap-0.5">
+                  <AlertTriangle size={8} />Chưa in
+                </span>
+              )
             ) : (
-              <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400 font-medium flex items-center gap-0.5">
-                <AlertTriangle size={8} />Chưa in
+              <span className="shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 dark:bg-slate-800 font-medium">
+                Chỉ HK
               </span>
             )}
             {/* Badge deadline (chỉ khi active) */}
@@ -1382,7 +1470,31 @@ function BookingCard({ row, onClick }: { row: BookingEditRow; onClick: () => voi
         </div>
         <ChevronRight size={16} className="text-muted-foreground shrink-0 mt-1" />
       </div>
-    </button>
+
+      <div
+        className="mt-2 pt-2 border-t border-border/50 flex items-center justify-between gap-2"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {needsPrint ? (
+          <label
+            className={`inline-flex items-center gap-2 text-xs select-none ${isAdmin && row.job_id ? "cursor-pointer" : "cursor-not-allowed opacity-75"}`}
+            title={!row.job_id ? "Chưa có job — mở đơn để nhận việc" : undefined}
+          >
+            <input
+              type="checkbox"
+              checked={!!row.da_xuat_in}
+              disabled={!isAdmin || !row.job_id || printSaving}
+              onChange={toggleDaXuatIn}
+              className="w-4 h-4 rounded border-border accent-emerald-600 shrink-0"
+            />
+            <span className="font-medium text-foreground">Đã xuất in / hoàn thành</span>
+            {printSaving && <Loader2 size={12} className="animate-spin text-muted-foreground" />}
+          </label>
+        ) : (
+          <span className="text-xs text-muted-foreground">📁 Chỉ chỉnh ảnh — gói này không cần in</span>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -1854,7 +1966,7 @@ export default function PhotoshopJobsPage() {
                       Nợ từ tháng trước ({backlogRows.length})
                     </div>
                     {backlogRows.map(row => (
-                      <BookingCard key={`backlog-${row.booking_id}`} row={row} onClick={() => setSelected(row)} />
+                      <BookingCard key={`backlog-${row.booking_id}`} row={row} isAdmin={isAdmin} onClick={() => setSelected(row)} />
                     ))}
                   </div>
                 )}
@@ -1866,7 +1978,7 @@ export default function PhotoshopJobsPage() {
                       </div>
                     )}
                     {monthRows.map(row => (
-                      <BookingCard key={row.booking_id} row={row} onClick={() => setSelected(row)} />
+                      <BookingCard key={row.booking_id} row={row} isAdmin={isAdmin} onClick={() => setSelected(row)} />
                     ))}
                   </div>
                 )}

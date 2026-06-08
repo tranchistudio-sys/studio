@@ -41,6 +41,11 @@ import CmsTrashPage from "@/pages/cms/trash";
 import CmsHomeSettingsPage from "@/pages/cms/home-settings";
 import CmsWeddingTemplatesPage from "@/pages/cms/wedding-templates";
 import PublicHomePage from "@/pages/public/home";
+import {
+  PUBLIC_PREVIEW_PARAM,
+  PUBLIC_PREVIEW_SESSION_KEY,
+  PUBLIC_PREVIEW_VALUE,
+} from "@/lib/public-site-url";
 import PublicGalleryPage from "@/pages/public/gallery";
 import PublicPricingPage from "@/pages/public/pricing-public";
 import PublicRentalPage from "@/pages/public/rental-public";
@@ -97,6 +102,21 @@ function isInternalPath(path: string): boolean {
 }
 
 const RETURN_TO_KEY = "amazingStudioReturnTo_v1";
+
+/** Globe / new tab: staff preview customer website (skip auto-redirect to /calendar). */
+function isPublicPreviewMode(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get(PUBLIC_PREVIEW_PARAM) === PUBLIC_PREVIEW_VALUE) {
+      sessionStorage.setItem(PUBLIC_PREVIEW_SESSION_KEY, "1");
+      return true;
+    }
+    return sessionStorage.getItem(PUBLIC_PREVIEW_SESSION_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
 
 function AdminRoute({ component: Component, fallback }: { component: React.ComponentType; fallback?: string }) {
   const { effectiveIsAdmin } = useStaffAuth();
@@ -288,7 +308,14 @@ function RouterRoot() {
     return <LoginRoute />;
   }
 
-  // Nhân viên/admin đã đăng nhập: vào "/" thấy Lịch Chụp; khách lạ vẫn thấy trang chủ web.
+  const publicPreview = isPublicPreviewMode();
+
+  // Preview mode: staff xem website khách (globe) — luôn hiện public, không vào app.
+  if (publicPreview && isPublicPath(location)) {
+    return <PublicRouter />;
+  }
+
+  // Nhân viên/admin đã đăng nhập: vào "/" → Lịch Chụp.
   if ((location === "/" || location === "/trang-chu") && viewer) {
     return <Redirect to="/calendar" />;
   }

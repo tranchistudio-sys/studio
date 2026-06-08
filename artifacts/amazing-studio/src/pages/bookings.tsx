@@ -1,5 +1,5 @@
 import { useMemo, useState, useCallback, useEffect } from "react";
-import { successFeedback } from "@/lib/feedback";
+import { paymentFeedback } from "@/lib/feedback";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { formatVND, formatDate } from "@/lib/utils";
 import { getImageSrc } from "@/lib/imageUtils";
@@ -173,7 +173,7 @@ export default function BookingsPage() {
 
   const addPayment = useMutation({
     mutationFn: (data: Record<string, unknown>) => fetchJson("/api/payments", { method: "POST", body: JSON.stringify(data) }),
-    onSuccess: () => { successFeedback(); qc.invalidateQueries({ queryKey: ["booking", selectedId] }); qc.invalidateQueries({ queryKey: ["bookings"] }); setShowPayForm(false); setPayForm({ amount: "", paymentMethod: "transfer", paymentType: "payment", notes: "" }); },
+    onSuccess: () => { paymentFeedback(); qc.invalidateQueries({ queryKey: ["booking", selectedId] }); qc.invalidateQueries({ queryKey: ["bookings"] }); setShowPayForm(false); setPayForm({ amount: "", paymentMethod: "transfer", paymentType: "payment", notes: "" }); },
   });
 
   const deletePayment = useMutation({

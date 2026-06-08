@@ -30,6 +30,57 @@ function playTone(frequency: number, duration: number, volume: number, type: Osc
   osc.stop(ctx.currentTime + delay + duration);
 }
 
+
+const APP_BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+export const LINDA_SOUNDS = {
+  orderSuccess: `${APP_BASE}/sounds/linda/chu-ye.mp3`,
+  error: `${APP_BASE}/sounds/linda/bo-keu.mp3`,
+  payment: `${APP_BASE}/sounds/linda/tra-tien.mp3`,
+} as const;
+
+const mp3Pool = new Map<string, HTMLAudioElement>();
+let activeMp3Stop: (() => void) | null = null;
+
+function playMp3(src: string, opts?: { maxMs?: number; volume?: number; startAt?: number }) {
+  try {
+    const vol = opts?.volume ?? getSoundSettings().volume;
+    if (vol <= 0) return;
+    activeMp3Stop?.();
+    activeMp3Stop = null;
+
+    let audio = mp3Pool.get(src);
+    if (!audio) {
+      audio = new Audio(src);
+      audio.preload = "auto";
+      mp3Pool.set(src, audio);
+    }
+
+    audio.volume = Math.max(0, Math.min(1, vol));
+    audio.currentTime = opts?.startAt ?? 0;
+    const playPromise = audio.play();
+    playPromise?.catch(() => {});
+
+    const maxMs = opts?.maxMs ?? 0;
+    if (maxMs > 0) {
+      const stop = () => {
+        try {
+          audio.pause();
+          audio.currentTime = 0;
+        } catch { /* ignore */ }
+      };
+      const timer = window.setTimeout(stop, maxMs);
+      const onEnd = () => {
+        window.clearTimeout(timer);
+        audio.removeEventListener("ended", onEnd);
+        if (activeMp3Stop === stop) activeMp3Stop = null;
+      };
+      audio.addEventListener("ended", onEnd);
+      activeMp3Stop = stop;
+    }
+  } catch { /* ignore */ }
+}
+
 export interface RingtonePreset {
   id: string;
   label: string;
@@ -236,9 +287,26 @@ export function triggerVibration(pattern: number | number[] = [80, 50, 80]) {
   } catch {}
 }
 
-export function successFeedback() {
-  playSuccessSound();
+/** Tạo đơn / lưu show thành công — CHÚ Ý */
+export function orderCreatedFeedback() {
+  playMp3(LINDA_SOUNDS.orderSuccess, { maxMs: 3500 });
   triggerVibration([80, 50, 80]);
+}
+
+/** Thu tiền / chi tiền */
+export function paymentFeedback() {
+  playMp3(LINDA_SOUNDS.payment, { maxMs: 4500 });
+  triggerVibration([60, 40, 60, 40, 100]);
+}
+
+/** Báo lỗi — tiếng bò ngắn */
+export function errorFeedback() {
+  playMp3(LINDA_SOUNDS.error, { maxMs: 1100, startAt: 0 });
+  triggerVibration([120, 80, 120]);
+}
+
+export function successFeedback() {
+  orderCreatedFeedback();
 }
 
 export function notificationFeedback() {

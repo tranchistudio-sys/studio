@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useRef, useEffect, Component, Fragment } from "react";
 import { useToast } from "@/hooks/use-toast";
-import { successFeedback } from "@/lib/feedback";
+import { orderCreatedFeedback } from "@/lib/feedback";
 import type { ReactNode, ErrorInfo } from "react";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -1788,7 +1788,7 @@ function ShowFormPanel({
         for (const sub of subDrafts) {
           if (sub.siblingId) qc.invalidateQueries({ queryKey: ["booking-full", sub.siblingId] });
         }
-        successFeedback();
+        orderCreatedFeedback();
         onSaved();
         return;
       } catch (e: unknown) {
@@ -1963,7 +1963,7 @@ function ShowFormPanel({
 
         qc.invalidateQueries({ queryKey: ["bookings"] });
         qc.invalidateQueries({ queryKey: ["customers"] });
-        successFeedback();
+        orderCreatedFeedback();
         if (proofUploadFailed) {
           setSaving(false);
           setProofWarning("Ảnh cọc chưa lưu được — đơn đã tạo thành công. Bạn có thể đóng form.");
@@ -2082,7 +2082,7 @@ function ShowFormPanel({
 
       qc.invalidateQueries({ queryKey: ["bookings"] });
       qc.invalidateQueries({ queryKey: ["customers"] });
-      successFeedback();
+      orderCreatedFeedback();
       if (singleProofUploadFailed) {
         setSaving(false);
         setProofWarning("Ảnh cọc chưa lưu được — đơn đã tạo thành công. Bạn có thể đóng form.");

@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
-import { successFeedback } from "@/lib/feedback";
+import { paymentFeedback } from "@/lib/feedback";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Search, CreditCard, Banknote, Phone, Clock,
@@ -1653,7 +1653,7 @@ export default function PaymentsPage() {
       qc.invalidateQueries({ queryKey: ["dashboard-simple"] });
       qc.invalidateQueries({ queryKey: ["dashboard-v2"] });
       qc.invalidateQueries({ queryKey: ["payment-suggestions"] });
-      successFeedback();
+      paymentFeedback();
       resetForm();
       setSheetOpen(false);
       setSelectedBooking(null);
@@ -1727,7 +1727,6 @@ export default function PaymentsPage() {
       await refetchHistory();
       await refetchRecent();
       if (selectedBooking) await refreshSelectedBooking(selectedBooking);
-      successFeedback();
     } catch {
       setVoidError("Lỗi khi huỷ phiếu. Vui lòng thử lại.");
     } finally {
@@ -1854,7 +1853,7 @@ export default function PaymentsPage() {
       qc.invalidateQueries({ queryKey: ["payments-default-month"] });
       qc.invalidateQueries({ queryKey: ["dashboard-simple"] });
       qc.invalidateQueries({ queryKey: ["dashboard-v2"] });
-      successFeedback();
+      paymentFeedback();
       closeAdHoc();
       setMainSuccess("✅ Đã lưu phiếu thu lẻ!");
       setTimeout(() => setMainSuccess(null), 2500);

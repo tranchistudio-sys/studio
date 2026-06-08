@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from "react";
+import { paymentFeedback } from "@/lib/feedback";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import {
@@ -243,6 +244,7 @@ export default function ExpensesPage() {
       qc.invalidateQueries({ queryKey: ["expense-stats"] });
       const bid = variables.bookingId as number | null | undefined;
       if (bid) qc.invalidateQueries({ queryKey: ["booking-full", bid] });
+      paymentFeedback();
       resetForm();
     },
   });
@@ -300,6 +302,7 @@ export default function ExpensesPage() {
       qc.invalidateQueries({ queryKey: ["expense-stats"] });
       setViewDetail(prev => prev ? { ...prev, status: data.status } : null);
       setPayDialog(null);
+      paymentFeedback();
     },
   });
 

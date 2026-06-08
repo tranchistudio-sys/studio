@@ -4,6 +4,7 @@ import type {
   ToastActionElement,
   ToastProps,
 } from "@/components/ui/toast"
+import { errorFeedback } from "@/lib/feedback"
 
 const TOAST_LIMIT = 3
 const TOAST_REMOVE_DELAY = 1000000
@@ -140,6 +141,9 @@ function dispatch(action: Action) {
 type Toast = Omit<ToasterToast, "id">
 
 function toast({ ...props }: Toast) {
+  if (props.variant === "destructive") {
+    errorFeedback();
+  }
   const id = genId()
 
   const update = (props: ToasterToast) =>

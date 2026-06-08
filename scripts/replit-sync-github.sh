@@ -3,8 +3,8 @@
 # Mục tiêu: kéo code mới nhất từ GitHub → build → sẵn sàng Publish
 set -euo pipefail
 
-REPO_URL="${REPO_URL:-https://github.com/tranchistudio-sys/amazing-studio.git}"
-BRANCH="${BRANCH:-master}"
+REPO_URL="${REPO_URL:-https://github.com/tranchistudio-sys/studio.git}"
+BRANCH="${BRANCH:-main}"
 
 echo "==> Sync GitHub → Replit ($BRANCH)"
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

@@ -152,3 +152,21 @@
 ::-webkit-scrollbar-thumb:hover {
   @apply bg-muted-foreground/50;
 }
+
+/* Toast sinh động hơn khi báo lỗi / thành công */
+@keyframes toast-shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-5px); }
+  40%, 80% { transform: translateX(5px); }
+}
+@keyframes toast-pop-in {
+  0% { transform: scale(0.92) translateY(8px); opacity: 0.6; }
+  100% { transform: scale(1) translateY(0); opacity: 1; }
+}
+[data-sonner-toast],
+.group.destructive[data-state="open"] {
+  animation: toast-pop-in 0.35s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+.group.destructive[data-state="open"] {
+  animation: toast-shake 0.45s ease-in-out, toast-pop-in 0.35s cubic-bezier(0.34, 1.4, 0.64, 1);
+}

@@ -37,10 +37,36 @@ async function prepareAdditionalServicesForSave(raw: unknown, packageId?: number
   return normalizeAdditionalServicesCast(lines, packageId);
 }
 
+/** Sum non-voided payments for a booking (A3). */
+async function sumActivePayments(
+  bookingId: number,
+  client?: { query: <T>(sql: string, params: unknown[]) => Promise<{ rows: T[] }> },
+): Promise<number> {
+  const sql = `SELECT COALESCE(SUM(amount::numeric), 0) AS total_paid
+    FROM payments WHERE booking_id = $1 AND COALESCE(status, 'active') <> 'voided'`;
+  if (client) {
+    const result = await client.query<{ total_paid: string }>(sql, [bookingId]);
+    return parseFloat(result.rows[0].total_paid);
+  }
+  const rows = await db
+    .select({ amount: paymentsTable.amount, status: paymentsTable.status })
+    .from(paymentsTable)
+    .where(eq(paymentsTable.bookingId, bookingId));
+  return rows
+    .filter((p) => (p.status ?? "active") !== "voided")
+    .reduce((s, p) => s + parseFloat(p.amount), 0);
+}
+
 async function recalcParentTotalFromChildren(parentId: number): Promise<number> {
-  const children = await db.select({ totalAmount: bookingsTable.totalAmount }).from(bookingsTable).where(eq(bookingsTable.parentId, parentId));
+  const children = await db
+    .select({ totalAmount: bookingsTable.totalAmount })
+    .from(bookingsTable)
+    .where(eq(bookingsTable.parentId, parentId));
   const newParentTotal = children.reduce((sum, c) => sum + parseFloat(c.totalAmount), 0);
-  await db.update(bookingsTable).set({ totalAmount: String(newParentTotal) }).where(eq(bookingsTable.id, parentId));
+  await db
+    .update(bookingsTable)
+    .set({ totalAmount: String(newParentTotal) })
+    .where(eq(bookingsTable.id, parentId));
   return newParentTotal;
 }
 // ─── Task #71: Normalize items[].photoName/makeupName from assignedStaff ─────
@@ -517,6 +543,9 @@ router.post("/bookings", async (req, res) => {
       children.push(child);
     }
 
+    const newParentTotal = await recalcParentTotalFromChildren(parent.id);
+    const [parentRefreshed] = await db.select().from(bookingsTable).where(eq(bookingsTable.id, parent.id));
+
     const [customer] = await db.select().from(customersTable).where(eq(customersTable.id, customerId));
     emitNotification({
       staffId: null,
@@ -529,10 +558,10 @@ router.post("/bookings", async (req, res) => {
       bookingId: parent.id,
     });
     res.status(201).json({
-      ...parent,
+      ...(parentRefreshed ?? parent),
       customerName: customer.name,
       customerPhone: customer.phone,
-      totalAmount: parseFloat(parent.totalAmount),
+      totalAmount: newParentTotal,
       depositAmount: parseFloat(parent.depositAmount),
       paidAmount: parseFloat(parent.paidAmount),
       discountAmount: parseFloat(parent.discountAmount ?? "0"),
@@ -663,7 +692,8 @@ router.get("/bookings/:id", async (req, res) => {
 
   if (!row) return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
 
-  const payments = await db.select().from(paymentsTable).where(eq(paymentsTable.bookingId, id));
+  const paymentBookingId = row.parentId ?? id;
+  const payments = await db.select().from(paymentsTable).where(eq(paymentsTable.bookingId, paymentBookingId));
   const expenses = await db.select().from(expensesTable).where(eq(expensesTable.bookingId, id));
   const tasks = await db
     .select({
@@ -677,8 +707,11 @@ router.get("/bookings/:id", async (req, res) => {
     .leftJoin(staffTable, eq(tasksTable.assigneeId, staffTable.id))
     .where(eq(tasksTable.bookingId, id));
 
-  const paidAmount = payments.reduce((s, p) => s + parseFloat(p.amount), 0);
+  const paidAmount = payments
+    .filter((p) => (p.status ?? "active") !== "voided")
+    .reduce((s, p) => s + parseFloat(p.amount), 0);
   const totalAmount = parseFloat(row.totalAmount);
+  const discountAmt = parseFloat(row.discountAmount ?? "0");
   const totalExpenses = expenses.reduce((s, e) => s + parseFloat(e.amount), 0);
 
   // Lookup creator name
@@ -690,7 +723,6 @@ router.get("/bookings/:id", async (req, res) => {
       .where(eq(staffTable.id, row.createdByStaffId));
     createdByStaffName = creator?.name ?? null;
   }
-  const discountAmt = parseFloat(row.discountAmount ?? "0");
   const productionCost = tasks.reduce((s, t) => s + (t.cost != null ? parseFloat(t.cost as string) : 0), 0);
   const coveredRoles = [...new Set(tasks.filter(t => t.assigneeId != null && t.role).map(t => t.role as string))];
 
@@ -744,7 +776,9 @@ router.get("/bookings/:id", async (req, res) => {
 
     if (parentRow) {
       const parentPayments = await db.select().from(paymentsTable).where(eq(paymentsTable.bookingId, parentRow.id));
-      const parentPaid = parentPayments.reduce((s, p) => s + parseFloat(p.amount), 0);
+      const parentPaid = parentPayments
+    .filter((p) => (p.status ?? "active") !== "voided")
+    .reduce((s, p) => s + parseFloat(p.amount), 0);
       const parentTotal = parseFloat(parentRow.totalAmount);
       const parentDiscount = parseFloat(parentRow.discountAmount ?? "0");
       parentContract = {
@@ -786,14 +820,24 @@ router.get("/bookings/:id", async (req, res) => {
       status: t.status,
     }));
 
+  // A4: child bookings show contract-level payment balance (parent payments vs parent total)
+  let detailRemainingAmount = Math.max(0, totalAmount - discountAmt - paidAmount);
+  if (row.parentId && parentContract && typeof parentContract === "object" && parentContract !== null) {
+    const pc = parentContract as { totalAmount?: number; discountAmount?: number };
+    detailRemainingAmount = Math.max(
+      0,
+      (pc.totalAmount ?? totalAmount) - (pc.discountAmount ?? discountAmt) - paidAmount,
+    );
+  }
+
   res.json({
     ...row,
     items: normalizeItemStaff(row.items),
     totalAmount,
     depositAmount: parseFloat(row.depositAmount),
     paidAmount,
-    discountAmount: parseFloat(row.discountAmount ?? "0"),
-    remainingAmount: Math.max(0, totalAmount - parseFloat(row.discountAmount ?? "0") - paidAmount),
+    discountAmount: discountAmt,
+    remainingAmount: detailRemainingAmount,
     totalExpenses,
     grossProfit: totalAmount - totalExpenses,
     createdByStaffName,
@@ -859,6 +903,7 @@ router.put("/bookings/:id", async (req, res) => {
     .select({
       status: bookingsTable.status,
       customerId: bookingsTable.customerId,
+      parentId: bookingsTable.parentId,
       isParentContract: bookingsTable.isParentContract,
       orderCode: bookingsTable.orderCode,
       shootDate: bookingsTable.shootDate,
@@ -874,6 +919,11 @@ router.put("/bookings/:id", async (req, res) => {
     .where(eq(bookingsTable.id, id));
   if (!oldBooking) return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
   const oldStatus = oldBooking.status;
+
+  // A8: parent contracts ignore client totalAmount — derived from Σ children
+  if (oldBooking.isParentContract) {
+    delete updateData.totalAmount;
+  }
   const callerId = verifyToken(req.headers.authorization) || null;
 
   // Task #55: enforce deductions = [] for parent contracts (always, regardless of body)
@@ -1058,12 +1108,9 @@ router.put("/bookings/:id", async (req, res) => {
       }
     }
 
-    // ── 2. Recalculate paid_amount from all payments ──
-    const paidResult = await client.query<{ total_paid: string }>(
-      `SELECT COALESCE(SUM(amount::numeric), 0) AS total_paid FROM payments WHERE booking_id = $1`,
-      [id]
-    );
-    const paidAmount = parseFloat(paidResult.rows[0].total_paid);
+    // ── 2. Recalculate paid_amount from active (non-voided) payments ──
+    const paymentBookingId = oldBooking.parentId ?? id;
+    const paidAmount = await sumActivePayments(paymentBookingId, client);
 
     // ── 3. Calculate remaining_amount using effective totals ──
     const bkCurrentResult = await client.query<{ total_amount: string; discount_amount: string }>(
@@ -1140,6 +1187,8 @@ router.put("/bookings/:id", async (req, res) => {
 
     if (fullBooking?.parentId) {
       await recalcParentTotalFromChildren(fullBooking.parentId);
+    } else if (fullBooking?.isParentContract) {
+      await recalcParentTotalFromChildren(id);
     }
 
     const custName = customer?.name || "Khách";
@@ -1345,13 +1394,7 @@ router.post("/bookings/:parentId/add-child", async (req, res) => {
       servicePackageId: servicePackageId ? parseInt(String(servicePackageId)) : null,
     }).returning();
 
-    const allChildren = await db.select({ totalAmount: bookingsTable.totalAmount })
-      .from(bookingsTable).where(eq(bookingsTable.parentId, parentId));
-    const newParentTotal = allChildren.reduce((s, c) => s + parseFloat(c.totalAmount), 0);
-
-    await db.update(bookingsTable)
-      .set({ totalAmount: String(newParentTotal) })
-      .where(eq(bookingsTable.id, parentId));
+    const newParentTotal = await recalcParentTotalFromChildren(parentId);
 
     res.status(201).json({
       ...child,

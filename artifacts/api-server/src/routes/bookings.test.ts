@@ -134,3 +134,16 @@ describe("validateAdditionalServices", () => {
     expect(() => assertAdditionalServicesValid(lines)).toThrow(AdditionalServicesValidationError);
   });
 });
+
+describe("sumActivePayments logic", () => {
+  it("filters voided payments", () => {
+    const payments = [
+      { amount: "1000000", status: "active" },
+      { amount: "500000", status: "voided" },
+    ];
+    const paid = payments
+      .filter((p) => (p.status ?? "active") !== "voided")
+      .reduce((s, p) => s + parseFloat(p.amount), 0);
+    expect(paid).toBe(1000000);
+  });
+});

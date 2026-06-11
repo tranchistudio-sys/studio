@@ -19,6 +19,37 @@
   opacity: 1;
 }
 
+/* Hero slideshow — lướt trái→phải + zoom + nghiêng 3D nhẹ (Ken Burns cinematic) */
+.hero-slide {
+  opacity: 0;
+  transition: opacity 1.2s ease-in-out;
+  will-change: opacity, transform;
+}
+.hero-slide.is-active {
+  opacity: 1;
+}
+@keyframes heroGlideZoomIn {
+  0%   { transform: perspective(1200px) scale(1.06) translateX(-2.5%) rotateY(1.3deg); }
+  100% { transform: perspective(1200px) scale(1.12) translateX(2.5%) rotateY(-1.3deg); }
+}
+@keyframes heroGlideZoomOut {
+  0%   { transform: perspective(1200px) scale(1.12) translateX(-2.5%) rotateY(1.3deg); }
+  100% { transform: perspective(1200px) scale(1.06) translateX(2.5%) rotateY(-1.3deg); }
+}
+.hero-slide.is-active.kb-zoom-in {
+  animation: heroGlideZoomIn 8s ease-out forwards;
+}
+.hero-slide.is-active.kb-zoom-out {
+  animation: heroGlideZoomOut 8s ease-out forwards;
+}
+@media (prefers-reduced-motion: reduce) {
+  .hero-slide {
+    transition-duration: 0.01ms !important;
+    animation: none !important;
+    transform: none !important;
+  }
+}
+
 .hero-content > * {
   opacity: 0;
   transform: translateY(24px);

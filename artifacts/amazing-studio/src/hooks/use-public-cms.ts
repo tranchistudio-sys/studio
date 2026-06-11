@@ -50,6 +50,8 @@ export interface PublicDress {
   name: string;
   categoryId: number | null;
   rentalPrice: number;
+  salePrice?: number;
+  isPriority?: boolean;
   coverImageUrl: string | null;
   slug: string | null;
   rentalStatus: string;
@@ -180,6 +182,19 @@ export function usePublicPackages() {
       if (!r.ok) throw new Error("Lỗi tải bảng giá");
       return r.json();
     },
+  });
+}
+
+/** Cây danh mục Cho thuê đồ (cùng queryKey với trang /cho-thue-do để share cache). */
+export type PublicDressCategory = PublicGalleryCategory;
+export function usePublicDressCategories() {
+  return useQuery<PublicDressCategory[]>({
+    queryKey: ["public-categories-dress-tree"],
+    queryFn: async () =>
+      parseCategoryList(
+        await fetchPublicJson<unknown>("/api/cms/public/categories/dress/tree", "Danh mục cho thuê"),
+      ),
+    staleTime: 5 * 60 * 1000,
   });
 }
 

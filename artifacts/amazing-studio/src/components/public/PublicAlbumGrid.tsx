@@ -33,7 +33,7 @@ export function PublicAlbumGrid({ images, isLoading }: Props) {
           <p className="text-center text-neutral-500 py-12">
             Album đang được cập nhật. Xem thêm tại{" "}
             <Link href="/bo-anh" className="underline text-neutral-900">
-              Concept ảnh
+              Dịch vụ
             </Link>
             .
           </p>

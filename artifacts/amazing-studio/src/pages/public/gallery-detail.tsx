@@ -1,9 +1,11 @@
-import { useState, useRef, useEffect } from "react";
+import { useState } from "react";
 import { useParams, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, ChevronLeft, ChevronRight, X, MessageCircle, User, Play } from "lucide-react";
-import { CMS_BASE, LazyImage } from "@/components/cms-shared";
+import { ArrowLeft, MessageCircle, User, Play, Camera } from "lucide-react";
+import { CMS_BASE } from "@/components/cms-shared";
 import { getImageSrc } from "@/lib/imageUtils";
+import { Tilt3D, STYLE_3D } from "@/components/public-3d";
+import PublicGalleryLightbox from "@/components/public/PublicGalleryLightbox";
 
 const CONSULTANTS: { name: string; phone: string }[] = [
   { name: "Nhân viên tư vấn 1", phone: "0364902228" },
@@ -60,167 +62,56 @@ function openZalo(phone: string) {
   } catch { try { window.open(webUrl, "_blank", "noopener,noreferrer"); } catch {} }
 }
 
-// ── Slider with image + video support ────────────────────────────────────────
-function MediaSlider({ items, onZoom }: { items: MediaItem[]; onZoom: (idx: number) => void }) {
-  const [idx, setIdx] = useState(0);
-  const touchStartX = useRef<number | null>(null);
-  const touchStartY = useRef<number | null>(null);
-
-  function prev() { setIdx(i => Math.max(0, i - 1)); }
-  function next() { setIdx(i => Math.min(items.length - 1, i + 1)); }
-  function onTouchStart(e: React.TouchEvent) {
-    touchStartX.current = e.touches[0].clientX;
-    touchStartY.current = e.touches[0].clientY;
-  }
-  function onTouchEnd(e: React.TouchEvent) {
-    if (touchStartX.current === null || touchStartY.current === null) return;
-    const dx = e.changedTouches[0].clientX - touchStartX.current;
-    const dy = e.changedTouches[0].clientY - touchStartY.current;
-    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 40) { if (dx < 0) next(); else prev(); }
-    touchStartX.current = null; touchStartY.current = null;
-  }
-
+// ── Media grid — giống album view của "Ý tưởng chụp ảnh" ─────────────────────
+function MediaGrid({ items, albumName, onOpen }: {
+  items: MediaItem[];
+  albumName: string;
+  onOpen: (idx: number) => void;
+}) {
   if (items.length === 0) {
     return (
-      <div className="aspect-[3/4] bg-neutral-100 border border-neutral-200 flex items-center justify-center">
-        <p className="text-neutral-500 text-sm">Chưa có ảnh</p>
+      <div className="flex flex-col items-center justify-center py-20 text-neutral-400">
+        <Camera className="w-10 h-10 mb-3 opacity-40" />
+        <p className="text-sm">Album đang được cập nhật</p>
       </div>
     );
   }
-
-  const cur = items[idx];
-  const curIsVideo = isVideo(cur);
-
   return (
-    <div className="relative select-none">
-      <div
-        className="aspect-[4/5] sm:aspect-[3/4] overflow-hidden bg-neutral-100 border border-neutral-200"
-        onTouchStart={onTouchStart}
-        onTouchEnd={onTouchEnd}
-      >
-        {curIsVideo ? (
-          <video
-            key={cur.id}
-            src={getImageSrc(cur.imageUrl) ?? cur.imageUrl}
-            controls
-            playsInline
-            className="w-full h-full object-contain bg-black"
-          />
-        ) : (
-          <img
-            src={getImageSrc(cur.imageUrl) ?? cur.imageUrl}
-            alt={cur.caption ?? `Ảnh ${idx + 1}`}
-            onClick={() => onZoom(idx)}
-            className="w-full h-full object-cover cursor-zoom-in"
-            draggable={false}
-          />
-        )}
-      </div>
-
-      {items.length > 1 && (
-        <>
-          <button
-            onClick={e => { e.stopPropagation(); prev(); }}
-            disabled={idx === 0}
-            className="absolute left-2 top-1/2 -translate-y-1/2 w-9 h-9 bg-white/80 backdrop-blur-sm rounded-full flex items-center justify-center shadow disabled:opacity-30"
+    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 sm:gap-4" style={{ perspective: "1200px" }}>
+      {items.map((m, i) => (
+        <div key={m.id} className="pi-grid-item" style={{ animationDelay: `${Math.min(i * 60, 480)}ms` }}>
+          <Tilt3D
+            intensity={7}
+            onClick={() => onOpen(i)}
+            className="relative aspect-[3/4] rounded-xl overflow-hidden bg-neutral-100 cursor-zoom-in"
           >
-            <ChevronLeft className="w-5 h-5" />
-          </button>
-          <button
-            onClick={e => { e.stopPropagation(); next(); }}
-            disabled={idx === items.length - 1}
-            className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 bg-white/80 backdrop-blur-sm rounded-full flex items-center justify-center shadow disabled:opacity-30"
-          >
-            <ChevronRight className="w-5 h-5" />
-          </button>
-          <div className="absolute top-3 right-3 bg-black/50 text-white text-xs px-2 py-0.5 rounded-full">
-            {idx + 1} / {items.length}
-          </div>
-        </>
-      )}
-
-      {items.length > 1 && (
-        <div className="flex gap-2 mt-3 overflow-x-auto pb-1">
-          {items.map((m, i) => (
-            <button
-              key={m.id}
-              onClick={() => setIdx(i)}
-              className={`relative flex-shrink-0 w-16 aspect-square overflow-hidden border-2 transition-all ${
-                i === idx ? "border-neutral-900" : "border-transparent opacity-60 hover:opacity-80"
-              }`}
-            >
+            <div className="pi-shine absolute inset-0 z-10 pointer-events-none overflow-hidden rounded-xl" aria-hidden />
+            {isVideo(m) ? (
+              <>
+                <video
+                  src={getImageSrc(m.imageUrl) ?? m.imageUrl}
+                  muted
+                  playsInline
+                  preload="metadata"
+                  className="w-full h-full object-cover"
+                />
+                <span className="absolute inset-0 z-[5] flex items-center justify-center pointer-events-none">
+                  <span className="w-12 h-12 rounded-full bg-black/45 backdrop-blur-sm flex items-center justify-center shadow-lg">
+                    <Play className="w-5 h-5 text-white fill-white ml-0.5" />
+                  </span>
+                </span>
+              </>
+            ) : (
               <img
                 src={getImageSrc(m.imageUrl) ?? m.imageUrl}
-                alt=""
-                className="w-full h-full object-cover bg-neutral-200"
+                alt={m.caption ?? `${albumName} ${i + 1}`}
+                loading="lazy"
+                className="w-full h-full object-cover"
               />
-              {isVideo(m) && (
-                <span className="absolute inset-0 flex items-center justify-center bg-black/30">
-                  <Play className="w-4 h-4 text-white fill-white" />
-                </span>
-              )}
-            </button>
-          ))}
+            )}
+          </Tilt3D>
         </div>
-      )}
-    </div>
-  );
-}
-
-// ── Lightbox (images only) ────────────────────────────────────────────────────
-function Lightbox({ images, startIdx, onClose }: { images: string[]; startIdx: number; onClose: () => void }) {
-  const [idx, setIdx] = useState(startIdx);
-  const touchStartX = useRef<number | null>(null);
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-      if (e.key === "ArrowLeft" && idx > 0) setIdx(i => i - 1);
-      if (e.key === "ArrowRight" && idx < images.length - 1) setIdx(i => i + 1);
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [idx, images.length, onClose]);
-
-  function onTouchStart(e: React.TouchEvent) { touchStartX.current = e.touches[0].clientX; }
-  function onTouchEnd(e: React.TouchEvent) {
-    if (touchStartX.current === null) return;
-    const dx = e.changedTouches[0].clientX - touchStartX.current;
-    if (dx < -40 && idx < images.length - 1) setIdx(i => i + 1);
-    if (dx > 40 && idx > 0) setIdx(i => i - 1);
-    touchStartX.current = null;
-  }
-
-  return (
-    <div className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center"
-      onClick={onClose} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
-      <button className="absolute top-4 right-4 text-white/80 hover:text-white z-10" onClick={onClose}>
-        <X className="w-7 h-7" />
-      </button>
-      {idx > 0 && (
-        <button onClick={e => { e.stopPropagation(); setIdx(i => i - 1); }}
-          className="absolute left-4 top-1/2 -translate-y-1/2 text-white/80 hover:text-white z-10">
-          <ChevronLeft className="w-10 h-10" />
-        </button>
-      )}
-      {idx < images.length - 1 && (
-        <button onClick={e => { e.stopPropagation(); setIdx(i => i + 1); }}
-          className="absolute right-4 top-1/2 -translate-y-1/2 text-white/80 hover:text-white z-10">
-          <ChevronRight className="w-10 h-10" />
-        </button>
-      )}
-      <img
-        src={getImageSrc(images[idx]) ?? images[idx]}
-        alt=""
-        className="max-h-screen max-w-screen-md w-full object-contain"
-        onClick={e => e.stopPropagation()}
-        draggable={false}
-      />
-      {images.length > 1 && (
-        <div className="absolute bottom-4 inset-x-0 text-center text-white/60 text-sm">
-          {idx + 1} / {images.length}
-        </div>
-      )}
+      ))}
     </div>
   );
 }
@@ -273,61 +164,49 @@ export default function PublicGalleryDetailPage() {
   }
 
   const media = album.media ?? [];
-  const photoUrls = media.filter(m => !isVideo(m)).map(m => m.imageUrl);
+  const photoCount = media.filter(m => !isVideo(m)).length;
+  const videoCount = media.length - photoCount;
   const tags = (album.tagsText ?? "").split(",").map(s => s.trim()).filter(Boolean);
-
-  // Mở lightbox theo index ảnh (chỉ ảnh, không video)
-  function openLightbox(mediaIdx: number) {
-    const target = media[mediaIdx];
-    if (!target || isVideo(target)) return;
-    const photoIdx = photoUrls.indexOf(target.imageUrl);
-    if (photoIdx >= 0) setLightboxIdx(photoIdx);
-  }
 
   return (
     <div className="min-h-screen bg-white pb-24">
+      <style>{STYLE_3D}</style>
       {/* Back nav */}
       <div className="sticky top-0 z-30 bg-white/90 backdrop-blur-sm border-b border-neutral-200 px-4 py-3 flex items-center gap-3">
         <button
           onClick={() => setLocation(`${BASE}/bo-anh`)}
-          className="flex items-center gap-1.5 text-sm text-neutral-600 hover:text-neutral-900 transition-colors"
+          className="flex items-center gap-1.5 text-sm text-neutral-600 hover:text-neutral-900 hover:-translate-x-0.5 transition-all"
         >
           <ArrowLeft className="w-4 h-4" /> Bộ sưu tập concept
         </button>
       </div>
 
-      <div className="max-w-3xl mx-auto px-4 py-5 space-y-6">
-        <MediaSlider items={media} onZoom={openLightbox} />
-
-        {/* Header */}
-        <div className="space-y-2">
+      <div className="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
+        {/* Header — giống album view của Ý tưởng chụp ảnh */}
+        <div className="mb-7">
           {album.categoryName && (
-            <p className="text-[11px] tracking-[0.3em] uppercase text-neutral-500">{album.categoryName}</p>
+            <p className="text-[11px] tracking-[0.3em] uppercase text-neutral-500 mb-2">{album.categoryName}</p>
           )}
-          <h1 className="font-serif text-2xl sm:text-3xl font-light text-neutral-900 leading-tight">{album.name}</h1>
+          <h1 className="font-serif text-2xl sm:text-3xl font-light text-neutral-900 mb-2 leading-tight">{album.name}</h1>
           <p className="text-xs text-neutral-500">
-            {photoUrls.length} ảnh
-            {media.length - photoUrls.length > 0 ? ` · ${media.length - photoUrls.length} video` : ""}
+            {photoCount} ảnh{videoCount > 0 ? ` · ${videoCount} video` : ""}
           </p>
+          {album.description && (
+            <p className="text-neutral-600 mt-3 leading-relaxed whitespace-pre-line">{album.description}</p>
+          )}
           {tags.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 pt-1">
+            <div className="flex flex-wrap gap-1.5 mt-3">
               {tags.map(t => (
-                <span key={t} className="text-[11px] px-2 py-0.5 bg-neutral-100 text-neutral-700 border border-neutral-200">
-                  {t}
-                </span>
+                <span key={t} className="text-[11px] px-2.5 py-1 rounded-full bg-neutral-100 text-neutral-600 shadow-sm">{t}</span>
               ))}
             </div>
           )}
         </div>
 
-        {album.description && (
-          <div className="text-sm text-neutral-700 leading-relaxed whitespace-pre-wrap border-t border-neutral-200 pt-4">
-            {album.description}
-          </div>
-        )}
+        <MediaGrid items={media} albumName={album.name} onOpen={setLightboxIdx} />
 
         {/* Consultant CTA */}
-        <div className="border-t border-neutral-200 pt-6 space-y-3">
+        <div className="border-t border-neutral-200 mt-10 pt-6 space-y-3 max-w-3xl">
           <h2 className="text-base font-semibold text-neutral-900">Liên hệ tư vấn concept</h2>
           <p className="text-sm text-neutral-600">
             Bạn thích concept này? Liên hệ ngay để được tư vấn thực hiện bộ ảnh của riêng bạn.
@@ -361,8 +240,12 @@ export default function PublicGalleryDetailPage() {
         </div>
       </div>
 
-      {lightboxIdx !== null && photoUrls.length > 0 && (
-        <Lightbox images={photoUrls} startIdx={lightboxIdx} onClose={() => setLightboxIdx(null)} />
+      {lightboxIdx !== null && media.length > 0 && (
+        <PublicGalleryLightbox
+          items={media.map(m => ({ src: m.imageUrl, type: isVideo(m) ? "video" as const : "image" as const }))}
+          startIndex={lightboxIdx}
+          onClose={() => setLightboxIdx(null)}
+        />
       )}
     </div>
   );

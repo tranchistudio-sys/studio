@@ -37,6 +37,26 @@ export const CONSULTANTS: { name: string; phone: string }[] = [
   { name: "Nhân viên tư vấn 2", phone: "0392817079" },
 ];
 
+/**
+ * Link chat tư vấn — thứ tự ưu tiên link Fanpage:
+ * 1. env VITE_FANPAGE_MESSENGER (tương đương settings FACEBOOK_MESSENGER_URL — hiện chưa có)
+ * 2. https://m.me/{PAGE_ID} — PAGE_ID thật từ settings.fb_active_page_id (page "Amazing Studio")
+ * Fallback hiển thị page công khai: FANPAGE_URL.
+ * Lưu ý: desktop chưa đăng nhập Facebook sẽ thấy trang login Messenger trước —
+ * hành vi bắt buộc của Facebook; trên điện thoại m.me mở thẳng app Messenger.
+ */
+export const FACEBOOK_PAGE_ID = "105341331408346";
+export const FANPAGE_MESSENGER_URL: string =
+  import.meta.env.VITE_FANPAGE_MESSENGER || `https://m.me/${FACEBOOK_PAGE_ID}`;
+export const FANPAGE_URL = "https://www.facebook.com/Amazingstudio";
+
+/** Facebook cá nhân Trần Chí (chat trực tiếp với chủ studio). */
+export const TRANCHI_CHAT_URL: string =
+  import.meta.env.VITE_TRANCHI_MESSENGER || "https://www.facebook.com/LyonTrann/";
+
+/** Zalo tư vấn — số hotline studio. */
+export const ZALO_CHAT_PHONE = "0392817079";
+
 export interface Testimonial {
   quote: string;
   author: string;

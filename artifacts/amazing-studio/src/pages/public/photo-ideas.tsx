@@ -1,9 +1,10 @@
-import { useState, useMemo, useEffect, useCallback, useRef } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import {
-  Lightbulb, Lock, Loader2, X, ChevronLeft, ChevronRight, Sparkles, Wrench, Camera,
+  Lightbulb, Lock, Loader2, ChevronLeft, Sparkles, Wrench, Camera,
 } from "lucide-react";
 import { getImageSrc } from "@/lib/imageUtils";
 import { Tilt3D, STYLE_3D } from "@/components/public-3d";
+import PublicGalleryLightbox from "@/components/public/PublicGalleryLightbox";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 interface IdeaCategory {
@@ -164,79 +165,6 @@ function PasswordGate({ onUnlocked }: { onUnlocked: (token: string) => void }) {
   );
 }
 
-// ─── Lightbox — zoom 3D, nút prev/next ───────────────────────────────────────
-function Lightbox({ images, index, onClose, onIndex }: {
-  images: string[]; index: number;
-  onClose: () => void; onIndex: (i: number) => void;
-}) {
-  const prev = useCallback(() => onIndex((index - 1 + images.length) % images.length), [index, images.length, onIndex]);
-  const next = useCallback(() => onIndex((index + 1) % images.length), [index, images.length, onIndex]);
-  const touchX = useRef<number | null>(null);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-      if (e.key === "ArrowLeft") prev();
-      if (e.key === "ArrowRight") next();
-    };
-    window.addEventListener("keydown", onKey);
-    document.body.style.overflow = "hidden";
-    return () => { window.removeEventListener("keydown", onKey); document.body.style.overflow = ""; };
-  }, [onClose, prev, next]);
-
-  const src = images[index];
-  return (
-    <div
-      className="fixed inset-0 z-[80] bg-black/95 flex items-center justify-center"
-      onClick={onClose}
-      onTouchStart={e => { touchX.current = e.touches[0].clientX; }}
-      onTouchEnd={e => {
-        if (touchX.current === null) return;
-        const dx = e.changedTouches[0].clientX - touchX.current;
-        if (dx > 48) prev(); else if (dx < -48) next();
-        touchX.current = null;
-      }}
-    >
-      <button
-        onClick={e => { e.stopPropagation(); onClose(); }}
-        className="absolute top-4 right-4 z-10 w-11 h-11 rounded-full bg-white/10 hover:bg-white/25 hover:rotate-90 text-white flex items-center justify-center transition-all duration-300"
-        aria-label="Đóng"
-      >
-        <X className="w-5 h-5" />
-      </button>
-      {images.length > 1 && (
-        <>
-          <button
-            onClick={e => { e.stopPropagation(); prev(); }}
-            className="absolute left-2 sm:left-5 z-10 w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/25 hover:scale-110 text-white flex items-center justify-center transition-all"
-            aria-label="Ảnh trước"
-          >
-            <ChevronLeft className="w-6 h-6" />
-          </button>
-          <button
-            onClick={e => { e.stopPropagation(); next(); }}
-            className="absolute right-2 sm:right-5 z-10 w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-white/10 hover:bg-white/25 hover:scale-110 text-white flex items-center justify-center transition-all"
-            aria-label="Ảnh sau"
-          >
-            <ChevronRight className="w-6 h-6" />
-          </button>
-        </>
-      )}
-      <img
-        key={src}
-        src={getImageSrc(src) ?? src}
-        alt=""
-        onClick={e => e.stopPropagation()}
-        className="pi-lightbox-img max-w-[94vw] max-h-[88vh] object-contain select-none rounded-lg shadow-[0_40px_90px_-30px_rgba(0,0,0,.9)]"
-        draggable={false}
-      />
-      <div className="absolute bottom-4 inset-x-0 text-center text-white/70 text-xs tracking-widest">
-        {index + 1} / {images.length}
-      </div>
-    </div>
-  );
-}
-
 // ─── Concept detail (album view) ─────────────────────────────────────────────
 function IdeaDetail({ idea, onBack }: { idea: PublicIdea; onBack: () => void }) {
   const images = albumOf(idea);
@@ -299,7 +227,7 @@ function IdeaDetail({ idea, onBack }: { idea: PublicIdea; onBack: () => void }) 
       )}
 
       {lightboxIdx !== null && (
-        <Lightbox images={images} index={lightboxIdx} onClose={() => setLightboxIdx(null)} onIndex={setLightboxIdx} />
+        <PublicGalleryLightbox items={images} startIndex={lightboxIdx} onClose={() => setLightboxIdx(null)} />
       )}
     </div>
   );

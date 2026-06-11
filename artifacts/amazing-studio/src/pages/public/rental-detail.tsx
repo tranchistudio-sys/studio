@@ -6,21 +6,21 @@ import {
   Phone,
   ChevronLeft,
   ChevronRight,
-  X,
   MessageCircle,
   Tag,
   Ruler,
   Palette,
   Package,
   User,
-  Plus,
   Copy,
   Calendar,
+  Facebook,
   Sparkles,
   Info,
   Shirt,
   ArrowRight,
 } from "lucide-react";
+import PublicGalleryLightbox from "@/components/public/PublicGalleryLightbox";
 import { CMS_BASE } from "@/components/cms-shared";
 import { getImageSrc } from "@/lib/imageUtils";
 import { formatVND } from "@/lib/utils";
@@ -33,9 +33,10 @@ import {
   CONSULTANTS,
   STUDIO_PHONE,
   STUDIO_PHONE_DISPLAY,
+  FANPAGE_MESSENGER_URL,
+  TRANCHI_CHAT_URL,
+  ZALO_CHAT_PHONE,
 } from "@/lib/public-site-config";
-
-const STUDIO_MESSENGER = import.meta.env.VITE_STUDIO_MESSENGER ?? "";
 
 const RENTAL_NOTES = [
   "Đặt cọc theo quy định của studio; số tiền phụ thuộc loại trang phục.",
@@ -67,7 +68,7 @@ function toZaloNumber(phone: string): string {
 
 function openZalo(phone: string) {
   const zaloNum = toZaloNumber(phone);
-  const webUrl = `https://zalo.me/${zaloNum}`;
+  const webUrl = `https://zalo.me/${phone.replace(/\D/g, "")}`;
   try {
     if (!isMobileDevice()) {
       window.open(webUrl, "_blank", "noopener,noreferrer");
@@ -101,18 +102,32 @@ function openZalo(phone: string) {
   }
 }
 
+function productPriceText(d: { rentalPrice: number; salePrice?: number }): string {
+  const sale = d.salePrice ?? 0;
+  if (sale > 0 && sale < d.rentalPrice) return formatVND(sale);
+  return d.rentalPrice > 0 ? formatVND(d.rentalPrice) : "Liên hệ";
+}
+
 function buildConsultMessage(dress: {
   code: string;
   name: string;
-  size?: string;
-  sizeText?: string | null;
+  rentalPrice: number;
+  salePrice?: number;
 }): string {
-  const size = (dress.sizeText && dress.sizeText.trim()) || (dress.size && dress.size.trim()) || "";
   const url = typeof window !== "undefined" ? window.location.href : "";
-  const lines = ["Em muốn tư vấn sản phẩm:", "", `Mã: ${dress.code}`, `Tên: ${dress.name}`];
-  if (size) lines.push(`Size: ${size}`);
-  lines.push("", "Link sản phẩm:", url, "", "Shop tư vấn giúp em nhé.");
-  return lines.join("\n");
+  return [
+    "Em đang quan tâm sản phẩm:",
+    "",
+    `${dress.name}${dress.code ? ` (Mã: ${dress.code})` : ""}`,
+    "",
+    "Giá:",
+    productPriceText(dress),
+    "",
+    "Link:",
+    url,
+    "",
+    "Nhờ tư vấn giúp em ạ.",
+  ].join("\n");
 }
 
 async function copyToClipboard(text: string): Promise<boolean> {
@@ -138,77 +153,174 @@ async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
-function ConsultantSection({ dress }: { dress: PublicDressDetail }) {
-  const { toast } = useToast();
+/** Popup fallback khi trình duyệt chặn clipboard — khách copy nhanh nội dung tư vấn. */
+function ConsultCopyPopup({ text, onClose }: { text: string; onClose: () => void }) {
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    taRef.current?.focus();
+    taRef.current?.select();
+  }, []);
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+    >
+      <div
+        className="w-full max-w-sm bg-white rounded-2xl p-4 shadow-xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <p className="text-sm font-medium text-neutral-900 mb-2">
+          Copy nội dung rồi dán vào khung chat
+        </p>
+        <textarea
+          ref={taRef}
+          readOnly
+          value={text}
+          rows={9}
+          className="w-full text-xs border border-neutral-200 rounded-xl p-2.5 text-neutral-700 focus:outline-none"
+          onFocus={(e) => e.currentTarget.select()}
+        />
+        <div className="flex gap-2 mt-3">
+          <button
+            type="button"
+            onClick={async () => {
+              const ok = await copyToClipboard(text);
+              if (ok) onClose();
+            }}
+            className="flex-1 py-2.5 rounded-xl bg-neutral-900 text-white text-sm font-medium hover:bg-neutral-800"
+          >
+            Copy
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            className="flex-1 py-2.5 rounded-xl border border-neutral-300 text-sm text-neutral-700 hover:bg-neutral-50"
+          >
+            Đóng
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
-  async function handleCopy() {
-    const ok = await copyToClipboard(buildConsultMessage(dress));
+type ChatTarget = "fanpage" | "tranchi" | "zalo";
+
+/**
+ * Chat thông minh: copy nội dung sản phẩm (tên + giá + link) vào clipboard
+ * rồi mở Messenger/Zalo ở tab mới. Clipboard bị chặn → popup copy nhanh.
+ */
+function useSmartConsult(dress: PublicDressDetail) {
+  const { toast } = useToast();
+  const [popupText, setPopupText] = useState<string | null>(null);
+
+  async function smartChat(target: ChatTarget) {
+    const msg = buildConsultMessage(dress);
+    const ok = await copyToClipboard(msg);
     if (ok) {
       toast({
-        title: "Đã sao chép",
-        description: "Nội dung tư vấn đã copy. Bạn có thể dán vào Zalo.",
+        title: "Đã copy nội dung tư vấn",
+        description: "Dán vào khung chat — nhân viên nhận đủ tên sản phẩm, giá và link.",
       });
     } else {
+      setPopupText(msg);
+    }
+    if (target === "zalo") {
+      openZalo(ZALO_CHAT_PHONE);
+    } else {
+      const href = target === "fanpage" ? FANPAGE_MESSENGER_URL : TRANCHI_CHAT_URL;
+      window.open(href, "_blank", "noopener,noreferrer");
+    }
+  }
+
+  const popup = popupText ? (
+    <ConsultCopyPopup text={popupText} onClose={() => setPopupText(null)} />
+  ) : null;
+
+  return { smartChat, popup };
+}
+
+function ConsultantSection({ dress }: { dress: PublicDressDetail }) {
+  const { toast } = useToast();
+  const { smartChat, popup } = useSmartConsult(dress);
+
+  async function handleCopyPhone(phone: string) {
+    const ok = await copyToClipboard(phone);
+    if (ok) {
+      toast({ title: "Đã copy số", description: phone });
+    } else {
       toast({
-        title: "Không sao chép được",
-        description: "Trình duyệt không cho phép. Bạn có thể copy thủ công.",
+        title: "Không copy được",
+        description: `Số điện thoại: ${phone}`,
         variant: "destructive",
       });
     }
   }
 
-  function handleZalo(phone: string) {
-    try {
-      openZalo(phone);
-    } catch {
-      toast({
-        title: "Không mở được Zalo",
-        description: `Vui lòng nhắn số ${phone} hoặc dùng Sao chép nội dung tư vấn.`,
-        variant: "destructive",
-      });
-    }
-  }
+  const chatBtn =
+    "inline-flex items-center justify-center gap-1.5 h-10 px-2 rounded-xl text-xs font-medium tracking-wide transition-colors min-w-0";
 
   return (
     <div className="space-y-3">
-      <div className="flex items-center justify-between gap-2">
-        <h2 className="font-serif text-lg font-light text-neutral-900">Nhân viên tư vấn</h2>
-        <button
-          type="button"
-          onClick={handleCopy}
-          className="inline-flex items-center gap-1.5 text-[11px] tracking-wide uppercase text-neutral-600 hover:text-neutral-900 transition-colors px-2 py-1"
-        >
-          <Copy className="w-3.5 h-3.5" />
-          Sao chép
-        </button>
-      </div>
+      {popup}
+      <h2 className="font-serif text-lg font-light text-neutral-900">Liên hệ tư vấn sản phẩm</h2>
       <div className="space-y-2.5">
         {CONSULTANTS.map((c) => (
           <div
             key={c.phone}
-            className="w-full bg-white/90 border border-neutral-200/80 rounded-2xl p-3 flex items-center gap-3 shadow-sm"
+            className="w-full bg-white/90 border border-neutral-200/80 rounded-2xl p-3 shadow-sm"
           >
-            <div className="flex-shrink-0 w-11 h-11 rounded-full bg-gradient-to-br from-[var(--public-accent)] to-[var(--public-accent-dark)] flex items-center justify-center text-white">
-              <User className="w-5 h-5" />
+            <div className="flex items-center gap-3 mb-2.5">
+              <div className="flex-shrink-0 w-11 h-11 rounded-full bg-gradient-to-br from-[var(--public-accent)] to-[var(--public-accent-dark)] flex items-center justify-center text-white">
+                <User className="w-5 h-5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-neutral-900 truncate">{c.name}</p>
+                <a
+                  href={`tel:${c.phone}`}
+                  className="text-xs text-neutral-500 tabular-nums hover:text-neutral-900"
+                >
+                  {c.phone}
+                </a>
+              </div>
             </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-neutral-900 truncate">{c.name}</p>
-              <a
-                href={`tel:${c.phone}`}
-                className="text-xs text-neutral-500 tabular-nums hover:text-neutral-900"
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <button
+                type="button"
+                onClick={() => smartChat("fanpage")}
+                className={`${chatBtn} bg-[#1877f2] text-white hover:bg-[#166fe0]`}
               >
-                {c.phone}
-              </a>
+                <Facebook className="w-3.5 h-3.5 shrink-0" />
+                Chat Fanpage
+              </button>
+              <button
+                type="button"
+                onClick={() => smartChat("tranchi")}
+                className={`${chatBtn} bg-neutral-900 text-white hover:bg-neutral-800`}
+              >
+                <MessageCircle className="w-3.5 h-3.5 shrink-0" />
+                Chat Trần Chí
+              </button>
+              <button
+                type="button"
+                onClick={() => smartChat("zalo")}
+                className={`${chatBtn} border border-[var(--public-accent-dark)] text-[var(--public-accent-dark)] bg-white hover:bg-[var(--public-cream-deep)]`}
+                aria-label={`Chat Zalo với ${c.name}`}
+              >
+                <MessageCircle className="w-3.5 h-3.5 shrink-0" />
+                Zalo
+              </button>
+              <button
+                type="button"
+                onClick={() => handleCopyPhone(c.phone)}
+                className={`${chatBtn} border border-neutral-300 text-neutral-700 bg-white hover:bg-neutral-50`}
+              >
+                <Copy className="w-3.5 h-3.5 shrink-0" />
+                Copy số
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={() => handleZalo(c.phone)}
-              className="flex-shrink-0 inline-flex items-center gap-1.5 px-3.5 h-10 min-w-[100px] justify-center border border-[var(--public-accent-dark)] text-[var(--public-accent-dark)] bg-white rounded-xl text-xs font-medium tracking-wide hover:bg-[var(--public-cream-deep)] transition-colors"
-              aria-label={`Chat Zalo với ${c.name}`}
-            >
-              <MessageCircle className="w-3.5 h-3.5" />
-              Zalo
-            </button>
           </div>
         ))}
       </div>
@@ -347,7 +459,7 @@ function ImageSlider({
         <img
           src={getImageSrc(images[idx]) ?? images[idx]}
           alt={`Ảnh ${idx + 1}`}
-          className="w-full h-full object-cover transition-opacity duration-200"
+          className="w-full h-full object-cover transition-transform duration-700 hover:scale-[1.03]"
           draggable={false}
         />
       </div>
@@ -397,104 +509,16 @@ function ImageSlider({
               key={`${src}-${i}`}
               type="button"
               onClick={() => setIdx(i)}
-              className={`flex-shrink-0 w-[4.25rem] sm:w-[4.75rem] aspect-square rounded-xl overflow-hidden border-2 transition-all shadow-sm ${
-                i === idx ? "border-neutral-900 opacity-100" : "border-transparent opacity-55 hover:opacity-80"
+              className={`flex-shrink-0 w-[4.25rem] sm:w-[4.75rem] aspect-square rounded-xl overflow-hidden transition-all duration-300 ${
+                i === idx
+                  ? "ring-2 ring-neutral-900 ring-offset-2 ring-offset-[var(--public-cream,#faf8f5)] shadow-md"
+                  : "ring-1 ring-neutral-200/80 opacity-55 hover:opacity-90 hover:-translate-y-0.5 hover:shadow-md"
               }`}
+              aria-label={`Xem ảnh ${i + 1}`}
             >
               <img src={getImageSrc(src) ?? src} alt="" className="w-full h-full object-cover" />
             </button>
           ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Lightbox({
-  images,
-  startIdx,
-  onClose,
-}: {
-  images: string[];
-  startIdx: number;
-  onClose: () => void;
-}) {
-  const [idx, setIdx] = useState(startIdx);
-  const touchStartX = useRef<number | null>(null);
-
-  useEffect(() => {
-    setIdx(startIdx);
-  }, [startIdx]);
-
-  useEffect(() => {
-    function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
-      if (e.key === "ArrowLeft" && idx > 0) setIdx((i) => i - 1);
-      if (e.key === "ArrowRight" && idx < images.length - 1) setIdx((i) => i + 1);
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [idx, images.length, onClose]);
-
-  function onTouchStart(e: React.TouchEvent) {
-    touchStartX.current = e.touches[0].clientX;
-  }
-  function onTouchEnd(e: React.TouchEvent) {
-    if (touchStartX.current === null) return;
-    const dx = e.changedTouches[0].clientX - touchStartX.current;
-    if (dx < -40 && idx < images.length - 1) setIdx((i) => i + 1);
-    if (dx > 40 && idx > 0) setIdx((i) => i - 1);
-    touchStartX.current = null;
-  }
-
-  return (
-    <div
-      className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center"
-      onClick={onClose}
-      onTouchStart={onTouchStart}
-      onTouchEnd={onTouchEnd}
-    >
-      <button
-        type="button"
-        className="absolute top-4 right-4 text-white/80 hover:text-white z-10"
-        onClick={onClose}
-      >
-        <X className="w-7 h-7" />
-      </button>
-      {idx > 0 && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            setIdx((i) => i - 1);
-          }}
-          className="absolute left-4 top-1/2 -translate-y-1/2 text-white/80 hover:text-white z-10"
-        >
-          <ChevronLeft className="w-10 h-10" />
-        </button>
-      )}
-      {idx < images.length - 1 && (
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            setIdx((i) => i + 1);
-          }}
-          className="absolute right-4 top-1/2 -translate-y-1/2 text-white/80 hover:text-white z-10"
-        >
-          <ChevronRight className="w-10 h-10" />
-        </button>
-      )}
-      <img
-        src={getImageSrc(images[idx]) ?? images[idx]}
-        alt=""
-        className="max-h-screen max-w-screen-sm w-full object-contain"
-        onClick={(e) => e.stopPropagation()}
-        draggable={false}
-      />
-      {images.length > 1 && (
-        <div className="absolute bottom-4 inset-x-0 text-center text-white/60 text-sm tabular-nums">
-          {idx + 1} / {images.length}
         </div>
       )}
     </div>
@@ -508,65 +532,48 @@ function ProductCtaButtons({
   dress: PublicDressDetail;
   layout: "card" | "bar";
 }) {
-  const { toast } = useToast();
+  const { smartChat, popup } = useSmartConsult(dress);
   const phone = CONSULTANTS[0]?.phone ?? STUDIO_PHONE;
-
-  async function handleConsult() {
-    const ok = await copyToClipboard(buildConsultMessage(dress));
-    if (ok) {
-      toast({ title: "Đã sao chép", description: "Dán nội dung vào Zalo để được tư vấn nhanh." });
-      try {
-        openZalo(phone);
-      } catch {}
-    } else {
-      toast({ title: "Không sao chép được", variant: "destructive" });
-    }
-  }
 
   const isBar = layout === "bar";
   const btnBase = isBar
-    ? "flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-colors min-h-[44px]"
+    ? "flex-1 flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-sm font-medium transition-colors min-h-[44px]"
     : "flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-colors w-full";
 
   return (
-    <div className={isBar ? "flex gap-2.5" : "flex flex-col gap-2 sm:flex-row sm:flex-wrap"}>
-      {phone && (
+    <div className={isBar ? "flex gap-2" : "flex flex-col gap-2 sm:flex-row sm:flex-wrap"}>
+      {popup}
+      <button
+        type="button"
+        onClick={() => smartChat("fanpage")}
+        className={`${btnBase} bg-[#1877f2] text-white hover:bg-[#166fe0]`}
+      >
+        <Facebook className="w-4 h-4 shrink-0" />
+        {isBar ? "Fanpage" : "Chat Fanpage"}
+      </button>
+      <button
+        type="button"
+        onClick={() => smartChat("tranchi")}
+        className={`${btnBase} bg-neutral-900 text-white hover:bg-neutral-800`}
+      >
+        <MessageCircle className="w-4 h-4 shrink-0" />
+        {isBar ? "Trần Chí" : "Chat Trần Chí"}
+      </button>
+      <button
+        type="button"
+        onClick={() => smartChat("zalo")}
+        className={`${btnBase} border border-[var(--public-accent-dark)] text-[var(--public-accent-dark)] bg-white hover:bg-[var(--public-cream-deep)]`}
+      >
+        <MessageCircle className="w-4 h-4 shrink-0" />
+        Zalo
+      </button>
+      {!isBar && phone && (
         <a
           href={`tel:${phone}`}
           className={`${btnBase} bg-white border border-neutral-300 text-neutral-900 hover:bg-[var(--public-cream-deep)]`}
         >
           <Phone className="w-4 h-4 shrink-0" />
           Gọi điện
-        </a>
-      )}
-      {phone && (
-        <button
-          type="button"
-          onClick={() => openZalo(phone)}
-          className={`${btnBase} border border-[var(--public-accent-dark)] text-[var(--public-accent-dark)] bg-white hover:bg-[var(--public-cream-deep)]`}
-        >
-          <MessageCircle className="w-4 h-4 shrink-0" />
-          Zalo
-        </button>
-      )}
-      {!isBar && (
-        <button
-          type="button"
-          onClick={handleConsult}
-          className={`${btnBase} bg-neutral-900 text-white hover:bg-neutral-800`}
-        >
-          <MessageCircle className="w-4 h-4 shrink-0" />
-          Nhắn tin tư vấn
-        </button>
-      )}
-      {STUDIO_MESSENGER && !isBar && (
-        <a
-          href={STUDIO_MESSENGER}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={`${btnBase} border border-neutral-200 text-neutral-700 hover:bg-neutral-50`}
-        >
-          Messenger
         </a>
       )}
     </div>
@@ -929,7 +936,7 @@ export default function RentalDetailPage() {
       </div>
 
       {lightboxIdx !== null && images.length > 0 && (
-        <Lightbox images={images} startIdx={lightboxIdx} onClose={() => setLightboxIdx(null)} />
+        <PublicGalleryLightbox items={images} startIndex={lightboxIdx} onClose={() => setLightboxIdx(null)} />
       )}
     </div>
   );

@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { LazyImage, CMS_BASE } from "@/components/cms-shared";
 import { formatVND, cn } from "@/lib/utils";
-import { Sparkles, Shirt, X } from "lucide-react";
+import { Sparkles, Shirt, X, Check } from "lucide-react";
 import { OUTFIT_TAGS, OutfitTagBadge, type OutfitTagKey } from "@/lib/outfit-tags";
 import { RENTAL_PAGE } from "@/lib/public-site-config";
 import { PublicReveal, PublicRevealItem } from "@/components/public/PublicReveal";
@@ -116,11 +116,6 @@ export default function PublicRentalPage() {
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<SortMode>("newest");
   const [smartFilterOpen, setSmartFilterOpen] = useState(false);
-  const [draftSizes, setDraftSizes] = useState<Set<string>>(new Set());
-  const [draftWeights, setDraftWeights] = useState<Set<string>>(new Set());
-  const [draftColors, setDraftColors] = useState<Set<string>>(new Set());
-  const [draftTags, setDraftTags] = useState<Set<string>>(new Set());
-  const [draftOutfitTags, setDraftOutfitTags] = useState<Set<OutfitTagKey>>(new Set());
   const smartFilterRef = useRef<HTMLDivElement>(null);
 
   const { data: cats = [], isLoading: catsLoading } = useQuery<PublicCategory[]>({
@@ -417,48 +412,8 @@ export default function PublicRentalPage() {
     setSortMode("newest");
   }
 
-  function syncDraftFromApplied() {
-    setDraftSizes(new Set(selectedSizes));
-    setDraftWeights(new Set(selectedWeights));
-    setDraftColors(new Set(selectedColors));
-    setDraftTags(new Set(selectedTags));
-    setDraftOutfitTags(new Set(selectedOutfitTags));
-  }
-
   function toggleSmartFilter() {
-    if (smartFilterOpen) {
-      setSmartFilterOpen(false);
-      return;
-    }
-    syncDraftFromApplied();
-    setSmartFilterOpen(true);
-  }
-
-  function applySmartFilter() {
-    setSelectedSizes(new Set(draftSizes));
-    setSelectedWeights(new Set(draftWeights));
-    setSelectedColors(new Set(draftColors));
-    setSelectedTags(new Set(draftTags));
-    setSelectedOutfitTags(new Set(draftOutfitTags));
-    setVisibleCount(PAGE_SIZE);
-  }
-
-  function clearDraftAdvanced() {
-    setDraftSizes(new Set());
-    setDraftWeights(new Set());
-    setDraftColors(new Set());
-    setDraftTags(new Set());
-    setDraftOutfitTags(new Set());
-  }
-
-  function clearAndApplyAdvanced() {
-    clearDraftAdvanced();
-    setSelectedSizes(new Set());
-    setSelectedWeights(new Set());
-    setSelectedColors(new Set());
-    setSelectedTags(new Set());
-    setSelectedOutfitTags(new Set());
-    setVisibleCount(PAGE_SIZE);
+    setSmartFilterOpen((open) => !open);
   }
 
   const breadcrumbLabel = useMemo(() => {
@@ -483,24 +438,28 @@ export default function PublicRentalPage() {
     [tier1, dresses, cats],
   );
 
+  // Lọc tức thì: bấm tag là áp dụng ngay, bấm lại để bỏ chọn; reset phân trang mỗi lần đổi.
+  function instantToggle<T>(setter: React.Dispatch<React.SetStateAction<Set<T>>>, value: T) {
+    setter((prev) => toggleSet(prev, value));
+    setVisibleCount(PAGE_SIZE);
+  }
+
   const advancedFilterPanel = (
     <AdvancedFiltersBody
       sizeOptions={sizeOptions}
       weightOptions={weightOptions}
       colorOptions={colorOptions}
       tagOptions={tagOptions}
-      draftSizes={draftSizes}
-      draftWeights={draftWeights}
-      draftColors={draftColors}
-      draftTags={draftTags}
-      draftOutfitTags={draftOutfitTags}
-      onToggleSize={(s) => setDraftSizes((prev) => toggleSet(prev, s))}
-      onToggleWeight={(s) => setDraftWeights((prev) => toggleSet(prev, s))}
-      onToggleColor={(s) => setDraftColors((prev) => toggleSet(prev, s))}
-      onToggleTag={(s) => setDraftTags((prev) => toggleSet(prev, s))}
-      onToggleOutfitTag={(k) => setDraftOutfitTags((prev) => toggleSet(prev, k))}
-      onClear={clearAndApplyAdvanced}
-      onApply={applySmartFilter}
+      selectedSizes={selectedSizes}
+      selectedWeights={selectedWeights}
+      selectedColors={selectedColors}
+      selectedTags={selectedTags}
+      selectedOutfitTags={selectedOutfitTags}
+      onToggleSize={(s) => instantToggle(setSelectedSizes, s)}
+      onToggleWeight={(s) => instantToggle(setSelectedWeights, s)}
+      onToggleColor={(s) => instantToggle(setSelectedColors, s)}
+      onToggleTag={(s) => instantToggle(setSelectedTags, s)}
+      onToggleOutfitTag={(k) => instantToggle(setSelectedOutfitTags, k)}
     />
   );
 
@@ -782,35 +741,31 @@ function AdvancedFiltersBody({
   weightOptions,
   colorOptions,
   tagOptions,
-  draftSizes,
-  draftWeights,
-  draftColors,
-  draftTags,
-  draftOutfitTags,
+  selectedSizes,
+  selectedWeights,
+  selectedColors,
+  selectedTags,
+  selectedOutfitTags,
   onToggleSize,
   onToggleWeight,
   onToggleColor,
   onToggleTag,
   onToggleOutfitTag,
-  onClear,
-  onApply,
 }: {
   sizeOptions: string[];
   weightOptions: string[];
   colorOptions: string[];
   tagOptions: string[];
-  draftSizes: Set<string>;
-  draftWeights: Set<string>;
-  draftColors: Set<string>;
-  draftTags: Set<string>;
-  draftOutfitTags: Set<OutfitTagKey>;
+  selectedSizes: Set<string>;
+  selectedWeights: Set<string>;
+  selectedColors: Set<string>;
+  selectedTags: Set<string>;
+  selectedOutfitTags: Set<OutfitTagKey>;
   onToggleSize: (s: string) => void;
   onToggleWeight: (s: string) => void;
   onToggleColor: (s: string) => void;
   onToggleTag: (s: string) => void;
   onToggleOutfitTag: (k: OutfitTagKey) => void;
-  onClear: () => void;
-  onApply: () => void;
 }) {
   const hasAnyOption =
     sizeOptions.length > 0 ||
@@ -830,25 +785,25 @@ function AdvancedFiltersBody({
             <FilterGroup
               label="Size"
               options={sizeOptions}
-              selected={draftSizes}
+              selected={selectedSizes}
               onToggle={onToggleSize}
             />
             <FilterGroup
               label="Số đo"
               options={weightOptions}
-              selected={draftWeights}
+              selected={selectedWeights}
               onToggle={onToggleWeight}
             />
             <FilterGroup
               label="Màu"
               options={colorOptions}
-              selected={draftColors}
+              selected={selectedColors}
               onToggle={onToggleColor}
             />
             <FilterGroup
               label="Kiểu"
               options={tagOptions}
-              selected={draftTags}
+              selected={selectedTags}
               onToggle={onToggleTag}
             />
           </>
@@ -857,7 +812,7 @@ function AdvancedFiltersBody({
           <p className="rental-smart-filter-label">Nhãn</p>
           <div className="rental-smart-filter-row rental-smart-filter-tags rental-smart-filter-tags--scroll">
             {OUTFIT_TAGS.map((t) => {
-              const active = draftOutfitTags.has(t.key);
+              const active = selectedOutfitTags.has(t.key);
               return (
                 <button
                   key={t.key}
@@ -877,22 +832,6 @@ function AdvancedFiltersBody({
             })}
           </div>
         </div>
-      </div>
-      <div className="rental-smart-filter-actions flex gap-1 px-2 py-1.5 sm:px-2.5 sm:py-2 border-t border-neutral-100 bg-[var(--public-cream,#faf8f5)]">
-        <button
-          type="button"
-          onClick={onClear}
-          className="rental-smart-filter-action-btn flex-1 rounded border border-neutral-200 text-neutral-600 hover:bg-white transition-colors"
-        >
-          Xóa lọc
-        </button>
-        <button
-          type="button"
-          onClick={onApply}
-          className="rental-smart-filter-action-btn flex-1 rounded font-medium text-white bg-gradient-to-r from-[var(--public-nude,#c4a882)] to-[#b8956f] hover:opacity-95 transition-opacity"
-        >
-          Áp dụng
-        </button>
       </div>
     </div>
   );
@@ -935,8 +874,13 @@ function FilterPill({
     <button
       type="button"
       onClick={onClick}
-      className={cn("rental-filter-pill rental-filter-pill--compact", active && "is-active")}
+      aria-pressed={active}
+      className={cn(
+        "rental-filter-pill rental-filter-pill--compact inline-flex items-center gap-0.5",
+        active && "is-active",
+      )}
     >
+      {active && <Check className="w-2.5 h-2.5 hidden sm:inline-block" aria-hidden />}
       {label}
     </button>
   );

@@ -11,7 +11,7 @@ import {
 
 const PUBLIC_NAV = [
   { href: "/", label: "Trang chủ" },
-  { href: "/bo-anh", label: "Concept ảnh" },
+  { href: "/bo-anh", label: "Dịch vụ" },
   { href: "/bang-gia", label: "Bảng giá" },
   { href: "/cho-thue-do", label: "Cho thuê đồ" },
   { href: "/y-tuong-chup-anh", label: "Ý tưởng chụp ảnh" },

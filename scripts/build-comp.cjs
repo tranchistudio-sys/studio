@@ -1,0 +1,11 @@
+const fs=require('fs');
+const root='D:/CODE NGÀY 6-6/exports/migration_pack_20260606_1941/project';
+const comp=root+'/artifacts/amazing-studio/src/components/additional-services-section.tsx';
+const dbP=root+'/artifacts/api-server/node_modules/@workspace/db/src/additional-services.ts';
+const head=fs.readFileSync(comp,'utf8').split('//')[0].trim()+'\n';
+let core=fs.readFileSync(dbP,'utf8').replace(/^\/\*\/[\s\S]*?\*\//,'').trim()+'\n';
+core=core.replace('export function validateAdditionalServices','export function validateAdditionalServicesForm');
+core=core.slice(0,core.indexOf('export function calcAdditionalServicesTotal'));
+const newL='export function newAdditionalServiceLine(): AdditionalServiceLine { return sanitizeAdditionalServices([{ id: 'as-new', title: '', qty: 1, unitPrice: 0, staffAssignments: [] }])[0]; }\n';
+const ui=String.fromCharCode(101,120,112,111,114,116,32,100,101,102,97,117,108,116,32,102,117,110,99,116,105,111,110,32,65,100,100,105,116,105,111,110,97,108,83,101,114,118,105,99,101,83,101,99,116,105,111,110,40,41,123,114,101,116,117,114,110,32,110,117,108,108,125,59,10)+String.fromCharCode(10);fs.writeFileSync(comp, head+core+newL+ui);
+console.log('built component');

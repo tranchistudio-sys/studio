@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "api-server",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--env-file=.env", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"],
+      "port": 3000,
+      "autoPort": false
+    },
+    {
+      "name": "amazing-studio",
+      "runtimeExecutable": "artifacts\\amazing-studio\\node_modules\\.bin\\vite.CMD",
+      "runtimeArgs": ["--config", "artifacts/amazing-studio/vite.config.ts", "--host", "0.0.0.0"],
+      "port": 5000,
+      "autoPort": true
+    }
+  ]
+}

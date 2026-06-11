@@ -1,0 +1,52 @@
+import { cn } from "@/lib/utils";
+
+const STEPS = [
+  { key: "template", label: "Mẫu" },
+  { key: "photo", label: "Ảnh" },
+  { key: "text", label: "Chữ" },
+  { key: "link", label: "Link" },
+] as const;
+
+export function WeddingCardEditorSteps({
+  hasPhoto,
+  hasNames,
+}: {
+  hasPhoto: boolean;
+  hasNames: boolean;
+}) {
+  const done = {
+    template: true,
+    photo: hasPhoto,
+    text: hasNames,
+    link: false,
+  };
+
+  return (
+    <div className="flex items-center justify-between gap-1 py-3 px-1">
+      {STEPS.map((s, i) => (
+        <div key={s.key} className="flex flex-1 flex-col items-center gap-1 min-w-0">
+          <div
+            className={cn(
+              "wc-step-dot flex h-8 w-8 items-center justify-center rounded-full text-[10px] font-bold border-2 transition-all",
+              done[s.key]
+                ? "is-done bg-[var(--wc-bt-taupe,#8e7c68)] border-[var(--wc-bt-taupe,#8e7c68)] text-white"
+                : "bg-white border-[var(--wc-bt-border,#e8e0d8)] text-[var(--wc-bt-muted,#6b6560)]",
+            )}
+          >
+            {i + 1}
+          </div>
+          <span
+            className={cn(
+              "text-[9px] uppercase tracking-wide truncate w-full text-center",
+              done[s.key]
+                ? "text-[var(--wc-bt-taupe-dark,#7d6b5d)] font-semibold"
+                : "text-[var(--wc-bt-muted,#6b6560)]",
+            )}
+          >
+            {s.label}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}

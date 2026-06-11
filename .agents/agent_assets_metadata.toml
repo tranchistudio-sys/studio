@@ -38,31 +38,13 @@ type = "text"
 title = "DATABASE_SCHEMA.md"
 
 [[outputs]]
-id = "1_D2lVSSKujO_dyQbD_MF"
-uri = "file://backup/docs/API_DOCUMENTATION.md"
-type = "text"
-title = "API_DOCUMENTATION.md"
-
-[[outputs]]
-id = "gGrqALKhrEeWjz3Mn9n6z"
-uri = "file://backup/docs/ARCHITECTURE.md"
-type = "text"
-title = "ARCHITECTURE.md"
-
-[[outputs]]
-id = "sYVrUthOTj7Hl8Rkgjpny"
-uri = "file://backup/docs/ENVIRONMENT_VARIABLES.md"
-type = "text"
-title = "ENVIRONMENT_VARIABLES.md"
-
-[[outputs]]
-id = "NdIzLTOqfn16rnAe122pA"
-uri = "file://backup/docs/THIRD_PARTY_SERVICES.md"
-type = "text"
-title = "THIRD_PARTY_SERVICES.md"
-
-[[outputs]]
 id = "MKcGkho1a-XK5d83Aacvp"
 uri = "file://backup/docs/STORAGE.md"
 type = "text"
 title = "STORAGE.md"
+
+[[outputs]]
+id = "9nqJcRd7CliT-mHFrdKvq"
+uri = "file://exports/Amazing_Studio_FULL_System_20260610_1454.tar.gz"
+type = "unspecified"
+title = "Amazing Studio - Toàn bộ Code + Ảnh + Database (138MB)"

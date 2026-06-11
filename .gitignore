@@ -71,3 +71,5 @@ downloads/*.zip
 
 # Local uploaded files (runtime)
 artifacts/data/object-storage/uploads/
+exports/*.sql
+exports/*.sql

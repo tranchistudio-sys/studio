@@ -62,6 +62,7 @@ Thumbs.db
 # Secrets & environment
 .env
 .env.*
+!.env.example
 
 # Database exports
 downloads/*.sql

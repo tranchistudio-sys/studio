@@ -112,11 +112,15 @@ async function findAttendanceTestStaff() {
   return fallback.rows[0] ? mapTestStaffRow(fallback.rows[0] as Record<string, unknown>) : null;
 }
 
-const VALID_WORK_TYPES = new Set(["studio", "di_show", "makeup_ngoai", "hau_ky", "linh_dong"]);
+const VALID_WORK_TYPES = new Set(["studio", "studio_auto", "di_show", "makeup_ngoai", "hau_ky", "linh_dong"]);
 
 // ─── Startup migration: add work_type, clean bad rules, seed defaults ────────
 async function ensureAttendanceSchema() {
   await pool.query(`ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS work_type TEXT`).catch(() => {});
+  await pool.query(`ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS attendance_type TEXT`).catch(() => {});
+  await pool.query(`ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS location_verified BOOLEAN NOT NULL DEFAULT FALSE`).catch(() => {});
+  await pool.query(`ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS selfie_required BOOLEAN NOT NULL DEFAULT FALSE`).catch(() => {});
+  await pool.query(`ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS qr_required BOOLEAN NOT NULL DEFAULT FALSE`).catch(() => {});
   await pool.query(`ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS checkin_photo_url TEXT`).catch(() => {});
   await pool.query(`ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS checkout_photo_url TEXT`).catch(() => {});
   await pool.query(`ALTER TABLE attendance_adjustments ADD COLUMN IF NOT EXISTS category TEXT`).catch(() => {});
@@ -206,6 +210,49 @@ const STUDIO_LAT = 11.3101;
 const STUDIO_LNG = 106.1074;
 const DEFAULT_RADIUS_M = 300;
 
+type AttendanceLogMethod = "qr" | "gps_auto" | "gps_selfie" | "offsite" | "manual";
+
+function isOffsiteMethod(method: string | null | undefined): boolean {
+  return method === "offsite" || method === "gps_selfie";
+}
+
+function isStudioAutoMethod(method: string | null | undefined): boolean {
+  return method === "gps_auto";
+}
+
+function inferAttendanceType(method: string | null, rawAttendanceType: string | null, rawWorkType: string | null): string {
+  if (rawAttendanceType) return rawAttendanceType;
+  if (isStudioAutoMethod(method) || rawWorkType === "studio_auto") return "studio_auto";
+  if (isOffsiteMethod(method)) return "offsite";
+  if (method === "qr") return "studio_qr";
+  if (method === "manual") return "manual";
+  return "studio";
+}
+
+function attendanceFlags(method: string | null, rawAttendanceType: string | null) {
+  const attendanceType = inferAttendanceType(method, rawAttendanceType, null);
+  const offsite = attendanceType === "offsite" || isOffsiteMethod(method);
+  const studioAuto = attendanceType === "studio_auto" || isStudioAutoMethod(method);
+  return {
+    locationVerified: offsite || studioAuto || method === "qr",
+    selfieRequired: offsite,
+    qrRequired: method === "qr",
+  };
+}
+
+async function loadStudioGeofence(): Promise<{ lat: number; lng: number; radius: number }> {
+  const settingsR = await pool.query(`SELECT key, value FROM settings WHERE key IN ('studio_lat', 'studio_lng', 'attendance_radius_m')`);
+  const settingsMap: Record<string, string> = {};
+  for (const row of settingsR.rows as { key: string; value: string }[]) {
+    settingsMap[row.key] = row.value;
+  }
+  return {
+    lat: parseFloat(settingsMap.studio_lat ?? String(STUDIO_LAT)),
+    lng: parseFloat(settingsMap.studio_lng ?? String(STUDIO_LNG)),
+    radius: parseFloat(settingsMap.attendance_radius_m ?? String(DEFAULT_RADIUS_M)),
+  };
+}
+
 function getDistanceM(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371000;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -233,32 +280,40 @@ router.post("/attendance/check-in", async (req, res) => {
 
   const {
     lat, lng, accuracyM, bookingId, workType: reqWorkType,
-    checkinPhotoUrl, notes,
+    checkinPhotoUrl, notes, attendanceType: reqAttendanceType,
+    checkInMethod: reqCheckInMethod, auto,
   } = req.body as {
     lat?: number; lng?: number; accuracyM?: number; bookingId?: number;
     workType?: string; checkinPhotoUrl?: string; notes?: string;
+    attendanceType?: string; checkInMethod?: string; auto?: boolean;
   };
 
   if (lat === undefined || lng === undefined) {
     return res.status(400).json({ error: "Vui lòng cấp quyền GPS để chấm công." });
   }
 
-  const settingsR = await pool.query(`SELECT key, value FROM settings WHERE key IN ('studio_lat', 'studio_lng', 'attendance_radius_m')`);
-  const settingsMap: Record<string, string> = {};
-  for (const row of settingsR.rows as { key: string; value: string }[]) {
-    settingsMap[row.key] = row.value;
+  const latNum = parseFloat(String(lat));
+  const lngNum = parseFloat(String(lng));
+  if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) {
+    return res.status(400).json({ error: "GPS khÃ´ng há»£p lá»‡." });
   }
-  const studioLat = parseFloat(settingsMap.studio_lat ?? String(STUDIO_LAT));
-  const studioLng = parseFloat(settingsMap.studio_lng ?? String(STUDIO_LNG));
-  const radiusM = parseFloat(settingsMap.attendance_radius_m ?? String(DEFAULT_RADIUS_M));
 
-  const distanceM = getDistanceM(parseFloat(String(lat)), parseFloat(String(lng)), studioLat, studioLng);
-  const inGeofence = distanceM <= radiusM;
-  const requestedOffsite = !!(reqWorkType && ["di_show", "makeup_ngoai"].includes(String(reqWorkType)));
+  const geofence = await loadStudioGeofence();
+  const distanceM = getDistanceM(latNum, lngNum, geofence.lat, geofence.lng);
+  const inGeofence = distanceM <= geofence.radius;
+  const requestedOffsite =
+    reqAttendanceType === "offsite" ||
+    reqCheckInMethod === "gps_selfie" ||
+    !!(reqWorkType && ["di_show", "makeup_ngoai"].includes(String(reqWorkType)));
+  const requestedAuto =
+    auto === true ||
+    reqAttendanceType === "studio_auto" ||
+    reqCheckInMethod === "gps_auto" ||
+    reqWorkType === "studio_auto";
   const photoUrl = checkinPhotoUrl ? String(checkinPhotoUrl).trim() : "";
   const noteText = notes ? String(notes).trim() : null;
 
-  let method: "qr" | "offsite" | "manual";
+  let method: AttendanceLogMethod;
   let allowedBookingId: number | null = bookingId ? parseInt(String(bookingId)) : null;
 
   if (requestedOffsite) {
@@ -266,40 +321,83 @@ router.post("/attendance/check-in", async (req, res) => {
     if (!photoUrl) {
       return res.status(400).json({ error: "Show ngoài cần chụp selfie xác thực trước khi chấm công" });
     }
-    method = "offsite";
+    method = "gps_selfie";
   } else if (inGeofence) {
-    method = "qr";
+    method = requestedAuto ? "gps_auto" : "qr";
   } else {
     return res.status(400).json({
       error: "Bạn đang ngoài vùng studio. Chọn \u201cĐi Show ngoài\u201d (selfie + GPS) hoặc đến studio để chấm \u201cTại Studio\u201d.",
       distanceM: Math.round(distanceM),
-      radiusM,
+      radiusM: geofence.radius,
     });
   }
 
   let workType: string;
   if (reqWorkType && VALID_WORK_TYPES.has(String(reqWorkType))) {
     workType = String(reqWorkType);
-  } else if (method === "offsite") {
+  } else if (isOffsiteMethod(method)) {
     const staffR = await pool.query(`SELECT role FROM staff WHERE id = $1`, [staffId]);
     const role = (staffR.rows[0] as { role?: string } | undefined)?.role;
     workType = role === "makeup" ? "makeup_ngoai" : "di_show";
+  } else if (method === "gps_auto") {
+    workType = "studio_auto";
   } else {
     workType = "studio";
   }
 
-  if (method === "qr" && !["studio", "hau_ky", "linh_dong"].includes(workType)) {
+  if ((method === "qr" || method === "gps_auto") && !["studio", "studio_auto", "hau_ky", "linh_dong"].includes(workType)) {
     return res.status(400).json({ error: "Tại studio chỉ được chọn Studio, Hậu kỳ hoặc Linh động." });
   }
-  if (method === "offsite" && !["di_show", "makeup_ngoai"].includes(workType)) {
+  if (isOffsiteMethod(method) && !["di_show", "makeup_ngoai"].includes(workType)) {
     return res.status(400).json({ error: "Show ngoài chỉ được chọn Đi show hoặc Makeup ngoài." });
   }
 
+  const attendanceType =
+    method === "gps_auto" ? "studio_auto"
+    : isOffsiteMethod(method) ? "offsite"
+    : method === "qr" ? "studio_qr"
+    : "studio";
+  const flags = attendanceFlags(method, attendanceType);
+
   const today = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
   const existing = await pool.query(
-    `SELECT id FROM attendance_logs WHERE staff_id = $1 AND type = 'check_in' AND (created_at + interval '7 hours')::date = $2::date LIMIT 1`,
+    `SELECT id, staff_id, type, method, lat, lng, accuracy_m, distance_m, booking_id, work_type,
+            attendance_type, location_verified, selfie_required, qr_required,
+            notes, checkin_photo_url, created_at,
+            to_char(created_at + interval '7 hours', 'HH24:MI') as local_time
+     FROM attendance_logs
+     WHERE staff_id = $1 AND type = 'check_in' AND (created_at + interval '7 hours')::date = $2::date
+     ORDER BY created_at ASC LIMIT 1`,
     [staffId, today]
   );
+  const existingRows = existing.rows as Record<string, unknown>[];
+  if (existingRows.length > 0) {
+    const row = existingRows[0];
+    const existingFlags = attendanceFlags(row.method as string | null, row.attendance_type as string | null);
+    return res.status(200).json({
+      id: row.id,
+      staffId: row.staff_id,
+      type: row.type,
+      method: row.method,
+      checkInMethod: row.method,
+      attendanceType: inferAttendanceType(row.method as string | null, row.attendance_type as string | null, row.work_type as string | null),
+      lat: row.lat,
+      lng: row.lng,
+      accuracyM: row.accuracy_m,
+      distanceM: row.distance_m,
+      bookingId: row.booking_id,
+      workType: inferWorkType(row.method as string | null, row.work_type as string | null),
+      notes: row.notes,
+      checkinPhotoUrl: row.checkin_photo_url,
+      locationVerified: row.location_verified ?? existingFlags.locationVerified,
+      selfieRequired: row.selfie_required ?? existingFlags.selfieRequired,
+      qrRequired: row.qr_required ?? existingFlags.qrRequired,
+      createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at ?? ""),
+      time: row.local_time,
+      alreadyCheckedIn: true,
+      message: "Báº¡n Ä‘Ã£ check-in hÃ´m nay rá»“i",
+    });
+  }
   if (existing.rows.length > 0) {
     return res.status(400).json({ error: "Bạn đã check-in hôm nay rồi" });
   }
@@ -308,17 +406,28 @@ router.post("/attendance/check-in", async (req, res) => {
     staffId,
     type: "check_in",
     method,
-    lat: String(lat),
-    lng: String(lng),
+    lat: String(latNum),
+    lng: String(lngNum),
     accuracyM: accuracyM !== undefined ? String(accuracyM) : null,
     distanceM: String(Math.round(distanceM)),
     bookingId: allowedBookingId,
     workType,
-    checkinPhotoUrl: method === "offsite" ? photoUrl : null,
+    attendanceType,
+    locationVerified: flags.locationVerified,
+    selfieRequired: flags.selfieRequired,
+    qrRequired: flags.qrRequired,
+    checkinPhotoUrl: isOffsiteMethod(method) ? photoUrl : null,
     notes: noteText,
   }).returning();
 
-  res.status(201).json(log);
+  res.status(201).json({
+    ...log,
+    checkInMethod: log.method,
+    attendanceType,
+    locationVerified: flags.locationVerified,
+    selfieRequired: flags.selfieRequired,
+    qrRequired: flags.qrRequired,
+  });
 });
 
 // ── QR Token ──────────────────────────────────────────────────────────────────
@@ -358,7 +467,7 @@ router.post("/attendance/check-out", async (req, res) => {
   if (checkInR.rows.length === 0) {
     return res.status(400).json({ error: "Bạn chưa chấm vào hôm nay" });
   }
-  const checkoutMethod: "qr" | "offsite" | "manual" = (checkInR.rows[0] as { method: string } | undefined)?.method as "qr" | "offsite" | "manual" ?? "qr";
+  const checkoutMethod: AttendanceLogMethod = ((checkInR.rows[0] as { method: string } | undefined)?.method as AttendanceLogMethod | undefined) ?? "qr";
 
   const [log] = await db.insert(attendanceLogsTable).values({
     staffId,
@@ -707,7 +816,8 @@ router.delete("/attendance/shifts/:id", async (req, res) => {
 // Infer work_type from method when work_type column is NULL (legacy data before V2 migration)
 function inferWorkType(method: string | null, rawWorkType: string | null): string | null {
   if (rawWorkType) return rawWorkType;
-  if (method === "offsite") return "di_show";
+  if (isOffsiteMethod(method)) return "di_show";
+  if (method === "gps_auto") return "studio_auto";
   if (method === "qr") return "studio";
   if (method === "manual") return "studio";
   return null;
@@ -771,12 +881,7 @@ async function loadOverrides(logIds: number[]): Promise<Map<number, LogOverride>
 
 // ── Studio info (public for GPS-aware UI) ────────────────────────────────────
 router.get("/attendance/studio-info", async (_req, res) => {
-  const settingsR = await pool.query(`SELECT key, value FROM settings WHERE key IN ('studio_lat', 'studio_lng', 'attendance_radius_m')`);
-  const map = Object.fromEntries(settingsR.rows.map((r: { key: string; value: string }) => [r.key, r.value]));
-  const lat = parseFloat(map.studio_lat ?? String(STUDIO_LAT));
-  const lng = parseFloat(map.studio_lng ?? String(STUDIO_LNG));
-  const radius = parseFloat(map.attendance_radius_m ?? String(DEFAULT_RADIUS_M));
-  res.json({ lat, lng, radius });
+  res.json(await loadStudioGeofence());
 });
 
 // ── GET /me: Tổng hợp tháng ──────────────────────────────────────────────────
@@ -799,7 +904,9 @@ router.get("/attendance/me", async (req, res) => {
   const month = String(req.query.month || todayVN().slice(0, 7));
 
   const logsR = await pool.query(
-    `SELECT id, staff_id, type, method, lat, lng, distance_m, work_type, notes, checkin_photo_url, created_at,
+    `SELECT id, staff_id, type, method, lat, lng, distance_m, work_type,
+            attendance_type, location_verified, selfie_required, qr_required,
+            notes, checkin_photo_url, created_at,
             to_char(created_at + interval '7 hours', 'HH24:MI') as local_time,
             to_char(created_at + interval '7 hours', 'YYYY-MM-DD') as local_date
      FROM attendance_logs WHERE staff_id = $1 AND to_char(created_at + interval '7 hours', 'YYYY-MM') = $2 ORDER BY created_at`,
@@ -813,8 +920,13 @@ router.get("/attendance/me", async (req, res) => {
     lat: l.lat,
     lng: l.lng,
     distanceM: l.distance_m != null ? parseFloat(String(l.distance_m)) : null,
-    isOffsite: l.method === "offsite",
+    isOffsite: isOffsiteMethod(l.method as string | null),
     workType: inferWorkType(l.method as string | null, l.work_type as string | null),
+    attendanceType: inferAttendanceType(l.method as string | null, l.attendance_type as string | null, l.work_type as string | null),
+    checkInMethod: l.method,
+    locationVerified: l.location_verified ?? attendanceFlags(l.method as string | null, l.attendance_type as string | null).locationVerified,
+    selfieRequired: l.selfie_required ?? attendanceFlags(l.method as string | null, l.attendance_type as string | null).selfieRequired,
+    qrRequired: l.qr_required ?? attendanceFlags(l.method as string | null, l.attendance_type as string | null).qrRequired,
     notes: l.notes,
     checkinPhotoUrl: (l.checkin_photo_url as string | null) ?? null,
     localTime: l.local_time as string,
@@ -1013,7 +1125,9 @@ router.get("/attendance/admin", async (req, res) => {
 
   const month = String(req.query.month || todayVN().slice(0, 7));
   const logsR = await pool.query(
-    `SELECT al.id, al.staff_id, al.type, al.method, al.lat, al.lng, al.accuracy_m, al.distance_m, al.booking_id, al.work_type, al.notes, al.checkin_photo_url, al.created_at,
+    `SELECT al.id, al.staff_id, al.type, al.method, al.lat, al.lng, al.accuracy_m, al.distance_m, al.booking_id, al.work_type,
+            al.attendance_type, al.location_verified, al.selfie_required, al.qr_required,
+            al.notes, al.checkin_photo_url, al.created_at,
             to_char(al.created_at + interval '7 hours', 'HH24:MI') as local_time,
             to_char(al.created_at + interval '7 hours', 'YYYY-MM-DD') as local_date,
             s.name as staff_name
@@ -1034,7 +1148,12 @@ router.get("/attendance/admin", async (req, res) => {
     distanceM: l.distance_m,
     bookingId: l.booking_id,
     workType: inferWorkType(l.method as string | null, l.work_type as string | null),
-    isOffsite: l.method === "offsite",
+    attendanceType: inferAttendanceType(l.method as string | null, l.attendance_type as string | null, l.work_type as string | null),
+    checkInMethod: l.method,
+    locationVerified: l.location_verified ?? attendanceFlags(l.method as string | null, l.attendance_type as string | null).locationVerified,
+    selfieRequired: l.selfie_required ?? attendanceFlags(l.method as string | null, l.attendance_type as string | null).selfieRequired,
+    qrRequired: l.qr_required ?? attendanceFlags(l.method as string | null, l.attendance_type as string | null).qrRequired,
+    isOffsite: isOffsiteMethod(l.method as string | null),
     notes: l.notes,
     checkinPhotoUrl: (l.checkin_photo_url as string | null) ?? null,
     localTime: l.local_time as string,
@@ -1155,9 +1274,11 @@ router.get("/attendance/today-summary", async (req, res) => {
       });
       if (ci) {
         daVao++;
-        if (!checkOutSet.has(staff.id)) chuaCheckOut++;
         const wt = inferWorkType(ci.method, ci.work_type);
-        if ((wt === "di_show" || wt === "makeup_ngoai") && !checkOutSet.has(staff.id)) dangDiShow++;
+        if ((wt === "di_show" || wt === "makeup_ngoai") && !checkOutSet.has(staff.id)) {
+          chuaCheckOut++;
+          dangDiShow++;
+        }
       }
       continue;
     }
@@ -1173,7 +1294,6 @@ router.get("/attendance/today-summary", async (req, res) => {
       const computedLate = ci.local_time > effThreshold;
       const effLate = ov?.overrideIsLate === 0 ? false : ov?.overrideIsLate === 1 ? true : computedLate;
       if (effLate) diTre++;
-      if (!checkOutSet.has(staff.id)) chuaCheckOut++;
     } else {
       chuaVao++;
       notCheckedInStudio.push(staff);
@@ -1255,9 +1375,10 @@ router.get("/attendance/staff-summary", async (req, res) => {
       isWeekend: isSundayOff(date),
     });
     if (!studioLatePenaltyApplies(mode)) {
-      if (!coDates.has(date)) missedCheckout++;
       const wt = inferWorkType(ci.method, ci.work_type);
-      if (wt === "di_show" || wt === "makeup_ngoai" || mode === "SHOW") showCount++;
+      const isOffsiteWork = wt === "di_show" || wt === "makeup_ngoai";
+      if (isOffsiteWork && !coDates.has(date)) missedCheckout++;
+      if (isOffsiteWork || mode === "SHOW") showCount++;
       continue;
     }
     const sh = shiftMap.get(date);
@@ -1267,9 +1388,11 @@ router.get("/attendance/staff-summary", async (req, res) => {
     const isLate = ov?.overrideIsLate === 0 ? false : ov?.overrideIsLate === 1 ? true : computed.isLate;
     if (isLate) lateCount++;
     if (isLate && computed.penalty > 0) totalLatePenalty += computed.penalty;
-    if (!coDates.has(date)) missedCheckout++;
     const wt = inferWorkType(ci.method, ci.work_type);
-    if (wt === "di_show" || wt === "makeup_ngoai") showCount++;
+    if ((wt === "di_show" || wt === "makeup_ngoai")) {
+      if (!coDates.has(date)) missedCheckout++;
+      showCount++;
+    }
   }
   const onTimeRate = totalDays > 0 ? Math.round(((totalDays - lateCount) / totalDays) * 100) : 0;
 
@@ -1316,7 +1439,9 @@ router.get("/attendance/staff-summary", async (req, res) => {
   );
   // Logs đầy đủ để LogDetailDialog render được
   const fullLogsR = await pool.query(
-    `SELECT id, staff_id, type, method, work_type, lat, lng, distance_m, notes, checkin_photo_url, created_at,
+    `SELECT id, staff_id, type, method, work_type,
+            attendance_type, location_verified, selfie_required, qr_required,
+            lat, lng, distance_m, notes, checkin_photo_url, created_at,
             to_char(created_at + interval '7 hours', 'HH24:MI') as local_time,
             to_char(created_at + interval '7 hours', 'YYYY-MM-DD') as local_date
      FROM attendance_logs WHERE staff_id = $1 AND to_char(created_at + interval '7 hours', 'YYYY-MM') = $2
@@ -1324,7 +1449,12 @@ router.get("/attendance/staff-summary", async (req, res) => {
   const fullLogs = (fullLogsR.rows as Record<string, unknown>[]).map(l => ({
     id: l.id, staffId: l.staff_id, type: l.type, method: l.method,
     workType: inferWorkType(l.method as string | null, l.work_type as string | null),
-    isOffsite: l.method === "offsite",
+    attendanceType: inferAttendanceType(l.method as string | null, l.attendance_type as string | null, l.work_type as string | null),
+    checkInMethod: l.method,
+    locationVerified: l.location_verified ?? attendanceFlags(l.method as string | null, l.attendance_type as string | null).locationVerified,
+    selfieRequired: l.selfie_required ?? attendanceFlags(l.method as string | null, l.attendance_type as string | null).selfieRequired,
+    qrRequired: l.qr_required ?? attendanceFlags(l.method as string | null, l.attendance_type as string | null).qrRequired,
+    isOffsite: isOffsiteMethod(l.method as string | null),
     lat: l.lat, lng: l.lng, distanceM: l.distance_m != null ? parseFloat(String(l.distance_m)) : null,
     notes: l.notes, checkinPhotoUrl: (l.checkin_photo_url as string | null) ?? null,
     localTime: l.local_time, localDate: l.local_date,
@@ -1819,6 +1949,10 @@ router.post("/attendance/manual", async (req, res) => {
   const [log] = await db.insert(attendanceLogsTable).values({
     staffId: parseInt(String(staffId)), type, method: "manual",
     workType: wt,
+    attendanceType: "manual",
+    locationVerified: false,
+    selfieRequired: false,
+    qrRequired: false,
     notes: notes || null,
   }).returning();
   res.status(201).json(log);

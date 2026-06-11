@@ -84,15 +84,37 @@ const fetchAttendanceSelf = (url: string, actAsStaffId: number | undefined, opts
     return d;
   });
 
-type WorkType = "studio" | "di_show" | "makeup_ngoai" | "hau_ky" | "linh_dong";
+type WorkType = "studio" | "studio_auto" | "di_show" | "makeup_ngoai" | "hau_ky" | "linh_dong";
 
 const WORK_TYPE_LABELS: Record<WorkType, string> = {
   studio: "Studio",
+  studio_auto: "Studio auto",
   di_show: "Đi show",
   makeup_ngoai: "Makeup ngoài",
   hau_ky: "Hậu kỳ",
   linh_dong: "Linh động",
 };
+
+function isOffsiteMethod(method?: string | null): boolean {
+  return method === "offsite" || method === "gps_selfie";
+}
+
+function isStudioAutoLog(log?: Pick<LogEntry, "method" | "attendanceType" | "workType" | "isOffsite"> | null): boolean {
+  return !!log && !log.isOffsite && (log.method === "gps_auto" || log.attendanceType === "studio_auto" || log.workType === "studio_auto");
+}
+
+function attendanceMethodLabel(log?: Pick<LogEntry, "method" | "attendanceType" | "workType" | "isOffsite"> | null): string {
+  if (!log) return "—";
+  if (isStudioAutoLog(log)) return "GPS Auto";
+  if (isOffsiteMethod(log.method) || log.isOffsite || log.attendanceType === "offsite") return "Ngoài studio + selfie";
+  if (log.method === "qr") return "QR";
+  if (log.method === "manual") return "Thủ công";
+  return "Studio";
+}
+
+function requiresManualCheckout(log?: Pick<LogEntry, "method" | "attendanceType" | "workType" | "isOffsite"> | null): boolean {
+  return !!log && (isOffsiteMethod(log.method) || log.isOffsite || log.attendanceType === "offsite" || log.workType === "di_show" || log.workType === "makeup_ngoai");
+}
 
 type LogOverrideInfo = {
   time: string | null;
@@ -108,11 +130,16 @@ type LogEntry = {
   staffName?: string;
   type: "check_in" | "check_out" | "overtime_check_in" | "overtime_check_out";
   method?: string;
+  checkInMethod?: string;
+  attendanceType?: string;
   workType?: WorkType | null;
   lat: number | null;
   lng: number | null;
   distanceM: number | null;
   isOffsite: boolean;
+  locationVerified?: boolean;
+  selfieRequired?: boolean;
+  qrRequired?: boolean;
   checkinPhotoUrl?: string | null;
   notes: string | null;
   localTime?: string;
@@ -296,7 +323,7 @@ function buildJournalAndStaffMoney(args: {
     const showDays = extras?.staffShowDays?.[String(staffId)] ?? [];
     const dayStatus = resolveDayStatus({
       date,
-      dayLogs: [{ type: "check_in", localTime: effTime || undefined, isOffsite: l.isOffsite }],
+      dayLogs: [{ type: "check_in", localTime: effTime || undefined, isOffsite: l.isOffsite, method: l.method, workType: l.workType, attendanceType: l.attendanceType }],
       shiftStart,
       lateRules,
       approvedLeaves: leaves,
@@ -316,7 +343,7 @@ function buildJournalAndStaffMoney(args: {
     } else if (l.override?.isLate === 1 && dayStatus.color === "green" && effTime) {
       const forced = resolveDayStatus({
         date,
-        dayLogs: [{ type: "check_in", localTime: effTime }],
+        dayLogs: [{ type: "check_in", localTime: effTime, isOffsite: l.isOffsite, method: l.method, workType: l.workType, attendanceType: l.attendanceType }],
         shiftStart,
         lateRules,
         approvedLeaves: [],
@@ -377,6 +404,7 @@ function buildJournalAndStaffMoney(args: {
       date,
       localTime: (effTime || l.localTime) ?? null,
       method: l.method ?? null,
+      attendanceType: l.attendanceType ?? null,
       isOffsite: !!l.isOffsite,
       workType: (l.workType as WorkType | null) ?? null,
       checkinPhotoUrl: l.checkinPhotoUrl ?? null,
@@ -413,7 +441,7 @@ function buildJournalAndStaffMoney(args: {
       const showDaysStreak = extras?.staffShowDays?.[String(s.id)] ?? [];
       const st = resolveDayStatus({
         date: d,
-        dayLogs: [{ type: "check_in", localTime: effTime || undefined }],
+        dayLogs: [{ type: "check_in", localTime: effTime || undefined, isOffsite: ci.isOffsite, method: ci.method, workType: ci.workType, attendanceType: ci.attendanceType }],
         shiftStart,
         lateRules,
         approvedLeaves: [],
@@ -469,7 +497,7 @@ function buildJournalAndStaffMoney(args: {
       const showDaysStreak = extras?.staffShowDays?.[String(s.id)] ?? [];
       const st = resolveDayStatus({
         date: d,
-        dayLogs: [{ type: "check_in", localTime: effTime || undefined }],
+        dayLogs: [{ type: "check_in", localTime: effTime || undefined, isOffsite: ci.isOffsite, method: ci.method, workType: ci.workType, attendanceType: ci.attendanceType }],
         shiftStart,
         lateRules,
         approvedLeaves: [],
@@ -564,6 +592,7 @@ function buildJournalAndStaffMoney(args: {
   for (const [, ci] of ciByStaffDate) {
     const staffId = Number(ci.staffId);
     const date = ci.localDate ?? ci.createdAt.slice(0, 10);
+    if (!requiresManualCheckout(ci)) continue;
     if (hasCheckOutOnDate(logs, staffId, date)) continue;
     if (!shouldAssessForgotCheckout(date)) continue;
     const staffName = ci.staffName ?? staffList.find(s => s.id === staffId)?.name ?? `#${staffId}`;
@@ -709,6 +738,7 @@ type DayStatus = {
   leaveReason?: string;
   isWeekend?: boolean;
   isFuture?: boolean;
+  requiresCheckout?: boolean;
 };
 
 const DAY_COLOR_CLS: Record<DayColor, string> = {
@@ -724,7 +754,7 @@ const DAY_COLOR_CLS: Record<DayColor, string> = {
 
 function resolveDayStatus(args: {
   date: string;
-  dayLogs: { type: string; localTime?: string; isOffsite?: boolean }[];
+  dayLogs: { type: string; localTime?: string; isOffsite?: boolean; method?: string | null; workType?: WorkType | null; attendanceType?: string | null }[];
   shiftStart: string;
   lateRules: LateRuleLite[];
   approvedLeaves: ApprovedLeaveLite[];
@@ -738,12 +768,13 @@ function resolveDayStatus(args: {
   const co = dayLogs.find(l => l.type === "check_out");
   const checkIn = ci?.localTime;
   const checkOut = co?.localTime;
+  const requiresCheckout = requiresManualCheckout(ci as Pick<LogEntry, "method" | "attendanceType" | "workType" | "isOffsite"> | null);
   const otHours = overtime?.hours;
   const otAmount = overtime?.amount ?? overtime?.pay;
 
   const leave = approvedLeaves.find(l => l.date === date);
   if (leave) {
-    return { date, color: "slate", label: "Off Day", attendanceMode: "OFF", checkIn, checkOut, isLeave: true, leaveReason: leave.reason, otHours, otAmount };
+    return { date, color: "slate", label: "Off Day", attendanceMode: "OFF", checkIn, checkOut, isLeave: true, leaveReason: leave.reason, otHours, otAmount, requiresCheckout };
   }
   if (isWeekend && !isFuture) {
     return { date, color: "slate", label: "Off Day", attendanceMode: "OFF", isWeekend: true, otHours, otAmount };
@@ -755,7 +786,7 @@ function resolveDayStatus(args: {
     const showLabel = checkIn ? "Show Day" : "Show Day";
     return {
       date, color: "blue", label: showLabel, attendanceMode: "SHOW",
-      checkIn, checkOut, isLate: false, otHours, otAmount,
+      checkIn, checkOut, isLate: false, otHours, otAmount, requiresCheckout,
     };
   }
 
@@ -765,7 +796,7 @@ function resolveDayStatus(args: {
       .sort((a, b) => (a.lateFromTime ?? "").localeCompare(b.lateFromTime ?? ""));
     const isLate = checkIn > shiftStart;
     if (!isLate) {
-      return { date, color: "green", label: "Studio Day", attendanceMode: "STUDIO", checkIn, checkOut, isLate: false, otHours, otAmount };
+      return { date, color: "green", label: "Studio Day", attendanceMode: "STUDIO", checkIn, checkOut, isLate: false, otHours, otAmount, requiresCheckout };
     }
     let tierIdx = -1;
     for (let i = 0; i < sorted.length; i++) {
@@ -781,7 +812,7 @@ function resolveDayStatus(args: {
     const penalty = sorted[tierIdx]?.penaltyAmount ?? 0;
     const color: DayColor = tierIdx === 0 ? "yellow" : tierIdx === 1 ? "orange" : "red";
     const label = tierIdx === 0 ? "Trễ nhẹ" : tierIdx === 1 ? "Trễ vừa" : "Trễ nặng";
-    return { date, color, label, attendanceMode: "STUDIO", checkIn, checkOut, isLate: true, lateMinutes, penalty, otHours, otAmount };
+    return { date, color, label, attendanceMode: "STUDIO", checkIn, checkOut, isLate: true, lateMinutes, penalty, otHours, otAmount, requiresCheckout };
   }
 
   if (isFuture) return { date, color: "blank", label: "", isFuture: true, attendanceMode: "STUDIO" };
@@ -1016,7 +1047,7 @@ function teamDayDisplayStatus(
   status: DayStatus,
   staffId: number,
   date: string,
-  dayLogs: { type: string; localDate?: string; createdAt: string; staffId?: number }[],
+  dayLogs: { type: string; localDate?: string; createdAt: string; staffId?: number; isOffsite?: boolean; method?: string | null; workType?: WorkType | null; attendanceType?: string | null }[],
 ): string {
   if (status.attendanceMode === "OFF" || status.isLeave) return "Off Day";
   if (status.attendanceMode === "SHOW") return status.checkIn ? `Show Day · ${status.checkIn}` : "Show Day";
@@ -1028,7 +1059,8 @@ function teamDayDisplayStatus(
       localDate: l.localDate,
       createdAt: l.createdAt,
     }));
-    if (!hasCheckOutOnDate(logs, staffId, date) && shouldAssessForgotCheckout(date)) {
+    const ci = dayLogs.find(l => l.type === "check_in");
+    if (requiresManualCheckout(ci as Pick<LogEntry, "method" | "attendanceType" | "workType" | "isOffsite"> | null) && !hasCheckOutOnDate(logs, staffId, date) && shouldAssessForgotCheckout(date)) {
       return "Quên check-out";
     }
     return status.label || "Đúng giờ";
@@ -1123,6 +1155,9 @@ function StaffBar({ staff, status, onClick }: {
     meta = status.checkIn + (status.checkOut ? `–${status.checkOut}` : " · quên ra");
     if (status.isLate && status.lateMinutes) meta += ` ·${status.lateMinutes}p`;
   }
+  if (status.checkIn && !status.checkOut && !status.requiresCheckout) {
+    meta = `${status.checkIn} · 18:00`;
+  }
   return (
     <button
       type="button"
@@ -1143,7 +1178,7 @@ function StaffBar({ staff, status, onClick }: {
 function TeamCalendar({ month, staffList, logsByStaff, extras, onClickStaffDay, maxBars = 4 }: {
   month: string;
   staffList: { id: number; name: string }[];
-  logsByStaff: Map<number, { type: string; localTime?: string; localDate?: string; createdAt: string; isOffsite?: boolean }[]>;
+  logsByStaff: Map<number, { type: string; localTime?: string; localDate?: string; createdAt: string; isOffsite?: boolean; method?: string | null; workType?: WorkType | null; attendanceType?: string | null }[]>;
   extras: TeamExtras | undefined;
   onClickStaffDay: (staffId: number, staffName: string, date: string) => void;
   maxBars?: number;
@@ -1162,7 +1197,7 @@ function TeamCalendar({ month, staffList, logsByStaff, extras, onClickStaffDay, 
   const byDate = new Map<string, TeamDayRow[]>();
   const monthSummary = { show: 0, onTime: 0, late: 0, absent: 0, leave: 0 };
   // Pre-group logs by staff+date once
-  const logsByStaffDate = new Map<number, Map<string, { type: string; localTime?: string; localDate?: string; createdAt: string; isOffsite?: boolean }[]>>();
+  const logsByStaffDate = new Map<number, Map<string, { type: string; localTime?: string; localDate?: string; createdAt: string; isOffsite?: boolean; method?: string | null; workType?: WorkType | null; attendanceType?: string | null }[]>>();
   for (const [sid, logs] of logsByStaff) {
     const m = new Map<string, typeof logs>();
     for (const l of logs) {
@@ -1193,7 +1228,7 @@ function TeamCalendar({ month, staffList, logsByStaff, extras, onClickStaffDay, 
       const showDays = extras?.staffShowDays?.[String(s.id)] ?? [];
       const status = resolveDayStatus({
         date,
-        dayLogs: dayLogs.map(l => ({ type: l.type, localTime: l.localTime, isOffsite: l.isOffsite })),
+        dayLogs: dayLogs.map(l => ({ type: l.type, localTime: l.localTime, isOffsite: l.isOffsite, method: l.method, workType: l.workType, attendanceType: l.attendanceType })),
         shiftStart: shiftStartForDay, lateRules, approvedLeaves: leaves,
         overtime: otByStaff.get(s.id)?.get(date), isWeekend, isFuture,
         hasShowBooking: showDays.includes(date),
@@ -1335,7 +1370,7 @@ function TeamCalendar({ month, staffList, logsByStaff, extras, onClickStaffDay, 
 function TeamMatrixGrid({ month, staffList, logsByStaff, extras, onClickCell }: {
   month: string;
   staffList: { id: number; name: string }[];
-  logsByStaff: Map<number, { type: string; localTime?: string; localDate?: string; createdAt: string; isOffsite?: boolean }[]>;
+  logsByStaff: Map<number, { type: string; localTime?: string; localDate?: string; createdAt: string; isOffsite?: boolean; method?: string | null; workType?: WorkType | null; attendanceType?: string | null }[]>;
   extras: TeamExtras | undefined;
   onClickCell: (staffId: number, staffName: string, date: string) => void;
 }) {
@@ -1400,7 +1435,7 @@ function TeamMatrixGrid({ month, staffList, logsByStaff, extras, onClickCell }: 
                     const showDays = extras?.staffShowDays?.[String(staff.id)] ?? [];
                     const status = resolveDayStatus({
                       date,
-                      dayLogs: dayLogs.map(l => ({ type: l.type, localTime: l.localTime, isOffsite: l.isOffsite })),
+                      dayLogs: dayLogs.map(l => ({ type: l.type, localTime: l.localTime, isOffsite: l.isOffsite, method: l.method, workType: l.workType, attendanceType: l.attendanceType })),
                       shiftStart: resolveShiftStart(staff.id, date, shiftOverrides, defaultShiftStart),
                       lateRules,
                       approvedLeaves: leaves,
@@ -1546,6 +1581,7 @@ type AttendanceJournalEntry = {
   date: string;
   localTime: string | null;
   method: string | null;
+  attendanceType?: string | null;
   isOffsite: boolean;
   workType: string | null;
   checkinPhotoUrl?: string | null;
@@ -1835,7 +1871,12 @@ export default function AttendancePage() {
   const [workType, setWorkType] = useState<WorkType>("studio");
   const [todayFilter, setTodayFilter] = useState<null | "daVao" | "diTre" | "dangDiShow" | "chuaCheckOut" | "showDay" | "studioDay">(null);
   const [inGeofence, setInGeofence] = useState<boolean | null>(null);
+  const [locationPermission, setLocationPermission] = useState<"unknown" | "prompt" | "granted" | "denied" | "unsupported" | "error">("unknown");
+  const [studioDistanceM, setStudioDistanceM] = useState<number | null>(null);
+  const [lastStudioCoords, setLastStudioCoords] = useState<{ lat: number; lng: number; accuracyM?: number; distanceM: number; inGeofence: boolean; ts: number } | null>(null);
+  const [autoCheckInAt, setAutoCheckInAt] = useState<string | null>(null);
   const inGeoRef = useRef<boolean | null>(null);
+  const lastAutoCheckInAttemptRef = useRef(0);
   useEffect(() => { inGeoRef.current = inGeofence; }, [inGeofence]);
 
   // Admin adjustments form
@@ -2104,10 +2145,25 @@ export default function AttendancePage() {
   // Check GPS once when tab "me" opens to know if in-geofence
   useEffect(() => {
     if (tab !== "me" || !studioInfo) return;
-    if (!navigator.geolocation) { setInGeofence(null); return; }
+    if (!navigator.geolocation) {
+      setInGeofence(null);
+      setLocationPermission("unsupported");
+      return;
+    }
+    let permissionStatus: PermissionStatus | null = null;
+    if (navigator.permissions?.query) {
+      navigator.permissions.query({ name: "geolocation" as PermissionName })
+        .then(status => {
+          permissionStatus = status;
+          setLocationPermission(status.state);
+          status.onchange = () => setLocationPermission(status.state);
+        })
+        .catch(() => {});
+    }
     const watch = navigator.geolocation.watchPosition(
       (pos) => {
         const { latitude, longitude } = pos.coords;
+        setLocationPermission("granted");
         const R = 6371000;
         const dLat = (latitude - studioInfo.lat) * Math.PI / 180;
         const dLng = (longitude - studioInfo.lng) * Math.PI / 180;
@@ -2117,11 +2173,27 @@ export default function AttendancePage() {
         const nowIn = dist <= studioInfo.radius;
         inGeoRef.current = nowIn;
         setInGeofence(nowIn);
+        setStudioDistanceM(dist);
+        setLastStudioCoords({
+          lat: latitude,
+          lng: longitude,
+          accuracyM: Number.isFinite(pos.coords.accuracy) ? pos.coords.accuracy : undefined,
+          distanceM: dist,
+          inGeofence: nowIn,
+          ts: Date.now(),
+        });
       },
-      () => setInGeofence(null),
+      (err) => {
+        setInGeofence(null);
+        setLastStudioCoords(null);
+        setLocationPermission(err.code === 1 ? "denied" : "error");
+      },
       { enableHighAccuracy: true, timeout: 10000 }
     );
-    return () => navigator.geolocation.clearWatch(watch);
+    return () => {
+      navigator.geolocation.clearWatch(watch);
+      if (permissionStatus) permissionStatus.onchange = null;
+    };
   }, [tab, studioInfo]);
 
   const handleDownloadQr = async () => {
@@ -2273,7 +2345,7 @@ export default function AttendancePage() {
 
   // ── Mutations ─────────────────────────────────────────────────────────────
   const checkin = useMutation({
-    mutationFn: (coords: { lat?: number; lng?: number; qrPayload?: string; workType?: WorkType; checkinPhotoUrl?: string; notes?: string }) =>
+    mutationFn: (coords: { lat?: number; lng?: number; accuracyM?: number; qrPayload?: string; workType?: WorkType; checkinPhotoUrl?: string; notes?: string; attendanceType?: string; checkInMethod?: string; auto?: boolean }) =>
       fetchAttendanceSelf(`/api/attendance/check-in`, attendanceActAsId, { method: "POST", body: JSON.stringify(coords) }),
     onSuccess: (data: { feedback?: PunchFeedback }) => {
       qc.invalidateQueries({ queryKey: ["attendance-me"] });
@@ -2396,9 +2468,17 @@ export default function AttendancePage() {
     setGeoLoading(true);
     try {
       const pos = await getGeolocationWithFallback();
-      const { latitude: lat, longitude: lng } = pos.coords;
+      const { latitude: lat, longitude: lng, accuracy } = pos.coords;
       if (action === "checkin") {
-        await checkin.mutateAsync({ lat, lng, workType });
+        await checkin.mutateAsync({
+          lat,
+          lng,
+          accuracyM: Number.isFinite(accuracy) ? accuracy : undefined,
+          workType: "studio_auto",
+          attendanceType: "studio_auto",
+          checkInMethod: "gps_auto",
+          auto: true,
+        });
       } else if (action === "checkout") {
         await checkout.mutateAsync({ lat, lng });
       } else if (action === "ot_checkin") {
@@ -2462,7 +2542,39 @@ export default function AttendancePage() {
     (todayCheckIn.isOffsite ||
       todayCheckIn.workType === "di_show" ||
       todayCheckIn.workType === "makeup_ngoai" ||
-      todayCheckIn.method === "offsite");
+      isOffsiteMethod(todayCheckIn.method));
+  const checkedInStudio = !!todayCheckIn && !checkedInOffsite;
+  const displayAutoCheckInAt =
+    autoCheckInAt ??
+    (isStudioAutoLog(todayCheckIn) ? (todayCheckIn?.localTime ?? new Date(todayCheckIn.createdAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })) : null);
+
+  useEffect(() => {
+    if (tab !== "me") return;
+    if (!lastStudioCoords?.inGeofence) return;
+    if (hasCheckedIn || isTodayShowDay || myLoading) return;
+    if (checkin.isPending || geoLoading) return;
+    const now = Date.now();
+    if (now - lastAutoCheckInAttemptRef.current < 5 * 60_000) return;
+    lastAutoCheckInAttemptRef.current = now;
+    setGeoErr(null);
+    void checkin.mutateAsync({
+      lat: lastStudioCoords.lat,
+      lng: lastStudioCoords.lng,
+      accuracyM: lastStudioCoords.accuracyM,
+      workType: "studio_auto",
+      attendanceType: "studio_auto",
+      checkInMethod: "gps_auto",
+      auto: true,
+    }).then((data: { time?: string; localTime?: string; createdAt?: string; alreadyCheckedIn?: boolean }) => {
+      const t = data.time ?? data.localTime ?? (data.createdAt ? new Date(data.createdAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }) : new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" }));
+      setAutoCheckInAt(t);
+      setCheckMsg({ ok: true, text: data.alreadyCheckedIn ? "Đã có chấm công hôm nay" : `Đã tự chấm công lúc ${t}` });
+      setTimeout(() => setCheckMsg(null), 3500);
+    }).catch((e: Error) => {
+      setCheckMsg({ ok: false, text: e.message });
+      setTimeout(() => setCheckMsg(null), 5000);
+    });
+  }, [tab, lastStudioCoords, hasCheckedIn, isTodayShowDay, myLoading, checkin, geoLoading]);
 
   const beginCheckInStudio = () => {
     setWorkType("studio");
@@ -2716,10 +2828,51 @@ export default function AttendancePage() {
                 Hôm nay — {new Date().toLocaleDateString("vi-VN", { weekday: "long", day: "numeric", month: "numeric" })}
               </h3>
 
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 dark:bg-emerald-950/20 p-3 mb-3 text-sm">
+                <div className="flex items-start gap-2">
+                  <MapPin className="w-4 h-4 text-emerald-700 mt-0.5 flex-shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <p className="font-semibold text-emerald-900 dark:text-emerald-100">Định vị studio tự động</p>
+                    <div className="mt-1 grid gap-1 text-xs text-emerald-800/90 dark:text-emerald-100/80">
+                      <span>{locationPermission === "granted" ? "Đã cấp quyền vị trí" : "Chưa cấp quyền vị trí"}</span>
+                      <span>
+                        {inGeofence === true
+                          ? "Bạn đang trong studio"
+                          : inGeofence === false
+                            ? `Ngoài phạm vi studio${studioDistanceM != null ? ` · ${Math.round(studioDistanceM)}m` : ""}`
+                            : "Đang kiểm tra phạm vi studio"}
+                      </span>
+                      {displayAutoCheckInAt && <span className="font-semibold">Đã tự chấm công lúc {displayAutoCheckInAt}</span>}
+                      {checkedInStudio && !displayAutoCheckInAt && todayCheckIn?.localTime && (
+                        <span className="font-semibold">Đã chấm công studio lúc {todayCheckIn.localTime}</span>
+                      )}
+                    </div>
+                    {locationPermission !== "granted" && !hasCheckedIn && !isTodayShowDay && (
+                      <button
+                        type="button"
+                        onClick={beginCheckInStudio}
+                        disabled={geoLoading || checkin.isPending}
+                        className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 text-white text-xs font-semibold hover:bg-emerald-700 disabled:opacity-60"
+                      >
+                        {(geoLoading || checkin.isPending) && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                        Bật định vị để tự chấm công
+                      </button>
+                    )}
+                    {(locationPermission === "denied" || locationPermission === "error" || locationPermission === "unsupported") && (
+                      <p className="mt-2 text-xs text-amber-800 dark:text-amber-200">
+                        Vui lòng bật định vị trên trình duyệt/điện thoại hoặc dùng QR dự phòng.
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+
               {/* Messages */}
-              {checkMsg && !checkMsg.ok && (
-                <div className="flex items-center gap-2 text-sm p-2.5 rounded-lg mb-3 bg-destructive/10 text-destructive">
-                  <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              {checkMsg && (
+                <div className={`flex items-center gap-2 text-sm p-2.5 rounded-lg mb-3 ${
+                  checkMsg.ok ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : "bg-destructive/10 text-destructive"
+                }`}>
+                  {checkMsg.ok ? <CheckCircle2 className="w-4 h-4 flex-shrink-0" /> : <AlertCircle className="w-4 h-4 flex-shrink-0" />}
                   {checkMsg.text}
                 </div>
               )}
@@ -2825,7 +2978,7 @@ export default function AttendancePage() {
                 </>
               )}
 
-              {hasCheckedIn && !hasCheckedOut && (
+              {hasCheckedIn && !hasCheckedOut && checkedInOffsite && (
                 <button
                   type="button"
                   onClick={() => {
@@ -2848,6 +3001,27 @@ export default function AttendancePage() {
                 </button>
               )}
 
+              {hasCheckedIn && !hasCheckedOut && !checkedInOffsite && (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50/70 p-3 mb-3 text-sm text-emerald-800">
+                  <div className="flex items-center gap-2 font-semibold">
+                    <CheckCircle2 className="w-4 h-4" />
+                    Studio đã ghi nhận. Hệ thống mặc định tính đủ ca đến 18:00.
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQrAction("checkout");
+                      void doGPS("checkout");
+                    }}
+                    disabled={geoLoading || checkout.isPending}
+                    className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-emerald-300 bg-white text-emerald-700 text-xs font-medium hover:bg-emerald-50 disabled:opacity-60"
+                  >
+                    {(checkout.isPending || (geoLoading && qrAction === "checkout")) && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                    Ghi nhận check-out thực tế (tuỳ chọn)
+                  </button>
+                </div>
+              )}
+
               {hasCheckedIn && hasCheckedOut && (
                 <div className="flex items-center justify-center gap-2 p-3 rounded-xl border-2 border-green-300 bg-green-50 text-green-700 font-semibold text-sm mb-3">
                   <CheckCircle2 className="w-5 h-5" />
@@ -2860,10 +3034,16 @@ export default function AttendancePage() {
                   Show Day: không bắt buộc check-in/check-out studio. Lịch booking đã được ghi nhận là đi làm.
                 </p>
               ) : (
-                <p className="text-[11px] text-muted-foreground mb-2">
+                <>
+                <p className="hidden text-[11px] text-muted-foreground mb-2">
                   Check-out hành chính: {checkoutRules.checkoutFrom}–{checkoutRules.checkoutUntil}
                   {" · "}Quên check-out sau {checkoutRules.checkoutUntil}: phạt {vnd(checkoutRules.forgotPenalty)} (ngày công vẫn tính).
                 </p>
+                <p className="text-[11px] text-muted-foreground mb-2">
+                  Tại studio: tự chấm bằng định vị, mặc định tính đủ ca đến 18:00. QR chỉ dùng dự phòng.
+                  {" · "}Ngoài studio: cần GPS + selfie và kết thúc ca theo logic cũ.
+                </p>
+                </>
               )}
 
               {/* Today's logs */}
@@ -2882,7 +3062,11 @@ export default function AttendancePage() {
                           : "Kết thúc TC"}:
                       </span>
                       <span>{new Date(l.createdAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })}</span>
-                      {l.isOffsite
+                      <span className={requiresManualCheckout(l) ? "text-amber-600" : isStudioAutoLog(l) ? "text-emerald-600" : "text-green-600"}>
+                        {attendanceMethodLabel(l)}
+                        {l.distanceM ? ` (${Math.round(Number(l.distanceM))}m)` : ""}
+                      </span>
+                      {false && l.isOffsite
                         ? <span className="text-amber-600">📍 Ngoài studio {l.distanceM ? `(${Math.round(Number(l.distanceM))}m)` : ""}</span>
                         : <span className="text-green-600">✓ Tại studio</span>}
                       {l.method === "manual" && <span className="text-violet-500 font-medium">[Thủ công]</span>}
@@ -3307,7 +3491,7 @@ export default function AttendancePage() {
                     rows = Array.from(map.values()).filter(r => studioIds.has(r.staffId) && !showIds.has(r.staffId));
                   }
                   if (todayFilter === "dangDiShow") rows = rows.filter(r => r.ci && (r.ci.workType === "di_show" || r.ci.workType === "makeup_ngoai") && !r.co);
-                  if (todayFilter === "chuaCheckOut") rows = rows.filter(r => r.ci && !r.co);
+                  if (todayFilter === "chuaCheckOut") rows = rows.filter(r => r.ci && requiresManualCheckout(r.ci) && !r.co);
                   return (
                     <div className="px-4 pb-3 border-t border-border pt-2">
                       <p className="text-[11px] text-muted-foreground mb-1.5">{rows.length} kết quả:</p>

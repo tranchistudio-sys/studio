@@ -628,69 +628,45 @@ router.get("/cms/categories", async (req, res) => {
     // ── product/album counts theo descendants (recursive CTE) ─────────────
     if (rows.length) {
       const ids = rows.map(x => x.id);
-      const isGallery = type === "gallery";
+      // Bảng item theo loại danh mục: gallery → albums, idea → photo_ideas, còn lại → dresses
+      const entity = type === "gallery"
+        ? { table: "gallery_albums", img: "x.cover_image_url" }
+        : type === "idea"
+          ? { table: "photo_ideas", img: "COALESCE(x.cover_image_url, x.public_image_url, x.image_url)" }
+          : { table: "dresses", img: "COALESCE(x.cover_image_url, x.public_image_url, x.image_url)" };
       const cnt = await pool.query(
-        isGallery
-          ? `WITH RECURSIVE descendants AS (
-               SELECT id AS root_id, id FROM cms_categories WHERE id = ANY($1::int[])
-               UNION ALL
-               SELECT d.root_id, c.id
-                 FROM cms_categories c JOIN descendants d ON c.parent_id = d.id
-                WHERE c.deleted_at IS NULL
-             )
-             SELECT d.root_id, COUNT(ga.id)::int AS c
-               FROM descendants d
-               LEFT JOIN gallery_albums ga
-                 ON ga.category_id = d.id
-                AND ga.deleted_at IS NULL
-              GROUP BY d.root_id`
-          : `WITH RECURSIVE descendants AS (
-               SELECT id AS root_id, id FROM cms_categories WHERE id = ANY($1::int[])
-               UNION ALL
-               SELECT d.root_id, c.id
-                 FROM cms_categories c JOIN descendants d ON c.parent_id = d.id
-                WHERE c.deleted_at IS NULL
-             )
-             SELECT d.root_id, COUNT(dr.id)::int AS c
-               FROM descendants d
-               LEFT JOIN dresses dr
-                 ON dr.category_id = d.id
-                AND dr.deleted_at IS NULL
-              GROUP BY d.root_id`,
+        `WITH RECURSIVE descendants AS (
+           SELECT id AS root_id, id FROM cms_categories WHERE id = ANY($1::int[])
+           UNION ALL
+           SELECT d.root_id, c.id
+             FROM cms_categories c JOIN descendants d ON c.parent_id = d.id
+            WHERE c.deleted_at IS NULL
+         )
+         SELECT d.root_id, COUNT(x.id)::int AS c
+           FROM descendants d
+           LEFT JOIN ${entity.table} x
+             ON x.category_id = d.id
+            AND x.deleted_at IS NULL
+          GROUP BY d.root_id`,
         [ids]
       );
       const cmap = new Map<number, number>();
       for (const x of cnt.rows as Array<{ root_id: number; c: number }>) cmap.set(x.root_id, x.c);
       // Fallback cover ảnh
       const cov = await pool.query(
-        isGallery
-          ? `WITH RECURSIVE descendants AS (
-               SELECT id AS root_id, id FROM cms_categories WHERE id = ANY($1::int[])
-               UNION ALL
-               SELECT d.root_id, c.id
-                 FROM cms_categories c JOIN descendants d ON c.parent_id = d.id
-                WHERE c.deleted_at IS NULL
-             )
-             SELECT DISTINCT ON (d.root_id) d.root_id, ga.cover_image_url AS img
-               FROM descendants d
-               JOIN gallery_albums ga ON ga.category_id = d.id
-                                      AND ga.deleted_at IS NULL
-                                      AND ga.cover_image_url IS NOT NULL
-              ORDER BY d.root_id, ga.id ASC`
-          : `WITH RECURSIVE descendants AS (
-               SELECT id AS root_id, id FROM cms_categories WHERE id = ANY($1::int[])
-               UNION ALL
-               SELECT d.root_id, c.id
-                 FROM cms_categories c JOIN descendants d ON c.parent_id = d.id
-                WHERE c.deleted_at IS NULL
-             )
-             SELECT DISTINCT ON (d.root_id) d.root_id,
-                    COALESCE(dr.cover_image_url, dr.public_image_url, dr.image_url) AS img
-               FROM descendants d
-               JOIN dresses dr ON dr.category_id = d.id
-                              AND dr.deleted_at IS NULL
-                              AND COALESCE(dr.cover_image_url, dr.public_image_url, dr.image_url) IS NOT NULL
-              ORDER BY d.root_id, dr.id ASC`,
+        `WITH RECURSIVE descendants AS (
+           SELECT id AS root_id, id FROM cms_categories WHERE id = ANY($1::int[])
+           UNION ALL
+           SELECT d.root_id, c.id
+             FROM cms_categories c JOIN descendants d ON c.parent_id = d.id
+            WHERE c.deleted_at IS NULL
+         )
+         SELECT DISTINCT ON (d.root_id) d.root_id, ${entity.img} AS img
+           FROM descendants d
+           JOIN ${entity.table} x ON x.category_id = d.id
+                                  AND x.deleted_at IS NULL
+                                  AND ${entity.img} IS NOT NULL
+          ORDER BY d.root_id, x.id ASC`,
         [ids]
       );
       const imap = new Map<number, string>();
@@ -709,7 +685,7 @@ router.post("/cms/categories", async (req, res) => {
   try {
     const { type, parentId, name, slug, coverImageUrl, sortOrder } = req.body ?? {};
     if (!type || !name?.trim()) return res.status(400).json({ error: "Thiếu type hoặc tên" });
-    if (!["dress", "service", "gallery"].includes(type)) {
+    if (!["dress", "service", "gallery", "idea"].includes(type)) {
       return res.status(400).json({ error: "type không hợp lệ" });
     }
     // Nếu có parentId thì kiểm tra cùng type

@@ -11,7 +11,7 @@ import {
   CreditCard, Film, MessageSquare, ChevronDown, Shield, Eye,
   Camera, Palette, Layers, Banknote, Star, TrendingDown, User, Timer, Funnel, FlaskConical,
   Volume2, VolumeX, CheckCheck,
-  Images, DollarSign, Tag, Trash2, Globe, Home, ExternalLink, Heart, LayoutTemplate
+  Images, DollarSign, Tag, Trash2, Globe, Home, ExternalLink, Heart, LayoutTemplate, Lightbulb
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useStaffAuth, type SimulateRole } from "@/contexts/StaffAuthContext";
@@ -87,6 +87,7 @@ const CMS_NAV: CmsNavItem[] = [
   { href: "/cms/gallery",    label: "Concept ảnh",  icon: Images,     adminOnly: true, publicPath: "/bo-anh" },
   { href: "/cms/pricing",    label: "Bảng giá",      icon: DollarSign, adminOnly: true, publicPath: "/bang-gia" },
   { href: "/cms/categories", label: "Cho thuê đồ",   icon: Shirt,      adminOnly: false, publicPath: "/cho-thue-do" },
+  { href: "/cms/photo-ideas", label: "Ý tưởng chụp ảnh", icon: Lightbulb, adminOnly: false, publicPath: "/y-tuong-chup-anh" },
   { href: "/cms/wedding-templates", label: "Cài đặt Thiệp cưới", icon: Heart, adminOnly: true, publicPath: "/thiep-cuoi-online" },
   { href: "/cms/trash",      label: "Thùng rác CMS", icon: Trash2,     adminOnly: true },
 ];

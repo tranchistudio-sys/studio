@@ -925,6 +925,46 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
     await client.query(`ALTER TABLE dresses ADD COLUMN IF NOT EXISTS sale_price numeric`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_dresses_priority ON dresses(is_priority, priority_at DESC NULLS LAST)`);
 
+    // ── Module "Ý tưởng chụp ảnh" (photo ideas) ─────────────────────────────
+    // Concept/dáng chụp mẫu cho khách tham khảo — bảo vệ bằng mật khẩu (24h).
+    // extra_images: JSON array đường dẫn ảnh. Tương lai mở rộng albums (ảnh + video)
+    // sẽ thêm bảng photo_idea_albums tham chiếu idea_id — schema hiện tại không cản trở.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS photo_ideas (
+        id                serial PRIMARY KEY,
+        name              text NOT NULL,
+        slug              text,
+        category_id       integer,
+        description       text,
+        image_url         text,
+        public_image_url  text,
+        cover_image_url   text,
+        extra_images      text,
+        tags_text         text,
+        visibility_status text NOT NULL DEFAULT 'public',
+        execution_status  text NOT NULL DEFAULT 'available',
+        sort_order        integer NOT NULL DEFAULT 0,
+        created_at        timestamp NOT NULL DEFAULT now(),
+        deleted_at        timestamp
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_photo_ideas_category ON photo_ideas(category_id)`);
+
+    // Key-value settings dùng chung (mật khẩu xem Ý tưởng chụp ảnh, có thể đổi trong CMS).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS app_settings (
+        key        text PRIMARY KEY,
+        value      text,
+        updated_at timestamp NOT NULL DEFAULT now()
+      )
+    `);
+    await client.query(`
+      INSERT INTO app_settings (key, value) VALUES
+        ('photo_ideas_password', '999999'),
+        ('photo_ideas_password_enabled', '1')
+      ON CONFLICT (key) DO NOTHING
+    `);
+
     await client.query("COMMIT");
     console.log("[migrations] Hoàn thành.");
   } catch (err) {

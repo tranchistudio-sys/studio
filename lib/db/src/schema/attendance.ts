@@ -1,4 +1,4 @@
-import { pgTable, serial, text, timestamp, integer, numeric, date, unique } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, timestamp, integer, numeric, date, unique, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { staffTable } from "./tasks";
@@ -6,7 +6,7 @@ import { bookingsTable } from "./bookings";
 
 // ─── Nhật ký chấm công ────────────────────────────────────────────────────────
 // type: check_in | check_out
-// method: qr | offsite | manual
+// method: qr | gps_auto | gps_selfie | offsite | manual
 export const attendanceLogsTable = pgTable("attendance_logs", {
   id: serial("id").primaryKey(),
   staffId: integer("staff_id").notNull().references(() => staffTable.id, { onDelete: "cascade" }),
@@ -17,7 +17,11 @@ export const attendanceLogsTable = pgTable("attendance_logs", {
   accuracyM: numeric("accuracy_m", { precision: 8, scale: 2 }),
   distanceM: numeric("distance_m", { precision: 8, scale: 2 }),
   bookingId: integer("booking_id").references(() => bookingsTable.id, { onDelete: "set null" }),
-  workType: text("work_type"), // studio | di_show | makeup_ngoai | hau_ky | linh_dong
+  workType: text("work_type"), // studio | studio_auto | di_show | makeup_ngoai | hau_ky | linh_dong
+  attendanceType: text("attendance_type"),
+  locationVerified: boolean("location_verified").default(false).notNull(),
+  selfieRequired: boolean("selfie_required").default(false).notNull(),
+  qrRequired: boolean("qr_required").default(false).notNull(),
   notes: text("notes"),
   // ADD-ONLY: giữ lại để dev là superset của prod (không drop khi publish)
   checkinPhotoUrl: text("checkin_photo_url"),

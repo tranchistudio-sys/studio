@@ -29,9 +29,20 @@ export function getPublicSiteHomeUrl(): string {
   return getPublicPageUrl("/");
 }
 
-/** Staff globe / new-tab preview: always append preview query so logged-in staff see the public site. */
+/**
+ * Staff globe / new-tab preview: always append preview query so logged-in staff
+ * see the public site. LUÔN dùng origin hiện tại (app đang chạy) — không dùng
+ * domain production, để khi browser đi theo href (middle-click, popup bị chặn,
+ * React chưa hydrate) vẫn mở đúng app này với flag ?xem_web=1 thay vì bị
+ * bản deploy cũ trên domain khác đá về /calendar.
+ */
 export function getPublicPreviewUrl(path = "/"): string {
-  return withPublicPreviewQuery(getPublicPageUrl(path));
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  if (typeof window !== "undefined" && window.location?.origin) {
+    const base = import.meta.env.BASE_URL.replace(/\/$/, "") || "";
+    return withPublicPreviewQuery(`${window.location.origin}${base}${normalized}`);
+  }
+  return withPublicPreviewQuery(getPublicPageUrl(normalized));
 }
 
 /** Absolute URL for a public route (e.g. `/bo-anh`, `/san-pham/slug`). */
@@ -66,9 +77,7 @@ export function getPublicPageUrl(path: string, options?: { preview?: boolean }):
  * staff still see the customer website (not /calendar).
  */
 export function openPublicSite(path = "/"): void {
-  const normalized = path.startsWith("/") ? path : `/${path}`;
-  const base = import.meta.env.BASE_URL.replace(/\/$/, "") || "";
-  const url = withPublicPreviewQuery(`${window.location.origin}${base}${normalized}`);
+  const url = getPublicPreviewUrl(path);
 
   const opened = window.open(url, "_blank", "noopener,noreferrer");
   if (opened) {

@@ -40,6 +40,7 @@ import aiTestRouter from "./ai-test";
 import notificationsRouter from "./notifications";
 import webPushRouter from "./web-push";
 import cmsRouter from "./cms";
+import photoIdeasRouter from "./photo-ideas";
 import weddingCardsRouter from "./wedding-cards";
 import staffAllowancesRouter from "./staff-allowances";
 
@@ -86,6 +87,7 @@ router.use(aiTestRouter);
 router.use(notificationsRouter);
 router.use(webPushRouter);
 router.use(cmsRouter);
+router.use(photoIdeasRouter);
 router.use(weddingCardsRouter);
 router.use(staffAllowancesRouter);
 

@@ -14,6 +14,7 @@ const PUBLIC_NAV = [
   { href: "/bo-anh", label: "Concept ảnh" },
   { href: "/bang-gia", label: "Bảng giá" },
   { href: "/cho-thue-do", label: "Cho thuê đồ" },
+  { href: "/y-tuong-chup-anh", label: "Ý tưởng chụp ảnh" },
   { href: "/thiep-cuoi-online", label: "Thiệp cưới" },
   { href: "/lien-he", label: "Liên hệ" },
 ];

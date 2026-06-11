@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Camera, Images } from "lucide-react";
 import { LazyImage } from "@/components/cms-shared";
+import { Style3D, Tilt3D } from "@/components/public-3d";
 import { PublicReveal, PublicRevealItem } from "@/components/public/PublicReveal";
 import { GALLERY_PAGE } from "@/lib/public-site-config";
 import {
@@ -183,6 +184,7 @@ export default function PublicGalleryPage() {
 
   return (
     <div className="pb-20 sm:pb-28">
+      <Style3D />
       <GalleryHero />
 
       <div className="max-w-7xl mx-auto px-5 sm:px-8 pt-10 sm:pt-14 pb-6">
@@ -336,11 +338,21 @@ export default function PublicGalleryPage() {
 
 function GalleryHero() {
   return (
-    <section className="gallery-hero px-5 sm:px-8 pt-14 sm:pt-20 pb-16 sm:pb-24">
+    <section className="gallery-hero relative overflow-hidden px-5 sm:px-8 pt-14 sm:pt-20 pb-16 sm:pb-24">
+      {/* Orbs gradient mềm bay lơ lửng tạo chiều sâu */}
+      <div aria-hidden className="absolute inset-0 pointer-events-none">
+        <div className="pi-float-soft absolute -top-20 -left-16 w-72 h-72 rounded-full bg-[var(--public-nude,#c4a882)]/15 blur-3xl" />
+        <div className="pi-float-soft absolute -bottom-24 -right-12 w-80 h-80 rounded-full bg-rose-200/25 blur-3xl" style={{ animationDelay: "1.6s" }} />
+        <div className="pi-float-soft absolute top-1/4 right-1/4 w-48 h-48 rounded-full bg-amber-100/40 blur-3xl" style={{ animationDelay: "3s" }} />
+      </div>
       <div className="gallery-hero-watermark" aria-hidden>
         {GALLERY_PAGE.watermark}
       </div>
       <div className="relative z-10 max-w-4xl mx-auto text-center hero-content hero-ready">
+        <div className="pi-gate-card inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-neutral-800 via-neutral-900 to-black text-white shadow-[0_18px_38px_-12px_rgba(0,0,0,.45)] mb-6"
+          style={{ animation: "piFloat 6s ease-in-out infinite", transformStyle: "preserve-3d" }}>
+          <Camera className="w-6 h-6" style={{ transform: "translateZ(18px)" }} />
+        </div>
         <p className="text-[10px] sm:text-[11px] tracking-[0.35em] text-neutral-500 uppercase mb-5">
           {GALLERY_PAGE.eyebrow}
         </p>
@@ -370,74 +382,81 @@ function GalleryAlbumCard({
   const tags = parseCSV(album.tagsText);
 
   return (
-    <article
-      role="link"
-      tabIndex={0}
-      onClick={onNavigate}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onNavigate();
-        }
-      }}
-      className="gallery-card concept-card group cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--public-nude,#c4a882)]"
-    >
+    <article className="group">
       <a href={href} className="sr-only" tabIndex={-1}>
         {album.name}
       </a>
-      <div className="relative aspect-[3/4] bg-neutral-100 overflow-hidden">
-        {album.coverImageUrl ? (
-          <>
-            <LazyImage
-              src={album.coverImageUrl}
-              alt={album.name}
-              className="concept-card-image absolute inset-0 w-full h-full object-cover"
-            />
-            <div
-              className="concept-card-overlay absolute inset-0 bg-gradient-to-t from-black/75 via-black/20 to-transparent pointer-events-none"
-              aria-hidden
-            />
-            <div className="concept-card-title-hover absolute bottom-0 left-0 right-0 p-5 sm:p-6 pointer-events-none">
-              <p className="font-serif text-xl sm:text-2xl text-white leading-snug">
-                {album.name}
-              </p>
-              {album.photoCount > 0 && (
-                <p className="text-white/70 text-[10px] tracking-[0.2em] uppercase mt-1.5">
-                  {album.photoCount} ảnh
-                  {album.videoCount > 0 ? ` · ${album.videoCount} video` : ""}
+      <Tilt3D
+        role="link"
+        tabIndex={0}
+        intensity={8}
+        onClick={onNavigate}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onNavigate();
+          }
+        }}
+        className="gallery-card concept-card cursor-pointer rounded-[0.625rem] overflow-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--public-nude,#c4a882)]"
+      >
+        <div className="relative aspect-[3/4] bg-neutral-100 overflow-hidden">
+          <div className="pi-shine absolute inset-0 z-10 pointer-events-none overflow-hidden" aria-hidden />
+          {album.coverImageUrl ? (
+            <>
+              <LazyImage
+                src={album.coverImageUrl}
+                alt={album.name}
+                className="concept-card-image absolute inset-0 w-full h-full object-cover"
+              />
+              <div
+                className="concept-card-overlay absolute inset-0 bg-gradient-to-t from-black/75 via-black/20 to-transparent pointer-events-none"
+                aria-hidden
+              />
+              <div
+                className="concept-card-title-hover absolute bottom-0 left-0 right-0 p-5 sm:p-6 pointer-events-none"
+                style={{ transform: "translateZ(34px)" }}
+              >
+                <p className="font-serif text-xl sm:text-2xl text-white leading-snug drop-shadow-[0_2px_8px_rgba(0,0,0,.45)]">
+                  {album.name}
                 </p>
-              )}
+                {album.photoCount > 0 && (
+                  <p className="text-white/70 text-[10px] tracking-[0.2em] uppercase mt-1.5">
+                    {album.photoCount} ảnh
+                    {album.videoCount > 0 ? ` · ${album.videoCount} video` : ""}
+                  </p>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="w-full h-full flex flex-col items-center justify-center gap-2 px-4">
+              <Images className="w-8 h-8 text-neutral-300" />
+              <span className="text-[10px] tracking-widest uppercase text-neutral-400 text-center">
+                {album.name}
+              </span>
             </div>
-          </>
-        ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center gap-2 px-4">
-            <Images className="w-8 h-8 text-neutral-300" />
-            <span className="text-[10px] tracking-widest uppercase text-neutral-400 text-center">
-              {album.name}
+          )}
+          {album.videoCount > 0 && (
+            <span className="absolute top-3 right-3 z-10 text-[10px] bg-black/55 text-white px-2.5 py-1 rounded-full backdrop-blur-sm">
+              ▶ Video
             </span>
+          )}
+        </div>
+        <div className="px-4 py-3 sm:hidden border-t border-neutral-100 bg-white">
+          <p className="font-serif text-lg text-neutral-900 line-clamp-2">{album.name}</p>
+        </div>
+        {tags.length > 0 && (
+          <div className="hidden sm:flex flex-wrap gap-1.5 px-4 py-3 -mt-1 bg-white">
+            {tags.slice(0, 2).map((t) => (
+              <span
+                key={t}
+                className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--public-cream-deep,#f3efe8)] text-neutral-600"
+              >
+                {t}
+              </span>
+            ))}
           </div>
         )}
-        {album.videoCount > 0 && (
-          <span className="absolute top-3 right-3 z-10 text-[10px] bg-black/55 text-white px-2.5 py-1 rounded-full backdrop-blur-sm">
-            ▶ Video
-          </span>
-        )}
-      </div>
-      <div className="px-4 py-3 sm:hidden border-t border-neutral-100">
-        <p className="font-serif text-lg text-neutral-900 line-clamp-2">{album.name}</p>
-      </div>
-      {tags.length > 0 && (
-        <div className="hidden sm:flex flex-wrap gap-1.5 px-4 pb-3 -mt-1">
-          {tags.slice(0, 2).map((t) => (
-            <span
-              key={t}
-              className="text-[10px] px-2 py-0.5 rounded-full bg-[var(--public-cream-deep,#f3efe8)] text-neutral-600"
-            >
-              {t}
-            </span>
-          ))}
-        </div>
-      )}
+      </Tilt3D>
     </article>
   );
 }

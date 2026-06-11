@@ -37,6 +37,8 @@ import LoginPage from "@/pages/login";
 import CmsGalleryPage from "@/pages/cms/gallery";
 import CmsPricingPublicPage from "@/pages/cms/pricing-public";
 import CmsCategoriesPage from "@/pages/cms/categories";
+import CmsPhotoIdeasPage from "@/pages/cms/photo-ideas";
+import PublicPhotoIdeasPage from "@/pages/public/photo-ideas";
 import CmsTrashPage from "@/pages/cms/trash";
 import CmsHomeSettingsPage from "@/pages/cms/home-settings";
 import CmsWeddingTemplatesPage from "@/pages/cms/wedding-templates";
@@ -77,6 +79,7 @@ const PUBLIC_ROUTES = [
   "/bang-gia",
   "/cho-thue-do",
   "/san-pham",
+  "/y-tuong-chup-anh",
   "/lien-he",
   "/thiep-cuoi-online",
   "/thiep-cuoi",
@@ -201,6 +204,7 @@ function PublicRouter() {
         <Route path="/bang-gia" component={PublicPricingPage} />
         <Route path="/cho-thue-do" component={PublicRentalPage} />
         <Route path="/san-pham/:slug" component={RentalDetailPage} />
+        <Route path="/y-tuong-chup-anh" component={PublicPhotoIdeasPage} />
         <Route path="/lien-he" component={PublicContactPage} />
         <Route path="/thiep-cuoi-online" component={WeddingCardsLandingPage} />
         <Route component={PublicNotFound} />
@@ -248,6 +252,7 @@ function InternalRouter() {
         <Route path="/cms/rentals" component={() => <Redirect to="/cms/categories" />} />
         <Route path="/cms/products-rental" component={() => <Redirect to="/cms/categories" />} />
         <Route path="/cms/categories" component={CmsCategoriesPage} />
+        <Route path="/cms/photo-ideas" component={CmsPhotoIdeasPage} />
         <Route path="/cms/trash" component={() => <CmsAdminRoute component={CmsTrashPage} />} />
         <Route component={NotFound} />
       </Switch>

@@ -1,0 +1,68 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "KuL9xxPDjT29yS3LTHRK0"
+uri = "file://exports/source_code.tar.gz"
+type = "unspecified"
+title = "Mã nguồn (source code)"
+
+[[outputs]]
+id = "SirGKTqtJfHJl4GSgraxy"
+uri = "file://exports/database_dump.sql.gz"
+type = "unspecified"
+title = "Dữ liệu database (PostgreSQL dump, .sql.gz)"
+
+[[outputs]]
+id = "x5uRh7sBoaFXFD1ZtKgVe"
+uri = "file://exports/AmazingStudio_Backup.tar.gz"
+type = "unspecified"
+title = "Gói backup hoàn chỉnh (source + database + tài liệu)"
+
+[[outputs]]
+id = "CocOLOjmBxXbYQrsy6hqP"
+uri = "file://backup/README.md"
+type = "text"
+title = "README - hướng dẫn khôi phục"
+
+[[outputs]]
+id = "1gi1Ts3tOElfaq6Va35Kz"
+uri = "file://backup/docs/BUSINESS_LOGIC.md"
+type = "text"
+title = "BUSINESS_LOGIC.md"
+
+[[outputs]]
+id = "RpaOlY65aQi0dlvNT3XQu"
+uri = "file://backup/docs/DATABASE_SCHEMA.md"
+type = "text"
+title = "DATABASE_SCHEMA.md"
+
+[[outputs]]
+id = "1_D2lVSSKujO_dyQbD_MF"
+uri = "file://backup/docs/API_DOCUMENTATION.md"
+type = "text"
+title = "API_DOCUMENTATION.md"
+
+[[outputs]]
+id = "gGrqALKhrEeWjz3Mn9n6z"
+uri = "file://backup/docs/ARCHITECTURE.md"
+type = "text"
+title = "ARCHITECTURE.md"
+
+[[outputs]]
+id = "sYVrUthOTj7Hl8Rkgjpny"
+uri = "file://backup/docs/ENVIRONMENT_VARIABLES.md"
+type = "text"
+title = "ENVIRONMENT_VARIABLES.md"
+
+[[outputs]]
+id = "NdIzLTOqfn16rnAe122pA"
+uri = "file://backup/docs/THIRD_PARTY_SERVICES.md"
+type = "text"
+title = "THIRD_PARTY_SERVICES.md"
+
+[[outputs]]
+id = "MKcGkho1a-XK5d83Aacvp"
+uri = "file://backup/docs/STORAGE.md"
+type = "text"
+title = "STORAGE.md"

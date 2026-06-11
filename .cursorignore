@@ -1,0 +1,17 @@
+# Heavy directories — skip indexing to prevent Cursor crashes
+node_modules/
+.pnpm-store/
+attached_assets/
+exports/
+artifacts/
+backup/
+.git/
+dist/
+tmp/
+out-tsc/
+.expo/
+.expo-shared/
+coverage/
+.cache/
+.local/
+downloads/

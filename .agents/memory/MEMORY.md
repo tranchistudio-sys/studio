@@ -1,0 +1,1 @@
+- [Runtime-managed DB tables](runtime-managed-tables.md) — wedding_*/cms_home_settings live outside Drizzle; drizzle-kit push (post-merge) wants to DROP them; post-merge.sh guarded by SAFE_PRODUCTION/SKIP_DB_PUSH; prod publish uses a separate dev↔prod diff.

@@ -41,6 +41,7 @@ import notificationsRouter from "./notifications";
 import webPushRouter from "./web-push";
 import cmsRouter from "./cms";
 import photoIdeasRouter from "./photo-ideas";
+import visualAdvisorRouter from "./visual-advisor";
 import weddingCardsRouter from "./wedding-cards";
 import staffAllowancesRouter from "./staff-allowances";
 
@@ -88,6 +89,7 @@ router.use(notificationsRouter);
 router.use(webPushRouter);
 router.use(cmsRouter);
 router.use(photoIdeasRouter);
+router.use(visualAdvisorRouter);
 router.use(weddingCardsRouter);
 router.use(staffAllowancesRouter);
 

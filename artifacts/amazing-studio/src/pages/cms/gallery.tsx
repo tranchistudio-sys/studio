@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient, useInfiniteQuery, type QueryClie
 import {
   Images, Plus, Edit2, Trash2, Eye, EyeOff, FileText, Tag, FolderTree, Globe,
   ChevronRight, ChevronDown, ArrowLeft, Search,
-  X, ChevronLeft, Save, Loader2, Star, Video, Play,
+  X, ChevronLeft, Save, Loader2, Star, Video, Play, SlidersHorizontal,
 } from "lucide-react";
 import { Button, Input } from "@/components/ui";
 import {
@@ -41,109 +41,12 @@ interface GalleryCat {
   productCount?: number; fallbackCover?: string | null;
 }
 
-// ─── Common tags (gallery) – localStorage, riêng vs categories ──────────────
-const COMMON_TAGS_KEY = "cms-gallery-common-tags-v1";
-const DEFAULT_COMMON_TAGS = [
-  "beauty","sexy","nàng thơ","sang trọng","ngầu","cá tính",
-  "cưới","studio","ngoại cảnh","phông xám",
-  "áo dài","truyền thống","hiện đại","việt phục",
-  "sinh nhật","vintage","tối giản","Hàn Quốc",
-];
-function normalizeTag(s: string): string { return s.trim().replace(/\s+/g, " "); }
-function loadCommonTags(): string[] {
-  try {
-    const raw = localStorage.getItem(COMMON_TAGS_KEY);
-    if (raw === null) {
-      localStorage.setItem(COMMON_TAGS_KEY, JSON.stringify(DEFAULT_COMMON_TAGS));
-      return [...DEFAULT_COMMON_TAGS];
-    }
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr.filter((x: unknown): x is string => typeof x === "string" && x.trim().length > 0) : [...DEFAULT_COMMON_TAGS];
-  } catch { return [...DEFAULT_COMMON_TAGS]; }
-}
-function saveCommonTags(list: string[]) {
-  try { localStorage.setItem(COMMON_TAGS_KEY, JSON.stringify(list)); } catch { /* ignore */ }
-}
-function useCommonTags() {
-  const [list, setList] = useState<string[]>(() => loadCommonTags());
-  const add = useCallback((raw: string) => {
-    const n = normalizeTag(raw); if (!n) return;
-    const lower = n.toLowerCase();
-    setList(prev => {
-      if (prev.some(t => t.toLowerCase() === lower)) return prev;
-      const next = [...prev, n]; saveCommonTags(next); return next;
-    });
-  }, []);
-  return { list, add };
-}
-
-function ChipSuggest({ label, suggestions, value, onChange, onAddSuggestion }: {
-  label: string; suggestions: string[]; value: string; onChange: (v: string) => void;
-  onAddSuggestion?: (s: string) => void;
-}) {
-  const current = useMemo(
-    () => (value ? value.split(",").map(s => s.trim()).filter(Boolean) : []),
-    [value]
-  );
-  const currentLower = useMemo(() => new Set(current.map(t => t.toLowerCase())), [current]);
-  const [draft, setDraft] = useState("");
-  function commit(next: string[]) { onChange(next.join(", ")); }
-  function addTag(raw: string) {
-    const n = normalizeTag(raw); if (!n) return;
-    if (currentLower.has(n.toLowerCase())) return;
-    commit([...current, n]);
-    onAddSuggestion?.(n);
-  }
-  function removeAt(idx: number) { const next = current.slice(); next.splice(idx, 1); commit(next); }
-  function toggleSuggestion(s: string) {
-    const lower = s.toLowerCase();
-    if (currentLower.has(lower)) commit(current.filter(t => t.toLowerCase() !== lower));
-    else commit([...current, s]);
-  }
-  function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Enter" || e.key === ",") {
-      e.preventDefault();
-      if (draft.trim()) { addTag(draft); setDraft(""); }
-    } else if (e.key === "Backspace" && draft === "" && current.length > 0) {
-      e.preventDefault(); removeAt(current.length - 1);
-    }
-  }
-  return (
-    <div>
-      <label className="text-xs text-muted-foreground mb-2 block">{label}</label>
-      <div className="flex flex-wrap gap-1.5 mb-2">
-        {suggestions.map(s => {
-          const active = currentLower.has(s.toLowerCase());
-          return (
-            <button key={s} type="button" onClick={() => toggleSuggestion(s)}
-              className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-all ${
-                active
-                  ? "bg-primary text-primary-foreground border-primary"
-                  : "bg-background text-muted-foreground border-border hover:border-primary/50 hover:text-foreground"
-              }`}
-            >{active ? "✓ " : ""}{s}</button>
-          );
-        })}
-      </div>
-      <div className="flex flex-wrap items-center gap-1.5 min-h-[2.25rem] px-2 py-1.5 rounded-md border border-border bg-background focus-within:border-primary/60 transition-colors">
-        {current.map((tag, idx) => (
-          <span key={`${tag}-${idx}`} className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-xs font-medium bg-primary text-primary-foreground">
-            {tag}
-            <button type="button" onClick={() => removeAt(idx)} className="inline-flex items-center justify-center w-4 h-4 rounded-full hover:bg-white/20" aria-label={`Xoá ${tag}`}>
-              <X className="w-3 h-3" />
-            </button>
-          </span>
-        ))}
-        <input
-          value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={onKeyDown}
-          onBlur={() => { if (draft.trim()) { addTag(draft); setDraft(""); } }}
-          placeholder={current.length === 0 ? "Nhập tag rồi nhấn Enter…" : ""}
-          className="flex-1 min-w-[8rem] bg-transparent outline-none text-sm h-6"
-        />
-      </div>
-    </div>
-  );
-}
+// Chip tag input + danh sách gợi ý: dùng chung từ components/cms-tag-input
+import {
+  ChipSuggest, useCommonTags, normalizeTag,
+  FilterChipRow, FilterRadioRow, mergeTagOptions,
+  GALLERY_TAG_KEY, GALLERY_TAG_DEFAULTS, ALBUM_CATEGORY_SUGGESTIONS,
+} from "@/components/cms-tag-input";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 function getDescendantIds(cats: GalleryCat[], rootId: number): Set<number> {
@@ -255,6 +158,10 @@ export default function CmsGalleryPage() {
   const [editTab, setEditTab] = useState<"info" | "photos">("info");
   const [search, setSearch] = useState("");
   const [mobileView, setMobileView] = useState<"cats" | "albums">("cats");
+  // Bộ lọc thông minh
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<"all" | "visible" | "hidden" | "draft">("all");
+  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
 
   const { data: catsAll = [], isLoading: catsLoading } = useQuery<GalleryCat[]>({
     queryKey: ["cms-categories", "gallery"],
@@ -287,15 +194,38 @@ export default function CmsGalleryPage() {
     },
   });
 
+  // Tag lọc: gộp tag thật từ album đang xem + tag gợi ý mặc định
+  const tagOptions = useMemo(() => {
+    const fromData = new Set<string>();
+    albums.forEach(a => (a.tagsText || "").split(/[,;]/).forEach(x => { const t = x.trim(); if (t) fromData.add(t); }));
+    return mergeTagOptions([...fromData].sort(), GALLERY_TAG_DEFAULTS);
+  }, [albums]);
+
   const filteredAlbums = useMemo(() => {
+    let list = albums;
     const q = search.trim().toLowerCase();
-    if (!q) return albums;
-    return albums.filter(a =>
-      a.name.toLowerCase().includes(q) ||
-      (a.slug ?? "").toLowerCase().includes(q) ||
-      (a.tagsText ?? "").toLowerCase().includes(q)
-    );
-  }, [albums, search]);
+    if (q) {
+      list = list.filter(a =>
+        a.name.toLowerCase().includes(q) ||
+        (a.slug ?? "").toLowerCase().includes(q) ||
+        (a.tagsText ?? "").toLowerCase().includes(q)
+      );
+    }
+    if (statusFilter !== "all") list = list.filter(a => a.status === statusFilter);
+    if (selectedTags.size > 0) {
+      list = list.filter(a => {
+        const v = (a.tagsText || "").toLowerCase();
+        return [...selectedTags].some(t => v.includes(t.toLowerCase()));
+      });
+    }
+    return list;
+  }, [albums, search, statusFilter, selectedTags]);
+
+  const hasExtraFilter = statusFilter !== "all" || selectedTags.size > 0;
+  const activeFilterCount = (statusFilter !== "all" ? 1 : 0) + selectedTags.size;
+  function clearFilters() {
+    setSearch(""); setStatusFilter("all"); setSelectedTags(new Set());
+  }
 
   const saveAlbum = useMutation({
     mutationFn: async (a: Partial<Album>) => {
@@ -538,19 +468,99 @@ export default function CmsGalleryPage() {
           </Button>
         </div>
 
-        <div className="px-4 py-2 border-b bg-background">
-          <div className="relative max-w-sm">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-            <Input
-              value={search} onChange={e => setSearch(e.target.value)}
-              placeholder="Tên, slug, tags..." className="pl-8 h-8 text-sm w-full"
-            />
-            {search && (
-              <button onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2">
-                <X className="w-3.5 h-3.5 text-muted-foreground" />
+        <div className="px-4 py-2 border-b bg-background space-y-1.5">
+          {/* Hàng 1: tìm kiếm + nút bộ lọc nâng cao */}
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1 max-w-sm">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <Input
+                value={search} onChange={e => setSearch(e.target.value)}
+                placeholder="Tên, slug, tags..." className="pl-8 h-8 text-sm w-full"
+              />
+              {search && (
+                <button onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2">
+                  <X className="w-3.5 h-3.5 text-muted-foreground" />
+                </button>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setFilterOpen(v => !v)}
+              className={`flex items-center gap-1.5 h-8 px-2.5 text-xs rounded-md border transition-colors flex-shrink-0 ${
+                filterOpen || hasExtraFilter
+                  ? "bg-foreground text-background border-foreground"
+                  : "bg-background text-muted-foreground border-border hover:border-foreground"
+              }`}
+            >
+              <SlidersHorizontal className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Bộ lọc</span>
+              {activeFilterCount > 0 && (
+                <span className="inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full bg-background text-foreground text-[10px] font-semibold">
+                  {activeFilterCount}
+                </span>
+              )}
+              {filterOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+            </button>
+            {(hasExtraFilter || search) && (
+              <button onClick={clearFilters} className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 flex-shrink-0">
+                <X className="w-3 h-3" /> Xoá lọc
               </button>
             )}
           </div>
+
+          {/* Hàng 2: chip danh mục cha/con — bấm là lọc ngay (gồm cả album mục con) */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+            <span className="text-[10px] text-muted-foreground flex-shrink-0 w-12">Mục:</span>
+            <button type="button" onClick={() => setSelectedCatId(null)}
+              className={`flex-shrink-0 px-2 py-0.5 text-xs rounded-full border transition-all ${
+                selectedCatId === null
+                  ? "bg-foreground text-background border-foreground"
+                  : "bg-background text-muted-foreground border-border hover:border-foreground"
+              }`}>
+              Tất cả
+            </button>
+            {rootCats.map(c => (
+              <button key={c.id} type="button" onClick={() => setSelectedCatId(c.id)}
+                className={`flex-shrink-0 px-2 py-0.5 text-xs rounded-full border transition-all ${
+                  selectedCatId === c.id
+                    ? "bg-foreground text-background border-foreground"
+                    : "bg-background text-muted-foreground border-border hover:border-foreground"
+                }`}>
+                {c.name}{c.productCount ? ` (${c.productCount})` : ""}
+              </button>
+            ))}
+          </div>
+          {/* Mục con của danh mục đang chọn (nếu có) */}
+          {selectedCatId !== null && cats.some(c => c.parentId === selectedCatId) && (
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+              <span className="text-[10px] text-muted-foreground flex-shrink-0 w-12">Con:</span>
+              {cats.filter(c => c.parentId === selectedCatId).sort((a, b) => a.sortOrder - b.sortOrder).map(c => (
+                <button key={c.id} type="button" onClick={() => setSelectedCatId(c.id)}
+                  className="flex-shrink-0 px-2 py-0.5 text-xs rounded-full border bg-background text-muted-foreground border-border hover:border-foreground transition-all">
+                  {c.name}{c.productCount ? ` (${c.productCount})` : ""}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Bộ lọc nâng cao: tag + trạng thái hiển thị */}
+          {filterOpen && (
+            <div className="space-y-1.5 pt-1 border-t border-dashed">
+              <FilterChipRow
+                label="Tags:" options={tagOptions} selected={selectedTags}
+                onToggle={t => setSelectedTags(prev => { const n = new Set(prev); if (n.has(t)) n.delete(t); else n.add(t); return n; })}
+              />
+              <FilterRadioRow
+                label="Hiện:" value={statusFilter} onChange={setStatusFilter}
+                options={[
+                  { key: "all", label: "Tất cả" },
+                  { key: "visible", label: "Hiển thị" },
+                  { key: "hidden", label: "Ẩn" },
+                  { key: "draft", label: "Nháp" },
+                ]}
+              />
+            </div>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto p-4">
@@ -562,9 +572,9 @@ export default function CmsGalleryPage() {
             <div className="flex flex-col items-center justify-center py-16 text-muted-foreground text-center">
               <Images className="w-12 h-12 mb-3 opacity-20" />
               <p className="font-medium">
-                {search ? "Không tìm thấy album" : selectedCat ? "Chưa có album trong mục này" : "Chưa có album nào"}
+                {search || hasExtraFilter ? "Không tìm thấy album khớp bộ lọc" : selectedCat ? "Chưa có album trong mục này" : "Chưa có album nào"}
               </p>
-              {!search && (
+              {!search && !hasExtraFilter && (
                 <Button size="sm" className="mt-4 gap-1.5" onClick={() => { setEditTab("info"); setEditAlbum({ status: "visible", categoryId: selectedCatId ?? null }); }}>
                   <Plus className="w-4 h-4" /> Tạo album đầu tiên
                 </Button>
@@ -574,14 +584,14 @@ export default function CmsGalleryPage() {
             <SortableList
               items={filteredAlbums}
               onReorder={ids => {
-                // Chỉ cho phép kéo thả khi đang xem "Tất cả album" + không tìm kiếm
+                // Chỉ cho phép kéo thả khi đang xem "Tất cả album" + không lọc gì
                 // (sort_order là global, kéo trong tập đã lọc sẽ gây trùng số thứ tự).
-                if (selectedCatId !== null || search.trim() !== "") return;
+                if (selectedCatId !== null || search.trim() !== "" || hasExtraFilter) return;
                 reorderAlbums.mutate(ids);
               }}
               className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
               renderItem={(a, dh) => {
-                const canReorder = selectedCatId === null && search.trim() === "";
+                const canReorder = selectedCatId === null && search.trim() === "" && !hasExtraFilter;
                 return (
                 <div className="group rounded-2xl border border-border bg-card overflow-hidden hover:shadow-md transition-shadow">
                   <div className="relative aspect-[4/3] bg-muted">
@@ -636,6 +646,7 @@ export default function CmsGalleryPage() {
           album={editAlbum} cats={cats} onClose={() => setEditAlbum(null)}
           onSave={a => saveAlbum.mutate(a)} saving={saveAlbum.isPending}
           defaultTab={editTab} effectiveIsAdmin={effectiveIsAdmin}
+          onCategoryCreated={() => qc.invalidateQueries({ queryKey: ["cms-categories", "gallery"] })}
         />
       )}
     </div>
@@ -657,16 +668,39 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function AlbumEditorModal({
-  album, cats, onClose, onSave, saving, defaultTab = "info", effectiveIsAdmin,
+  album, cats, onClose, onSave, saving, defaultTab = "info", effectiveIsAdmin, onCategoryCreated,
 }: {
   album: Partial<Album>; cats: GalleryCat[]; onClose: () => void;
   onSave: (a: Partial<Album>) => void; saving: boolean;
   defaultTab?: "info" | "photos";
   effectiveIsAdmin: boolean;
+  onCategoryCreated?: () => void;
 }) {
   const [draft, setDraft] = useState<Partial<Album>>(album);
   const [tab, setTab] = useState<"info" | "photos">(album.id ? defaultTab : "info");
-  const commonTags = useCommonTags();
+  const commonTags = useCommonTags(GALLERY_TAG_KEY, GALLERY_TAG_DEFAULTS);
+  const [creatingCat, setCreatingCat] = useState<string | null>(null);
+
+  // Bấm chip danh mục gợi ý: chọn danh mục trùng tên nếu có, chưa có thì tạo mới
+  const normCat = (s: string) =>
+    normalizeTag(s).normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase();
+  async function pickSuggestedCategory(name: string) {
+    const existing = cats.find(c => normCat(c.name) === normCat(name));
+    if (existing) { setDraft(d => ({ ...d, categoryId: existing.id })); return; }
+    if (creatingCat) return;
+    setCreatingCat(name);
+    try {
+      const r = await fetch(`${CMS_BASE}/api/cms/categories`, {
+        method: "POST", headers: authHeaders(),
+        body: JSON.stringify({ type: "gallery", name }),
+      });
+      const row = await r.json().catch(() => ({}));
+      if (r.ok && row?.id) {
+        setDraft(d => ({ ...d, categoryId: row.id }));
+        onCategoryCreated?.();
+      }
+    } finally { setCreatingCat(null); }
+  }
   // Tạo option list dưới dạng cây phẳng có indent
   const sortedOptions = useMemo(() => {
     const out: Array<{ id: number; label: string; depth: number }> = [];
@@ -740,6 +774,29 @@ function AlbumEditorModal({
                 <option key={o.id} value={o.id}>{o.label}</option>
               ))}
             </select>
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {ALBUM_CATEGORY_SUGGESTIONS.map(name => {
+                const existing = cats.find(c => normCat(c.name) === normCat(name));
+                const active = existing != null && draft.categoryId === existing.id;
+                return (
+                  <button
+                    key={name} type="button"
+                    onClick={() => void pickSuggestedCategory(name)}
+                    disabled={creatingCat !== null}
+                    title={existing ? "Chọn danh mục này" : "Chưa có — bấm để tạo và chọn"}
+                    className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-all disabled:opacity-50 ${
+                      active
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : existing
+                          ? "bg-background text-muted-foreground border-border hover:border-primary/50 hover:text-foreground"
+                          : "bg-background text-muted-foreground border-dashed border-border hover:border-primary/50 hover:text-foreground"
+                    }`}
+                  >
+                    {creatingCat === name ? "Đang tạo…" : `${active ? "✓ " : existing ? "" : "+ "}${name}`}
+                  </button>
+                );
+              })}
+            </div>
           </div>
           <div>
             <label className="text-sm font-medium">Slug (URL)</label>

@@ -3,6 +3,7 @@ import { Link, useLocation } from "wouter";
 import { Menu, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
+import { PublicAiAdvisor } from "@/components/public-ai-advisor";
 import {
   STUDIO_ADDRESS,
   STUDIO_EMAIL,
@@ -267,6 +268,8 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
       </header>
 
       <main className="flex-1">{children}</main>
+
+      <PublicAiAdvisor />
 
       <footer className="border-t border-neutral-200 bg-stone-50">
         <div className="max-w-7xl mx-auto px-5 sm:px-8 py-16 sm:py-20">

@@ -184,7 +184,7 @@ function signViewToken(): string {
   return `${header}.${payload}.${sig}`;
 }
 
-function verifyViewToken(token: string | undefined): boolean {
+export function verifyViewToken(token: string | undefined): boolean {
   if (!token) return false;
   const parts = token.split(".");
   if (parts.length !== 3) return false;
@@ -197,7 +197,7 @@ function verifyViewToken(token: string | undefined): boolean {
   } catch { return false; }
 }
 
-async function getIdeasPasswordConfig(): Promise<{ password: string; enabled: boolean }> {
+export async function getIdeasPasswordConfig(): Promise<{ password: string; enabled: boolean }> {
   const r = await pool.query(
     `SELECT key, value FROM app_settings WHERE key IN ('photo_ideas_password', 'photo_ideas_password_enabled')`
   );

@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Tag, Plus, Trash2, Edit2, Save, Loader2, X, ChevronRight, ChevronDown,
   FolderPlus, Lightbulb, Image as ImageIcon, Eye, EyeOff, Search, Check,
-  AlertCircle, MoreHorizontal, ArrowLeft, Sparkles, Wrench,
+  AlertCircle, MoreHorizontal, ArrowLeft, Sparkles, Wrench, SlidersHorizontal,
 } from "lucide-react";
 import { Button, Input } from "@/components/ui";
 import {
@@ -15,6 +15,10 @@ import {
 } from "@/components/cms-shared";
 import { getImageSrc } from "@/lib/imageUtils";
 import { useToast } from "@/hooks/use-toast";
+import {
+  ChipSuggest, useCommonTags, IDEA_TAG_KEY, IDEA_TAG_DEFAULTS,
+  FilterChipRow, FilterRadioRow, mergeTagOptions,
+} from "@/components/cms-tag-input";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 interface Category {
@@ -188,6 +192,7 @@ function IdeaDrawer({ idea, categories, defaultCategoryId, onClose, onSaved, onD
   const set = useCallback(<K extends keyof FormType>(k: K, v: FormType[K]) => {
     setForm(f => ({ ...f, [k]: v }));
   }, []);
+  const ideaTags = useCommonTags(IDEA_TAG_KEY, IDEA_TAG_DEFAULTS);
 
   const flatCatsList = useMemo(() => flattenCats(categories), [categories]);
 
@@ -401,14 +406,13 @@ function IdeaDrawer({ idea, categories, defaultCategoryId, onClose, onSaved, onD
                 </div>
               </div>
 
-              <div>
-                <label className="text-xs text-muted-foreground mb-1 block">Tags (cách nhau dấu phẩy)</label>
-                <Input
-                  value={form.tagsText ?? ""}
-                  onChange={e => set("tagsText", e.target.value || null)}
-                  placeholder="nàng thơ, trong trẻo, Hàn Quốc..."
-                />
-              </div>
+              <ChipSuggest
+                label="Tags — AI tư vấn dựa vào tags này, bấm chip để gắn nhanh"
+                suggestions={ideaTags.list}
+                value={form.tagsText ?? ""}
+                onChange={v => set("tagsText", v || null)}
+                onAddSuggestion={ideaTags.add}
+              />
 
               <div>
                 <label className="text-xs text-muted-foreground mb-1 block">Mô tả</label>
@@ -629,6 +633,10 @@ export default function CmsPhotoIdeasPage() {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [search, setSearch] = useState("");
   const [execFilter, setExecFilter] = useState<ExecFilter>("all");
+  // Bộ lọc thông minh
+  const [filterOpen, setFilterOpen] = useState(false);
+  const [visFilter, setVisFilter] = useState<"all" | "public" | "hidden">("all");
+  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
   const [editingIdea, setEditingIdea] = useState<Idea | "new" | null>(null);
   const [drawerDefaultCatId, setDrawerDefaultCatId] = useState<number | null>(null);
   const [addUnderParent, setAddUnderParent] = useState<number | "root" | null>(null);
@@ -660,10 +668,24 @@ export default function CmsPhotoIdeasPage() {
     return getDescendantIds(cats, selectedCatId);
   }, [selectedCatId, cats]);
 
+  // Tag lọc: gộp tag thật từ ý tưởng + tag gợi ý mặc định
+  const tagOptions = useMemo(() => {
+    const fromData = new Set<string>();
+    ideas.forEach(d => (d.tagsText || "").split(/[,;]/).forEach(x => { const t = x.trim(); if (t) fromData.add(t); }));
+    return mergeTagOptions([...fromData].sort(), IDEA_TAG_DEFAULTS);
+  }, [ideas]);
+
   const filteredIdeas = useMemo(() => {
     if (!descendantIds) return [];
     let list = ideas.filter(d => d.categoryId !== null && descendantIds.has(d.categoryId));
     if (execFilter !== "all") list = list.filter(d => d.executionStatus === execFilter);
+    if (visFilter !== "all") list = list.filter(d => d.visibilityStatus === visFilter);
+    if (selectedTags.size > 0) {
+      list = list.filter(d => {
+        const v = (d.tagsText || "").toLowerCase();
+        return [...selectedTags].some(t => v.includes(t.toLowerCase()));
+      });
+    }
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(d =>
@@ -673,7 +695,13 @@ export default function CmsPhotoIdeasPage() {
       );
     }
     return list;
-  }, [ideas, descendantIds, search, execFilter]);
+  }, [ideas, descendantIds, search, execFilter, visFilter, selectedTags]);
+
+  const hasExtraFilter = execFilter !== "all" || visFilter !== "all" || selectedTags.size > 0;
+  const activeFilterCount = (execFilter !== "all" ? 1 : 0) + (visFilter !== "all" ? 1 : 0) + selectedTags.size;
+  function clearFilters() {
+    setSearch(""); setExecFilter("all"); setVisFilter("all"); setSelectedTags(new Set());
+  }
 
   // ── Category mutations (dùng chung API /cms/categories với type='idea') ──
   const addCat = useMutation({
@@ -820,6 +848,11 @@ export default function CmsPhotoIdeasPage() {
                 <div className="relative flex-1 min-w-[180px] max-w-sm">
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
                   <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Tên, tags, mô tả..." className="pl-8 h-9" />
+                  {search && (
+                    <button onClick={() => setSearch("")} className="absolute right-2 top-1/2 -translate-y-1/2">
+                      <X className="w-3.5 h-3.5 text-muted-foreground" />
+                    </button>
+                  )}
                 </div>
                 {([
                   { key: "all", label: "Tất cả" },
@@ -838,7 +871,46 @@ export default function CmsPhotoIdeasPage() {
                     {f.label}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  onClick={() => setFilterOpen(v => !v)}
+                  className={`flex items-center gap-1.5 h-8 px-2.5 text-xs rounded-md border transition-colors ${
+                    filterOpen || hasExtraFilter
+                      ? "bg-foreground text-background border-foreground"
+                      : "bg-background text-muted-foreground border-border hover:border-foreground"
+                  }`}
+                >
+                  <SlidersHorizontal className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Bộ lọc</span>
+                  {activeFilterCount > 0 && (
+                    <span className="inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full bg-background text-foreground text-[10px] font-semibold">
+                      {activeFilterCount}
+                    </span>
+                  )}
+                  {filterOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                </button>
+                {(hasExtraFilter || search) && (
+                  <button onClick={clearFilters} className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1">
+                    <X className="w-3 h-3" /> Xoá lọc
+                  </button>
+                )}
               </div>
+              {filterOpen && (
+                <div className="space-y-1.5 pt-1.5 border-t border-dashed">
+                  <FilterChipRow
+                    label="Tags:" options={tagOptions} selected={selectedTags}
+                    onToggle={t => setSelectedTags(prev => { const n = new Set(prev); if (n.has(t)) n.delete(t); else n.add(t); return n; })}
+                  />
+                  <FilterRadioRow
+                    label="Hiện:" value={visFilter} onChange={setVisFilter}
+                    options={[
+                      { key: "all", label: "Tất cả" },
+                      { key: "public", label: "Đang hiển thị" },
+                      { key: "hidden", label: "Đang ẩn" },
+                    ]}
+                  />
+                </div>
+              )}
             </div>
             <div className="flex-1 overflow-y-auto p-4">
               {ideasLoading ? (
@@ -846,8 +918,8 @@ export default function CmsPhotoIdeasPage() {
               ) : filteredIdeas.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-16 text-muted-foreground text-center">
                   <Lightbulb className="w-12 h-12 mb-3 opacity-20" />
-                  <p className="font-medium">{search ? "Không tìm thấy ý tưởng" : "Chưa có ý tưởng trong danh mục này"}</p>
-                  {!search && (
+                  <p className="font-medium">{search || hasExtraFilter ? "Không tìm thấy ý tưởng khớp bộ lọc" : "Chưa có ý tưởng trong danh mục này"}</p>
+                  {!search && !hasExtraFilter && (
                     <Button size="sm" className="mt-4 gap-1.5" onClick={() => openNewIdea(selectedCatId)}>
                       <Plus className="w-4 h-4" /> Thêm ý tưởng đầu tiên
                     </Button>

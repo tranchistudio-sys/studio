@@ -16,6 +16,7 @@ import { getImageSrc } from "@/lib/imageUtils";
 import { formatVND } from "@/lib/utils";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { OUTFIT_TAGS, OutfitTagBadge, type OutfitTagKey } from "@/lib/outfit-tags";
+import { ChipSuggest, useCommonTags, DRESS_TAG_KEY, DRESS_TAG_DEFAULTS } from "@/components/cms-tag-input";
 import { uploadQueueStore } from "@/lib/upload-queue/store";
 import { useToast } from "@/hooks/use-toast";
 
@@ -619,6 +620,7 @@ function ProductDrawer({ dress, categories, onClose, onSaved, onDeleted }: {
   const set = useCallback(<K extends keyof FormType>(k: K, v: FormType[K]) => {
     setForm(f => ({ ...f, [k]: v }));
   }, []);
+  const dressTags = useCommonTags(DRESS_TAG_KEY, DRESS_TAG_DEFAULTS);
 
   const flatCats = useMemo(() => flattenCategories(categories), [categories]);
 
@@ -817,15 +819,18 @@ function ProductDrawer({ dress, categories, onClose, onSaved, onDeleted }: {
                     <label className="text-xs text-muted-foreground mb-1 block">Màu sắc</label>
                     <Input value={form.colorText ?? ""} onChange={e => set("colorText", e.target.value || null)} placeholder="Trắng,Kem,Hồng" />
                   </div>
-                  <div>
+                  <div className="col-span-2">
                     <label className="text-xs text-muted-foreground mb-1 block">Chất liệu</label>
                     <Input value={form.materialText ?? ""} onChange={e => set("materialText", e.target.value || null)} placeholder="Lụa,ren,mikado" />
                   </div>
-                  <div>
-                    <label className="text-xs text-muted-foreground mb-1 block">Tags / Đặc tính</label>
-                    <Input value={form.tagsText ?? ""} onChange={e => set("tagsText", e.target.value || null)} placeholder="đuôi cá,luxury" />
-                  </div>
                 </div>
+                <ChipSuggest
+                  label="Tags / Phong cách — AI tư vấn dựa vào tags này, bấm chip để gắn nhanh"
+                  suggestions={dressTags.list}
+                  value={form.tagsText ?? ""}
+                  onChange={v => set("tagsText", v || null)}
+                  onAddSuggestion={dressTags.add}
+                />
               </div>
 
               {/* Giá */}

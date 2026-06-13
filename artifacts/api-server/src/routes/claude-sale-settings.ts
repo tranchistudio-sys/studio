@@ -16,6 +16,16 @@ import { scanReengageCandidates } from "../lib/sale-reengage";
 import { getSaleContext } from "../lib/sale-context";
 import { getScheduleContext } from "../lib/sale-calendar";
 import { getActivePlaybook } from "../lib/sale-playbook";
+import {
+  getAiProviderConfig,
+  setAiProviderConfig,
+  defaultAiProviderConfig,
+  normalizeAiProviderConfig,
+  resolveProviderChain,
+  resolveApiKey,
+  ALL_PROVIDERS,
+  PROVIDER_LABEL,
+} from "../lib/ai-provider";
 
 /**
  * Module "Cài đặt Claude Sale" + Monitor + Follow-up khách cũ.
@@ -144,6 +154,41 @@ router.get("/claude-sale/reengage", async (req, res) => {
     res.json({ candidates, count: candidates.length });
   } catch (err) {
     res.status(500).json({ error: `Quét khách cần chăm lại lỗi: ${String(err).slice(0, 200)}` });
+  }
+});
+
+// ─── Cấu hình AI Provider (tổng đài fallback Claude → OpenAI → …) ─────────────
+
+// GET: cấu hình hiện tại + chuỗi thực tế + provider nào đã có key (để admin kiểm tra).
+router.get("/claude-sale/ai-provider", async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const config = await getAiProviderConfig();
+    const chain = resolveProviderChain(config);
+    const keyStatus: Record<string, boolean> = {};
+    for (const p of ALL_PROVIDERS) keyStatus[p] = !!(await resolveApiKey(p));
+    res.json({
+      config,
+      defaults: defaultAiProviderConfig(),
+      chain,
+      chainLabels: chain.map((p) => PROVIDER_LABEL[p]),
+      keyStatus, // { claude: true, openai: true/false, gemini: false }
+      providers: ALL_PROVIDERS.map((p) => ({ value: p, label: PROVIDER_LABEL[p] })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: `Đọc cấu hình AI Provider lỗi: ${String(err).slice(0, 200)}` });
+  }
+});
+
+// PUT: lưu cấu hình mới (provider chính/dự phòng, bật-tắt fallback, timeout, retry).
+router.put("/claude-sale/ai-provider", async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const merged = normalizeAiProviderConfig({ ...(await getAiProviderConfig()), ...(req.body ?? {}) });
+    const config = await setAiProviderConfig(merged);
+    res.json({ config, chain: resolveProviderChain(config) });
+  } catch (err) {
+    res.status(500).json({ error: `Lưu cấu hình AI Provider lỗi: ${String(err).slice(0, 200)}` });
   }
 });
 

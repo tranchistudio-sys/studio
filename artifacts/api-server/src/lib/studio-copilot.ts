@@ -680,7 +680,9 @@ export async function answerStudioCopilot(
 }
 
 export function isLlmConfigured(): boolean {
-  const base = (process.env.AI_INTEGRATIONS_OPENAI_BASE_URL ?? "").trim();
-  const key = (process.env.AI_INTEGRATIONS_OPENAI_API_KEY ?? "").trim();
-  return !!base && !!key && key !== "placeholder";
+  // Claude (provider chính mới) — chỉ cần ANTHROPIC_API_KEY là LLM sẵn sàng.
+  if ((process.env.ANTHROPIC_API_KEY ?? "").trim()) return true;
+  // OpenAI legacy (cổng riêng hoặc OpenAI thật) — dùng khi provider là OpenAI.
+  const key = (process.env.AI_INTEGRATIONS_OPENAI_API_KEY ?? process.env.OPENAI_API_KEY ?? "").trim();
+  return !!key && key !== "placeholder";
 }

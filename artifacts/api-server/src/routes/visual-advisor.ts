@@ -1,8 +1,8 @@
 import { Router, type IRouter } from "express";
 import { pool } from "@workspace/db";
-import OpenAI from "openai";
 import { verifyViewToken, getIdeasPasswordConfig } from "./photo-ideas";
 import { isLlmConfigured } from "../lib/studio-copilot";
+import { callChat } from "../lib/ai-orchestrator";
 
 /**
  * AI Visual Advisor — tư vấn hình ảnh cho toàn website public.
@@ -295,11 +295,6 @@ function keywordMatch(query: string, catalog: CatalogItem[]): CatalogItem[] {
 
 // ─── LLM: chỉ chọn (source, id) từ catalog ───────────────────────────────────
 
-const openai = new OpenAI({
-  baseURL: process.env.AI_INTEGRATIONS_OPENAI_BASE_URL,
-  apiKey: process.env.AI_INTEGRATIONS_OPENAI_API_KEY ?? "placeholder",
-});
-
 interface LlmResult {
   answer: string;
   picks: Array<{ source: SourceType; id: number }>;
@@ -326,19 +321,21 @@ QUY TẮC BẮT BUỘC:
 1. Chỉ được chọn id có trong danh sách trên. TUYỆT ĐỐI không bịa tên, ảnh, link hay sản phẩm không tồn tại.
 2. Chọn tối đa ${MAX_RESULTS} kết quả phù hợp nhất với mong muốn của khách; ưu tiên kết quả không ghi "(chưa có ảnh)".
 3. Nếu không có gì phù hợp: picks để mảng rỗng và answer nói thật là studio chưa có mẫu này, mời khách liên hệ để được tư vấn thêm.
-4. answer: tiếng Việt, thân thiện, 1–3 câu ngắn, không hứa hẹn gì ngoài danh sách.
+4. answer: tiếng Việt, giọng nhân viên Hoa thân thiện (xưng "em"), 1–3 câu ngắn, không hứa hẹn gì ngoài danh sách.
 5. Trả về DUY NHẤT một JSON object đúng định dạng: {"answer": "...", "picks": [{"source": "dress", "id": 1}]}`;
 
-  const resp = await openai.chat.completions.create({
-    model: "gpt-5.2",
-    max_completion_tokens: 1024,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: query },
-    ],
+  // Qua TỔNG ĐÀI: Claude (chính) → OpenAI (dự phòng). jsonMode ép trả JSON hợp lệ.
+  // Tone theo `system` ở trên; server vẫn validate lại từng (source,id) để chống bịa.
+  const result = await callChat({
+    system,
+    messages: [{ role: "user", content: query }],
+    maxTokens: 1024,
+    jsonMode: true,
+    label: "website-advisor",
   });
+  if (!result.ok) return null; // hết provider → caller tự fallback keyword match
 
-  const raw = resp.choices[0]?.message?.content ?? "";
+  const raw = result.text;
   const jsonText = raw.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
   const start = jsonText.indexOf("{");
   const end = jsonText.lastIndexOf("}");

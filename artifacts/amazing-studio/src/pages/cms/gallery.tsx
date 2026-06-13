@@ -11,7 +11,6 @@ import {
   GripVertical, uploadFileViaPresign, type UploadedImage,
 } from "@/components/cms-shared";
 import { getImageSrc } from "@/lib/imageUtils";
-import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { useToast } from "@/hooks/use-toast";
 import { getPublicPageUrl } from "@/lib/public-site-url";
 
@@ -151,7 +150,7 @@ function CatNode({ cat, depth, allCats, handlers }: {
 // ─── Page ───────────────────────────────────────────────────────────────────
 export default function CmsGalleryPage() {
   const qc = useQueryClient();
-  const { effectiveIsAdmin } = useStaffAuth();
+  const effectiveIsAdmin = true; // CMS Website mở toàn quyền cho mọi nhân viên
   const [selectedCatId, setSelectedCatId] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [editAlbum, setEditAlbum] = useState<Partial<Album> | null>(null);

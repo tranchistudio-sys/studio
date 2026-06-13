@@ -647,6 +647,30 @@ router.put("/leave-requests/:id", async (req, res) => {
   res.json(updated);
 });
 
+// DELETE /api/leave-requests/:id — xóa thật đơn xin nghỉ (chỉ admin/owner)
+router.delete("/leave-requests/:id", async (req, res) => {
+  const callerId = verifyToken(req.headers.authorization);
+  if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
+  const id = parseInt(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "ID không hợp lệ" });
+
+  // Chỉ Admin và Owner được xóa đơn; nhân viên không được phép.
+  const cr = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
+  const caller = cr.rows[0] as { role?: string; roles?: unknown } | undefined;
+  const callerRoles = Array.isArray(caller?.roles) ? (caller!.roles as string[]) : [];
+  const privileged =
+    caller?.role === "admin" || caller?.role === "owner" ||
+    callerRoles.includes("admin") || callerRoles.includes("owner");
+  if (!privileged) return res.status(403).json({ error: "Chỉ Admin/Owner mới có thể xóa đơn xin nghỉ" });
+
+  const [existing] = await db.select().from(staffLeaveRequestsTable)
+    .where(eq(staffLeaveRequestsTable.id, id));
+  if (!existing) return res.status(404).json({ error: "Không tìm thấy đơn" });
+
+  await db.delete(staffLeaveRequestsTable).where(eq(staffLeaveRequestsTable.id, id));
+  res.json({ ok: true, id });
+});
+
 // ── Ghi chú nội bộ: admin-only ────────────────────────────────────────────────
 router.get("/staff/:id/internal-notes", async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);

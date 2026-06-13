@@ -108,6 +108,7 @@ function attendanceMethodLabel(log?: Pick<LogEntry, "method" | "attendanceType" 
   if (isStudioAutoLog(log)) return "GPS Auto";
   if (isOffsiteMethod(log.method) || log.isOffsite || log.attendanceType === "offsite") return "Ngoài studio + selfie";
   if (log.method === "qr") return "QR";
+  if (log.method === "wifi" || log.attendanceType === "studio_wifi") return "WiFi Studio";
   if (log.method === "manual") return "Thủ công";
   return "Studio";
 }
@@ -2467,24 +2468,29 @@ export default function AttendancePage() {
     setQrAction(action);
     setGeoLoading(true);
     try {
-      const pos = await getGeolocationWithFallback();
-      const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+      // GPS hỏng → vẫn gửi không kèm toạ độ; server fallback kiểm tra WiFi studio
+      let coords: { lat?: number; lng?: number; accuracyM?: number } = {};
+      try {
+        const pos = await getGeolocationWithFallback();
+        const { latitude: lat, longitude: lng, accuracy } = pos.coords;
+        coords = { lat, lng, accuracyM: Number.isFinite(accuracy) ? accuracy : undefined };
+      } catch {
+        coords = {};
+      }
       if (action === "checkin") {
         await checkin.mutateAsync({
-          lat,
-          lng,
-          accuracyM: Number.isFinite(accuracy) ? accuracy : undefined,
+          ...coords,
           workType: "studio_auto",
           attendanceType: "studio_auto",
           checkInMethod: "gps_auto",
           auto: true,
         });
       } else if (action === "checkout") {
-        await checkout.mutateAsync({ lat, lng });
+        await checkout.mutateAsync(coords);
       } else if (action === "ot_checkin") {
-        await overtimeCheckin.mutateAsync({ lat, lng });
+        await overtimeCheckin.mutateAsync(coords);
       } else {
-        await overtimeCheckout.mutateAsync({ lat, lng });
+        await overtimeCheckout.mutateAsync(coords);
       }
     } catch (e: unknown) {
       setGeoErr(geoErrorMessage(e));

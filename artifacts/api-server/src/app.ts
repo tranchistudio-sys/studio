@@ -9,6 +9,9 @@ import { startDeadlineChecker, startWeddingPrepReminder } from "./routes/notific
 
 const app: Express = express();
 
+// Cần IP thật của client (xác thực WiFi studio) — tin x-forwarded-for từ proxy (Vite dev / reverse proxy)
+app.set("trust proxy", true);
+
 app.use(
   pinoHttp({
     logger,

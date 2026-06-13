@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
-import { Building2, Loader2, LogOut, MapPin } from "lucide-react";
+import { Building2, Loader2, LogOut, MapPin, Wifi } from "lucide-react";
 import { AttendanceEncouragementModal } from "@/components/AttendanceEncouragementModal";
 import { OffsiteCheckInDialog } from "@/components/OffsiteCheckInDialog";
 import { uploadFileViaPresign } from "@/components/cms-shared";
@@ -14,6 +14,17 @@ type TodayAttendance = {
   todayMode?: "SHOW" | "STUDIO" | "OFF";
   todayBookings?: Array<{ id: number; customerName: string | null; serviceLabel: string | null; packageType: string | null }>;
 };
+
+type GpsState = "checking" | "ok" | "out" | "fail";
+type WifiState = "checking" | "ok" | "no" | "unconfigured";
+
+function distanceMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371000;
+  const dLat = ((lat2 - lat1) * Math.PI) / 180;
+  const dLng = ((lng2 - lng1) * Math.PI) / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
 
 export default function AttendanceCheckinPage() {
   const [, setLocation] = useLocation();
@@ -29,6 +40,8 @@ export default function AttendanceCheckinPage() {
   const [encourageFeedback, setEncourageFeedback] = useState<PunchFeedback | null>(null);
   const [todayMode, setTodayMode] = useState<"SHOW" | "STUDIO" | "OFF" | null>(null);
   const [todayBookings, setTodayBookings] = useState<TodayAttendance["todayBookings"]>([]);
+  const [gpsState, setGpsState] = useState<GpsState>("checking");
+  const [wifiState, setWifiState] = useState<WifiState>("checking");
 
   useEffect(() => {
     const token = localStorage.getItem("amazingStudioToken_v2");
@@ -45,6 +58,38 @@ export default function AttendanceCheckinPage() {
       .finally(() => setStatus("ready"));
   }, []);
 
+  // Kiểm tra trạng thái WiFi studio (server đối chiếu IP) + GPS (so với geofence)
+  useEffect(() => {
+    const token = localStorage.getItem("amazingStudioToken_v2");
+    fetch(`${BASE}/api/attendance/wifi-status`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+      .then(r => r.ok ? r.json() : null)
+      .then((d: { configured?: boolean; verified?: boolean } | null) => {
+        if (!d || !d.configured) setWifiState("unconfigured");
+        else setWifiState(d.verified ? "ok" : "no");
+      })
+      .catch(() => setWifiState("unconfigured"));
+
+    if (!navigator.geolocation) {
+      setGpsState("fail");
+      return;
+    }
+    fetch(`${BASE}/api/attendance/studio-info`)
+      .then(r => r.json())
+      .then((info: { lat: number; lng: number; radius: number }) => {
+        navigator.geolocation.getCurrentPosition(
+          pos => {
+            const d = distanceMeters(pos.coords.latitude, pos.coords.longitude, info.lat, info.lng);
+            setGpsState(d <= (info.radius || 300) ? "ok" : "out");
+          },
+          () => setGpsState("fail"),
+          { timeout: 12000, enableHighAccuracy: true },
+        );
+      })
+      .catch(() => setGpsState("fail"));
+  }, []);
+
   const authHeaders = () => {
     const token = localStorage.getItem("amazingStudioToken_v2");
     return {
@@ -55,22 +100,22 @@ export default function AttendanceCheckinPage() {
 
   const submitPunch = async (
     type: "check_in" | "check_out",
-    lat: number,
-    lng: number,
+    lat: number | undefined,
+    lng: number | undefined,
     mode?: "studio" | "offsite",
     extra?: { checkinPhotoUrl?: string; notes?: string },
   ) => {
     const endpoint = type === "check_in" ? "/api/attendance/check-in" : "/api/attendance/check-out";
+    const coords = lat !== undefined && lng !== undefined ? { lat, lng } : {};
     const body =
       type === "check_in"
         ? {
-            lat,
-            lng,
+            ...coords,
             workType: mode === "offsite" ? "di_show" : "studio",
             ...(extra?.checkinPhotoUrl ? { checkinPhotoUrl: extra.checkinPhotoUrl } : {}),
             ...(extra?.notes ? { notes: extra.notes } : {}),
           }
-        : { lat, lng };
+        : coords;
 
     setStatus("sending");
     try {
@@ -85,6 +130,7 @@ export default function AttendanceCheckinPage() {
         time?: string;
         feedback?: PunchFeedback;
         createdAt?: string;
+        method?: string;
       };
 
       if (!res.ok) {
@@ -112,7 +158,8 @@ export default function AttendanceCheckinPage() {
         setMessage(
           json.message ?? (type === "check_in" ? "Chấm vào thành công!" : "Chấm ra thành công!"),
         );
-        setDetail(`Thời gian: ${json.time ?? new Date().toLocaleTimeString("vi-VN")}`);
+        const timeText = `Thời gian: ${json.time ?? new Date().toLocaleTimeString("vi-VN")}`;
+        setDetail(json.method === "wifi" ? `Đã xác nhận có mặt tại studio qua WiFi. ${timeText}` : timeText);
       }
       if (type === "check_in") {
         setCheckedIn(true);
@@ -159,10 +206,9 @@ export default function AttendanceCheckinPage() {
     setMessage("");
     setDetail("");
 
+    // GPS hỏng/không có quyền → vẫn gửi không kèm toạ độ; server sẽ kiểm tra WiFi studio (GPS pass OR WiFi pass)
     if (!navigator.geolocation) {
-      setStatus("error");
-      setMessage("Trình duyệt không hỗ trợ GPS");
-      setDetail("Vui lòng dùng trình duyệt hỗ trợ định vị để chấm công.");
+      void submitPunch(type, undefined, undefined, mode);
       setGeoLoading(false);
       return;
     }
@@ -172,19 +218,9 @@ export default function AttendanceCheckinPage() {
         setGeoLoading(false);
         void submitPunch(type, pos.coords.latitude, pos.coords.longitude, mode);
       },
-      err => {
+      () => {
         setGeoLoading(false);
-        setStatus("error");
-        if (err.code === 1) {
-          setMessage("Bị từ chối quyền GPS");
-          setDetail("Hãy cho phép trình duyệt truy cập vị trí và thử lại.");
-        } else if (err.code === 3) {
-          setMessage("Hết thời gian chờ GPS");
-          setDetail("Hãy đảm bảo bạn đang bật GPS và thử lại.");
-        } else {
-          setMessage("Không lấy được vị trí GPS");
-          setDetail(err.message ?? "");
-        }
+        void submitPunch(type, undefined, undefined, mode);
       },
       { timeout: 15000, enableHighAccuracy: true },
     );
@@ -225,11 +261,50 @@ export default function AttendanceCheckinPage() {
           </div>
         ) : status === "ready" ? (
           <>
-            <div className="rounded-2xl shadow-lg border p-8 text-center mb-6 bg-blue-50">
+            <div className="rounded-2xl shadow-lg border p-8 text-center mb-4 bg-blue-50">
               <div className="text-4xl mb-3">{checkedIn ? "✅" : "👤"}</div>
               <p className="text-lg font-semibold text-blue-700">
                 {checkedIn ? "Đã chấm vào hôm nay" : "Chưa chấm vào hôm nay"}
               </p>
+            </div>
+
+            {/* Trạng thái xác thực: GPS pass OR WiFi pass là được chấm công */}
+            <div className="rounded-xl border bg-white/70 px-4 py-3 mb-6 text-sm space-y-1.5">
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-muted-foreground"><MapPin className="w-4 h-4" /> Định vị</span>
+                {gpsState === "checking" ? (
+                  <span className="flex items-center gap-1 text-muted-foreground"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Đang kiểm tra…</span>
+                ) : gpsState === "ok" ? (
+                  <span className="font-medium text-green-700">Đạt ✓</span>
+                ) : (
+                  <span className="font-medium text-red-600">{gpsState === "out" ? "Ngoài vùng studio" : "Không đạt"}</span>
+                )}
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="flex items-center gap-1.5 text-muted-foreground"><Wifi className="w-4 h-4" /> WiFi Studio</span>
+                {wifiState === "checking" ? (
+                  <span className="flex items-center gap-1 text-muted-foreground"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Đang kiểm tra…</span>
+                ) : wifiState === "ok" ? (
+                  <span className="font-medium text-green-700">Đạt ✓</span>
+                ) : wifiState === "unconfigured" ? (
+                  <span className="text-muted-foreground">Chưa cấu hình</span>
+                ) : (
+                  <span className="font-medium text-red-600">Không đạt</span>
+                )}
+              </div>
+              {gpsState !== "checking" && wifiState !== "checking" && (
+                <div className="flex items-center justify-between border-t pt-1.5 mt-1.5">
+                  <span className="text-muted-foreground">Kết quả</span>
+                  {gpsState === "ok" || wifiState === "ok" ? (
+                    <span className="font-semibold text-green-700">Được phép chấm công</span>
+                  ) : (
+                    <span className="font-semibold text-red-600">Không được phép chấm công</span>
+                  )}
+                </div>
+              )}
+              {gpsState !== "ok" && gpsState !== "checking" && wifiState === "ok" && (
+                <p className="text-xs text-green-700 pt-0.5">Đã xác nhận có mặt tại studio qua WiFi.</p>
+              )}
             </div>
 
             {!checkedIn ? (

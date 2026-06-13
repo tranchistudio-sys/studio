@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation } from "wouter";
-import { Menu, X } from "lucide-react";
+import { Menu, X, LogIn, LayoutDashboard } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { PublicAiAdvisor } from "@/components/public-ai-advisor";
@@ -13,10 +13,10 @@ import {
 const PUBLIC_NAV = [
   { href: "/", label: "Trang chủ" },
   { href: "/bo-anh", label: "Dịch vụ" },
-  { href: "/bang-gia", label: "Bảng giá" },
   { href: "/cho-thue-do", label: "Cho thuê đồ" },
   { href: "/y-tuong-chup-anh", label: "Ý tưởng chụp ảnh" },
   { href: "/thiep-cuoi-online", label: "Thiệp cưới" },
+  { href: "/bang-gia", label: "Bảng giá" },
   { href: "/lien-he", label: "Liên hệ" },
 ];
 
@@ -80,6 +80,19 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
     ? "text-white/70 border-white/40"
     : "text-neutral-500 border-neutral-300";
 
+  // Nút đăng nhập/quản trị: thu nhỏ thành icon kín đáo, chỉ nhân viên để ý.
+  // Giữ nguyên chức năng — đã đăng nhập → /calendar, chưa → /login.
+  const isStaffLoggedIn = authChecked && !!viewer;
+  const authHref = isStaffLoggedIn ? "/calendar" : "/login";
+  const AuthIcon = isStaffLoggedIn ? LayoutDashboard : LogIn;
+  const authTitle = isStaffLoggedIn ? "Vào hệ thống" : "Đăng nhập";
+  const authIconClass = cn(
+    "inline-flex items-center justify-center w-8 h-8 rounded-full border transition-colors",
+    overlayHeader
+      ? "text-white/70 border-white/30 hover:text-white hover:border-white/60"
+      : "text-neutral-400 border-neutral-200 hover:text-neutral-900 hover:border-neutral-400",
+  );
+
   return (
     <div
       className={cn(
@@ -101,7 +114,7 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
         )}
       >
         <div className="max-w-7xl mx-auto px-5 sm:px-8">
-          <div className="min-[540px]:hidden flex flex-col items-center py-3">
+          <div className="min-[540px]:hidden relative flex flex-col items-center py-3">
             <Link href="/" className="flex items-center gap-2 group">
               <span className={cn("font-serif text-xl font-light tracking-wider transition-colors", logoClass)}>
                 AMAZING
@@ -135,31 +148,14 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
                 </Link>
               ))}
             </nav>
-            {authChecked && viewer ? (
-              <Link
-                href="/calendar"
-                className={cn(
-                  "mt-2 text-[11px] tracking-widest uppercase px-3 py-1 border transition-colors",
-                  overlayHeader
-                    ? "text-white/80 border-white/40 hover:border-white"
-                    : "text-neutral-500 border-neutral-200 hover:border-neutral-900",
-                )}
-              >
-                Vào hệ thống
-              </Link>
-            ) : (
-              <Link
-                href="/login"
-                className={cn(
-                  "mt-2 text-[11px] tracking-widest uppercase px-3 py-1 border transition-colors",
-                  overlayHeader
-                    ? "text-white/80 border-white/40 hover:border-white"
-                    : "text-neutral-500 border-neutral-200 hover:border-neutral-900",
-                )}
-              >
-                Đăng nhập
-              </Link>
-            )}
+            <Link
+              href={authHref}
+              aria-label={authTitle}
+              title={authTitle}
+              className={cn("absolute top-3 right-0", authIconClass)}
+            >
+              <AuthIcon className="w-4 h-4" />
+            </Link>
           </div>
 
           <div className="hidden min-[540px]:flex items-center justify-between h-16 gap-4">
@@ -188,31 +184,14 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
               ))}
             </nav>
 
-            {authChecked && viewer ? (
-              <Link
-                href="/calendar"
-                className={cn(
-                  "hidden md:inline-flex flex-shrink-0 text-xs tracking-widest uppercase px-4 py-2 border transition-colors",
-                  overlayHeader
-                    ? "text-white/90 border-white/50 hover:bg-white/10"
-                    : "text-neutral-600 border-neutral-300 hover:border-neutral-900",
-                )}
-              >
-                Vào hệ thống
-              </Link>
-            ) : (
-              <Link
-                href="/login"
-                className={cn(
-                  "hidden md:inline-flex flex-shrink-0 text-xs tracking-widest uppercase px-4 py-2 border transition-colors",
-                  overlayHeader
-                    ? "text-white/90 border-white/50 hover:bg-white/10"
-                    : "text-neutral-600 border-neutral-300 hover:border-neutral-900",
-                )}
+            <Link
+              href={authHref}
+              aria-label={authTitle}
+              title={authTitle}
+              className={cn("flex-shrink-0", authIconClass)}
             >
-              Đăng nhập
+              <AuthIcon className="w-4 h-4" />
             </Link>
-            )}
 
             <button
               type="button"

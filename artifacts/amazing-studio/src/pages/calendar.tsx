@@ -5307,11 +5307,12 @@ function LeaveFormDialog({
 
 // ─── Leave detail dialog ──────────────────────────────────────────────────────
 function LeaveDetailDialog({
-  leave, onClose, isAdmin, viewerId, viewerName, onChanged,
+  leave, onClose, isAdmin, canDelete = false, viewerId, viewerName, onChanged,
 }: {
   leave: LeaveRequest | null;
   onClose: () => void;
   isAdmin: boolean;
+  canDelete?: boolean;
   viewerId?: number;
   viewerName?: string;
   onChanged: () => void;
@@ -5330,6 +5331,23 @@ function LeaveDetailDialog({
   const canApproveReject = isAdmin && leave.status === "pending";
   const canUnapprove = isAdmin && leave.status === "approved";
   const canSelfCancel = !isAdmin && isOwner && leave.status === "pending";
+
+  const onDelete = async () => {
+    if (!window.confirm("Bạn có chắc muốn xóa đơn xin nghỉ này không?")) return;
+    setBusy(true);
+    try {
+      const res = await authFetch(`${BASE}/api/leave-requests/${leave.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Xóa đơn thất bại");
+      }
+      onChanged();
+      onClose();
+      toast({ title: "Đã xóa đơn xin nghỉ" });
+    } catch (e) {
+      toast({ title: (e as Error).message, variant: "destructive" });
+    } finally { setBusy(false); }
+  };
 
   const update = async (body: Record<string, unknown>) => {
     setBusy(true);
@@ -5400,6 +5418,16 @@ function LeaveDetailDialog({
           )}
           {canUnapprove && (
             <Button variant="outline" onClick={onUnapprove} disabled={busy}>Huỷ duyệt</Button>
+          )}
+          {canDelete && (
+            <Button
+              variant="outline"
+              onClick={onDelete}
+              disabled={busy}
+              className="border-red-300 text-red-600 hover:bg-red-50 hover:text-red-700 gap-1.5"
+            >
+              <Trash2 className="w-4 h-4" /> Xóa đơn
+            </Button>
           )}
           {canSelfCancel && (
             <Button variant="outline" onClick={onSelfCancel} disabled={busy}>Huỷ đơn của tôi</Button>
@@ -6846,6 +6874,7 @@ function CalendarPageInner() {
         leave={viewingLeave}
         onClose={() => setViewingLeave(null)}
         isAdmin={isAdmin}
+        canDelete={rawIsAdmin || viewer?.role === "owner" || viewer?.role === "admin"}
         viewerId={viewer?.id}
         viewerName={viewer?.name}
         onChanged={refreshLeaves}

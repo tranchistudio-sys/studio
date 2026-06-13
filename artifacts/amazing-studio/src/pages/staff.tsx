@@ -13,6 +13,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 import { Users, Plus, Pencil, Banknote, DollarSign, Briefcase, ClipboardList, ChevronDown, ChevronUp, AlertCircle, UserCircle, LogOut, ChevronRight, KeyRound, Eye, EyeOff, ShieldCheck, BarChart2, Camera } from "lucide-react";
 import { useStaffAuth, type ViewerUser } from "@/contexts/StaffAuthContext";
 import StaffAvatar from "@/components/StaffAvatar";
@@ -237,12 +238,14 @@ type StaffFormData = {
   status: string; staffType: string; joinDate: string; notes: string;
   baseSalaryAmount: string; allowance: string; salaryNotes: string;
   avatar?: string | null; banner?: string | null;
+  attendanceEnabled: boolean;
 };
 const EMPTY_FORM: StaffFormData = {
   name: "", phone: "", email: "", address: "",
   status: "active", staffType: "official", joinDate: "", notes: "",
   baseSalaryAmount: "", allowance: "", salaryNotes: "",
   avatar: null, banner: null,
+  attendanceEnabled: true,
 };
 
 interface StaffFormSheetProps {
@@ -292,6 +295,7 @@ function StaffFormSheet({ open, onClose, editStaff }: StaffFormSheetProps) {
         salaryNotes: String(editStaff.salaryNotes || ""),
         avatar: (editStaff.avatar as string | null) || null,
         banner: (editStaff.banner as string | null) || null,
+        attendanceEnabled: editStaff.attendanceEnabled !== false,
       });
       setSelectedRoles(getRoles(editStaff as { roles?: unknown; role?: unknown }));
     } else {
@@ -366,6 +370,7 @@ function StaffFormSheet({ open, onClose, editStaff }: StaffFormSheetProps) {
         banner: form.banner || null,
         roles: selectedRoles,
         role: selectedRoles[0] || null,
+        attendanceEnabled: form.attendanceEnabled,
       };
 
       let staffId: number;
@@ -474,6 +479,23 @@ function StaffFormSheet({ open, onClose, editStaff }: StaffFormSheetProps) {
                       <SelectItem value="freelancer">Cộng tác viên (CTV)</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+                <div className="sm:col-span-2 flex items-center justify-between rounded-lg border p-3">
+                  <div>
+                    <Label>Tính chấm công</Label>
+                    <p className="text-xs text-muted-foreground mt-0.5">
+                      {form.staffType !== "official"
+                        ? "CTV / Freelancer không được tính chấm công (mặc định tắt)."
+                        : form.attendanceEnabled
+                          ? "Đang BẬT — nhân viên xuất hiện trong lịch chấm công, tính trễ/vắng/phạt."
+                          : "Đang TẮT — không hiện trong lịch chấm công, không tính trễ/vắng/phạt (vd: nghỉ đi học). Lịch sử cũ vẫn giữ nguyên."}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={form.staffType === "official" && form.attendanceEnabled}
+                    disabled={form.staffType !== "official"}
+                    onCheckedChange={v => setForm(f => ({ ...f, attendanceEnabled: v }))}
+                  />
                 </div>
                 <div className="sm:col-span-2">
                   <Label>Địa chỉ</Label>

@@ -114,8 +114,17 @@ async function findAttendanceTestStaff() {
 
 const VALID_WORK_TYPES = new Set(["studio", "studio_auto", "di_show", "makeup_ngoai", "hau_ky", "linh_dong"]);
 
+// Điều kiện vào lịch/thống kê chấm công: NV chính thức + nút "Tính chấm công" bật.
+// CTV/freelancer hoặc NV bị tắt sẽ không vào roster — lịch sử log cũ vẫn giữ nguyên.
+function attendanceEligibleSql(alias = ""): string {
+  const p = alias ? `${alias}.` : "";
+  return `lower(coalesce(${p}staff_type, 'official')) IN ('official', 'fulltime', 'employee') AND coalesce(${p}attendance_enabled, TRUE) = TRUE`;
+}
+
 // ─── Startup migration: add work_type, clean bad rules, seed defaults ────────
 async function ensureAttendanceSchema() {
+  // Nút gạt "Tính chấm công" trong Nhân sự — chỉ NV chính thức + bật mới vào lịch/thống kê
+  await pool.query(`ALTER TABLE staff ADD COLUMN IF NOT EXISTS attendance_enabled BOOLEAN NOT NULL DEFAULT TRUE`).catch(() => {});
   await pool.query(`ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS work_type TEXT`).catch(() => {});
   await pool.query(`ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS attendance_type TEXT`).catch(() => {});
   await pool.query(`ALTER TABLE attendance_logs ADD COLUMN IF NOT EXISTS location_verified BOOLEAN NOT NULL DEFAULT FALSE`).catch(() => {});
@@ -210,7 +219,7 @@ const STUDIO_LAT = 11.3101;
 const STUDIO_LNG = 106.1074;
 const DEFAULT_RADIUS_M = 300;
 
-type AttendanceLogMethod = "qr" | "gps_auto" | "gps_selfie" | "offsite" | "manual";
+type AttendanceLogMethod = "qr" | "gps_auto" | "gps_selfie" | "offsite" | "manual" | "wifi";
 
 function isOffsiteMethod(method: string | null | undefined): boolean {
   return method === "offsite" || method === "gps_selfie";
@@ -225,6 +234,7 @@ function inferAttendanceType(method: string | null, rawAttendanceType: string | 
   if (isStudioAutoMethod(method) || rawWorkType === "studio_auto") return "studio_auto";
   if (isOffsiteMethod(method)) return "offsite";
   if (method === "qr") return "studio_qr";
+  if (method === "wifi") return "studio_wifi";
   if (method === "manual") return "manual";
   return "studio";
 }
@@ -234,7 +244,7 @@ function attendanceFlags(method: string | null, rawAttendanceType: string | null
   const offsite = attendanceType === "offsite" || isOffsiteMethod(method);
   const studioAuto = attendanceType === "studio_auto" || isStudioAutoMethod(method);
   return {
-    locationVerified: offsite || studioAuto || method === "qr",
+    locationVerified: offsite || studioAuto || method === "qr" || method === "wifi",
     selfieRequired: offsite,
     qrRequired: method === "qr",
   };
@@ -261,6 +271,65 @@ function getDistanceM(lat1: number, lng1: number, lat2: number, lng2: number): n
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
+// ── WiFi studio verification (fallback khi GPS hỏng) ─────────────────────────
+// Web app không đọc được SSID/BSSID từ trình duyệt → xác thực bằng IP nguồn
+// của request: nhân viên nối WiFi studio sẽ mang IP/subnet mà admin đã lưu
+// trong settings (studio_wifi_ips). Hỗ trợ IP chính xác, wildcard (192.168.1.*)
+// và CIDR (192.168.1.0/24).
+function getClientIp(req: import("express").Request): string {
+  const ip = req.ip || req.socket?.remoteAddress || "";
+  return ip.replace(/^::ffff:/, "").trim();
+}
+
+function ipv4ToLong(ip: string): number | null {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  let out = 0;
+  for (const p of parts) {
+    const n = Number(p);
+    if (!Number.isInteger(n) || n < 0 || n > 255) return null;
+    out = out * 256 + n;
+  }
+  return out;
+}
+
+function ipMatchesEntry(ip: string, entry: string): boolean {
+  const e = entry.trim();
+  if (!e) return false;
+  if (e === ip) return true;
+  if (e.includes("*")) {
+    const prefix = e.slice(0, e.indexOf("*"));
+    return prefix.length > 0 && ip.startsWith(prefix);
+  }
+  if (e.includes("/")) {
+    const [base, bitsStr] = e.split("/");
+    const bits = Number(bitsStr);
+    const baseLong = ipv4ToLong(base);
+    const ipLong = ipv4ToLong(ip);
+    if (baseLong === null || ipLong === null || !Number.isInteger(bits) || bits < 0 || bits > 32) return false;
+    if (bits === 0) return true;
+    const mask = (0xffffffff << (32 - bits)) >>> 0;
+    return ((baseLong & mask) >>> 0) === ((ipLong & mask) >>> 0);
+  }
+  return false;
+}
+
+type WifiCheckResult = { configured: boolean; verified: boolean; clientIp: string; wifiName: string };
+
+async function checkStudioWifi(req: import("express").Request): Promise<WifiCheckResult> {
+  const r = await pool.query(`SELECT key, value FROM settings WHERE key IN ('studio_wifi_name', 'studio_wifi_ips')`);
+  const map: Record<string, string> = {};
+  for (const row of r.rows as { key: string; value: string }[]) map[row.key] = row.value;
+  const wifiName = (map.studio_wifi_name ?? "").trim();
+  const ips = (map.studio_wifi_ips ?? "")
+    .split(/[,;\n]+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+  const clientIp = getClientIp(req);
+  const configured = ips.length > 0;
+  const verified = configured && !!clientIp && ips.some(e => ipMatchesEntry(clientIp, e));
+  return { configured, verified, clientIp, wifiName };
+}
 
 // GET /attendance/test-staff — admin chế độ nhân viên: NV hệ thống để test chấm công
 router.get("/attendance/test-staff", async (req, res) => {
@@ -288,19 +357,15 @@ router.post("/attendance/check-in", async (req, res) => {
     attendanceType?: string; checkInMethod?: string; auto?: boolean;
   };
 
-  if (lat === undefined || lng === undefined) {
-    return res.status(400).json({ error: "Vui lòng cấp quyền GPS để chấm công." });
-  }
-
-  const latNum = parseFloat(String(lat));
-  const lngNum = parseFloat(String(lng));
-  if (!Number.isFinite(latNum) || !Number.isFinite(lngNum)) {
-    return res.status(400).json({ error: "GPS khÃ´ng há»£p lá»‡." });
-  }
+  // GPS giờ là optional: nếu thiết bị không lấy được vị trí thì vẫn còn
+  // fallback WiFi studio bên dưới (GPS pass OR WiFi pass).
+  const latNum = lat !== undefined ? parseFloat(String(lat)) : NaN;
+  const lngNum = lng !== undefined ? parseFloat(String(lng)) : NaN;
+  const gpsValid = Number.isFinite(latNum) && Number.isFinite(lngNum);
 
   const geofence = await loadStudioGeofence();
-  const distanceM = getDistanceM(latNum, lngNum, geofence.lat, geofence.lng);
-  const inGeofence = distanceM <= geofence.radius;
+  const distanceM = gpsValid ? getDistanceM(latNum, lngNum, geofence.lat, geofence.lng) : null;
+  const inGeofence = distanceM !== null && distanceM <= geofence.radius;
   const requestedOffsite =
     reqAttendanceType === "offsite" ||
     reqCheckInMethod === "gps_selfie" ||
@@ -315,21 +380,38 @@ router.post("/attendance/check-in", async (req, res) => {
 
   let method: AttendanceLogMethod;
   let allowedBookingId: number | null = bookingId ? parseInt(String(bookingId)) : null;
+  let wifiCheck: WifiCheckResult | null = null;
 
   if (requestedOffsite) {
     // Show ngoài: không cần lịch chụp — bắt buộc selfie + GPS
     if (!photoUrl) {
       return res.status(400).json({ error: "Show ngoài cần chụp selfie xác thực trước khi chấm công" });
     }
+    if (!gpsValid) {
+      return res.status(400).json({ error: "Show ngoài cần GPS — vui lòng cấp quyền vị trí và thử lại." });
+    }
     method = "gps_selfie";
   } else if (inGeofence) {
     method = requestedAuto ? "gps_auto" : "qr";
   } else {
-    return res.status(400).json({
-      error: "Bạn đang ngoài vùng studio. Chọn \u201cĐi Show ngoài\u201d (selfie + GPS) hoặc đến studio để chấm \u201cTại Studio\u201d.",
-      distanceM: Math.round(distanceM),
-      radiusM: geofence.radius,
-    });
+    // GPS fail (không quyền / máy hư định vị) hoặc ngoài vùng → fallback WiFi studio
+    wifiCheck = await checkStudioWifi(req);
+    if (wifiCheck.verified) {
+      method = "wifi";
+    } else {
+      const gpsPart = gpsValid
+        ? `GPS ngoài vùng studio (cách ${Math.round(distanceM!)}m, cho phép ${geofence.radius}m)`
+        : "không lấy được GPS";
+      const wifiPart = wifiCheck.configured
+        ? "không kết nối WiFi studio"
+        : "WiFi studio chưa được cấu hình";
+      return res.status(400).json({
+        error: `Không đủ điều kiện chấm công: ${gpsPart} và ${wifiPart}. Hãy bật GPS / kết nối WiFi studio, hoặc chọn "Đi Show ngoài" (selfie + GPS).`,
+        gpsOk: false,
+        wifiOk: false,
+        ...(distanceM !== null ? { distanceM: Math.round(distanceM), radiusM: geofence.radius } : {}),
+      });
+    }
   }
 
   let workType: string;
@@ -345,7 +427,7 @@ router.post("/attendance/check-in", async (req, res) => {
     workType = "studio";
   }
 
-  if ((method === "qr" || method === "gps_auto") && !["studio", "studio_auto", "hau_ky", "linh_dong"].includes(workType)) {
+  if ((method === "qr" || method === "gps_auto" || method === "wifi") && !["studio", "studio_auto", "hau_ky", "linh_dong"].includes(workType)) {
     return res.status(400).json({ error: "Tại studio chỉ được chọn Studio, Hậu kỳ hoặc Linh động." });
   }
   if (isOffsiteMethod(method) && !["di_show", "makeup_ngoai"].includes(workType)) {
@@ -355,6 +437,7 @@ router.post("/attendance/check-in", async (req, res) => {
   const attendanceType =
     method === "gps_auto" ? "studio_auto"
     : isOffsiteMethod(method) ? "offsite"
+    : method === "wifi" ? "studio_wifi"
     : method === "qr" ? "studio_qr"
     : "studio";
   const flags = attendanceFlags(method, attendanceType);
@@ -406,10 +489,10 @@ router.post("/attendance/check-in", async (req, res) => {
     staffId,
     type: "check_in",
     method,
-    lat: String(latNum),
-    lng: String(lngNum),
-    accuracyM: accuracyM !== undefined ? String(accuracyM) : null,
-    distanceM: String(Math.round(distanceM)),
+    lat: gpsValid ? String(latNum) : null,
+    lng: gpsValid ? String(lngNum) : null,
+    accuracyM: gpsValid && accuracyM !== undefined ? String(accuracyM) : null,
+    distanceM: distanceM !== null ? String(Math.round(distanceM)) : null,
     bookingId: allowedBookingId,
     workType,
     attendanceType,
@@ -427,6 +510,7 @@ router.post("/attendance/check-in", async (req, res) => {
     locationVerified: flags.locationVerified,
     selfieRequired: flags.selfieRequired,
     qrRequired: flags.qrRequired,
+    ...(method === "wifi" ? { message: "Đã xác nhận có mặt tại studio qua WiFi." } : {}),
   });
 });
 
@@ -489,9 +573,10 @@ async function handleOvertimePunch(req: import("express").Request, res: import("
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const staffId = await resolveAttendanceStaffId(req, callerId);
   const { lat, lng, accuracyM } = req.body;
-  if (lat === undefined || lng === undefined) {
-    return res.status(400).json({ error: "Vui lòng cấp quyền GPS để chấm tăng ca." });
-  }
+  // GPS optional — fallback WiFi studio giống chấm công thường (GPS pass OR WiFi pass)
+  const latNum = lat !== undefined ? parseFloat(String(lat)) : NaN;
+  const lngNum = lng !== undefined ? parseFloat(String(lng)) : NaN;
+  const gpsValid = Number.isFinite(latNum) && Number.isFinite(lngNum);
 
   // Geofence check (cùng logic check-in)
   const settingsR = await pool.query(`SELECT key, value FROM settings WHERE key IN ('studio_lat', 'studio_lng', 'attendance_radius_m')`);
@@ -500,27 +585,34 @@ async function handleOvertimePunch(req: import("express").Request, res: import("
   const studioLat = parseFloat(settingsMap.studio_lat ?? String(STUDIO_LAT));
   const studioLng = parseFloat(settingsMap.studio_lng ?? String(STUDIO_LNG));
   const radiusM = parseFloat(settingsMap.attendance_radius_m ?? String(DEFAULT_RADIUS_M));
-  const distanceM = getDistanceM(parseFloat(String(lat)), parseFloat(String(lng)), studioLat, studioLng);
-  const inGeofence = distanceM <= radiusM;
-  const method: "qr" | "offsite" = inGeofence ? "qr" : "offsite";
+  const distanceM = gpsValid ? getDistanceM(latNum, lngNum, studioLat, studioLng) : null;
+  const inGeofence = distanceM !== null && distanceM <= radiusM;
+  let method: "qr" | "offsite" | "wifi" = inGeofence ? "qr" : "offsite";
   if (!inGeofence) {
-    // Cho phép offsite chỉ khi có booking hôm nay
-    const today = todayVN();
-    const offsite = await pool.query(`
-      SELECT id FROM bookings
-      WHERE shoot_date = $1 AND status NOT IN ('cancelled', 'huy')
-        AND (
-          (assigned_staff @> to_jsonb($2::int))
-          OR (assigned_staff->>'photo')::int = $2
-          OR (assigned_staff->>'photographer')::int = $2
-          OR (assigned_staff->>'makeup')::int = $2
-          OR (assigned_staff->>'sale')::int = $2
-        ) LIMIT 1`, [today, staffId]);
-    if (offsite.rows.length === 0) {
-      return res.status(400).json({
-        error: "Bạn không trong vùng studio và không có lịch chụp hôm nay",
-        distanceM: Math.round(distanceM), radiusM,
-      });
+    const wifi = await checkStudioWifi(req);
+    if (wifi.verified) {
+      method = "wifi";
+    } else {
+      // Cho phép offsite chỉ khi có booking hôm nay (offsite cần GPS thật)
+      const today = todayVN();
+      const offsite = gpsValid ? await pool.query(`
+        SELECT id FROM bookings
+        WHERE shoot_date = $1 AND status NOT IN ('cancelled', 'huy')
+          AND (
+            (assigned_staff @> to_jsonb($2::int))
+            OR (assigned_staff->>'photo')::int = $2
+            OR (assigned_staff->>'photographer')::int = $2
+            OR (assigned_staff->>'makeup')::int = $2
+            OR (assigned_staff->>'sale')::int = $2
+          ) LIMIT 1`, [today, staffId]) : null;
+      if (!offsite || offsite.rows.length === 0) {
+        return res.status(400).json({
+          error: gpsValid
+            ? "Bạn không trong vùng studio, không kết nối WiFi studio và không có lịch chụp hôm nay"
+            : "Không lấy được GPS và không kết nối WiFi studio — vui lòng bật GPS hoặc nối WiFi studio để chấm tăng ca.",
+          ...(distanceM !== null ? { distanceM: Math.round(distanceM), radiusM } : {}),
+        });
+      }
     }
   }
 
@@ -564,9 +656,10 @@ async function handleOvertimePunch(req: import("express").Request, res: import("
     staffId,
     type: punchType,
     method,
-    lat: String(lat), lng: String(lng),
-    accuracyM: accuracyM !== undefined ? String(accuracyM) : null,
-    distanceM: String(Math.round(distanceM)),
+    lat: gpsValid ? String(latNum) : null,
+    lng: gpsValid ? String(lngNum) : null,
+    accuracyM: gpsValid && accuracyM !== undefined ? String(accuracyM) : null,
+    distanceM: distanceM !== null ? String(Math.round(distanceM)) : null,
     workType: "overtime",
   }).returning();
   res.status(201).json(log);
@@ -819,6 +912,7 @@ function inferWorkType(method: string | null, rawWorkType: string | null): strin
   if (isOffsiteMethod(method)) return "di_show";
   if (method === "gps_auto") return "studio_auto";
   if (method === "qr") return "studio";
+  if (method === "wifi") return "studio";
   if (method === "manual") return "studio";
   return null;
 }
@@ -882,6 +976,38 @@ async function loadOverrides(logIds: number[]): Promise<Map<number, LogOverride>
 // ── Studio info (public for GPS-aware UI) ────────────────────────────────────
 router.get("/attendance/studio-info", async (_req, res) => {
   res.json(await loadStudioGeofence());
+});
+
+// ── Eligible staff: danh sách NV được tính chấm công (lịch team) ─────────────
+// Chỉ NV chính thức + attendance_enabled = TRUE. Frontend dùng cho lịch tháng.
+router.get("/attendance/eligible-staff", async (req, res) => {
+  const callerId = verifyToken(req.headers.authorization);
+  if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
+  const r = await pool.query(
+    `SELECT id, name, role, roles, username, staff_type, coalesce(attendance_enabled, TRUE) as attendance_enabled
+     FROM staff
+     WHERE is_active = 1 AND ${attendanceEligibleSql()}
+     ORDER BY name`,
+  );
+  res.json((r.rows as Record<string, unknown>[]).map(row => ({
+    id: row.id,
+    name: row.name,
+    role: row.role,
+    roles: Array.isArray(row.roles) ? row.roles : [],
+    username: row.username ?? null,
+    staffType: String(row.staff_type ?? "official"),
+    attendanceEnabled: row.attendance_enabled !== false,
+    isAdmin: row.role === "admin" || (Array.isArray(row.roles) && (row.roles as unknown[]).includes("admin")),
+  })));
+});
+
+// ── WiFi status: thiết bị hiện tại có đang ở mạng WiFi studio không ──────────
+// Dùng cho màn hình chấm công (hiển thị Đạt/Không đạt) và cho admin lấy IP
+// hiện tại khi cấu hình WiFi studio trong Cài đặt.
+router.get("/attendance/wifi-status", async (req, res) => {
+  const callerId = verifyToken(req.headers.authorization);
+  if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
+  res.json(await checkStudioWifi(req));
 });
 
 // ── GET /me: Tổng hợp tháng ──────────────────────────────────────────────────
@@ -1133,7 +1259,9 @@ router.get("/attendance/admin", async (req, res) => {
             s.name as staff_name
      FROM attendance_logs al
      JOIN staff s ON s.id = al.staff_id
-     WHERE to_char(al.created_at + interval '7 hours', 'YYYY-MM') = $1 ORDER BY al.created_at`,
+     WHERE to_char(al.created_at + interval '7 hours', 'YYYY-MM') = $1
+       AND ${attendanceEligibleSql("s")}
+     ORDER BY al.created_at`,
     [month]
   );
   const mappedRows = (logsR.rows as Record<string, unknown>[]).map(l => ({
@@ -1235,7 +1363,7 @@ router.get("/attendance/today-summary", async (req, res) => {
   const isTodayOff = isSundayOff(today);
 
   const activeStaffR = await pool.query<{ id: number; name: string; role: string }>(
-    `SELECT id, name, role FROM staff WHERE is_active = 1 ORDER BY name`,
+    `SELECT id, name, role FROM staff WHERE is_active = 1 AND ${attendanceEligibleSql()} ORDER BY name`,
   );
   const activeStaffList = activeStaffR.rows;
 
@@ -1602,7 +1730,7 @@ router.get("/attendance/team-extras", async (req, res) => {
     }
   }
 
-  const staffIdsR = await pool.query<{ id: number }>(`SELECT id FROM staff WHERE is_active = 1`);
+  const staffIdsR = await pool.query<{ id: number }>(`SELECT id FROM staff WHERE is_active = 1 AND ${attendanceEligibleSql()}`);
   const allStaffIds = staffIdsR.rows.map(r => r.id);
   const showDaysByStaff = await getShowDayDatesByStaffForMonth(allStaffIds, month);
   const staffShowDays: Record<string, string[]> = {};

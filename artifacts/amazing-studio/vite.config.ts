@@ -40,6 +40,8 @@ export default defineConfig({
       "/api": {
         target: apiProxyTarget,
         changeOrigin: true,
+        // Gửi x-forwarded-for để API thấy IP thật của client (xác thực WiFi studio)
+        xfwd: true,
       },
     },
     fs: {

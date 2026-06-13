@@ -19,7 +19,6 @@ import {
 } from "@/components/cms-shared";
 import { getImageSrc } from "@/lib/imageUtils";
 import { formatVND } from "@/lib/utils";
-import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { OUTFIT_TAGS, OutfitTagBadge } from "@/lib/outfit-tags";
 import { useToast } from "@/hooks/use-toast";
 import { uploadQueueStore } from "@/lib/upload-queue/store";
@@ -713,7 +712,7 @@ function ProductDrawer({ dress, categories, allProducts, defaultCategoryId, onCl
   onSaved: () => void;
   onDeleted: () => void;
 }) {
-  const { effectiveIsAdmin } = useStaffAuth();
+  const effectiveIsAdmin = true; // CMS Website mở toàn quyền cho mọi nhân viên
   const { toast } = useToast();
   const qc = useQueryClient();
   const isNew = dress === "new";
@@ -1983,7 +1982,7 @@ function BulkUploadModal({ onClose, onCreated }: { onClose: () => void; onCreate
 export default function CmsCategoriesPage() {
   const qc = useQueryClient();
   const { toast } = useToast();
-  const { effectiveIsAdmin } = useStaffAuth();
+  const effectiveIsAdmin = true; // CMS Website mở toàn quyền cho mọi nhân viên
 
   // Category tree state
   const [expanded, setExpanded] = useState<Set<number>>(() => loadExpanded());

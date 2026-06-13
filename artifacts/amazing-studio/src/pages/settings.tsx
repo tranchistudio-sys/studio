@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { Card, CardContent, Input, Button, Textarea } from "@/components/ui";
 import { CurrencyInput } from "@/components/ui/currency-input";
-import { Save, Store, Mail, Phone, MapPin, Building, Clock, Navigation, Loader2, LocateFixed, CheckCircle2, AlertCircle, Bot, MessageSquare, Wrench, Volume2, Play, Vibrate, VolumeX } from "lucide-react";
+import { Save, Store, Mail, Phone, MapPin, Building, Clock, Navigation, Loader2, LocateFixed, CheckCircle2, AlertCircle, Bot, MessageSquare, Wrench, Volume2, Play, Vibrate, VolumeX, Wifi } from "lucide-react";
 import { SUCCESS_RINGTONES, NOTIF_RINGTONES, getSoundSettings, setSoundSettings, previewRingtone, type RingtonePreset } from "@/lib/feedback";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
@@ -59,6 +59,50 @@ function GpsDetectButton({ onDetected }: { onDetected: (lat: number, lng: number
       )}
       {state === "idle" && (
         <span className="text-sm text-muted-foreground">Bấm nút này khi đang đứng <strong>tại tiệm</strong> để tự động lấy tọa độ GPS</span>
+      )}
+    </div>
+  );
+}
+
+function WifiDetectButton({ onDetected }: { onDetected: (ip: string) => void }) {
+  const [state, setState] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [msg, setMsg] = useState("");
+
+  const detect = async () => {
+    setState("loading");
+    setMsg("");
+    try {
+      const r = await fetch(`${BASE}/api/attendance/wifi-status`, { headers: authH() });
+      const d = (await r.json()) as { clientIp?: string; error?: string };
+      if (!r.ok || !d.clientIp) throw new Error(d.error || "Không lấy được IP hiện tại");
+      onDetected(d.clientIp);
+      setState("success");
+      setMsg(`IP hiện tại: ${d.clientIp} — đã thêm vào danh sách`);
+      setTimeout(() => setState("idle"), 8000);
+    } catch (e) {
+      setState("error");
+      setMsg((e as Error).message);
+    }
+  };
+
+  return (
+    <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 p-4 rounded-xl border border-dashed bg-muted/30">
+      <Button type="button" variant="outline" className="gap-2 shrink-0" onClick={() => void detect()} disabled={state === "loading"}>
+        {state === "loading" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wifi className="w-4 h-4 text-blue-500" />}
+        {state === "loading" ? "Đang lấy IP..." : "Lấy IP mạng hiện tại"}
+      </Button>
+      {state === "success" && (
+        <span className="flex items-center gap-1.5 text-sm text-green-700">
+          <CheckCircle2 className="w-4 h-4" /> {msg}
+        </span>
+      )}
+      {state === "error" && (
+        <span className="flex items-center gap-1.5 text-sm text-red-600">
+          <AlertCircle className="w-4 h-4" /> {msg}
+        </span>
+      )}
+      {state === "idle" && (
+        <span className="text-sm text-muted-foreground">Bấm khi thiết bị đang nối <strong>WiFi studio</strong> để lấy IP mạng và thêm vào danh sách hợp lệ</span>
       )}
     </div>
   );
@@ -240,6 +284,8 @@ type Settings = {
   studio_lat: number;
   studio_lng: number;
   attendance_radius_m: number;
+  studio_wifi_name: string;
+  studio_wifi_ips: string;
   aiPricingInfo: string | null;
 };
 
@@ -520,6 +566,39 @@ export default function SettingsPage() {
           <div className="text-xs text-muted-foreground space-y-1">
             <p>💡 <strong>Cách đơn giản nhất:</strong> Mở trang này <em>tại tiệm</em>, bấm nút "Lấy vị trí hiện tại" → tọa độ tự động điền.</p>
             <p>📌 Hoặc mở Google Maps, nhấp chuột phải vào studio → chọn <em>"What's here?"</em> để thấy lat/lng.</p>
+          </div>
+
+          {/* WiFi studio — fallback khi GPS của nhân viên hỏng */}
+          <div className="pt-6 border-t space-y-4">
+            <div>
+              <h4 className="text-base font-bold flex items-center gap-2">
+                <Wifi className="w-4 h-4 text-primary" /> WiFi Studio (dự phòng khi GPS hỏng)
+              </h4>
+              <p className="text-sm text-muted-foreground mt-1">
+                Nhân viên được chấm công nếu <strong>GPS đạt HOẶC đang nối WiFi studio</strong>. Trình duyệt không đọc được tên WiFi nên hệ thống xác thực bằng IP mạng của thiết bị.
+              </p>
+            </div>
+            <WifiDetectButton
+              onDetected={ip =>
+                setForm(p => {
+                  const cur = String(p.studio_wifi_ips ?? "");
+                  const list = cur.split(/[,;\n]+/).map(s => s.trim()).filter(Boolean);
+                  if (list.includes(ip)) return p;
+                  return { ...p, studio_wifi_ips: [...list, ip].join(", ") };
+                })
+              }
+            />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Tên WiFi (hiển thị)</label>
+                <Input {...f("studio_wifi_name")} placeholder="Amazing Studio" />
+              </div>
+              <div className="space-y-2">
+                <label className="text-sm font-medium">IP mạng hợp lệ</label>
+                <Input {...f("studio_wifi_ips")} placeholder="113.161.x.x, 192.168.1.*" />
+                <p className="text-xs text-muted-foreground">Nhiều IP cách nhau dấu phẩy. Hỗ trợ IP chính xác, wildcard (192.168.1.*) hoặc CIDR (192.168.1.0/24). Để trống = tắt xác thực WiFi.</p>
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>

@@ -27,6 +27,8 @@ export type AttendanceStaffRow = {
   roles?: string[] | unknown;
   username?: string | null;
   isAdmin?: boolean | null;
+  attendanceEnabled?: boolean | null;
+  attendance_enabled?: boolean | null;
 };
 
 export function normalizeStaffIdentity(value: string): string {
@@ -74,6 +76,8 @@ function isAttendanceAdminLike(row: AttendanceStaffRow): boolean {
 }
 
 export function isAttendanceEligibleStaff(row: AttendanceStaffRow): boolean {
+  // Nút gạt "Tính chấm công" trong Nhân sự: tắt = loại khỏi lịch/thống kê
+  if (row.attendanceEnabled === false || row.attendance_enabled === false) return false;
   const staffType = String(row.staffType ?? row.staff_type ?? "official").trim().toLowerCase();
   if (ATTENDANCE_EXCLUDED_STAFF_TYPES.has(staffType)) return false;
   if (isAttendanceAdminLike(row)) return false;

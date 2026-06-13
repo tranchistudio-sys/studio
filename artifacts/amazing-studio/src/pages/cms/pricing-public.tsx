@@ -5,7 +5,6 @@ import { getPublicPageUrl } from "@/lib/public-site-url";
 import { Button, Input } from "@/components/ui";
 import { authHeaders, CMS_BASE } from "@/components/cms-shared";
 import { formatVND } from "@/lib/utils";
-import { useStaffAuth } from "@/contexts/StaffAuthContext";
 
 interface PublicPkg {
   id: number; code: string | null; name: string; price: number;
@@ -16,7 +15,7 @@ interface PublicPkg {
 
 export default function CmsPricingPublicPage() {
   const qc = useQueryClient();
-  const { effectiveIsAdmin } = useStaffAuth();
+  const effectiveIsAdmin = true; // CMS Website mở toàn quyền cho mọi nhân viên
   const [search, setSearch] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [draftShort, setDraftShort] = useState("");

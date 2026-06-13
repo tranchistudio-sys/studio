@@ -245,10 +245,10 @@ function InternalRouter() {
         <Route path="/ai-sale-scripts" component={AiSaleScriptsPage} />
         <Route path="/ai-test" component={AiTestRoomPage} />
         <Route path="/notifications" component={NotificationsPage} />
-        <Route path="/cms/home-settings" component={() => <CmsAdminRoute component={CmsHomeSettingsPage} />} />
-        <Route path="/cms/gallery" component={() => <CmsAdminRoute component={CmsGalleryPage} />} />
+        <Route path="/cms/home-settings" component={CmsHomeSettingsPage} />
+        <Route path="/cms/gallery" component={CmsGalleryPage} />
         <Route path="/cms/wedding-templates" component={() => <CmsAdminRoute component={CmsWeddingTemplatesPage} />} />
-        <Route path="/cms/pricing" component={() => <CmsAdminRoute component={CmsPricingPublicPage} />} />
+        <Route path="/cms/pricing" component={CmsPricingPublicPage} />
         <Route path="/cms/rentals" component={() => <Redirect to="/cms/categories" />} />
         <Route path="/cms/products-rental" component={() => <Redirect to="/cms/categories" />} />
         <Route path="/cms/categories" component={CmsCategoriesPage} />

@@ -271,11 +271,12 @@ async function requireCmsStaff(req: Request, res: Response): Promise<boolean> {
   const role = await requireAuth(req, res);
   return !!role;
 }
+// Mở toàn quyền các module CMS Website (Trang chủ, Cài đặt, Concept ảnh, Bảng giá,
+// Cho thuê đồ, Ý tưởng) cho mọi nhân viên đã đăng nhập: được thêm/sửa/xoá/ẩn-hiện
+// như Admin. Vẫn yêu cầu đăng nhập để chống truy cập ẩn danh.
 async function requireAdmin(req: Request, res: Response): Promise<boolean> {
   const role = await requireAuth(req, res);
-  if (!role) return false;
-  if (role !== "admin") { res.status(403).json({ error: "Chỉ admin được thao tác" }); return false; }
-  return true;
+  return !!role;
 }
 
 const STATUSES = ["draft", "visible", "hidden"] as const;
@@ -1247,19 +1248,16 @@ router.patch("/cms/rentals/:id", async (req, res) => {
   const role = await requireAuth(req, res);
   if (!role) return;
   try {
+    void role; // mọi nhân viên đã đăng nhập đều được bật/tắt public + đặt trạng thái
     const { isPublic, cmsStatus, publicImageUrl } = req.body ?? {};
     const upd: string[] = [];
     const vals: unknown[] = [];
     let i = 1;
     if (isPublic !== undefined) {
-      if (role !== "admin") return res.status(403).json({ error: "Chỉ admin được bật/tắt public" });
       upd.push(`is_public = $${i++}`); vals.push(isPublic ? 1 : 0);
     }
     if (cmsStatus !== undefined) {
       const s = normStatus(cmsStatus);
-      if (role !== "admin" && s !== "draft") {
-        return res.status(403).json({ error: "Nhân viên chỉ được đặt nháp" });
-      }
       upd.push(`cms_status = $${i++}`); vals.push(s);
     }
     if (publicImageUrl !== undefined) { upd.push(`public_image_url = $${i++}`); vals.push(publicImageUrl); }
@@ -1294,26 +1292,22 @@ router.patch("/cms/packages/:id", async (req, res) => {
   const role = await requireAuth(req, res);
   if (!role) return;
   try {
+    void role; // mọi nhân viên đã đăng nhập đều được bật/tắt public, đặt trạng thái và sửa giá
     const { isPublic, cmsStatus, shortDescription, price } = req.body ?? {};
     const upd: string[] = [];
     const vals: unknown[] = [];
     let i = 1;
     if (isPublic !== undefined) {
-      if (role !== "admin") return res.status(403).json({ error: "Chỉ admin được bật/tắt public" });
       upd.push(`is_public = $${i++}`); vals.push(isPublic ? 1 : 0);
     }
     if (cmsStatus !== undefined) {
       const s = normStatus(cmsStatus);
-      if (role !== "admin" && s !== "draft") {
-        return res.status(403).json({ error: "Nhân viên chỉ được đặt nháp" });
-      }
       upd.push(`cms_status = $${i++}`); vals.push(s);
     }
     if (shortDescription !== undefined) {
       upd.push(`short_description = $${i++}`); vals.push(shortDescription);
     }
     if (price !== undefined) {
-      if (role !== "admin") return res.status(403).json({ error: "Chỉ admin được sửa giá" });
       upd.push(`price = $${i++}`); vals.push(String(price));
     }
     if (!upd.length) return res.json({ ok: true });

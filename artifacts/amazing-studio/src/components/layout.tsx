@@ -82,10 +82,10 @@ type CmsNavItem = {
 };
 
 const CMS_NAV: CmsNavItem[] = [
-  { href: "/",               label: "Trang chủ",     icon: Home,       adminOnly: true, publicPreview: true },
-  { href: "/cms/home-settings", label: "Cài đặt Trang chủ", icon: LayoutTemplate, adminOnly: true, publicPath: "/" },
-  { href: "/cms/gallery",    label: "Concept ảnh",  icon: Images,     adminOnly: true, publicPath: "/bo-anh" },
-  { href: "/cms/pricing",    label: "Bảng giá",      icon: DollarSign, adminOnly: true, publicPath: "/bang-gia" },
+  { href: "/",               label: "Trang chủ",     icon: Home,       adminOnly: false, publicPreview: true },
+  { href: "/cms/home-settings", label: "Cài đặt Trang chủ", icon: LayoutTemplate, adminOnly: false, publicPath: "/" },
+  { href: "/cms/gallery",    label: "Concept ảnh",  icon: Images,     adminOnly: false, publicPath: "/bo-anh" },
+  { href: "/cms/pricing",    label: "Bảng giá",      icon: DollarSign, adminOnly: false, publicPath: "/bang-gia" },
   { href: "/cms/categories", label: "Cho thuê đồ",   icon: Shirt,      adminOnly: false, publicPath: "/cho-thue-do" },
   { href: "/cms/photo-ideas", label: "Ý tưởng chụp ảnh", icon: Lightbulb, adminOnly: false, publicPath: "/y-tuong-chup-anh" },
   { href: "/cms/wedding-templates", label: "Cài đặt Thiệp cưới", icon: Heart, adminOnly: true, publicPath: "/thiep-cuoi-online" },

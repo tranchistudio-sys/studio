@@ -1,4 +1,4 @@
-import { pgTable, serial, text, timestamp, integer, date, numeric, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, timestamp, integer, date, numeric, jsonb, boolean } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { customersTable } from "./customers";
@@ -23,6 +23,8 @@ export const staffTable = pgTable("staff", {
   isActive: integer("is_active").notNull().default(1),
   status: text("status").notNull().default("active"), // active | inactive | probation
   staffType: text("staff_type").notNull().default("official"),
+  // Nút gạt "Tính chấm công": chỉ NV chính thức + bật mới vào lịch/thống kê chấm công
+  attendanceEnabled: boolean("attendance_enabled").notNull().default(true),
   notes: text("notes"),
   username: text("username"),
   passwordHash: text("password_hash"),

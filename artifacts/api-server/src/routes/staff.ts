@@ -107,7 +107,7 @@ router.post("/staff", async (req, res) => {
   const callerRole = await getCallerRole(callerId);
   if (callerRole !== "admin") return res.status(403).json({ error: "Chỉ admin mới có thể thêm nhân viên" });
 
-  const { name, phone, role, roles, email, salary, baseSalaryAmount, joinDate, isActive, status, staffType, notes, salaryNotes, avatar, banner, color } = req.body;
+  const { name, phone, role, roles, email, salary, baseSalaryAmount, joinDate, isActive, status, staffType, attendanceEnabled, notes, salaryNotes, avatar, banner, color } = req.body;
   const statusVal = status || "active";
   const activeVal = isActive !== undefined ? (isActive ? 1 : 0) : (statusVal === "inactive" || statusVal === "probation" ? 0 : 1);
   const notesVal = [notes, salaryNotes].filter(Boolean).join(" | ") || null;
@@ -135,6 +135,7 @@ router.post("/staff", async (req, res) => {
       isActive: activeVal,
       status: statusVal,
       staffType: staffType || "official",
+      attendanceEnabled: attendanceEnabled !== undefined ? Boolean(attendanceEnabled) : true,
       notes: notesVal,
       color: colorVal,
     })
@@ -155,7 +156,7 @@ router.put("/staff/:id", async (req, res) => {
     return res.status(403).json({ error: "Chỉ admin mới có thể chỉnh sửa hồ sơ nhân viên" });
   }
 
-  const { name, phone, role, roles, email, salary, baseSalaryAmount, joinDate, isActive, status, staffType, notes, salaryNotes, avatar, banner, coverImageUrl, color } = req.body;
+  const { name, phone, role, roles, email, salary, baseSalaryAmount, joinDate, isActive, status, staffType, attendanceEnabled, notes, salaryNotes, avatar, banner, coverImageUrl, color } = req.body;
   const update: Record<string, unknown> = {};
 
   if (name !== undefined) update.name = name;
@@ -169,6 +170,7 @@ router.put("/staff/:id", async (req, res) => {
   if (isAdmin) {
     if (color !== undefined) update.color = color || null;
     if (staffType !== undefined) update.staffType = staffType;
+    if (attendanceEnabled !== undefined) update.attendanceEnabled = Boolean(attendanceEnabled);
     if (role !== undefined) update.role = role;
     if (roles !== undefined) {
       update.roles = Array.isArray(roles) ? roles : [];

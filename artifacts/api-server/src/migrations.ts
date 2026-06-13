@@ -1024,6 +1024,41 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
       LANGUAGE SQL IMMUTABLE PARALLEL SAFE STRICT
     `).catch((e) => console.error("[migrations] tạo immutable_unaccent fallback thất bại:", e));
   }
+
+  // ── Module Claude Sale: bảng cấu hình + cờ lead (idempotent, an toàn) ─────────
+  // KHÔNG đụng booking/khách hàng/CRM. Chỉ thêm 2 bảng riêng của chatbot.
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS claude_sale_settings (
+        id          INTEGER PRIMARY KEY DEFAULT 1,
+        config      JSONB NOT NULL,
+        updated_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_by  INTEGER,
+        CONSTRAINT claude_sale_settings_singleton CHECK (id = 1)
+      )
+    `);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS claude_sale_lead_flags (
+        facebook_user_id      TEXT PRIMARY KEY,
+        phone_captured        BOOLEAN NOT NULL DEFAULT false,
+        phone_captured_at     TIMESTAMP,
+        appointment_intent    BOOLEAN NOT NULL DEFAULT false,
+        appointment_intent_at TIMESTAMP,
+        needs_human           BOOLEAN NOT NULL DEFAULT false,
+        escalation_reason     TEXT,
+        escalated_at          TIMESTAMP,
+        profile_sync_status   TEXT,
+        profile_synced_at     TIMESTAMP,
+        updated_at            TIMESTAMP NOT NULL DEFAULT NOW()
+      )
+    `);
+    // Bổ sung cột cho DB đã tạo bảng từ trước (idempotent).
+    await pool.query(`ALTER TABLE claude_sale_lead_flags ADD COLUMN IF NOT EXISTS profile_sync_status TEXT`);
+    await pool.query(`ALTER TABLE claude_sale_lead_flags ADD COLUMN IF NOT EXISTS profile_synced_at TIMESTAMP`);
+    console.log("[migrations] Claude Sale: claude_sale_settings + claude_sale_lead_flags OK");
+  } catch (err) {
+    console.error("[migrations] Claude Sale tables:", err);
+  }
 }
 
 export default runMigrations;

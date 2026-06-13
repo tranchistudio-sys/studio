@@ -1,4 +1,5 @@
 import { pool } from "@workspace/db";
+import { getMasterEnabled } from "./lib/sale-master";
 
 const DEFAULT_FOLLOW_UP_MSG = "Dạ bạn ơi, mình có thể hỗ trợ thêm gì không ạ? Amazing Studio luôn sẵn sàng giúp bạn ạ 😊";
 
@@ -12,18 +13,6 @@ async function getPageAccessToken(): Promise<string | null> {
     return r.rows[0]?.value ?? process.env.FB_PAGE_ACCESS_TOKEN ?? null;
   } catch {
     return null;
-  }
-}
-
-async function getAutoReplyEnabled(): Promise<boolean> {
-  try {
-    const r = await pool.query(
-      `SELECT value FROM settings WHERE key = 'fb_auto_reply_enabled' LIMIT 1`,
-    );
-    const v = r.rows[0]?.value ?? "";
-    return v === "1" || v.toLowerCase() === "true" || v.toLowerCase() === "yes";
-  } catch {
-    return false;
   }
 }
 
@@ -63,9 +52,10 @@ type Candidate = {
 
 export async function runFollowUpCheck(): Promise<void> {
   const pageToken = await getPageAccessToken();
-  const autoReplyEnabled = await getAutoReplyEnabled();
+  // CẦU DAO TỔNG: follow-up chỉ chạy khi Claude Sale đang bật (cùng công tắc với chatbot).
+  const masterEnabled = await getMasterEnabled();
 
-  if (!pageToken || !autoReplyEnabled) {
+  if (!pageToken || !masterEnabled) {
     return;
   }
 
@@ -123,17 +113,23 @@ async function processCandidate(
   );
   if (outboundCheck.rows.length > 0) return;
 
-  // Kiểm tra đã chốt đơn chưa (customer_id IS NOT NULL)
+  // Kiểm tra đã chốt đơn chưa (customer_id IS NOT NULL) + chế độ AI của lead
   const leadCheck = await pool.query(
-    `SELECT customer_id, current_script_id, current_sale_step FROM crm_leads WHERE facebook_user_id = $1 LIMIT 1`,
+    `SELECT customer_id, current_script_id, current_sale_step, ai_mode FROM crm_leads WHERE facebook_user_id = $1 LIMIT 1`,
     [row.psid],
   );
   const lead = leadCheck.rows[0] as {
     customer_id: number | null;
     current_script_id: number | null;
     current_sale_step: number | null;
+    ai_mode: string | null;
   } | undefined;
   if (lead?.customer_id) return;
+  // CẦU DAO RIÊNG TỪNG LEAD: nhân viên đang tiếp quản / tạm dừng → KHÔNG follow-up (mục 11/12).
+  if ((lead?.ai_mode ?? "active") !== "active") {
+    console.log(`[FollowUp] skip psid=${row.psid} reason=ai_mode_${lead?.ai_mode ?? "unknown"}`);
+    return;
+  }
   if (lead?.current_script_id == null) return;
 
   const scriptId = lead.current_script_id;

@@ -11,7 +11,8 @@ import {
   CreditCard, Film, MessageSquare, ChevronDown, Shield, Eye,
   Camera, Palette, Layers, Banknote, Star, TrendingDown, User, Timer, Funnel, FlaskConical,
   Volume2, VolumeX, CheckCheck,
-  Images, DollarSign, Tag, Trash2, Globe, Home, ExternalLink, Heart, LayoutTemplate, Lightbulb
+  Images, DollarSign, Tag, Trash2, Globe, Home, ExternalLink, Heart, LayoutTemplate, Lightbulb,
+  SlidersHorizontal, Activity, RefreshCw
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useStaffAuth, type SimulateRole } from "@/contexts/StaffAuthContext";
@@ -51,9 +52,17 @@ const ALL_NAV_ITEMS = [
   { href: "/revenue",         label: "Doanh thu & Lợi nhuận", icon: TrendingUp,    adminOnly: true },
 
   // 🧠 Nhóm phụ / ít dùng
-  { href: "/facebook-inbox-ai", label: "Inbox Facebook AI",  icon: MessageSquare,    adminOnly: false },
-  { href: "/ai-sale-scripts",   label: "Kịch bản Sale AI",   icon: Sparkles,         adminOnly: false },
-  { href: "/ai-test",           label: "Phòng test AI",       icon: FlaskConical,     adminOnly: false },
+  { href: "/facebook-inbox-ai", label: "Inbox Facebook",     icon: MessageSquare,    adminOnly: false },
+  { href: "/claude-sale-test",  label: "Claude Sale Test",   icon: FlaskConical,     adminOnly: true  },
+  { href: "/claude-sale-settings", label: "Claude Sale Settings", icon: SlidersHorizontal, adminOnly: true },
+  { href: "/claude-sale-monitor",  label: "Claude Sale Monitor",  icon: Activity,          adminOnly: true },
+  { href: "/claude-sale-reengage", label: "Khách cần chăm lại",   icon: RefreshCw,         adminOnly: true },
+  { href: "/sale-learning",     label: "Sale Learning",      icon: Sparkles,         adminOnly: true  },
+  // ⏸️ Bộ não ChatGPT/OpenAI cũ — TẠM ẨN khỏi menu (chuẩn bị chuyển sang Claude).
+  //    Code & route vẫn còn (vào trực tiếp /ai-sale-scripts, /ai-test để rollback).
+  //    Bỏ comment 2 dòng dưới để hiện lại menu bot cũ.
+  // { href: "/ai-sale-scripts",   label: "Kịch bản Sale AI",   icon: Sparkles,         adminOnly: false },
+  // { href: "/ai-test",           label: "Phòng test AI",       icon: FlaskConical,     adminOnly: false },
   { href: "/pricing",         label: "Dịch vụ & Bảng giá",  icon: LayoutList,      adminOnly: false },
   { href: "/staff",           label: "Nhân sự",              icon: UserCog,         adminOnly: false },
   { href: "/tasks",           label: "Giao việc",            icon: CheckSquare,     adminOnly: false },

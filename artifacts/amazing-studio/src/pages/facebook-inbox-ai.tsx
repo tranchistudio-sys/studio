@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bot, MessageSquare, Send, UserPlus, RefreshCw, Settings, ChevronLeft, Plus, X, Paperclip, AlertTriangle, Download, ZoomIn, Pencil, Bell, BellOff, Search, MoreHorizontal } from "lucide-react";
+import { Bot, MessageSquare, Send, UserPlus, RefreshCw, Settings, ChevronLeft, Plus, X, Paperclip, AlertTriangle, Download, ZoomIn, Pencil, Bell, BellOff, Search, MoreHorizontal, Loader2 } from "lucide-react";
 import { Link } from "wouter";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -30,6 +30,8 @@ type LeadInfo = {
   currentScriptId?: number | null;
   currentSaleStep?: number | null;
   scriptName?: string | null;
+  profileSyncStatus?: string | null;
+  needsHuman?: boolean;
 };
 
 type Thread = {
@@ -205,7 +207,7 @@ function MessageTag({ direction, aiDecision, sentStatus, sentBy }: { direction: 
 
 type FollowUpStatus = { count: number; lastAt: string | null; optedOut: boolean; inQueue: boolean };
 
-function LeadInfoPanel({ lead, psid, onOpenCustomer, onOpenLead, onSave }: { lead: LeadInfo; psid: string; onOpenCustomer?: () => void; onOpenLead?: () => void; onSave?: (patch: Partial<LeadInfo>) => void; }) {
+function LeadInfoPanel({ lead, psid, onOpenCustomer, onOpenLead, onSave, onSyncProfile, syncing }: { lead: LeadInfo; psid: string; onOpenCustomer?: () => void; onOpenLead?: () => void; onSave?: (patch: Partial<LeadInfo>) => void; onSyncProfile?: () => void; syncing?: boolean; }) {
   const [name, setName] = useState(lead.name ?? "");
   const [phone, setPhone] = useState(lead.phone ?? "");
   const [zalo, setZalo] = useState(lead.zalo ?? "");
@@ -252,6 +254,28 @@ function LeadInfoPanel({ lead, psid, onOpenCustomer, onOpenLead, onSave }: { lea
           <p className="text-[11px] text-muted-foreground">PSID: {psid.slice(-10)}</p>
           <span className={`mt-1 inline-flex text-[10px] font-medium px-2 py-0.5 rounded-full ${statusLabel(lead.status).cls}`}>{statusLabel(lead.status).label}</span>
         </div>
+      </div>
+      {/* Đồng bộ tên/avatar Facebook (giữ tên admin đã sửa) */}
+      <div className="flex items-center justify-between gap-2 -mt-1">
+        {(() => {
+          const st = lead.profileSyncStatus;
+          const badge = st === "synced"
+            ? { t: "Đã đồng bộ Facebook", c: "text-green-600" }
+            : (st === "failed" || st === "unavailable")
+              ? { t: "Không lấy được từ Facebook", c: "text-orange-500" }
+              : isGenericName
+                ? { t: "Chưa đồng bộ tên", c: "text-gray-400" }
+                : { t: "Đã có tên", c: "text-green-600" };
+          return <span className={`text-[10px] ${badge.c}`}>{badge.t}</span>;
+        })()}
+        <button
+          onClick={onSyncProfile}
+          disabled={syncing}
+          className="text-[11px] flex items-center gap-1 px-2 py-1 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 disabled:opacity-50 shrink-0"
+          title="Lấy tên & avatar thật từ Facebook"
+        >
+          {syncing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />} Đồng bộ tên
+        </button>
       </div>
       {(() => {
         const hasGroup = (lead.currentSaleStep ?? 0) >= 3 && !!lead.currentScriptId && !!lead.scriptName;
@@ -621,8 +645,9 @@ export default function FacebookInboxAiPage() {
   const aiModeMutation = useMutation({ mutationFn: async ({ psid, aiMode }: { psid: string; aiMode: string }) => { const r = await authFetch(`${BASE}/api/fb-ai/threads/${psid}/ai-mode`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ aiMode }) }); const d = await r.json(); if (!r.ok) throw new Error(d.error || "Cập nhật AI thất bại"); return d; }, onSuccess: () => { qc.invalidateQueries({ queryKey: ["fb-inbox-threads"] }); }, onError: (e: Error) => setHint(e.message) });
   const createCustomerMutation = useMutation({ mutationFn: async ({ psid, phone, zalo }: { psid: string; phone: string; zalo: string }) => { const r = await authFetch(`${BASE}/api/fb-inbox/threads/${psid}/create-customer`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone: phone || undefined, zalo: zalo || undefined }) }); const d = await r.json(); if (!r.ok) throw new Error(d.error || "Tạo khách hàng thất bại"); return d as { customerId?: number; leadId?: number }; }, onSuccess: (d) => { setShowModal(false); setModalPhone(""); setModalZalo(""); setCreatedCustomerId(d.customerId ?? null); qc.invalidateQueries({ queryKey: ["fb-inbox-threads"] }); setSelectedPsid((v) => v); }, onError: (e: Error) => setHint(e.message) });
   const globalAiMutation = useMutation({
+    // CẦU DAO TỔNG duy nhất: bật/tắt Claude Sale toàn hệ thống (dùng chung mọi nơi).
     mutationFn: async (autoReplyEnabled: boolean) => {
-      const r = await authFetch(`${BASE}/api/fb-ai/config`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ autoReplyEnabled }) });
+      const r = await authFetch(`${BASE}/api/claude-sale/master`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: autoReplyEnabled }) });
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "Cập nhật thất bại");
       return d;
@@ -665,8 +690,31 @@ export default function FacebookInboxAiPage() {
     },
     onError: (e: Error) => setHint(e.message),
   });
+  // Đồng bộ tên/avatar 1 hội thoại (giữ nguyên tên admin đã sửa).
+  const syncOneProfileMutation = useMutation({
+    mutationFn: async (psid: string) => {
+      const r = await authFetch(`${BASE}/api/fb-inbox/threads/${psid}/sync-profile`, { method: "POST" });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || "Đồng bộ thất bại");
+      return d as { success: boolean; status: string; name?: string; nameKept?: boolean; error?: string };
+    },
+    onSuccess: (d) => {
+      if (d.success) setHint(d.nameKept ? "Đã đồng bộ avatar (giữ tên bạn đã sửa)" : "Đã đồng bộ tên/avatar từ Facebook");
+      else setHint(`Không lấy được từ Facebook: ${d.error ?? "không có dữ liệu"}`);
+      qc.invalidateQueries({ queryKey: ["fb-inbox-threads"] });
+    },
+    onError: (e: Error) => setHint(e.message),
+  });
 
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendMutation.mutate(); } };
+  // Nhân viên gửi tay khi AI đang chăm → hỏi tiếp quản (section 9). Đồng ý → gửi (BE tự chuyển takeover).
+  const handleSend = () => {
+    if (!draft.trim() || sendMutation.isPending || uploadProgress) return;
+    if ((lead?.aiMode ?? "active") === "active") {
+      if (!window.confirm("Bạn muốn tiếp quản cuộc hội thoại này? AI sẽ tự tắt ở khách này để bạn chăm thủ công.")) return;
+    }
+    sendMutation.mutate();
+  };
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); handleSend(); } };
   const handleSelectThread = (psid: string) => { if (uploadProgress) return; setSelectedPsid(psid); setDraft(""); setHint(""); setCreatedCustomerId(null); setShowActionSheet(false); pendingPreviewUrls.forEach((u) => URL.revokeObjectURL(u)); setPendingImages([]); setPendingPreviewUrls([]); };
   const handleBack = () => { if (uploadProgress) return; setSelectedPsid(null); setShowActionSheet(false); setHint(""); pendingPreviewUrls.forEach((u) => URL.revokeObjectURL(u)); setPendingImages([]); setPendingPreviewUrls([]); };
   const lead = selectedThread?.lead ?? null;
@@ -1057,14 +1105,14 @@ export default function FacebookInboxAiPage() {
                         )}
                       </button>
                     ) : null}
-                    <button onClick={() => sendMutation.mutate()} disabled={!draft.trim() || sendMutation.isPending || !!uploadProgress} className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-xl text-sm font-medium disabled:opacity-50 hover:opacity-90"><Send className="w-4 h-4" />{sendMutation.isPending ? "Đang gửi..." : "Gửi"}</button>
+                    <button onClick={handleSend} disabled={!draft.trim() || sendMutation.isPending || !!uploadProgress} className="inline-flex items-center gap-2 bg-primary text-primary-foreground px-4 py-2 rounded-xl text-sm font-medium disabled:opacity-50 hover:opacity-90"><Send className="w-4 h-4" />{sendMutation.isPending ? "Đang gửi..." : "Gửi"}</button>
                   </div>
                 </div>
               </div>
 
               {/* LeadInfoPanel — desktop only */}
               <div className="hidden md:block">
-                {lead && <LeadInfoPanel lead={lead} psid={selectedPsid} onOpenLead={() => window.location.assign("/crm")} onOpenCustomer={openCustomer} onSave={saveLead} />}
+                {lead && <LeadInfoPanel lead={lead} psid={selectedPsid} onOpenLead={() => window.location.assign("/crm")} onOpenCustomer={openCustomer} onSave={saveLead} onSyncProfile={() => syncOneProfileMutation.mutate(selectedPsid)} syncing={syncOneProfileMutation.isPending} />}
               </div>
             </>
           )}

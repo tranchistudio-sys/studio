@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.1",
     "@google-cloud/storage": "^7.19.0",
     "@types/multer": "^2.1.0",
     "@workspace/api-zod": "workspace:*",

@@ -31,6 +31,11 @@ import CrmLeadsPage from "@/pages/crm-leads";
 import FacebookInboxAiPage from "@/pages/facebook-inbox-ai";
 import AiSaleScriptsPage from "@/pages/ai-sale-scripts";
 import AiTestRoomPage from "@/pages/ai-test-room";
+import ClaudeSaleTestPage from "@/pages/claude-sale-test";
+import ClaudeSaleSettingsPage from "@/pages/claude-sale-settings";
+import ClaudeSaleMonitorPage from "@/pages/claude-sale-monitor";
+import ClaudeSaleReengagePage from "@/pages/claude-sale-reengage";
+import SaleLearningPage from "@/pages/sale-learning";
 import NotificationsPage from "@/pages/notifications";
 import NotFound from "@/pages/not-found";
 import LoginPage from "@/pages/login";
@@ -92,7 +97,7 @@ const INTERNAL_PREFIXES = [
   "/pricing", "/services", "/staff", "/accounting", "/ai-assistant", "/settings",
   "/bookings", "/payments", "/expenses", "/revenue", "/contracts", "/reports",
   "/my-profile", "/photoshop-jobs", "/attendance",
-  "/crm-leads", "/facebook-inbox-ai", "/ai-sale-scripts", "/ai-test", "/notifications",
+  "/crm-leads", "/facebook-inbox-ai", "/ai-sale-scripts", "/ai-test", "/claude-sale-test", "/claude-sale-settings", "/claude-sale-monitor", "/claude-sale-reengage", "/sale-learning", "/notifications",
   "/cms",
 ];
 
@@ -244,6 +249,11 @@ function InternalRouter() {
         <Route path="/facebook-inbox-ai" component={FacebookInboxAiPage} />
         <Route path="/ai-sale-scripts" component={AiSaleScriptsPage} />
         <Route path="/ai-test" component={AiTestRoomPage} />
+        <Route path="/claude-sale-test" component={() => <AdminRoute component={ClaudeSaleTestPage} />} />
+        <Route path="/claude-sale-settings" component={() => <AdminRoute component={ClaudeSaleSettingsPage} />} />
+        <Route path="/claude-sale-monitor" component={() => <AdminRoute component={ClaudeSaleMonitorPage} />} />
+        <Route path="/claude-sale-reengage" component={() => <AdminRoute component={ClaudeSaleReengagePage} />} />
+        <Route path="/sale-learning" component={() => <AdminRoute component={SaleLearningPage} />} />
         <Route path="/notifications" component={NotificationsPage} />
         <Route path="/cms/home-settings" component={CmsHomeSettingsPage} />
         <Route path="/cms/gallery" component={CmsGalleryPage} />

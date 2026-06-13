@@ -17,6 +17,17 @@ import {
   type AiSaleReply,
   type AiSettings,
 } from "./ai-engine";
+import { askClaudeForReply, type ClaudeHistoryItem } from "../lib/claude-sale";
+import { getSaleContext } from "../lib/sale-context";
+import { getActivePlaybook } from "../lib/sale-playbook";
+import { getClaudeSaleSettings, computeReplyDelayMs } from "../lib/sale-settings";
+import { getScheduleContext } from "../lib/sale-calendar";
+import { getMasterEnabled } from "../lib/sale-master";
+import {
+  markPhoneCaptured, markAppointmentIntent, markNeedsHuman, setProfileSyncStatus,
+  detectPhone, detectAppointmentIntent, detectEscalation,
+} from "../lib/sale-lead-flags";
+import { emitNotification } from "./notifications";
 import multer from "multer";
 import { randomUUID } from "crypto";
 import { objectStorageClient, ObjectStorageService } from "../lib/objectStorage";
@@ -144,12 +155,16 @@ async function sendChunksWithTyping(
   chunks: string[],
   aiDecision: string,
   settings?: AiSettings,
+  /** Nếu set: bubble ĐẦU chờ đúng số ms này (delay theo độ dài tin khách); các bubble sau gõ nhanh tự nhiên. */
+  firstDelayMs?: number,
 ): Promise<boolean> {
   if (settings?.logDecisions) console.log(`[AI] psid=${psid} chunks=${chunks.length} decision=${aiDecision}`);
   let allSent = true;
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
-    const delayMs = naturalDelayMs(chunk, settings);
+    const delayMs = firstDelayMs != null
+      ? (i === 0 ? firstDelayMs : Math.min(2500, 600 + chunk.length * 15))
+      : naturalDelayMs(chunk, settings);
     if (settings?.logDecisions) console.log(`[AI] psid=${psid} chunk[${i}]="${chunk.slice(0, 60)}" delay=${delayMs}ms`);
     if (settings?.typingIndicator !== false) await sendTypingOn(psid, token);
     await sleep(delayMs);
@@ -419,10 +434,41 @@ export async function processIncomingFacebookMessage(psid: string, text: string,
   }
 
   const aiMode = lead?.ai_mode ?? "active";
-  const aiShouldReply = cfg.autoReplyEnabled && aiMode === "active";
+
+  // Cờ AI tự ghi (Monitor) — cập nhật bất kể AI có trả lời hay không. Read-only với CRM.
+  if (detectPhone(text)) markPhoneCaptured(psid).catch(() => {});
+  if (detectAppointmentIntent(text)) markAppointmentIntent(psid).catch(() => {});
+
+  // ══ BỘ NÃO SALE CLAUDE (Giai đoạn 1 — chỉ tư vấn) ════════════════════════════
+  // CẦU DAO TỔNG (DB) thay cho biến môi trường: 1 công tắc cho cả Test & Messenger.
+  // Khi TẮT: webhook vẫn nhận tin, vẫn lưu lead + lịch sử (ở trên) — chỉ KHÔNG trả lời.
+  // Khi lead ở 'paused'/'takeover': nhân viên đang chăm → AI im.
+  const masterOn = await getMasterEnabled();
+  if (masterOn && aiMode === "active") {
+    await handleClaudeSaleReply(psid, text, lead, cfg);
+    return;
+  }
+  // MỌI trường hợp còn lại (master tắt HOẶC lead không 'active') → KHÔNG trả lời.
+  // Tin & lead đã lưu ở trên; chỉ ghi lý do. Không rơi xuống bot ChatGPT cũ.
+  await pool.query(
+    `UPDATE fb_inbox_messages SET ai_decision = $1
+     WHERE id = (SELECT id FROM fb_inbox_messages WHERE facebook_user_id = $2 AND direction = 'incoming' ORDER BY id DESC LIMIT 1)`,
+    [!masterOn ? "claude_master_off" : aiMode === "takeover" ? "ai_disabled_takeover" : "ai_disabled_paused", psid],
+  );
+  return;
+  // ══ HẾT CLAUDE — phía dưới là bot ChatGPT/OpenAI cũ (đang tắt qua công tắc) ═══
+
+  // ── CÔNG TẮC TẠM TẮT BỘ NÃO CHATGPT/OpenAI CŨ ──────────────────────────────
+  // Mặc định TẮT (false). Khi tắt: webhook vẫn nhận tin, tạo lead, lưu lịch sử,
+  // nhưng KHÔNG tự động trả lời (cả QA-script lẫn ChatGPT) — nhường chỗ cho Claude.
+  // Bật lại bộ não cũ: đặt LEGACY_FB_BOT_ENABLED=1 (hoặc true) trong .env.
+  const legacyBotEnabled = toBool(process.env.LEGACY_FB_BOT_ENABLED);
+  const aiShouldReply = legacyBotEnabled && cfg.autoReplyEnabled && aiMode === "active";
 
   if (!aiShouldReply || !cfg.openaiApiKey || !cfg.pageAccessToken) {
-    const decision = !aiShouldReply
+    const decision = !legacyBotEnabled
+      ? "legacy_bot_disabled"
+      : !aiShouldReply
       ? !cfg.autoReplyEnabled ? "ai_disabled_global" : aiMode === "takeover" ? "ai_disabled_takeover" : "ai_disabled_paused"
       : "missing_config";
     await pool.query(
@@ -620,6 +666,129 @@ export async function processIncomingFacebookMessage(psid: string, text: string,
   }
 }
 
+/**
+ * Xử lý trả lời tự động bằng Claude (Giai đoạn 1).
+ * - Lưu/đánh dấu ai_decision rõ ràng cho từng nhánh.
+ * - Lỗi Claude/API → ai_decision="claude_error", KHÔNG crash, KHÔNG gửi tin.
+ * - Không tạo booking, không sửa/xóa lead, không đụng dữ liệu (chỉ đọc).
+ */
+async function handleClaudeSaleReply(
+  psid: string,
+  text: string,
+  lead: { name?: string } | undefined,
+  cfg: FbConfig,
+): Promise<void> {
+  const markIncoming = async (decision: string) => {
+    await pool.query(
+      `UPDATE fb_inbox_messages SET ai_decision = $1
+       WHERE id = (SELECT id FROM fb_inbox_messages WHERE facebook_user_id = $2 AND direction = 'incoming' ORDER BY id DESC LIMIT 1)`,
+      [decision, psid],
+    );
+  };
+
+  const apiKey = (process.env.ANTHROPIC_API_KEY ?? "").trim();
+  if (!apiKey) {
+    console.warn(`[Claude] psid=${psid} ANTHROPIC_API_KEY chưa cấu hình — bỏ qua trả lời`);
+    await markIncoming("claude_no_key");
+    return;
+  }
+  if (!cfg.pageAccessToken) {
+    await markIncoming("claude_no_page_token");
+    return;
+  }
+
+  // Lịch sử hội thoại (tin khách hiện tại đã nằm cuối danh sách này)
+  const historyRows = await pool.query(
+    `SELECT direction, message FROM fb_inbox_messages WHERE facebook_user_id = $1 ORDER BY id DESC LIMIT 20`,
+    [psid],
+  );
+  const history = (historyRows.rows as ClaudeHistoryItem[]).reverse();
+
+  // Nạp cấu hình Claude Sale (dùng chung với Test) + lịch (read-only) nếu bật.
+  const settings = await getClaudeSaleSettings();
+  let scheduleContext = "";
+  if (settings.calendarEnabled) {
+    try { scheduleContext = await getScheduleContext(settings.calWindowDays); } catch { /* bỏ qua */ }
+  }
+
+  let reply;
+  try {
+    const context = await getSaleContext();
+    const styleGuide = await getActivePlaybook();
+    reply = await askClaudeForReply({
+      apiKey,
+      model: process.env.ANTHROPIC_MODEL?.trim() || undefined,
+      customerMessage: text,
+      customerName: lead?.name,
+      history,
+      context,
+      styleGuide,
+      settings,
+      scheduleContext,
+    });
+  } catch (err) {
+    console.error(`[Claude] psid=${psid} lỗi gọi Claude:`, err);
+    await markIncoming("claude_error");
+    return;
+  }
+
+  // Tên khách Claude vừa học được → lưu lead NẾU tên hiện tại vẫn là placeholder
+  // (KHÔNG ghi đè tên admin/đã có tên thật).
+  if (reply.learnedName && isPlaceholderLeadName(lead?.name)) {
+    await pool.query(`UPDATE crm_leads SET name = $1 WHERE facebook_user_id = $2`, [reply.learnedName, psid]);
+    console.log(`[Claude] psid=${psid} lưu tên khách tự khai: "${reply.learnedName}"`);
+  }
+
+  // Escalation: từ marker của Claude HOẶC phát hiện từ khóa (chuyển khoản/đặt cọc/gặp người).
+  const escalationReason = reply.escalation || detectEscalation(text);
+
+  const chunks = reply.messages.filter((m) => m.trim().length > 0);
+  if (chunks.length === 0) {
+    console.warn(`[Claude] psid=${psid} Claude trả về rỗng`);
+    await markIncoming(escalationReason ? "claude_escalated_empty" : "claude_empty");
+    if (escalationReason) await escalateToHuman(psid, lead?.name, escalationReason);
+    return;
+  }
+
+  // Tốc độ trả lời: delay theo độ dài tin KHÁCH (cấu hình + random ±30%). Áp dụng cho bubble đầu.
+  const replyDelayMs = computeReplyDelayMs(text, settings);
+  const allSent = await sendChunksWithTyping(psid, cfg.pageAccessToken, chunks, "claude_replied", undefined, replyDelayMs);
+  await markIncoming(allSent ? (escalationReason ? "claude_replied_escalated" : "claude_replied") : "claude_partial_failed");
+  console.log(`[Claude] psid=${psid} đã gửi ${chunks.length} tin (allSent=${allSent})`);
+
+  // Sau khi đã gửi câu chuyển tiếp lịch sự → chuyển nhân viên thật tiếp quản.
+  if (escalationReason) await escalateToHuman(psid, lead?.name, escalationReason);
+}
+
+/** Tên lead còn là placeholder (chưa có tên thật) → được phép ghi đè bằng tên mới. */
+function isPlaceholderLeadName(name?: string | null): boolean {
+  if (!name?.trim()) return true;
+  return name.startsWith("Khách Facebook ") || /^Khách\s/i.test(name) || /^FB\s/i.test(name);
+}
+
+/**
+ * Escalation → NEEDS_HUMAN_CONFIRMATION: chuyển lead sang 'takeover' (AI im),
+ * ghi cờ cần-tiếp-quản, và báo nhân viên thật qua notification. KHÔNG đụng booking.
+ */
+async function escalateToHuman(psid: string, leadName: string | undefined, reason: string): Promise<void> {
+  try {
+    await pool.query(`UPDATE crm_leads SET ai_mode = 'takeover' WHERE facebook_user_id = $1`, [psid]);
+  } catch (err) {
+    console.error(`[Claude] psid=${psid} set takeover lỗi:`, String(err).slice(0, 120));
+  }
+  await markNeedsHuman(psid, reason);
+  const who = leadName && !isPlaceholderLeadName(leadName) ? leadName : `khách FB …${psid.slice(-4)}`;
+  emitNotification({
+    staffId: null, // broadcast cho admin/nhân viên đang trực
+    type: "claude_sale_escalation",
+    priority: "high",
+    title: "Claude Sale cần người tiếp quản",
+    message: `${who}: ${reason}. AI đã tạm dừng ở hội thoại này, cần nhân viên xác nhận/xử lý.`,
+    targetModule: "facebook-inbox-ai",
+  });
+  console.log(`[Claude] psid=${psid} ESCALATE → takeover + notify: ${reason}`);
+}
+
 function maskToken(t: string | null): string | null {
   if (!t || t.length < 8) return t ? "****" : null;
   return t.slice(0, 4) + "****" + t.slice(-4);
@@ -679,7 +848,12 @@ router.get("/fb-ai/status", async (req, res) => {
   const caller = await getCaller(req);
   if (!caller) return res.status(401).json({ error: "Chưa đăng nhập" });
   const cfg = await getConfig();
-  res.json({ autoReplyEnabled: cfg.autoReplyEnabled, hasConfig: !!cfg.pageAccessToken && !!cfg.openaiApiKey });
+  // CẦU DAO TỔNG (DB) là nguồn sự thật DUY NHẤT cho Claude Sale. hasConfig = sẵn sàng
+  // chạy Claude (có Page token + ANTHROPIC_API_KEY). autoReplyEnabled giữ tên cũ để
+  // tương thích UI, nhưng nay = trạng thái cầu dao tổng.
+  const masterEnabled = await getMasterEnabled();
+  const hasApiKey = !!(process.env.ANTHROPIC_API_KEY ?? "").trim();
+  res.json({ autoReplyEnabled: masterEnabled, masterEnabled, hasConfig: !!cfg.pageAccessToken && hasApiKey });
 });
 
 // GET /fb-ai/webhook-log — xem 50 sự kiện webhook gần nhất (chỉ admin)
@@ -774,19 +948,23 @@ router.post("/fb-ai/sync-profiles", async (req, res) => {
 
     if (!nextName && !nextAvatar) {
       failed += 1;
+      await setProfileSyncStatus(psid, profile.errorMsg ? "failed" : "unavailable");
       if (profile.errorMsg && !errors.includes(profile.errorMsg)) {
         errors.push(profile.errorMsg);
       }
       continue;
     }
 
+    // BẢO VỆ tên admin đã sửa: chỉ cập nhật tên khi tên hiện tại còn là placeholder.
+    const canSetName = !!nextName && isPlaceholderLeadName(lead.name);
     await db
       .update(crmLeadsTable)
       .set({
-        ...(nextName ? { name: nextName } : {}),
+        ...(canSetName ? { name: nextName! } : {}),
         ...(nextAvatar ? { avatarUrl: nextAvatar } : {}),
       })
       .where(eq(crmLeadsTable.id, lead.id));
+    await setProfileSyncStatus(psid, "synced");
     updated += 1;
   }
 
@@ -794,6 +972,46 @@ router.post("/fb-ai/sync-profiles", async (req, res) => {
     console.warn(`[SyncProfiles] ${failed}/${scanned} thất bại. Lỗi: ${errors.join(" | ")}`);
   }
   res.json({ success: true, scanned, updated, failed, errors });
+});
+
+// POST /fb-inbox/threads/:psid/sync-profile — đồng bộ tên/avatar 1 hội thoại (nút "Đồng bộ tên").
+// Bảo vệ tên admin đã sửa; không crash; ghi profile_sync_status.
+router.post("/fb-inbox/threads/:psid/sync-profile", async (req, res) => {
+  const caller = await getCaller(req);
+  if (!caller) return res.status(401).json({ error: "Chưa đăng nhập" });
+  const cfg = await getConfig();
+  if (!cfg.pageAccessToken) return res.status(400).json({ error: "Chưa cấu hình Page Access Token" });
+  const psid = req.params.psid;
+
+  const [lead] = await db
+    .select({ id: crmLeadsTable.id, name: crmLeadsTable.name, avatarUrl: crmLeadsTable.avatarUrl })
+    .from(crmLeadsTable)
+    .where(eq(crmLeadsTable.facebookUserId, psid))
+    .limit(1);
+  if (!lead) return res.status(404).json({ error: "Không tìm thấy hội thoại" });
+
+  const profile = await fetchFacebookProfile(psid, cfg.pageAccessToken);
+  if (!profile.name && !profile.avatarUrl) {
+    const status = profile.errorMsg ? "failed" : "unavailable";
+    await setProfileSyncStatus(psid, status);
+    return res.json({ success: false, status, error: profile.errorMsg ?? "Facebook không trả về tên/avatar", name: lead.name, avatarUrl: lead.avatarUrl });
+  }
+  const canSetName = !!profile.name && isPlaceholderLeadName(lead.name);
+  await db
+    .update(crmLeadsTable)
+    .set({
+      ...(canSetName ? { name: profile.name! } : {}),
+      ...(profile.avatarUrl ? { avatarUrl: profile.avatarUrl } : {}),
+    })
+    .where(eq(crmLeadsTable.id, lead.id));
+  await setProfileSyncStatus(psid, "synced");
+  res.json({
+    success: true,
+    status: "synced",
+    name: canSetName ? profile.name : lead.name,
+    avatarUrl: profile.avatarUrl ?? lead.avatarUrl,
+    nameKept: !canSetName && !!profile.name, // tên admin được giữ nguyên
+  });
 });
 
 router.get("/fb-inbox/staff-senders", async (req, res) => {
@@ -853,6 +1071,7 @@ router.get("/fb-inbox/threads", async (req, res) => {
     avatarUrl: string | null; aiPerThreadEnabled: boolean | null; aiMode: string;
     customerId: number | null; notes: string | null;
     currentScriptId: number | null; currentSaleStep: number | null; scriptName: string | null;
+    profileSyncStatus: string | null; needsHuman: boolean;
   }>();
   if (psids.length > 0) {
     const placeholders = psids.map((_, i) => `$${i + 1}`).join(", ");
@@ -860,9 +1079,11 @@ router.get("/fb-inbox/threads", async (req, res) => {
       `SELECT l.id, l.facebook_user_id, l.name, l.phone, l.status, l.avatar_url,
               l.ai_per_thread_enabled, l.ai_mode, l.customer_id, l.notes,
               l.current_script_id, l.current_sale_step,
-              s.name AS script_name
+              s.name AS script_name,
+              f.profile_sync_status, COALESCE(f.needs_human, false) AS needs_human
        FROM crm_leads l
        LEFT JOIN ai_service_scripts s ON s.id = l.current_script_id
+       LEFT JOIN claude_sale_lead_flags f ON f.facebook_user_id = l.facebook_user_id
        WHERE l.facebook_user_id IN (${placeholders})`,
       psids,
     );
@@ -872,6 +1093,7 @@ router.get("/fb-inbox/threads", async (req, res) => {
         status: string | null; avatar_url: string | null; ai_per_thread_enabled: boolean | null;
         ai_mode: string | null; customer_id: number | null; notes: string | null;
         current_script_id: number | null; current_sale_step: number | null; script_name: string | null;
+        profile_sync_status: string | null; needs_human: boolean | null;
       }>)
         .filter((x) => !!x.facebook_user_id)
         .map((x) => [x.facebook_user_id, {
@@ -887,6 +1109,8 @@ router.get("/fb-inbox/threads", async (req, res) => {
           currentScriptId: x.current_script_id ?? null,
           currentSaleStep: x.current_sale_step ?? null,
           scriptName: x.script_name ?? null,
+          profileSyncStatus: x.profile_sync_status ?? null,
+          needsHuman: !!x.needs_human,
         }]),
     );
   }

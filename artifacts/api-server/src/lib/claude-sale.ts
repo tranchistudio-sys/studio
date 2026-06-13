@@ -1,4 +1,3 @@
-import Anthropic from "@anthropic-ai/sdk";
 import {
   type ClaudeSaleSettings,
   buildSettingsPromptBlock,
@@ -6,6 +5,8 @@ import {
   NEEDS_HUMAN_MARKER_RE,
   NAME_MARKER_RE,
 } from "./sale-settings";
+import { callChat, type ChatMessage } from "./ai-orchestrator";
+import { ALL_FAILED_CUSTOMER_MESSAGE, type AiProviderName } from "./ai-provider";
 
 /**
  * Bộ não sale Claude cho Facebook Messenger (Giai đoạn 1 — chỉ tư vấn).
@@ -21,7 +22,8 @@ import {
 export type ClaudeHistoryItem = { direction: "incoming" | "outgoing"; message: string };
 
 export type AskClaudeInput = {
-  apiKey: string;
+  /** Không còn dùng trực tiếp — tổng đài (ai-orchestrator) tự đọc key theo provider. Giữ để tương thích caller cũ. */
+  apiKey?: string;
   model?: string;
   customerMessage: string;
   customerName?: string | null;
@@ -39,7 +41,18 @@ export type AskClaudeInput = {
  * escalation: lý do cần nhân viên thật tiếp quản (null nếu không cần).
  * learnedName: tên khách Claude vừa học được trong lượt này (null nếu không có).
  */
-export type ClaudeReply = { messages: string[]; raw: string; escalation: string | null; learnedName: string | null };
+export type ClaudeReply = {
+  messages: string[];
+  raw: string;
+  escalation: string | null;
+  learnedName: string | null;
+  /** Provider thực tế đã trả lời (null nếu tất cả lỗi → cần nhân viên). */
+  providerUsed: AiProviderName | null;
+  /** true nếu provider chính lỗi và đã fallback sang provider khác. */
+  fallbackUsed: boolean;
+  /** Lý do fallback, vd "claude_timeout" (null nếu không fallback). */
+  fallbackReason: string | null;
+};
 
 // Model mặc định cho chatbot sale (cân bằng chi phí/chất lượng). Override qua ANTHROPIC_MODEL.
 export const DEFAULT_MODEL = "claude-sonnet-4-6";
@@ -141,8 +154,8 @@ Trả lời tin mới nhất theo đúng vai Hoa, và LUÔN đẩy khách sang b
 function toApiMessages(
   history: ClaudeHistoryItem[],
   fallbackMessage: string,
-): Anthropic.MessageParam[] {
-  const msgs: Anthropic.MessageParam[] = [];
+): ChatMessage[] {
+  const msgs: ChatMessage[] = [];
   for (const h of history) {
     const role: "user" | "assistant" = h.direction === "incoming" ? "user" : "assistant";
     let content = (h.message ?? "").trim();
@@ -161,8 +174,6 @@ function toApiMessages(
 }
 
 export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeReply> {
-  const client = new Anthropic({ apiKey: input.apiKey });
-  const model = (input.model && input.model.trim()) || DEFAULT_MODEL;
   const system = buildSystemPrompt(
     input.context,
     input.customerName,
@@ -172,18 +183,36 @@ export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeRe
   );
   const messages = toApiMessages(input.history, input.customerMessage);
 
-  const resp = await client.messages.create({
-    model,
-    max_tokens: 1024,
+  // Gọi qua TỔNG ĐÀI: Claude (chính) → OpenAI (dự phòng) → … Mọi provider nhận CÙNG
+  // system+messages nên giọng Hoa giữ nguyên. input.model (nếu có) override model Claude.
+  const result = await callChat({
     system,
     messages,
+    maxTokens: 1024,
+    label: "sale",
+    ...(input.model && input.model.trim() ? { modelOverride: { claude: input.model.trim() } } : {}),
   });
 
-  const rawFull = resp.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("\n")
-    .trim();
+  // Tất cả provider lỗi (hoặc lỗi cấu hình/safety) → KHÔNG im lặng: câu chuyển nhân viên + escalation.
+  if (!result.ok) {
+    const escalation =
+      result.reason === "config_error"
+        ? `Lỗi cấu hình AI (cần admin kiểm tra): ${result.adminAlert}`
+        : result.reason === "safety"
+          ? "AI từ chối nội dung — cần nhân viên xử lý"
+          : "AI tạm thời không phản hồi — cần nhân viên hỗ trợ";
+    return {
+      messages: [ALL_FAILED_CUSTOMER_MESSAGE],
+      raw: ALL_FAILED_CUSTOMER_MESSAGE,
+      escalation,
+      learnedName: null,
+      providerUsed: null,
+      fallbackUsed: false,
+      fallbackReason: null,
+    };
+  }
+
+  const rawFull = result.text;
 
   // Tách các dấu hiệu nội bộ trước khi gửi khách (khách KHÔNG thấy):
   //  <<NEEDS_HUMAN: lý do>>  → cần nhân viên tiếp quản
@@ -203,5 +232,13 @@ export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeRe
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
 
-  return { messages: parts.length > 0 ? parts : raw ? [raw] : [], raw, escalation, learnedName };
+  return {
+    messages: parts.length > 0 ? parts : raw ? [raw] : [],
+    raw,
+    escalation,
+    learnedName,
+    providerUsed: result.providerUsed,
+    fallbackUsed: result.fallbackUsed,
+    fallbackReason: result.fallbackReason,
+  };
 }

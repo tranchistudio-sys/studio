@@ -2,7 +2,7 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { pool } from "@workspace/db";
 import { verifyToken } from "./auth";
 import { askClaudeForReply, resolveModel, type ClaudeHistoryItem } from "../lib/claude-sale";
-import { getSaleContext, getSaleContextInfo } from "../lib/sale-context";
+import { getSaleContext, getSaleContextInfo, resolvePriceImagesByCodes } from "../lib/sale-context";
 import { getActivePlaybook } from "../lib/sale-playbook";
 import { getClaudeSaleSettings, computeReplyDelayMs } from "../lib/sale-settings";
 import { getScheduleContext } from "../lib/sale-calendar";
@@ -110,6 +110,13 @@ router.post("/claude-sale-test/chat", async (req, res) => {
       scheduleContext,
     });
     const responseTimeMs = Date.now() - startedAt;
+    // Ảnh bảng giá nhóm (theo marker <<PRICE_IMAGE: MÃ>> của Claude) → trả objectPath
+    // để sân test render INLINE. Đã qua gate ai_image_url + public_for_customer.
+    let priceImages: string[] = [];
+    try {
+      const hits = await resolvePriceImagesByCodes(reply.priceImageCodes ?? []);
+      priceImages = hits.map((h) => h.objectPath);
+    } catch { /* không chặn câu trả lời nếu lỗi ảnh */ }
     return res.json({
       reply: reply.messages.length > 0 ? reply.messages : reply.raw ? [reply.raw] : ["(Claude không trả về nội dung)"],
       raw: reply.raw,
@@ -120,6 +127,8 @@ router.post("/claude-sale-test/chat", async (req, res) => {
       // Sân test KHÔNG đụng DB: chỉ hiển thị để admin thấy AI sẽ làm gì.
       escalation: reply.escalation,
       learnedName: reply.learnedName,
+      // Ảnh bảng giá nhóm để render inline (objectPath /objects/...; FE dùng getImageSrc).
+      priceImages,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -4,6 +4,7 @@ import {
   buildCalendarRulesBlock,
   NEEDS_HUMAN_MARKER_RE,
   NAME_MARKER_RE,
+  PRICE_IMAGE_MARKER_RE,
 } from "./sale-settings";
 import { callChat, type ChatMessage } from "./ai-orchestrator";
 import { ALL_FAILED_CUSTOMER_MESSAGE, type AiProviderName } from "./ai-provider";
@@ -46,6 +47,8 @@ export type ClaudeReply = {
   raw: string;
   escalation: string | null;
   learnedName: string | null;
+  /** Mã gói Claude muốn gửi ảnh bảng giá nhóm (từ marker <<PRICE_IMAGE: MÃ>>). Đã upper-case + dedupe. */
+  priceImageCodes: string[];
   /** Provider thực tế đã trả lời (null nếu tất cả lỗi → cần nhân viên). */
   providerUsed: AiProviderName | null;
   /** true nếu provider chính lỗi và đã fallback sang provider khác. */
@@ -61,6 +64,9 @@ export const DEFAULT_MODEL = "claude-sonnet-4-6";
 export function resolveModel(): string {
   return process.env.ANTHROPIC_MODEL?.trim() || DEFAULT_MODEL;
 }
+
+// Hướng dẫn gửi ảnh bảng giá nhóm — dùng chung cho cả nhánh có/không cấu hình.
+const PRICE_IMAGE_INSTRUCTION = `GỬI ẢNH BẢNG GIÁ (dấu hiệu nội bộ — khách KHÔNG thấy): Khi em BÁO GIÁ một gói cụ thể, ở DÒNG CUỐI thêm <<PRICE_IMAGE: MÃ_GÓI>> (vd <<PRICE_IMAGE: ST-LUXURY>>) để hệ thống TỰ gửi ảnh bảng giá của nhóm gói đó cho khách. Dùng đúng MÃ trong ngoặc vuông [..] ở bảng giá. Nhiều gói thì cách nhau dấu phẩy. CHỈ thêm khi thật sự đang báo giá gói đó (không thêm khi mới chào hỏi/hỏi nhu cầu).`;
 
 function buildSystemPrompt(
   context: string,
@@ -101,6 +107,8 @@ function buildSystemPrompt(
 MỤC TIÊU: không chỉ trả lời câu hỏi — mà DẪN khách đi theo quy trình tới bước để lại số điện thoại / hẹn nhân viên (tùy mức độ chủ động ở trên). Kết mỗi lượt bằng 1 câu đưa khách sang bước tiếp theo khi phù hợp.
 ${calendarBlock ? `\n${calendarBlock}\n` : ""}
 ${constraints}
+
+${PRICE_IMAGE_INSTRUCTION}
 
 DỮ LIỆU STUDIO, BẢNG GIÁ, LINK & CONCEPT:
 ${context}${scheduleBlock}${styleBlock}
@@ -144,6 +152,8 @@ RÀNG BUỘC (Giai đoạn 1 — chỉ tư vấn, chưa chốt):
 - KHÔNG hứa chắc còn lịch trống ngày cụ thể — nói sẽ kiểm tra lịch.
 - KHÔNG tự đặt booking, KHÔNG sửa dữ liệu. Khai thác tên + số điện thoại + ngày để nhân viên liên hệ.
 - Việc phức tạp / khiếu nại / chốt cọc: mời để lại số điện thoại, sẽ có người hỗ trợ.
+
+${PRICE_IMAGE_INSTRUCTION}
 
 DỮ LIỆU STUDIO, BẢNG GIÁ, LINK & CONCEPT:
 ${context}${styleBlock}
@@ -206,6 +216,7 @@ export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeRe
       raw: ALL_FAILED_CUSTOMER_MESSAGE,
       escalation,
       learnedName: null,
+      priceImageCodes: [],
       providerUsed: null,
       fallbackUsed: false,
       fallbackReason: null,
@@ -222,9 +233,21 @@ export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeRe
   const nameMatch = rawFull.match(NAME_MARKER_RE);
   const learnedName = nameMatch && nameMatch[1]?.trim() ? nameMatch[1].trim().slice(0, 60) : null;
 
+  //  <<PRICE_IMAGE: MÃ1, MÃ2>>  → gửi ảnh bảng giá nhóm của các gói đó (khách KHÔNG thấy)
+  const priceImageCodes: string[] = [];
+  const priceImgRe = new RegExp(PRICE_IMAGE_MARKER_RE.source, "gi");
+  let imgMatch: RegExpExecArray | null;
+  while ((imgMatch = priceImgRe.exec(rawFull)) !== null) {
+    for (const part of (imgMatch[1] ?? "").split(/[,\s]+/)) {
+      const code = part.trim().toUpperCase();
+      if (code && !priceImageCodes.includes(code)) priceImageCodes.push(code);
+    }
+  }
+
   const raw = rawFull
     .replace(new RegExp(NEEDS_HUMAN_MARKER_RE.source, "gi"), "")
     .replace(new RegExp(NAME_MARKER_RE.source, "gi"), "")
+    .replace(priceImgRe, "")
     .trim();
 
   const parts = raw
@@ -237,6 +260,7 @@ export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeRe
     raw,
     escalation,
     learnedName,
+    priceImageCodes,
     providerUsed: result.providerUsed,
     fallbackUsed: result.fallbackUsed,
     fallbackReason: result.fallbackReason,

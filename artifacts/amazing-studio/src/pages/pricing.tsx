@@ -11,6 +11,8 @@ import {
 import { formatVND } from "@/lib/utils";
 import { Button, Input, Badge } from "@/components/ui";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
+import { MultiImageUploader } from "@/components/cms-shared";
+import { getImageSrc } from "@/lib/imageUtils";
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
 type GroupMeta = { Icon: React.ElementType; iconCls: string; bgCls: string; ringCls: string };
@@ -71,7 +73,7 @@ type ServicePackage = {
   requiresPostProduction?: boolean;
   requiresPrinting?: boolean;
 };
-type ServiceGroup = { id: number; name: string; description: string; isActive: boolean; sortOrder: number };
+type ServiceGroup = { id: number; name: string; description: string; isActive: boolean; sortOrder: number; aiImageUrl?: string | null; publicForCustomer?: boolean };
 type Surcharge = { id: number; name: string; category: string; price: number; unit: string; description: string; isActive: boolean; sortOrder: number };
 
 const UNIT_OPTIONS = ["lần", "buổi", "bàn", "tấm", "km", "người", "bộ", "cuốn", "trang", "ảnh", "clip", "ngày"];
@@ -513,6 +515,22 @@ export default function PricingPage() {
                       </button>
                       {effectiveIsAdmin && pkgsInGroup.length > 0 && (
                         <div className="relative z-10 flex items-center gap-2 flex-shrink-0 pl-2 border-l border-border/60">
+                          {/* Gắn ảnh bảng giá cho nhóm (Sale AI gửi khách) — bấm mở modal upload */}
+                          <button
+                            type="button"
+                            title={group.aiImageUrl ? "Đổi / xoá ảnh bảng giá nhóm" : "Gắn ảnh bảng giá cho nhóm (Sale AI gửi khách)"}
+                            aria-label={`Gắn ảnh bảng giá cho nhóm ${group.name}`}
+                            onClick={(e) => { e.stopPropagation(); e.preventDefault(); setEditingGroup(group); setShowGroupModal(true); }}
+                            className="flex items-center gap-1 rounded-lg px-1.5 py-1 hover:bg-muted transition-colors"
+                          >
+                            {group.aiImageUrl ? (
+                              <img src={getImageSrc(group.aiImageUrl) ?? ""} alt="" className="w-7 h-7 rounded object-cover ring-1 ring-border" />
+                            ) : (
+                              <span className="flex items-center gap-1 text-[10px] font-medium text-sky-600">
+                                <Camera className="w-4 h-4" /><span className="hidden lg:inline">Gắn hình</span>
+                              </span>
+                            )}
+                          </button>
                           <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium hidden sm:inline ${
                             groupPostMixed ? "bg-amber-100 text-amber-800" : groupHasPostProduction ? "bg-sky-100 text-sky-700" : "bg-muted text-muted-foreground"
                           }`}>
@@ -718,13 +736,26 @@ export default function PricingPage() {
                 const meta = getGroupMeta(g.name);
                 return (
                   <div key={g.id} className={`flex items-center gap-3 p-4 rounded-xl border border-border bg-card hover:border-primary/20 transition-colors ${!g.isActive ? "opacity-60" : ""}`}>
-                    <div className={`w-10 h-10 rounded-xl ${meta.bgCls} ring-1 ${meta.ringCls} flex items-center justify-center flex-shrink-0`}>
-                      <meta.Icon className={`w-5 h-5 ${meta.iconCls}`} />
-                    </div>
+                    {g.aiImageUrl ? (
+                      <img
+                        src={getImageSrc(g.aiImageUrl) ?? ""}
+                        alt={g.name}
+                        className="w-10 h-10 rounded-xl object-cover flex-shrink-0 ring-1 ring-border"
+                      />
+                    ) : (
+                      <div className={`w-10 h-10 rounded-xl ${meta.bgCls} ring-1 ${meta.ringCls} flex items-center justify-center flex-shrink-0`}>
+                        <meta.Icon className={`w-5 h-5 ${meta.iconCls}`} />
+                      </div>
+                    )}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2">
                         <p className="font-semibold">{g.name}</p>
                         {!g.isActive && <Badge variant="outline" className="text-[10px] px-1.5 py-0">Ẩn</Badge>}
+                        {g.aiImageUrl && (
+                          <Badge variant="outline" className={`text-[10px] px-1.5 py-0 gap-1 ${g.publicForCustomer === false ? "text-muted-foreground" : "text-emerald-600 border-emerald-300"}`}>
+                            🖼️ {g.publicForCustomer === false ? "Ảnh (tắt gửi)" : "Ảnh AI"}
+                          </Badge>
+                        )}
                       </div>
                       {g.description && <p className="text-sm text-muted-foreground truncate">{g.description}</p>}
                       <p className="text-xs text-muted-foreground mt-0.5">{count} gói dịch vụ · thứ tự {g.sortOrder}</p>
@@ -1573,6 +1604,8 @@ function GroupModal({ group, onClose, onSaved }: {
     description: group?.description ?? "",
     isActive: group?.isActive ?? true,
     sortOrder: group?.sortOrder?.toString() ?? "0",
+    aiImageUrl: group?.aiImageUrl ?? "",
+    publicForCustomer: group?.publicForCustomer ?? true,
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -1627,6 +1660,61 @@ function GroupModal({ group, onClose, onSaved }: {
             <input type="checkbox" checked={form.isActive} onChange={e => setForm(f => ({ ...f, isActive: e.target.checked }))} className="w-4 h-4 rounded" />
             <span className="text-sm">Đang hoạt động</span>
           </label>
+
+          {/* ─── Ảnh bảng giá cho Sale AI ─────────────────────────────── */}
+          <div className="pt-3 border-t border-border">
+            <label className="block text-xs font-semibold text-muted-foreground mb-1.5">
+              🖼️ Ảnh bảng giá (Sale AI gửi cho khách)
+            </label>
+            {form.aiImageUrl ? (
+              <div className="space-y-2">
+                <div className="relative w-full rounded-xl overflow-hidden border border-border bg-muted">
+                  <img
+                    src={getImageSrc(form.aiImageUrl) ?? ""}
+                    alt="Ảnh bảng giá nhóm"
+                    className="w-full max-h-56 object-contain bg-muted"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <div className="flex-1">
+                    <MultiImageUploader
+                      multiple={false}
+                      useQueue={false}
+                      label="Đổi ảnh khác"
+                      onUploaded={imgs => { if (imgs[0]) setForm(f => ({ ...f, aiImageUrl: imgs[0].objectPath })); }}
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setForm(f => ({ ...f, aiImageUrl: "" }))}
+                    className="shrink-0 text-destructive hover:text-destructive"
+                  >
+                    <Trash2 className="w-4 h-4 mr-1" /> Xoá ảnh
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <MultiImageUploader
+                multiple={false}
+                useQueue={false}
+                label="Tải ảnh bảng giá lên (kéo thả / dán / chọn)"
+                onUploaded={imgs => { if (imgs[0]) setForm(f => ({ ...f, aiImageUrl: imgs[0].objectPath })); }}
+              />
+            )}
+            <label className="flex items-center gap-2 cursor-pointer mt-3">
+              <input
+                type="checkbox"
+                checked={form.publicForCustomer}
+                onChange={e => setForm(f => ({ ...f, publicForCustomer: e.target.checked }))}
+                className="w-4 h-4 rounded"
+              />
+              <span className="text-sm">Cho phép Sale AI gửi ảnh này cho khách</span>
+            </label>
+            <p className="text-[11px] text-muted-foreground mt-1">
+              Sale AI chỉ gửi ảnh khi có ảnh và ô này được bật. Ảnh lưu trên object storage.
+            </p>
+          </div>
         </div>
         <div className="flex gap-3 px-6 py-4 border-t border-border">
           <Button variant="outline" onClick={onClose} className="flex-1">Huỷ</Button>

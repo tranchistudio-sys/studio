@@ -401,6 +401,13 @@ export const NEEDS_HUMAN_MARKER_RE = /<<\s*NEEDS_HUMAN\s*:?\s*([^>]*?)\s*>>/i;
 export const NAME_MARKER_RE = /<<\s*NAME\s*:?\s*([^>]*?)\s*>>/i;
 
 /**
+ * Sentinel Claude chèn khi BÁO GIÁ một gói → hệ thống tự gửi ảnh bảng giá NHÓM của gói đó.
+ * Nội dung trong ngoặc là MÃ GÓI (vd ST-LUXURY); nhiều mã cách nhau dấu phẩy.
+ * Code tách ra trước khi gửi khách (khách KHÔNG thấy). Khớp toàn cục để lấy nhiều marker.
+ */
+export const PRICE_IMAGE_MARKER_RE = /<<\s*(?:PRICE_IMAGE|SEND_IMAGE|IMG)\s*:?\s*([^>]*?)\s*>>/i;
+
+/**
  * Quy tắc ĐỌC LỊCH THÔNG MINH (read-only) + escalation. Trả "" nếu tắt tính năng.
  * Số giờ lấy từ cấu hình; phần phrasing & escalation là CỐ ĐỊNH (an toàn).
  */

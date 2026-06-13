@@ -18,7 +18,7 @@ import {
   type AiSettings,
 } from "./ai-engine";
 import { askClaudeForReply, type ClaudeHistoryItem } from "../lib/claude-sale";
-import { getSaleContext } from "../lib/sale-context";
+import { getSaleContext, resolvePriceImagesByCodes } from "../lib/sale-context";
 import { getActivePlaybook } from "../lib/sale-playbook";
 import { getClaudeSaleSettings, computeReplyDelayMs } from "../lib/sale-settings";
 import { getScheduleContext } from "../lib/sale-calendar";
@@ -755,6 +755,30 @@ async function handleClaudeSaleReply(
   const allSent = await sendChunksWithTyping(psid, cfg.pageAccessToken, chunks, "claude_replied", undefined, replyDelayMs);
   await markIncoming(allSent ? (escalationReason ? "claude_replied_escalated" : "claude_replied") : "claude_partial_failed");
   console.log(`[Claude] psid=${psid} đã gửi ${chunks.length} tin (allSent=${allSent})`);
+
+  // Ảnh bảng giá nhóm: Claude xác định gói (marker <<PRICE_IMAGE: MÃ>>) → nhóm có ai_image_url
+  // & public_for_customer=true → gửi attachment. Lỗi attachment thì fallback gửi LINK ảnh public.
+  if (reply.priceImageCodes?.length) {
+    try {
+      const hits = await resolvePriceImagesByCodes(reply.priceImageCodes);
+      if (hits.length > 0) {
+        const objectPaths = hits.map((h) => h.objectPath);
+        const imgsSent = await sendPriceImagesSequentially(psid, cfg.pageAccessToken, objectPaths, "claude_price_img");
+        if (imgsSent) {
+          console.log(`[Claude] psid=${psid} đã gửi ${hits.length} ảnh bảng giá nhóm: ${hits.map((h) => h.groupName).join(", ")}`);
+        } else {
+          // Fallback: gửi LINK ảnh public dạng text để khách vẫn xem được.
+          const links = objectPaths.map((p) => resolveImagePath(p)).filter(Boolean).join("\n");
+          if (links) {
+            try { await sendFacebookMessage(psid, `Dạ em gửi bảng giá để mình xem nha 😊\n${links}`, cfg.pageAccessToken); } catch { /* bỏ qua */ }
+            console.log(`[Claude] psid=${psid} ảnh attachment lỗi → đã fallback gửi link ảnh bảng giá`);
+          }
+        }
+      }
+    } catch (e) {
+      console.error(`[Claude] psid=${psid} gửi ảnh bảng giá nhóm lỗi:`, String(e).slice(0, 160));
+    }
+  }
 
   // Sau khi đã gửi câu chuyển tiếp lịch sự → chuyển nhân viên thật tiếp quản.
   if (escalationReason) await escalateToHuman(psid, lead?.name, escalationReason);

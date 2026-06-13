@@ -970,7 +970,7 @@ router.get("/service-groups", async (_req, res) => {
 
 router.post("/service-groups", async (req, res) => {
   if (!await requireAdmin(req, res)) return;
-  const { name, description, sortOrder, isActive } = req.body;
+  const { name, description, sortOrder, isActive, aiImageUrl, publicForCustomer } = req.body;
   if (!name?.trim()) return res.status(400).json({ error: "Tên nhóm không được để trống" });
 
   // Reject duplicate names
@@ -982,6 +982,8 @@ router.post("/service-groups", async (req, res) => {
 
   const [g] = await db.insert(serviceGroupsTable).values({
     name: name.trim(), description, sortOrder: sortOrder ?? 0, isActive: isActive !== false ? 1 : 0,
+    aiImageUrl: typeof aiImageUrl === "string" && aiImageUrl.trim() ? aiImageUrl.trim() : null,
+    publicForCustomer: publicForCustomer === false ? false : true,
   }).returning();
   res.status(201).json(fmtGroup(g));
 });
@@ -989,11 +991,16 @@ router.post("/service-groups", async (req, res) => {
 router.put("/service-groups/:id", async (req, res) => {
   if (!await requireAdmin(req, res)) return;
   const id = parseInt(req.params.id);
-  const { name, description, sortOrder, isActive } = req.body;
+  const { name, description, sortOrder, isActive, aiImageUrl, publicForCustomer } = req.body;
   const [g] = await db.update(serviceGroupsTable).set({
     name, description,
     sortOrder: sortOrder !== undefined ? sortOrder : undefined,
     isActive: isActive !== undefined ? (isActive ? 1 : 0) : undefined,
+    // aiImageUrl: undefined = không đụng tới; "" / null = xóa ảnh; chuỗi = đặt ảnh.
+    aiImageUrl: aiImageUrl === undefined
+      ? undefined
+      : (typeof aiImageUrl === "string" && aiImageUrl.trim() ? aiImageUrl.trim() : null),
+    publicForCustomer: publicForCustomer === undefined ? undefined : Boolean(publicForCustomer),
   }).where(eq(serviceGroupsTable.id, id)).returning();
   if (!g) return res.status(404).json({ error: "Not found" });
   res.json(fmtGroup(g));

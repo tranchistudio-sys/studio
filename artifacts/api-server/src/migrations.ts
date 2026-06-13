@@ -151,6 +151,10 @@ async function runMigrations() {
     await client.query(`ALTER TABLE ai_service_scripts ADD COLUMN IF NOT EXISTS service_group TEXT DEFAULT NULL`);
     await client.query(`ALTER TABLE crm_leads ADD COLUMN IF NOT EXISTS service_group TEXT DEFAULT NULL`);
 
+    // Ảnh bảng giá theo nhóm dịch vụ để Sale AI gửi cho khách (object storage path).
+    await client.query(`ALTER TABLE service_groups ADD COLUMN IF NOT EXISTS ai_image_url TEXT DEFAULT NULL`);
+    await client.query(`ALTER TABLE service_groups ADD COLUMN IF NOT EXISTS public_for_customer BOOLEAN NOT NULL DEFAULT TRUE`);
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS ai_unknown_questions (
         id              SERIAL PRIMARY KEY,

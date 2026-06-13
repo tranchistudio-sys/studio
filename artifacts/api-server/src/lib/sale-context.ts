@@ -130,9 +130,12 @@ export async function getSaleContext(): Promise<string> {
     for (const r of kept) {
       if (!groups.has(r.group_name)) groups.set(r.group_name, []);
       const desc = cleanDesc(r.description);
+      const code = (r.code ?? "").trim().toUpperCase();
+      // Mã [CODE] đứng đầu để Claude trích đúng mã gói khi báo giá (dùng cho <<PRICE_IMAGE: MÃ>>).
+      const head = code ? `[${code}] ` : "";
       const line = desc
-        ? `${r.pkg_name.trim()} — ${formatVnd(r.price)}. Gồm: ${desc}`
-        : `${r.pkg_name.trim()} — ${formatVnd(r.price)}`;
+        ? `${head}${r.pkg_name.trim()} — ${formatVnd(r.price)}. Gồm: ${desc}`
+        : `${head}${r.pkg_name.trim()} — ${formatVnd(r.price)}`;
       groups.get(r.group_name)!.push(line);
     }
     let priceText = "";
@@ -175,5 +178,46 @@ CHÍNH SÁCH:
   } catch (err) {
     console.error("[Claude] getSaleContext — dùng fallback:", String(err).slice(0, 200));
     return FALLBACK_CONTEXT;
+  }
+}
+
+/** Ảnh bảng giá của nhóm để Sale AI gửi cho khách (đã qua gate publicForCustomer). */
+export type PriceImageHit = { code: string; groupId: number; groupName: string; objectPath: string };
+
+/**
+ * Tra ảnh bảng giá nhóm từ danh sách MÃ GÓI mà Claude xác định (vd ST-LUXURY).
+ * Quy tắc (spec): packageCode → gói → nhóm → group.aiImageUrl.
+ * CHỈ trả ảnh khi nhóm CÓ ai_image_url VÀ public_for_customer = TRUE.
+ * Dedupe theo nhóm (mỗi nhóm chỉ 1 ảnh dù nhiều mã trỏ về). KHÔNG bao giờ throw.
+ */
+export async function resolvePriceImagesByCodes(codes: string[]): Promise<PriceImageHit[]> {
+  const norm = Array.from(
+    new Set((codes ?? []).map((c) => (c ?? "").trim().toUpperCase()).filter(Boolean)),
+  );
+  if (norm.length === 0) return [];
+  try {
+    const res = await pool.query(
+      `SELECT DISTINCT ON (g.id)
+              g.id AS group_id, g.name AS group_name, g.ai_image_url, p.code
+       FROM service_packages p
+       JOIN service_groups g ON g.id = p.group_id
+       WHERE UPPER(p.code) = ANY($1)
+         AND g.ai_image_url IS NOT NULL
+         AND length(trim(g.ai_image_url)) > 0
+         AND g.public_for_customer = TRUE
+       ORDER BY g.id`,
+      [norm],
+    );
+    return (res.rows as Array<{ group_id: number; group_name: string; ai_image_url: string; code: string | null }>).map(
+      (r) => ({
+        code: (r.code ?? "").trim().toUpperCase(),
+        groupId: r.group_id,
+        groupName: r.group_name,
+        objectPath: r.ai_image_url.trim(),
+      }),
+    );
+  } catch (err) {
+    console.error("[Claude] resolvePriceImagesByCodes lỗi:", String(err).slice(0, 160));
+    return [];
   }
 }

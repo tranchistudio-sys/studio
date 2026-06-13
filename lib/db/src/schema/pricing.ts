@@ -8,6 +8,10 @@ export const serviceGroupsTable = pgTable("service_groups", {
   description: text("description"),
   sortOrder: integer("sort_order").notNull().default(0),
   isActive: integer("is_active").notNull().default(1),
+  /** Ảnh bảng giá của nhóm để Sale AI gửi cho khách (object-storage path, vd /objects/...). */
+  aiImageUrl: text("ai_image_url"),
+  /** Chỉ cho Sale AI gửi ảnh nhóm này khi = true (gate an toàn). */
+  publicForCustomer: boolean("public_for_customer").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

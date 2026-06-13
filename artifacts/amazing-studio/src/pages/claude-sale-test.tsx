@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { apiUrl } from "@/lib/api-base";
+import { getImageSrc } from "@/lib/imageUtils";
 import {
   Send, Trash2, Bot, User, Sparkles, Clock, Package, AlertTriangle, Loader2,
 } from "lucide-react";
@@ -112,6 +113,14 @@ export default function ClaudeSaleTestPage() {
           await sleep(delay);
           const c = chunks[i];
           setMessages((prev) => [...prev, { id: newId(), from: "claude", text: c, ts: Date.now() }]);
+        }
+        // Ảnh bảng giá nhóm (theo marker <<PRICE_IMAGE: MÃ>>): render INLINE như bubble ảnh.
+        const priceImages: string[] = Array.isArray(data.priceImages) ? data.priceImages : [];
+        for (const objectPath of priceImages) {
+          const url = getImageSrc(objectPath);
+          if (!url) continue;
+          await sleep(500);
+          setMessages((prev) => [...prev, { id: newId(), from: "claude", text: `[image:${url}]`, ts: Date.now() }]);
         }
       }
     } catch (e) {

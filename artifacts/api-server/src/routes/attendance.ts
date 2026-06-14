@@ -14,9 +14,12 @@ import {
   getShowDayDatesForStaff,
   getShowDayDatesByStaffForMonth,
   getShowDayStaffIdsForDate,
+  getShowTimesForStaff,
+  getShowTimesByStaffForMonth,
   getBookingsForStaffOnDate,
   resolveAttendanceMode,
   studioLatePenaltyApplies,
+  computeShowLateness,
   isSundayOff,
   type AttendanceMode,
 } from "../lib/attendance-mode";
@@ -1114,8 +1117,10 @@ router.get("/attendance/me", async (req, res) => {
   // Leave-aware: bỏ qua tính trễ cho ngày có leave approved trong cap 2/tháng
   const leaveInfo = await getExcusedLeaveDates(callerId, month);
   const showDayDates = await getShowDayDatesForStaff(callerId, month);
+  const showTimes = await getShowTimesForStaff(callerId, month);
 
   let onTimeCount = 0;
+  const onTimeDates = new Set<string>();
   const bonusPenalty: { type: string; amount: number; description: string; date: string; isLate?: boolean; waived?: boolean; waiverReason?: string | null; overrideReason?: string | null }[] = [];
 
   checkIns.forEach(ci => {
@@ -1130,11 +1135,35 @@ router.get("/attendance/me", async (req, res) => {
       isLeaveExcused: leaveInfo.excused.has(dateStr),
       isWeekend: isSundayOff(dateStr),
     });
-    if (!studioLatePenaltyApplies(mode)) {
-      onTimeCount++;
+    const override = ci.override;
+    // Show ngoài: chấm trễ theo giờ hẹn chụp (shoot_time). Không có giờ hẹn → coi đúng giờ.
+    if (mode === "SHOW") {
+      const shootTime = showTimes.get(dateStr);
+      const showLate = shootTime ? computeShowLateness(localTime, shootTime, lateRules, ruleCheckInTo) : null;
+      const isLate = override?.isLate === 0 ? false : override?.isLate === 1 ? true : !!showLate?.isLate;
+      if (!isLate || !showLate) {
+        onTimeCount++;
+        onTimeDates.add(dateStr);
+        return;
+      }
+      const waiver = waiverByDate.get(dateStr);
+      bonusPenalty.push({
+        type: "penalty",
+        amount: showLate.penalty,
+        description: showLate.penalty > 0 ? `Đi show trễ lúc ${localTime} (hẹn ${shootTime})` : `Show trễ lúc ${localTime}`,
+        date: dateStr,
+        isLate: true,
+        waived: !!waiver,
+        waiverReason: waiver?.reason ?? null,
+        overrideReason: override?.reason ?? null,
+      });
       return;
     }
-    const override = ci.override;
+    if (!studioLatePenaltyApplies(mode)) {
+      onTimeCount++;
+      onTimeDates.add(dateStr);
+      return;
+    }
     const shift = shiftMap.get(dateStr);
     const effThreshold = shift ? shift.startTime : ruleCheckInTo;
     const computed = findPenalty(localTime, effThreshold, lateRules);
@@ -1143,6 +1172,7 @@ router.get("/attendance/me", async (req, res) => {
     const penalty = isLate ? computed.penalty : 0;
     if (!isLate) {
       onTimeCount++;
+      onTimeDates.add(dateStr);
     } else {
       const waiver = waiverByDate.get(dateStr);
       bonusPenalty.push({
@@ -1162,16 +1192,33 @@ router.get("/attendance/me", async (req, res) => {
   const penaltyAdj = adjRows.filter(a => a.type === "penalty").reduce((s, a) => s + a.amount, 0);
 
   const weeklyBonus = parseFloat(String(rule?.weeklyOnTimeBonus ?? "50000"));
-  const weeksOnTime = Math.floor(onTimeCount / 5);
-
+  // Thưởng chuyên cần CHỈ theo tuần: tháng chia 4 tuần [1-7][8-14][15-21][22-cuối].
+  // Mỗi tuần đã trôi qua hết + đi đủ công đúng giờ tất cả ngày bắt buộc (bỏ CN + nghỉ phép ≤2) = +50k.
+  // Tối đa 4 tuần = 200k/tháng. Không có thưởng tháng riêng.
   const [y, mo] = month.split("-").map(Number);
-  for (let w = 0; w < weeksOnTime; w++) {
-    const weekEnd = new Date(y, mo - 1, (w + 1) * 7);
+  const daysInMonthMe = new Date(y, mo, 0).getDate();
+  const todayMe = todayVN();
+  const WEEK_BLOCKS_ME: [number, number][] = [[1, 7], [8, 14], [15, 21], [22, daysInMonthMe]];
+  let weeksOnTime = 0;
+  for (let wi = 0; wi < WEEK_BLOCKS_ME.length; wi++) {
+    const [startD, endD] = WEEK_BLOCKS_ME[wi];
+    const lastDate = `${month}-${String(endD).padStart(2, "0")}`;
+    if (lastDate > todayMe) continue; // tuần chưa kết thúc → chưa xét
+    const required: string[] = [];
+    for (let d = startD; d <= endD; d++) {
+      const date = `${month}-${String(d).padStart(2, "0")}`;
+      if (isSundayOff(date)) continue;
+      if (leaveInfo.excused.has(date)) continue;
+      required.push(date);
+    }
+    if (required.length === 0) continue;
+    if (!required.every(d => onTimeDates.has(d))) continue;
+    weeksOnTime++;
     bonusPenalty.push({
       type: "bonus",
       amount: weeklyBonus,
-      description: `Bonus đúng giờ tuần ${w + 1}`,
-      date: weekEnd.toISOString().slice(0, 10),
+      description: `Thưởng chuyên cần tuần ${wi + 1}`,
+      date: lastDate,
     });
   }
 
@@ -1227,6 +1274,7 @@ router.get("/attendance/me", async (req, res) => {
     })),
     approvedLeaves: leaveInfo.allLeaveDates.map(d => ({ date: d })),
     showDayDates: [...showDayDates].sort(),
+    showTimes: Object.fromEntries(showTimes),
     todayMode: await (async () => {
       const t = todayVN();
       const hasBooking = showDayDates.has(t);
@@ -1489,6 +1537,7 @@ router.get("/attendance/staff-summary", async (req, res) => {
   // Leave-aware: bỏ qua tính trễ/vắng cho ngày leave approved (cap 2)
   const leaveInfo = await getExcusedLeaveDates(staffId, month);
   const showDayDates = await getShowDayDatesForStaff(staffId, month);
+  const showTimes = await getShowTimesForStaff(staffId, month);
 
   const totalDays = ciByDate.size;
   let lateCount = 0;
@@ -1502,22 +1551,34 @@ router.get("/attendance/staff-summary", async (req, res) => {
       isLeaveExcused: leaveInfo.excused.has(date),
       isWeekend: isSundayOff(date),
     });
-    if (!studioLatePenaltyApplies(mode)) {
-      const wt = inferWorkType(ci.method, ci.work_type);
-      const isOffsiteWork = wt === "di_show" || wt === "makeup_ngoai";
+    const ov = ci.override;
+    const wt = inferWorkType(ci.method, ci.work_type);
+    const isOffsiteWork = wt === "di_show" || wt === "makeup_ngoai";
+
+    // Show ngoài: tính trễ theo giờ hẹn chụp (shoot_time), vẫn đếm show + missed checkout.
+    if (mode === "SHOW") {
+      showCount++;
       if (isOffsiteWork && !coDates.has(date)) missedCheckout++;
-      if (isOffsiteWork || mode === "SHOW") showCount++;
+      const shootTime = showTimes.get(date);
+      const showLate = shootTime ? computeShowLateness(ci.local_time, shootTime, lateRules, ruleCheckInTo) : null;
+      const isLate = ov?.overrideIsLate === 0 ? false : ov?.overrideIsLate === 1 ? true : !!showLate?.isLate;
+      if (isLate) lateCount++;
+      if (isLate && showLate && showLate.penalty > 0) totalLatePenalty += showLate.penalty;
+      continue;
+    }
+    if (!studioLatePenaltyApplies(mode)) {
+      // OFF (Chủ Nhật) có check-in — chỉ đếm show nếu là offsite work
+      if (isOffsiteWork && !coDates.has(date)) missedCheckout++;
+      if (isOffsiteWork) showCount++;
       continue;
     }
     const sh = shiftMap.get(date);
     const effThreshold = sh ? sh.startTime : ruleCheckInTo;
     const computed = findPenalty(ci.local_time, effThreshold, lateRules);
-    const ov = ci.override;
     const isLate = ov?.overrideIsLate === 0 ? false : ov?.overrideIsLate === 1 ? true : computed.isLate;
     if (isLate) lateCount++;
     if (isLate && computed.penalty > 0) totalLatePenalty += computed.penalty;
-    const wt = inferWorkType(ci.method, ci.work_type);
-    if ((wt === "di_show" || wt === "makeup_ngoai")) {
+    if (isOffsiteWork) {
       if (!coDates.has(date)) missedCheckout++;
       showCount++;
     }
@@ -1614,6 +1675,7 @@ router.get("/attendance/staff-summary", async (req, res) => {
     })),
     approvedLeaves: leaveInfo.allLeaveDates.map(d => ({ date: d })),
     showDayDates: [...showDayDates].sort(),
+    showTimes: Object.fromEntries(showTimes),
     overtimeByDate: otMonth.byDate.filter(d => d.hours > 0).map(d => ({ date: d.date, hours: d.hours, amount: d.pay })),
     logs: fullLogs,
   });
@@ -1737,6 +1799,12 @@ router.get("/attendance/team-extras", async (req, res) => {
   for (const [sid, dates] of showDaysByStaff) {
     if (dates.size > 0) staffShowDays[String(sid)] = [...dates].sort();
   }
+  // Giờ hẹn chụp (shoot_time) sớm nhất theo ngày — để chấm trễ show ngoài.
+  const showTimesByStaff = await getShowTimesByStaffForMonth(allStaffIds, month);
+  const staffShowTimes: Record<string, Record<string, string>> = {};
+  for (const [sid, byDate] of showTimesByStaff) {
+    if (byDate.size > 0) staffShowTimes[String(sid)] = Object.fromEntries(byDate);
+  }
 
   res.json({
     month,
@@ -1752,6 +1820,7 @@ router.get("/attendance/team-extras", async (req, res) => {
     staffWaivers,
     staffAdjustments,
     staffShowDays,
+    staffShowTimes,
   });
 });
 
@@ -1948,25 +2017,37 @@ router.post("/attendance/penalty-waiver", async (req, res) => {
   // Use effective time + isLate (honor override)
   const ovMap = await loadOverrides([ci.id]);
   const ov = ovMap.get(ci.id);
+  if (ov?.overrideIsLate === 0) {
+    return res.status(400).json({ error: "Ngày này đã được gỡ phạt (đã tính đúng giờ)" });
+  }
   const effTime = ov?.overrideTime ?? ci.local_time;
-  const computed = findPenalty(effTime, effThreshold, lateRules);
-  const effIsLate = ov?.overrideIsLate === 0 ? false : ov?.overrideIsLate === 1 ? true : computed.isLate;
-  if (!effIsLate || computed.penalty <= 0) {
+  // Mode-aware: show ngoài so với giờ hẹn chụp (shoot_time); studio so với giờ ca.
+  const monthStr = dateStr.slice(0, 7);
+  const showDates = await getShowDayDatesForStaff(staffIdNum, monthStr);
+  let effIsLate: boolean;
+  if (showDates.has(dateStr)) {
+    const showTimes = await getShowTimesForStaff(staffIdNum, monthStr);
+    const shootTime = showTimes.get(dateStr);
+    const sl = shootTime ? computeShowLateness(effTime, shootTime, lateRules, ruleCheckInTo) : null;
+    effIsLate = ov?.overrideIsLate === 1 ? true : !!sl?.isLate;
+  } else {
+    const computed = findPenalty(effTime, effThreshold, lateRules);
+    effIsLate = ov?.overrideIsLate === 1 ? true : computed.isLate;
+  }
+  if (!effIsLate) {
     return res.status(400).json({ error: "Ngày này không có phạt đi trễ để gỡ" });
   }
 
-  // Atomic dedup via INSERT ... ON CONFLICT on partial unique index (waiver per staff+date)
-  const ins = await pool.query(
-    `INSERT INTO attendance_adjustments (staff_id, date, type, category, amount, reason, created_by)
-     VALUES ($1, $2, 'bonus', 'waiver', $3, $4, $5)
-     ON CONFLICT (staff_id, date) WHERE category = 'waiver' DO NOTHING
-     RETURNING *`,
-    [staffIdNum, dateStr, String(computed.penalty), trimmedReason, callerId]
-  );
-  if (ins.rowCount === 0) {
-    return res.status(400).json({ error: "Ngày này đã được gỡ phạt rồi" });
-  }
-  res.status(201).json(ins.rows[0]);
+  // Gỡ phạt = đánh dấu ngày này ĐÚNG GIỜ (override is_late = 0): tự động hết phạt,
+  // phút trễ về 0, và được tính vào chuỗi đúng giờ. Lý do bắt buộc, lưu lịch sử.
+  const [ovRow] = await db.insert(attendanceLogOverridesTable).values({
+    logId: ci.id,
+    overrideTime: null,
+    overrideIsLate: 0,
+    reason: `Gỡ phạt: ${trimmedReason}`,
+    createdBy: callerId,
+  }).returning();
+  res.status(201).json(ovRow);
 });
 
 router.post("/attendance/adjustments", async (req, res) => {
@@ -2022,14 +2103,24 @@ router.post("/attendance/money-edit", async (req, res) => {
     : trimmedReason;
 
   if (action === "waiver") {
-    // Gỡ phạt = thưởng bù (full waiver dùng category waiver nếu chưa có)
-    const existing = await pool.query(
-      `SELECT id FROM attendance_adjustments WHERE staff_id=$1 AND date=$2::date AND category='waiver' LIMIT 1`,
+    // Gỡ phạt = đánh dấu ngày ĐÚNG GIỜ (override is_late=0) cho lần chấm vào của ngày đó:
+    // tự động hết phạt, phút trễ về 0, tính vào chuỗi đúng giờ. (Thay cho thưởng bù trước đây.)
+    const ciR = await pool.query(
+      `SELECT id FROM attendance_logs WHERE staff_id=$1 AND type='check_in'
+         AND (created_at + interval '7 hours')::date = $2::date ORDER BY created_at ASC LIMIT 1`,
       [staffIdNum, dateStr]
     );
-    const category = existing.rows.length === 0 && systemPenalty != null && amt >= systemPenalty ? "waiver" : "manual_edit";
+    if (ciR.rows.length > 0) {
+      const logId = (ciR.rows[0] as { id: number }).id;
+      const [ovRow] = await db.insert(attendanceLogOverridesTable).values({
+        logId, overrideTime: null, overrideIsLate: 0,
+        reason: `Gỡ phạt: ${auditNote}`, createdBy: callerId,
+      }).returning();
+      return res.status(201).json({ ...ovRow, kind: "override" });
+    }
+    // Không có check-in ngày đó (vd phạt thủ công) → giữ cách cũ: thưởng bù để offset.
     const [adj] = await db.insert(attendanceAdjustmentsTable).values({
-      staffId: staffIdNum, date: dateStr, type: "bonus", category,
+      staffId: staffIdNum, date: dateStr, type: "bonus", category: "manual_edit",
       amount: String(amt), reason: auditNote, createdBy: callerId,
     }).returning();
     const detail = await pool.query(

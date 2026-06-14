@@ -188,6 +188,7 @@ type MyAttendance = {
   approvedLeaves?: ApprovedLeaveLite[];
   overtime?: { hours: number; pay: number; byDate: { date: string; hours: number; pay: number }[] };
   showDayDates?: string[];
+  showTimes?: Record<string, string>;
   todayMode?: AttendanceMode;
   todayBookings?: { id: number; customerName: string | null; serviceLabel: string | null; packageType: string | null; shootDate: string }[];
 };
@@ -203,6 +204,7 @@ type StaffSummaryResp = {
   overtimeByDate?: OvertimeByDateItem[];
   logs?: LogEntry[];
   showDayDates?: string[];
+  showTimes?: Record<string, string>;
 };
 
 type ShiftOverrideLite = { date: string; scope: string; startTime: string; staffIds: number[] };
@@ -234,23 +236,9 @@ type TeamExtras = {
   staffWaivers?: Record<string, Record<string, { amount: number; reason: string | null; createdByName?: string | null; createdAt?: string }>>;
   staffAdjustments?: Record<string, Array<{ id: number; date: string; type: string; category: string | null; amount: number; reason: string | null; createdByName: string | null; createdAt: string }>>;
   staffShowDays?: Record<string, string[]>;
+  // date -> giờ hẹn chụp "HH:MM" sớm nhất (để chấm trễ show ngoài)
+  staffShowTimes?: Record<string, Record<string, string>>;
 };
-
-const MONTHLY_ON_TIME_BONUS = 200_000;
-
-function expectedWorkDatesInMonth(monthStr: string): string[] {
-  const todayStr = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
-  const [y, m] = monthStr.split("-").map(Number);
-  const daysInMonth = new Date(y, m, 0).getDate();
-  const out: string[] = [];
-  for (let d = 1; d <= daysInMonth; d++) {
-    const date = `${monthStr}-${String(d).padStart(2, "0")}`;
-    if (date > todayStr) continue;
-    if (new Date(`${date}T12:00:00`).getDay() === 0) continue;
-    out.push(date);
-  }
-  return out;
-}
 
 function isWaived(staffId: number, date: string, extras: TeamExtras | undefined): { waived: boolean; reason: string | null } {
   const w = extras?.staffWaivers?.[String(staffId)]?.[date];
@@ -284,7 +272,6 @@ function buildJournalAndStaffMoney(args: {
   }));
   const checkInTo = extras?.checkInTo ?? rules?.rule?.checkinEndTime ?? "08:10";
   const weeklyBonus = extras?.weeklyOnTimeBonus ?? rules?.rule?.weeklyBonusAmount ?? 50_000;
-  const monthlyBonus = extras?.monthlyOnTimeBonus ?? MONTHLY_ON_TIME_BONUS;
   const shiftOverrides = extras?.shiftOverrides;
 
   const checkIns = logs.filter(l => l.type === "check_in");
@@ -322,6 +309,7 @@ function buildJournalAndStaffMoney(args: {
     const effTime = l.override?.time ?? l.localTime ?? "";
 
     const showDays = extras?.staffShowDays?.[String(staffId)] ?? [];
+    const showTime = extras?.staffShowTimes?.[String(staffId)]?.[date];
     const dayStatus = resolveDayStatus({
       date,
       dayLogs: [{ type: "check_in", localTime: effTime || undefined, isOffsite: l.isOffsite, method: l.method, workType: l.workType, attendanceType: l.attendanceType }],
@@ -331,6 +319,8 @@ function buildJournalAndStaffMoney(args: {
       isWeekend: false,
       isFuture: false,
       hasShowBooking: showDays.includes(date),
+      showTime,
+      checkInTo,
     });
 
     let status = dayStatus.label || "Đúng giờ";
@@ -350,6 +340,9 @@ function buildJournalAndStaffMoney(args: {
         approvedLeaves: [],
         isWeekend: false,
         isFuture: false,
+        hasShowBooking: showDays.includes(date),
+        showTime,
+        checkInTo,
       });
       if (forced.isLate) {
         status = forced.label;
@@ -421,54 +414,68 @@ function buildJournalAndStaffMoney(args: {
     });
   }
 
-  const expectedDates = expectedWorkDatesInMonth(month);
   const [y, mo] = month.split("-").map(Number);
+  const todayStrBonus = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 10);
+  const daysInMonthBonus = new Date(y, mo, 0).getDate();
+  // Thưởng chuyên cần CHỈ theo tuần. Tháng chia 4 tuần: [1-7][8-14][15-21][22-cuối tháng].
+  // Mỗi tuần đi đủ công + đúng giờ tất cả ngày bắt buộc (bỏ CN + ≤2 ngày nghỉ phép) = +50k.
+  // Tối đa 4 tuần = 200k/tháng. KHÔNG còn thưởng tháng riêng.
+  const WEEK_BLOCKS: [number, number][] = [[1, 7], [8, 14], [15, 21], [22, daysInMonthBonus]];
 
   for (const s of staffList) {
     const leaves = extras?.staffLeaves?.[String(s.id)] ?? [];
     const excused = new Set(leaves.map(l => l.date).slice(0, 2));
-    let onTimeStreak = 0;
+    const showDaysS = extras?.staffShowDays?.[String(s.id)] ?? [];
     const ciDates = new Map<string, AdminLog>();
     for (const l of checkIns.filter(x => Number(x.staffId) === s.id)) {
       const d = l.localDate ?? l.createdAt.slice(0, 10);
       if (!ciDates.has(d)) ciDates.set(d, l);
     }
-    for (const [, ci] of ciDates) {
-      const d = ci.localDate ?? ci.createdAt.slice(0, 10);
-      if (excused.has(d)) continue;
-      const shiftStart = resolveShiftStart(s.id, d, shiftOverrides, checkInTo);
-      const effTime = ci.override?.time ?? ci.localTime ?? "";
+    // Ngày d có đi đúng giờ không (xanh / gỡ phạt / override đúng giờ; trễ hoặc chưa chấm = false).
+    const isOnTimeDay = (d: string): boolean => {
+      const ci = ciDates.get(d);
+      if (!ci) return false;
       const { waived } = isWaived(s.id, d, extras);
-      const showDaysStreak = extras?.staffShowDays?.[String(s.id)] ?? [];
+      if (ci.override?.isLate === 0 || waived) return true;
+      if (ci.override?.isLate === 1) return false;
+      const effTime = ci.override?.time ?? ci.localTime ?? "";
       const st = resolveDayStatus({
         date: d,
         dayLogs: [{ type: "check_in", localTime: effTime || undefined, isOffsite: ci.isOffsite, method: ci.method, workType: ci.workType, attendanceType: ci.attendanceType }],
-        shiftStart,
+        shiftStart: resolveShiftStart(s.id, d, shiftOverrides, checkInTo),
         lateRules,
         approvedLeaves: [],
         isWeekend: false,
         isFuture: false,
-        hasShowBooking: showDaysStreak.includes(d),
+        hasShowBooking: showDaysS.includes(d),
+        showTime: extras?.staffShowTimes?.[String(s.id)]?.[d],
+        checkInTo,
       });
-      let onTime = st.color === "green" || st.attendanceMode === "SHOW";
-      if (ci.override?.isLate === 0) onTime = true;
-      if (ci.override?.isLate === 1) onTime = false;
-      if (waived) onTime = true;
-      if (onTime) onTimeStreak++;
-    }
+      return st.color === "green";
+    };
 
     const money = staffMoney.get(s.id)!;
-    const weeksOnTime = Math.floor(onTimeStreak / 5);
-    for (let w = 0; w < weeksOnTime; w++) {
-      const weekEnd = new Date(y, mo - 1, (w + 1) * 7);
-      const date = weekEnd.toISOString().slice(0, 10);
+    // Mỗi tuần đã trôi qua hết + đi đủ công đúng giờ → +50k (tối đa 4 tuần = 200k).
+    for (let wi = 0; wi < WEEK_BLOCKS.length; wi++) {
+      const [startD, endD] = WEEK_BLOCKS[wi];
+      const lastDate = `${month}-${String(endD).padStart(2, "0")}`;
+      if (lastDate > todayStrBonus) continue; // tuần chưa kết thúc → chưa xét (sửa bug phát thưởng sớm)
+      const required: string[] = [];
+      for (let d = startD; d <= endD; d++) {
+        const date = `${month}-${String(d).padStart(2, "0")}`;
+        if (new Date(`${date}T12:00:00`).getDay() === 0) continue; // Chủ Nhật off
+        if (excused.has(date)) continue; // ngày nghỉ phép (≤2/tháng) được trừ
+        required.push(date);
+      }
+      if (required.length === 0) continue;
+      if (!required.every(isOnTimeDay)) continue; // trễ/vắng 1 ngày bất kỳ → mất thưởng tuần đó
       money.totalBonus += weeklyBonus;
       entries.push({
         kind: "bonus",
         logId: null,
         staffId: s.id,
         staffName: s.name,
-        date,
+        date: lastDate,
         localTime: null,
         method: null,
         isOffsite: false,
@@ -479,61 +486,9 @@ function buildJournalAndStaffMoney(args: {
         bonusAmount: weeklyBonus,
         waived: false,
         waiverReason: null,
-        notes: `Thưởng chuyên cần tuần ${w + 1} (+${weeklyBonus.toLocaleString("vi-VN")}đ)`,
+        notes: `Thưởng chuyên cần tuần ${wi + 1} (+${weeklyBonus.toLocaleString("vi-VN")}đ)`,
         override: null,
-        createdAt: `${date}T23:59:00.000Z`,
-      });
-    }
-
-    const required = expectedDates.filter(d => !excused.has(d));
-    let monthOk = required.length > 0;
-    const showDaysMonth = extras?.staffShowDays?.[String(s.id)] ?? [];
-    for (const d of required) {
-      const ci = ciDates.get(d);
-      if (!ci && showDaysMonth.includes(d)) continue;
-      if (!ci) { monthOk = false; break; }
-      const shiftStart = resolveShiftStart(s.id, d, shiftOverrides, checkInTo);
-      const effTime = ci.override?.time ?? ci.localTime ?? "";
-      const { waived } = isWaived(s.id, d, extras);
-      const showDaysStreak = extras?.staffShowDays?.[String(s.id)] ?? [];
-      const st = resolveDayStatus({
-        date: d,
-        dayLogs: [{ type: "check_in", localTime: effTime || undefined, isOffsite: ci.isOffsite, method: ci.method, workType: ci.workType, attendanceType: ci.attendanceType }],
-        shiftStart,
-        lateRules,
-        approvedLeaves: [],
-        isWeekend: false,
-        isFuture: false,
-        hasShowBooking: showDaysStreak.includes(d),
-      });
-      let onTime = st.color === "green" || st.attendanceMode === "SHOW";
-      if (ci.override?.isLate === 0) onTime = true;
-      if (ci.override?.isLate === 1) onTime = false;
-      if (waived) onTime = true;
-      if (!onTime) { monthOk = false; break; }
-    }
-    if (monthOk) {
-      const lastDay = required[required.length - 1] ?? `${month}-01`;
-      money.totalBonus += monthlyBonus;
-      entries.push({
-        kind: "bonus",
-        logId: null,
-        staffId: s.id,
-        staffName: s.name,
-        date: lastDay,
-        localTime: null,
-        method: null,
-        isOffsite: false,
-        workType: null,
-        status: "Thưởng chuyên cần",
-        lateMinutes: 0,
-        penaltyAmount: 0,
-        bonusAmount: monthlyBonus,
-        waived: false,
-        waiverReason: null,
-        notes: `Thưởng chuyên cần tháng (+${monthlyBonus.toLocaleString("vi-VN")}đ)`,
-        override: null,
-        createdAt: `${lastDay}T23:58:00.000Z`,
+        createdAt: `${lastDate}T23:59:00.000Z`,
       });
     }
     money.net = money.totalBonus - money.totalPenalty;
@@ -709,6 +664,35 @@ function lateMinutesBetween(localTime: string, shiftStart: string): number {
   return Math.max(0, ch * 60 + cm - (sh * 60 + sm));
 }
 
+// Chấm trễ cho Show ngoài: so giờ chấm với giờ hẹn chụp (showTime). Quy tắc trễ
+// (theo giờ tuyệt đối quanh checkInTo) được quy về OFFSET phút rồi áp lên showTime.
+// Mirror backend computeShowLateness. tierIdx: 0=vàng, 1=cam, >=2=đỏ.
+function computeShowLatenessFE(
+  checkIn: string, showTime: string, lateRules: LateRuleLite[], checkInTo: string,
+): { isLate: boolean; penalty: number; tierIdx: number; lateMinutes: number } {
+  if (!checkIn || !showTime) return { isLate: false, penalty: 0, tierIdx: -1, lateMinutes: 0 };
+  const lateMinutes = lateMinutesBetween(checkIn, showTime);
+  if (checkIn <= showTime || lateMinutes <= 0) return { isLate: false, penalty: 0, tierIdx: -1, lateMinutes: 0 };
+  const anchor = (() => { const [h, m] = checkInTo.split(":").map(Number); return (h || 0) * 60 + (m || 0); })();
+  const toMin = (t: string) => { const [h, m] = t.split(":").map(Number); return (h || 0) * 60 + (m || 0); };
+  const bands = lateRules
+    .filter(r => r.lateFromTime)
+    .map(r => ({
+      fromOff: Math.max(1, toMin(r.lateFromTime!) - anchor),
+      toOff: r.lateToTime ? toMin(r.lateToTime) - anchor : null,
+      penalty: r.penaltyAmount ?? 0,
+    }))
+    .sort((a, b) => a.fromOff - b.fromOff);
+  if (bands.length === 0) return { isLate: true, penalty: 0, tierIdx: 0, lateMinutes };
+  let tierIdx = -1;
+  for (let i = 0; i < bands.length; i++) {
+    const b = bands[i];
+    if (lateMinutes >= b.fromOff && (b.toOff === null || lateMinutes <= b.toOff)) { tierIdx = i; break; }
+  }
+  if (tierIdx === -1) tierIdx = bands.length - 1;
+  return { isLate: true, penalty: bands[tierIdx]?.penalty ?? 0, tierIdx, lateMinutes };
+}
+
 // Resolve shift start cho 1 staff ngày cụ thể: scope=selected match > scope=all > default.
 function resolveShiftStart(
   staffId: number, date: string, overrides: ShiftOverrideLite[] | undefined, fallback: string
@@ -763,8 +747,10 @@ function resolveDayStatus(args: {
   isWeekend: boolean;
   isFuture: boolean;
   hasShowBooking?: boolean;
+  showTime?: string;
+  checkInTo?: string;
 }): DayStatus {
-  const { date, dayLogs, shiftStart, lateRules, approvedLeaves, overtime, isWeekend, isFuture, hasShowBooking } = args;
+  const { date, dayLogs, shiftStart, lateRules, approvedLeaves, overtime, isWeekend, isFuture, hasShowBooking, showTime, checkInTo } = args;
   const ci = dayLogs.find(l => l.type === "check_in");
   const co = dayLogs.find(l => l.type === "check_out");
   const checkIn = ci?.localTime;
@@ -784,10 +770,25 @@ function resolveDayStatus(args: {
   const mode: AttendanceMode = hasShowBooking ? "SHOW" : "STUDIO";
 
   if (mode === "SHOW") {
-    const showLabel = checkIn ? "Show Day" : "Show Day";
+    // Show ngoài: nhân viên chấm GPS+selfie → tính trễ theo giờ hẹn chụp (showTime).
+    if (!checkIn) {
+      if (isFuture) return { date, color: "blank", label: "", isFuture: true, attendanceMode: "SHOW" };
+      return { date, color: "blue", label: "Show Day", attendanceMode: "SHOW", isLate: false, otHours, otAmount, requiresCheckout };
+    }
+    if (!showTime) {
+      // Không có giờ hẹn để so → coi đúng giờ.
+      return { date, color: "green", label: "Show — đúng giờ", attendanceMode: "SHOW", checkIn, checkOut, isLate: false, otHours, otAmount, requiresCheckout };
+    }
+    const sl = computeShowLatenessFE(checkIn, showTime, lateRules, checkInTo ?? shiftStart);
+    if (!sl.isLate) {
+      return { date, color: "green", label: "Show — đúng giờ", attendanceMode: "SHOW", checkIn, checkOut, isLate: false, otHours, otAmount, requiresCheckout };
+    }
+    const showColor: DayColor = sl.tierIdx === 0 ? "yellow" : sl.tierIdx === 1 ? "orange" : "red";
+    const showLabel = sl.tierIdx === 0 ? "Show trễ nhẹ" : sl.tierIdx === 1 ? "Show trễ vừa" : "Show trễ nặng";
     return {
-      date, color: "blue", label: showLabel, attendanceMode: "SHOW",
-      checkIn, checkOut, isLate: false, otHours, otAmount, requiresCheckout,
+      date, color: showColor, label: showLabel, attendanceMode: "SHOW",
+      checkIn, checkOut, isLate: true, lateMinutes: sl.lateMinutes, penalty: sl.penalty,
+      otHours, otAmount, requiresCheckout,
     };
   }
 
@@ -829,8 +830,9 @@ function buildMonthDayStatuses(args: {
   approvedLeaves: ApprovedLeaveLite[];
   overtimeByDate: OvertimeByDateItem[];
   showDayDates?: string[];
+  showTimes?: Record<string, string>;
 }): DayStatus[] {
-  const { month, logs, shifts, defaultShiftStart, lateRules, approvedLeaves, overtimeByDate, showDayDates } = args;
+  const { month, logs, shifts, defaultShiftStart, lateRules, approvedLeaves, overtimeByDate, showDayDates, showTimes } = args;
   const showSet = new Set(showDayDates ?? []);
   const [y, m] = month.split("-").map(Number);
   const total = new Date(y, m, 0).getDate();
@@ -850,6 +852,8 @@ function buildMonthDayStatuses(args: {
       overtime: otMap.get(date),
       isWeekend, isFuture,
       hasShowBooking: showSet.has(date),
+      showTime: showTimes?.[date],
+      checkInTo: defaultShiftStart,
     }));
   }
   return out;
@@ -1233,6 +1237,8 @@ function TeamCalendar({ month, staffList, logsByStaff, extras, onClickStaffDay, 
         shiftStart: shiftStartForDay, lateRules, approvedLeaves: leaves,
         overtime: otByStaff.get(s.id)?.get(date), isWeekend, isFuture,
         hasShowBooking: showDays.includes(date),
+        showTime: extras?.staffShowTimes?.[String(s.id)]?.[date],
+        checkInTo: defaultShiftStart,
       });
       rows.push({ staff: s, status });
       if (!isFuture && !isWeekend) {
@@ -1443,6 +1449,8 @@ function TeamMatrixGrid({ month, staffList, logsByStaff, extras, onClickCell }: 
                       overtime: otMap.get(date),
                       isWeekend, isFuture,
                       hasShowBooking: showDays.includes(date),
+                      showTime: extras?.staffShowTimes?.[String(staff.id)]?.[date],
+                      checkInTo: defaultShiftStart,
                     });
                     const hasOT = (status.otHours ?? 0) > 0;
                     const cls = DAY_COLOR_CLS[status.color];
@@ -3169,6 +3177,7 @@ export default function AttendancePage() {
                 approvedLeaves: myAtt?.approvedLeaves ?? [],
                 overtimeByDate: (myAtt?.overtime?.byDate ?? []).map(d => ({ date: d.date, hours: d.hours, amount: d.pay })),
                 showDayDates: myAtt?.showDayDates ?? [],
+                showTimes: myAtt?.showTimes ?? {},
               });
               return (
                 <div className="rounded-2xl border border-border bg-card overflow-hidden">
@@ -3606,6 +3615,7 @@ export default function AttendancePage() {
                   approvedLeaves: adminStaffSummary.approvedLeaves ?? [],
                   overtimeByDate: adminStaffSummary.overtimeByDate ?? [],
                   showDayDates: adminStaffSummary.showDayDates ?? [],
+                  showTimes: adminStaffSummary.showTimes ?? {},
                 });
                 const sName = staffList.find(s => String(s.id) === adminCalStaffId)?.name ?? `#${adminCalStaffId}`;
                 return (

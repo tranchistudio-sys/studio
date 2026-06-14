@@ -10,9 +10,9 @@
     },
     {
       "name": "amazing-studio",
-      "runtimeExecutable": "artifacts\\amazing-studio\\node_modules\\.bin\\vite.CMD",
-      "runtimeArgs": ["--config", "artifacts/amazing-studio/vite.config.ts", "--host", "0.0.0.0"],
-      "port": 5000,
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev:web"],
+      "port": 5001,
       "autoPort": true
     }
   ]

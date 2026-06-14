@@ -102,6 +102,20 @@ function countDressesInBranch(
   return dresses.filter((d) => d.categoryId != null && ids.has(d.categoryId)).length;
 }
 
+// Thứ tự ưu tiên danh mục gốc (chỉ sort ở frontend, KHÔNG đổi DB):
+// 1) Cưới  2) Áo dài / Việt phục  3) Beauty  4) Khác. Số nhỏ = lên trước.
+function tier1Priority(name: string): number {
+  const n = (name || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/đ/g, "d");
+  if (n.includes("cuoi") || n.includes("wedding")) return 0;
+  if (n.includes("ao dai") || n.includes("viet phuc")) return 1;
+  if (n.includes("beauty")) return 2;
+  return 3;
+}
+
 export default function PublicRentalPage() {
   const [location, setLocation] = useLocation();
   const [tier1Id, setTier1Id] = useState<number | null>(null);
@@ -144,7 +158,17 @@ export default function PublicRentalPage() {
     return m;
   }, [cats]);
 
-  const tier1 = childrenOf.get(null) ?? [];
+  const tier1Raw = childrenOf.get(null) ?? [];
+  // Ưu tiên hiển thị: Cưới → Áo dài/Việt phục → Beauty → khác. Trong cùng nhóm giữ thứ tự DB.
+  const tier1 = useMemo(
+    () =>
+      [...tier1Raw].sort((a, b) => {
+        const pa = tier1Priority(a.name);
+        const pb = tier1Priority(b.name);
+        return pa !== pb ? pa - pb : a.sortOrder - b.sortOrder;
+      }),
+    [tier1Raw],
+  );
   const tier2 = tier1Id != null ? (childrenOf.get(tier1Id) ?? []) : [];
   const tier3 = tier2Id != null ? (childrenOf.get(tier2Id) ?? []) : [];
 

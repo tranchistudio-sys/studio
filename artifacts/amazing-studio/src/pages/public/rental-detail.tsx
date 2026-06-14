@@ -712,6 +712,12 @@ export default function RentalDetailPage() {
     return (sameCat.length >= 2 ? sameCat : others).slice(0, 4);
   }, [allDresses, dress]);
 
+  // Mở chi tiết sản phẩm: luôn cuộn lên đầu để thấy ảnh lớn trước (SPA giữ vị trí cuộn
+  // cũ từ trang danh sách nên hay bị tụt giữa/cuối ảnh). Reset cả khi đổi sản phẩm liên quan.
+  useEffect(() => {
+    window.scrollTo({ top: 0, left: 0 });
+  }, [slug]);
+
   const status = dress ? getPublicStatus(dress.rentalStatus) : null;
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 

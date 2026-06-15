@@ -6,6 +6,15 @@ import {
   resolveApiKey,
   PROVIDER_LABEL,
 } from "./ai-provider";
+import {
+  type ChatMessage,
+  type ChatImage,
+  buildClaudeMessages,
+  buildOpenAIMessages,
+} from "./ai-message-builders";
+
+// Re-export để các importer cũ của ChatMessage từ module này vẫn chạy nguyên vẹn.
+export type { ChatMessage, ChatImage } from "./ai-message-builders";
 
 /**
  * TỔNG ĐÀI AI (provider fallback) — lõi dùng chung cho mọi chatbot/assistant.
@@ -20,8 +29,6 @@ import {
  *
  * BẢO MẬT: KHÔNG log API key (mọi message lỗi đều đi qua redact()).
  */
-
-export type ChatMessage = { role: "user" | "assistant"; content: string };
 
 export type ChatRequest = {
   /** System prompt (persona + dữ liệu + ràng buộc) — đã build sẵn bởi caller. */
@@ -130,7 +137,7 @@ async function callClaude(apiKey: string, model: string, req: ChatRequest, timeo
       model,
       max_tokens: req.maxTokens ?? 1024,
       system: req.system,
-      messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
+      messages: buildClaudeMessages(req.messages),
       ...(req.temperature != null ? { temperature: req.temperature } : {}),
     });
     const text = resp.content
@@ -155,10 +162,7 @@ async function callOpenAI(apiKey: string, model: string, req: ChatRequest, timeo
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({
         model,
-        messages: [
-          { role: "system", content: req.system },
-          ...req.messages.map((m) => ({ role: m.role, content: m.content })),
-        ],
+        messages: buildOpenAIMessages(req.system, req.messages),
         ...(req.temperature != null ? { temperature: req.temperature } : {}),
         ...(req.jsonMode ? { response_format: { type: "json_object" } } : {}),
       }),

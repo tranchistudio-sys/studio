@@ -12,7 +12,7 @@ import {
   Camera, Palette, Layers, Banknote, Star, TrendingDown, User, Timer, Funnel, FlaskConical,
   Volume2, VolumeX, CheckCheck,
   Images, DollarSign, Tag, Trash2, Globe, Home, ExternalLink, Heart, LayoutTemplate, Lightbulb,
-  SlidersHorizontal, Activity, RefreshCw
+  SlidersHorizontal, Activity, RefreshCw, Share2
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useStaffAuth, type SimulateRole } from "@/contexts/StaffAuthContext";
@@ -58,6 +58,7 @@ const ALL_NAV_ITEMS = [
   { href: "/claude-sale-monitor",  label: "Claude Sale Monitor",  icon: Activity,          adminOnly: true },
   { href: "/claude-sale-reengage", label: "Khách cần chăm lại",   icon: RefreshCw,         adminOnly: true },
   { href: "/sale-learning",     label: "Sale Learning",      icon: Sparkles,         adminOnly: true  },
+  { href: "/auto-post-facebook", label: "AutoPost Facebook", icon: Share2,           adminOnly: true  },
   // ⏸️ Bộ não ChatGPT/OpenAI cũ — TẠM ẨN khỏi menu (chuẩn bị chuyển sang Claude).
   //    Code & route vẫn còn (vào trực tiếp /ai-sale-scripts, /ai-test để rollback).
   //    Bỏ comment 2 dòng dưới để hiện lại menu bot cũ.

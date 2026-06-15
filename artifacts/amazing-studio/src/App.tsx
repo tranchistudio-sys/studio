@@ -36,6 +36,7 @@ import ClaudeSaleSettingsPage from "@/pages/claude-sale-settings";
 import ClaudeSaleMonitorPage from "@/pages/claude-sale-monitor";
 import ClaudeSaleReengagePage from "@/pages/claude-sale-reengage";
 import SaleLearningPage from "@/pages/sale-learning";
+import AutoPostFacebookPage from "@/pages/auto-post-facebook";
 import NotificationsPage from "@/pages/notifications";
 import NotFound from "@/pages/not-found";
 import LoginPage from "@/pages/login";
@@ -97,7 +98,7 @@ const INTERNAL_PREFIXES = [
   "/pricing", "/services", "/staff", "/accounting", "/ai-assistant", "/settings",
   "/bookings", "/payments", "/expenses", "/revenue", "/contracts", "/reports",
   "/my-profile", "/photoshop-jobs", "/attendance",
-  "/crm-leads", "/facebook-inbox-ai", "/ai-sale-scripts", "/ai-test", "/claude-sale-test", "/claude-sale-settings", "/claude-sale-monitor", "/claude-sale-reengage", "/sale-learning", "/notifications",
+  "/crm-leads", "/facebook-inbox-ai", "/ai-sale-scripts", "/ai-test", "/claude-sale-test", "/claude-sale-settings", "/claude-sale-monitor", "/claude-sale-reengage", "/sale-learning", "/auto-post-facebook", "/notifications",
   "/cms",
 ];
 
@@ -254,6 +255,7 @@ function InternalRouter() {
         <Route path="/claude-sale-monitor" component={() => <AdminRoute component={ClaudeSaleMonitorPage} />} />
         <Route path="/claude-sale-reengage" component={() => <AdminRoute component={ClaudeSaleReengagePage} />} />
         <Route path="/sale-learning" component={() => <AdminRoute component={SaleLearningPage} />} />
+        <Route path="/auto-post-facebook" component={() => <AdminRoute component={AutoPostFacebookPage} />} />
         <Route path="/notifications" component={NotificationsPage} />
         <Route path="/cms/home-settings" component={CmsHomeSettingsPage} />
         <Route path="/cms/gallery" component={CmsGalleryPage} />

@@ -15,6 +15,20 @@ export const serviceGroupsTable = pgTable("service_groups", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+/** Giờ vàng — campaign giảm giá theo nhóm danh mục (cms_categories) hoặc sản phẩm (dresses). */
+export const goldenHourCampaignsTable = pgTable("golden_hour_campaigns", {
+  id: serial("id").primaryKey(),
+  scope: text("scope").notNull(),
+  refId: integer("ref_id").notNull(),
+  name: text("name").notNull().default("Giờ vàng"),
+  percent: numeric("percent", { precision: 5, scale: 2 }).notNull().default("0"),
+  startsAt: timestamp("starts_at", { withTimezone: true }),
+  endsAt: timestamp("ends_at", { withTimezone: true }),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 export const servicePackagesTable = pgTable("service_packages", {
   id: serial("id").primaryKey(),
   groupId: integer("group_id").references(() => serviceGroupsTable.id),

@@ -47,6 +47,7 @@ import photoIdeasRouter from "./photo-ideas";
 import visualAdvisorRouter from "./visual-advisor";
 import weddingCardsRouter from "./wedding-cards";
 import staffAllowancesRouter from "./staff-allowances";
+import goldenHourRouter from "./golden-hour";
 
 const router: IRouter = Router();
 
@@ -98,5 +99,6 @@ router.use(photoIdeasRouter);
 router.use(visualAdvisorRouter);
 router.use(weddingCardsRouter);
 router.use(staffAllowancesRouter);
+router.use(goldenHourRouter);
 
 export default router;

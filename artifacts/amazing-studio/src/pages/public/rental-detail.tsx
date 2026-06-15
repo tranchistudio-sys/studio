@@ -26,6 +26,7 @@ import { getImageSrc } from "@/lib/imageUtils";
 import { formatVND } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { OutfitTagBadge } from "@/lib/outfit-tags";
+import { GoldenHourBadge, ghDiscounted } from "@/lib/golden-hour";
 import { useOutfitSchedule } from "@/hooks/use-outfit-schedule";
 import { format, parseISO } from "date-fns";
 import { vi } from "date-fns/locale";
@@ -352,6 +353,8 @@ interface PublicDressDetail {
   rentalStatus: string;
   outfitTag: string | null;
   slug: string;
+  goldenHourPercent?: number;
+  goldenHourName?: string | null;
 }
 
 interface PublicDressListItem {
@@ -364,6 +367,7 @@ interface PublicDressListItem {
   rentalPrice: number;
   salePrice?: number;
   rentalStatus: string;
+  goldenHourPercent?: number;
 }
 
 const STATUS_MAP: Record<string, { label: string; color: string; bg: string }> = {
@@ -657,6 +661,11 @@ function RelatedProducts({
                 <span className="text-neutral-400 line-through">{formatVND(d.rentalPrice)}</span>{" "}
                 <span className="text-rose-600 font-semibold">{formatVND(d.salePrice!)}</span>
               </p>
+            ) : (d.goldenHourPercent ?? 0) > 0 ? (
+              <p className="text-xs mt-0.5">
+                <span className="text-neutral-400 line-through">{formatVND(d.rentalPrice)}</span>{" "}
+                <span className="text-amber-600 font-semibold">{formatVND(ghDiscounted(d.rentalPrice, d.goldenHourPercent))}</span>
+              </p>
             ) : (
               <p className="text-xs text-neutral-500 mt-0.5">
                 {d.rentalPrice > 0 ? formatVND(d.rentalPrice) : "Liên hệ"}
@@ -796,6 +805,9 @@ export default function RentalDetailPage() {
                   </span>
                 )}
                 <OutfitTagBadge tag={dress.outfitTag} />
+                {(dress.goldenHourPercent ?? 0) > 0 && !((dress.salePrice ?? 0) > 0 && (dress.salePrice ?? 0) < dress.rentalPrice) && (
+                  <GoldenHourBadge percent={dress.goldenHourPercent} />
+                )}
               </div>
 
               {dress.categoryName && (
@@ -822,6 +834,18 @@ export default function RentalDetailPage() {
                       </span>
                       <span className="block font-serif text-xl text-rose-600 leading-tight">
                         {formatVND(dress.salePrice!)}
+                      </span>
+                    </span>
+                  ) : (dress.goldenHourPercent ?? 0) > 0 ? (
+                    <span className="text-right">
+                      <span className="block text-sm text-neutral-400 line-through leading-tight">
+                        {formatVND(dress.rentalPrice)}
+                      </span>
+                      <span className="block font-serif text-xl text-amber-600 leading-tight">
+                        {formatVND(ghDiscounted(dress.rentalPrice, dress.goldenHourPercent))}
+                      </span>
+                      <span className="block text-[11px] font-semibold text-amber-700 mt-0.5">
+                        ⚡ Giờ vàng -{Math.round(dress.goldenHourPercent!)}%
                       </span>
                     </span>
                   ) : (

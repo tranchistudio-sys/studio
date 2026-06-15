@@ -1063,6 +1063,34 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
   } catch (err) {
     console.error("[migrations] Claude Sale tables:", err);
   }
+
+  // ── Giờ vàng (Golden Hour) — campaign giảm giá theo nhóm danh mục / sản phẩm ───
+  // Bảng cấu hình riêng, KHÔNG đụng dresses/cms_categories, KHÔNG ghi đè giá gốc.
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS golden_hour_campaigns (
+        id          serial PRIMARY KEY,
+        scope       text NOT NULL,              -- 'category' | 'dress'
+        ref_id      integer NOT NULL,           -- cms_categories.id hoặc dresses.id
+        name        text NOT NULL DEFAULT 'Giờ vàng',
+        percent     numeric(5,2) NOT NULL DEFAULT 0,
+        starts_at   timestamptz,
+        ends_at     timestamptz,
+        is_active   boolean NOT NULL DEFAULT true,
+        created_at  timestamptz NOT NULL DEFAULT now(),
+        updated_at  timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+    await pool.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS golden_hour_campaigns_scope_ref_unique ON golden_hour_campaigns(scope, ref_id)`,
+    );
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS idx_golden_hour_active ON golden_hour_campaigns(is_active, starts_at, ends_at)`,
+    );
+    console.log("[migrations] golden_hour_campaigns OK");
+  } catch (err) {
+    console.error("[migrations] golden_hour_campaigns:", err);
+  }
 }
 
 export default runMigrations;

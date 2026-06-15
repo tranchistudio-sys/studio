@@ -8,6 +8,7 @@ import { OUTFIT_TAGS, OutfitTagBadge, type OutfitTagKey } from "@/lib/outfit-tag
 import { RENTAL_PAGE } from "@/lib/public-site-config";
 import { PublicReveal, PublicRevealItem } from "@/components/public/PublicReveal";
 import { getGalleryDescendantIds } from "@/hooks/use-public-cms";
+import { GoldenHourBadge, ghDiscounted } from "@/lib/golden-hour";
 
 const OUTFIT_LABEL_TO_KEY_PUB: Array<[string, OutfitTagKey]> = [
   ["hang moi 100", "HANG_MOI_100"],
@@ -54,6 +55,8 @@ interface PublicDress {
   sizeText: string | null;
   colorText: string | null;
   tagsText: string | null;
+  goldenHourPercent?: number;
+  goldenHourName?: string | null;
 }
 
 const PAGE_SIZE = 60;
@@ -983,6 +986,11 @@ function RentalDressCard({
                     <span className="text-white/60 line-through">{formatVND(d.rentalPrice)}</span>{" "}
                     <span className="text-amber-300 font-semibold">{formatVND(d.salePrice!)}</span>
                   </p>
+                ) : (d.goldenHourPercent ?? 0) > 0 ? (
+                  <p className="text-xs mt-1.5 tracking-wide">
+                    <span className="text-white/60 line-through">{formatVND(d.rentalPrice)}</span>{" "}
+                    <span className="text-amber-300 font-semibold">{formatVND(ghDiscounted(d.rentalPrice, d.goldenHourPercent))}</span>
+                  </p>
                 ) : (
                   <p className="text-white/80 text-xs mt-1.5 tracking-wide">
                     Giá thuê: {formatVND(d.rentalPrice)}
@@ -1006,9 +1014,12 @@ function RentalDressCard({
             </span>
           </div>
         )}
-        {d.outfitTag && (
-          <div className="absolute top-1.5 left-1.5 sm:top-3 sm:left-3 z-10 scale-90 sm:scale-100 origin-top-left">
-            <OutfitTagBadge tag={d.outfitTag} size="sm" />
+        {(d.outfitTag || ((d.goldenHourPercent ?? 0) > 0 && !((d.salePrice ?? 0) > 0 && (d.salePrice ?? 0) < d.rentalPrice))) && (
+          <div className="absolute top-1.5 left-1.5 sm:top-3 sm:left-3 z-10 scale-90 sm:scale-100 origin-top-left flex flex-col items-start gap-1">
+            {d.outfitTag && <OutfitTagBadge tag={d.outfitTag} size="sm" />}
+            {(d.goldenHourPercent ?? 0) > 0 && !((d.salePrice ?? 0) > 0 && (d.salePrice ?? 0) < d.rentalPrice) && (
+              <GoldenHourBadge percent={d.goldenHourPercent} />
+            )}
           </div>
         )}
       </div>
@@ -1021,6 +1032,11 @@ function RentalDressCard({
             <p className="text-[11px] sm:text-sm mt-1 sm:mt-2 leading-tight">
               <span className="text-neutral-400 text-[10px] sm:text-xs line-through">{formatVND(d.rentalPrice)}</span>{" "}
               <span className="font-semibold text-rose-600">{formatVND(d.salePrice!)}</span>
+            </p>
+          ) : (d.goldenHourPercent ?? 0) > 0 ? (
+            <p className="text-[11px] sm:text-sm mt-1 sm:mt-2 leading-tight">
+              <span className="text-neutral-400 text-[10px] sm:text-xs line-through">{formatVND(d.rentalPrice)}</span>{" "}
+              <span className="font-semibold text-amber-600">{formatVND(ghDiscounted(d.rentalPrice, d.goldenHourPercent))}</span>
             </p>
           ) : (
             <p className="text-[11px] sm:text-sm text-neutral-800 mt-1 sm:mt-2 leading-tight">

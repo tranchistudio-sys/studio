@@ -23,6 +23,7 @@ import { OUTFIT_TAGS, OutfitTagBadge } from "@/lib/outfit-tags";
 import { useToast } from "@/hooks/use-toast";
 import { uploadQueueStore } from "@/lib/upload-queue/store";
 import { getPublicPageUrl } from "@/lib/public-site-url";
+import { GoldenHourCategoryButton } from "@/components/golden-hour-admin";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 interface Category {
@@ -1817,6 +1818,7 @@ function CategoryNode({ cat, depth, allCats, expanded, selectedCatId, onSelect, 
               {action.icon} {action.label}
             </button>
           ))}
+          <GoldenHourCategoryButton categoryId={cat.id} categoryName={cat.name} />
         </div>
       )}
 

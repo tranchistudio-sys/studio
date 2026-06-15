@@ -1385,6 +1385,62 @@ router.get("/cms/public/categories/dress/tree", async (_req, res) => {
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
+// ── Giờ vàng: gắn goldenHourPercent + goldenHourName cho danh sách váy ────────
+// Ưu tiên (gần SP nhất): SP có sale_price riêng → KHÔNG giờ vàng; else campaign
+// scope='dress' của SP; else campaign scope='category' gần nhất đi từ danh mục lên cha.
+// Chỉ tính lúc hiển thị — KHÔNG ghi đè giá gốc. Lỗi/bảng chưa có → bỏ qua an toàn.
+async function attachGoldenHour(items: any[]): Promise<any[]> {
+  if (!items || items.length === 0) return items;
+  try {
+    const camps = await pool.query(
+      `SELECT scope, ref_id AS "refId", name, percent
+         FROM golden_hour_campaigns
+        WHERE is_active = true
+          AND (starts_at IS NULL OR starts_at <= now())
+          AND (ends_at   IS NULL OR ends_at   >= now())`,
+    );
+    const dressCamp = new Map<number, { pct: number; name: string }>();
+    const catCamp = new Map<number, { pct: number; name: string }>();
+    for (const c of camps.rows as any[]) {
+      const pct = parseFloat(c.percent);
+      if (!(pct > 0)) continue;
+      if (c.scope === "dress") dressCamp.set(Number(c.refId), { pct, name: c.name });
+      else if (c.scope === "category") catCamp.set(Number(c.refId), { pct, name: c.name });
+    }
+    const parentOf = new Map<number, number | null>();
+    if (catCamp.size > 0) {
+      const cats = await pool.query(`SELECT id, parent_id AS "parentId" FROM cms_categories WHERE type = 'dress'`);
+      for (const r of cats.rows as any[]) {
+        parentOf.set(Number(r.id), r.parentId == null ? null : Number(r.parentId));
+      }
+    }
+    for (const it of items) {
+      const rental = Number(it.rentalPrice) || 0;
+      const sale = Number(it.salePrice) || 0;
+      const hasOwnSale = sale > 0 && sale < rental;
+      let found: { pct: number; name: string } | null = null;
+      if (!hasOwnSale && (dressCamp.size > 0 || catCamp.size > 0)) {
+        if (dressCamp.has(Number(it.id))) {
+          found = dressCamp.get(Number(it.id))!;
+        } else {
+          let cid: number | null = it.categoryId == null ? null : Number(it.categoryId);
+          const guard = new Set<number>();
+          while (cid != null && !guard.has(cid)) {
+            guard.add(cid);
+            if (catCamp.has(cid)) { found = catCamp.get(cid)!; break; }
+            cid = parentOf.has(cid) ? parentOf.get(cid)! : null;
+          }
+        }
+      }
+      it.goldenHourPercent = found ? found.pct : 0;
+      it.goldenHourName = found ? found.name : null;
+    }
+  } catch {
+    for (const it of items) { it.goldenHourPercent = 0; it.goldenHourName = null; }
+  }
+  return items;
+}
+
 // Public dresses (toàn bộ - client tự filter theo category)
 router.get("/cms/public/dresses", async (_req, res) => {
   try {
@@ -1407,13 +1463,15 @@ router.get("/cms/public/dresses", async (_req, res) => {
           AND cms_status = 'visible'
         ORDER BY is_priority DESC, priority_at DESC NULLS LAST, created_at DESC`
     );
-    res.json(r.rows.map(row => ({
+    const items = r.rows.map(row => ({
       ...row,
       rentalPrice: parseFloat(row.rentalPrice ?? "0"),
       sellPrice: parseFloat(row.sellPrice ?? "0"),
       salePrice: row.salePrice != null ? parseFloat(row.salePrice) : 0,
       isPriority: !!row.isPriority,
-    })));
+    }));
+    await attachGoldenHour(items);
+    res.json(items);
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
@@ -1480,7 +1538,7 @@ router.get("/cms/public/dresses/slug/:slug", async (req, res) => {
       const cat = await pool.query(`SELECT name FROM cms_categories WHERE id = $1`, [row.categoryId]);
       if (cat.rows[0]) categoryName = (cat.rows[0] as { name: string }).name;
     }
-    res.json({
+    const out: any = {
       ...row,
       rentalPrice: parseFloat((row.rentalPrice ?? "0") as string),
       depositRequired: parseFloat((row.depositRequired ?? "0") as string),
@@ -1490,7 +1548,9 @@ router.get("/cms/public/dresses/slug/:slug", async (req, res) => {
       extraImagesRaw: undefined,
       coverImageUrlRaw: undefined,
       categoryName,
-    });
+    };
+    await attachGoldenHour([out]);
+    res.json(out);
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 

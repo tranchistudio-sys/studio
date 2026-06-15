@@ -24,6 +24,7 @@ import {
   useSaveSchedule, useToggleSchedule, useDeleteSchedule, useSaveSettings, useTestFacebook,
   type PoolItem, type Post, type Schedule, type Slot, type FbTestResult, type AutoPostSettings,
 } from "@/lib/autopost-api";
+import { getImageSrc } from "@/lib/imageUtils";
 
 /**
  * AutoPost Facebook — trang quản trị 7 tab (Task 8). Chỉ admin (AdminRoute).
@@ -149,14 +150,18 @@ export default function AutoPostFacebookPage() {
 
 function Thumb({ url, className }: { url?: string; className?: string }) {
   const [err, setErr] = useState(false);
-  if (!url || err) {
+  // Dùng helper chuẩn của app: /objects/... → /api/storage/objects/... (Vite proxy /api).
+  const src = getImageSrc(url);
+  // Reset trạng thái lỗi khi đổi ảnh (Thumb có thể bị tái dùng cho item khác sau refetch).
+  useEffect(() => { setErr(false); }, [src]);
+  if (!src || err) {
     return (
       <div className={`flex items-center justify-center bg-muted text-muted-foreground ${className ?? ""}`}>
         <ImageIcon className="w-6 h-6 opacity-40" />
       </div>
     );
   }
-  return <img src={url} alt="" onError={() => setErr(true)} className={`object-cover ${className ?? ""}`} />;
+  return <img src={src} alt="" onError={() => setErr(true)} className={`object-cover ${className ?? ""}`} />;
 }
 
 function Empty({ text }: { text: string }) {

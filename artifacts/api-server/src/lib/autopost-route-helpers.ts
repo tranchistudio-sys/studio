@@ -12,6 +12,7 @@ export const POST_STATUSES = [
   "pending_review",
   "approved",
   "scheduled",
+  "posting",
   "posted",
   "failed",
   "skipped",

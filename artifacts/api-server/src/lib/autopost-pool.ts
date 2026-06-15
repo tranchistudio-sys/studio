@@ -200,7 +200,7 @@ async function upsertPoolItem(item: PoolItemInput): Promise<void> {
         public_link         = EXCLUDED.public_link,
         image_hash          = EXCLUDED.image_hash,
         meta                = EXCLUDED.meta,
-        is_eligible         = true,
+        is_eligible         = EXCLUDED.is_eligible,
         ineligible_reason   = NULL,
         updated_at          = now()`,
     [

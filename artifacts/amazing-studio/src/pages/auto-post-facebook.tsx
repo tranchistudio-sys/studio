@@ -172,10 +172,12 @@ function Spin() {
 function PendingTab({ notify }: { notify: Notify }) {
   const { data: posts, isLoading } = usePosts("pending_review");
   if (isLoading) return <Spin />;
-  if (!posts?.length) return <Empty text="Chưa có bài nào chờ duyệt. Vào 'Kho nội dung' → 'Tạo bài' để Claude viết caption." />;
+  // Chỉ hiện bài có caption hợp lệ (phòng dữ liệu hỏng/sửa tay DB).
+  const valid = (posts ?? []).filter((p) => Array.isArray(p.captionOptions) && p.captionOptions.length > 0);
+  if (!valid.length) return <Empty text="Chưa có bài nào chờ duyệt. Vào 'Kho nội dung' → 'Tạo bài' để Claude viết caption." />;
   return (
     <div className="grid gap-4 md:grid-cols-2">
-      {posts.map((p) => <PendingCard key={p.id} post={p} notify={notify} />)}
+      {valid.map((p) => <PendingCard key={p.id} post={p} notify={notify} />)}
     </div>
   );
 }

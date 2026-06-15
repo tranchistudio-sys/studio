@@ -76,6 +76,8 @@ export type Post = {
   facebookPostLink: string | null;
   errorMessage: string | null;
   retryCount: number;
+  captionHash: string | null;
+  imageHash: string | null;
   poolTitle: string | null;
   createdAt: string;
   updatedAt: string;

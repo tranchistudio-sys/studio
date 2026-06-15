@@ -127,7 +127,7 @@ export async function publishDuePosts(nowMs: number = Date.now()): Promise<{ pos
       try {
         const dup = await pool.query(
           `SELECT 1 FROM autopost_posts
-            WHERE status = 'posted' AND id <> $1 AND page_id IS NOT DISTINCT FROM $2
+            WHERE status IN ('posted', 'posting') AND id <> $1 AND page_id IS NOT DISTINCT FROM $2
               AND ( (image_hash IS NOT NULL AND image_hash = $3)
                  OR (caption_hash IS NOT NULL AND caption_hash = $4) )
             LIMIT 1`,
@@ -343,7 +343,7 @@ export async function generatePendingPosts(nowMs: number = Date.now()): Promise<
               JSON.stringify(captionOptions),
               result.recommendedIndex,
               when,
-              sha1(images[0] || ""),
+              images[0] ? sha1(images[0]) : null,
               (row.source_type as string | null) ?? null,
               (row.source_item_id as string | null) ?? null,
             ],

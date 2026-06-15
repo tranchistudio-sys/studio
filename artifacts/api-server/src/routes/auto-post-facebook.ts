@@ -393,7 +393,7 @@ router.post("/autopost/posts/generate", async (req: Request, res: Response) => {
         JSON.stringify(images),
         JSON.stringify(captionOptions),
         result.recommendedIndex,
-        sha1(images[0] || ""),
+        images[0] ? sha1(images[0]) : null,
         row.source_type ?? null,
         row.source_item_id ?? null,
       ],
@@ -461,11 +461,25 @@ router.patch("/autopost/posts/:id", async (req: Request, res: Response) => {
     const sets: string[] = [];
     const params: unknown[] = [];
     if (body.captionFinal !== undefined) {
-      params.push(body.captionFinal == null ? null : String(body.captionFinal));
+      // caption_final phải là chuỗi không rỗng (giống ràng buộc của /approve).
+      if (body.captionFinal == null || String(body.captionFinal).trim().length === 0) {
+        res.status(400).json({ error: "captionFinal phải là chuỗi không rỗng" });
+        return;
+      }
+      const cap = String(body.captionFinal).trim();
+      params.push(cap);
       sets.push(`caption_final = $${params.length}`);
+      // Tính caption_hash đồng bộ để dedupe luôn hoạt động dù sửa qua PATCH.
+      params.push(sha1(cap));
+      sets.push(`caption_hash = $${params.length}`);
     }
     if (body.captionRecommendedIndex !== undefined) {
-      params.push(Number(body.captionRecommendedIndex));
+      const idx = Number(body.captionRecommendedIndex);
+      if (!Number.isFinite(idx) || idx < 0 || idx > 100) {
+        res.status(400).json({ error: "captionRecommendedIndex không hợp lệ" });
+        return;
+      }
+      params.push(idx);
       sets.push(`caption_recommended_index = $${params.length}`);
     }
     if (sets.length === 0) {
@@ -473,12 +487,14 @@ router.patch("/autopost/posts/:id", async (req: Request, res: Response) => {
       return;
     }
     params.push(Number(req.params.id));
+    // CHỈ cho sửa bài CHƯA duyệt — bài đã approved/scheduled phải qua /approve
+    // (không cho lách quy trình duyệt: spec mục 8.1).
     const r = await pool.query(
       `UPDATE autopost_posts SET ${sets.join(", ")}, updated_at = now()
-        WHERE id = $${params.length} RETURNING id`,
+        WHERE id = $${params.length} AND status IN ('pending_review', 'draft_ai') RETURNING id`,
       params,
     );
-    if (!r.rows[0]) { res.status(404).json({ error: "Không tìm thấy bài" }); return; }
+    if (!r.rows[0]) { res.status(409).json({ error: "Chỉ sửa được bài chưa duyệt (chờ duyệt/nháp)" }); return; }
     res.json(r.rows[0]);
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -500,6 +516,10 @@ router.post("/autopost/posts/:id/approve", async (req: Request, res: Response) =
       return;
     }
     const approver = verifyToken(req.headers.authorization);
+    if (approver == null) {
+      res.status(401).json({ error: "Token không hợp lệ hoặc hết hạn" });
+      return;
+    }
     const r = await pool.query(
       `UPDATE autopost_posts
           SET caption_final = $1, status = 'approved', approved_by = $2,
@@ -570,6 +590,10 @@ router.put("/autopost/settings", async (req: Request, res: Response) => {
   try {
     const config = req.body ?? {};
     const approver = verifyToken(req.headers.authorization);
+    if (approver == null) {
+      res.status(401).json({ error: "Token không hợp lệ hoặc hết hạn" });
+      return;
+    }
     const r = await pool.query(
       `INSERT INTO autopost_settings (id, config, updated_at, updated_by)
        VALUES (1, $1::jsonb, now(), $2)

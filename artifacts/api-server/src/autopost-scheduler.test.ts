@@ -53,7 +53,8 @@ function routePool(opts: {
       const rc = claims.length ? claims.shift()! : 1;
       return Promise.resolve({ rowCount: rc, rows: rc ? [{ id: 1 }] : [] });
     }
-    if (s.includes("SELECT 1 FROM autopost_posts") && s.includes("status = 'posted'")) {
+    if (s.includes("IS NOT DISTINCT FROM")) {
+      // dedupe SELECT (chứa "page_id IS NOT DISTINCT FROM $2")
       return Promise.resolve({ rows: opts.dedupeHit ? [{ "?column?": 1 }] : [] });
     }
     // posted UPDATE, failed UPDATE, skipped UPDATE, pool times_posted UPDATE, …

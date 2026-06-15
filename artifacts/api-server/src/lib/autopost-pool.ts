@@ -187,7 +187,9 @@ async function upsertPoolItem(item: PoolItemInput): Promise<void> {
        ($1, $2, $3, $4, $5, $6::jsonb,
         $7, $8, $9, $10, $11, $12,
         $13, $14, $15::jsonb, $16, NULL)
-     ON CONFLICT (source_table, source_item_id) DO UPDATE SET
+     ON CONFLICT (source_table, source_item_id)
+       WHERE source_table IS NOT NULL AND source_item_id IS NOT NULL
+       DO UPDATE SET
         content_type        = EXCLUDED.content_type,
         title               = EXCLUDED.title,
         images              = EXCLUDED.images,

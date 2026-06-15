@@ -21,3 +21,4 @@ export * from "./attendance";
 export * from "./crm_leads";
 export * from "./legacy";
 export * from "./cms";
+export * from "./autopost";

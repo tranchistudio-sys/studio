@@ -1,0 +1,90 @@
+# See https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files for more about ignoring files.
+
+# compiled output
+dist
+tmp
+out-tsc
+*.tsbuildinfo
+.expo
+.expo-shared
+
+# dependencies
+node_modules
+.pnpm-store
+
+# macOS resource forks / junk
+._*
+.DS_Store
+
+# local temp
+-r
+-rq
+_*.txt
+_build.log
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# misc
+/.sass-cache
+/connect.lock
+/coverage
+/libpeerconnection.log
+npm-debug.log
+yarn-error.log
+testem.log
+/typings
+
+# System Files
+.DS_Store
+Thumbs.db
+
+.cursor/rules/nx-rules.mdc
+.github/instructions/nx.instructions.md
+
+# Replit
+.cache/
+.local/
+
+# Secrets & environment
+.env
+.env.*
+!.env.example
+
+# Database exports
+downloads/*.sql
+downloads/*.sql.gz
+downloads/*.zip
+
+# Local uploaded files (runtime)
+artifacts/data/object-storage/uploads/
+exports/*.sql
+exports/*.sql
+
+# ── KHÔNG push: object storage / ảnh upload / dump DB / backup (yêu cầu push code sạch) ──
+# Runtime object storage (mọi vị trí) + ảnh đã tải về local
+**/data/object-storage/
+**/public/uploads/
+artifacts/api-server/data/
+# Database dumps / exports
+*.dump
+*.sql.gz
+database_production_latest.sql
+production_live_*.sql
+# Backups & file tạm của quá trình vận hành
+*.bak
+*.tar.gz
+*.zip

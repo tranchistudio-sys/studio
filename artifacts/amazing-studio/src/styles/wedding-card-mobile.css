@@ -1,0 +1,339 @@
+/* Thiệp cưới — mobile-first + hiệu ứng nhẹ (không thư viện nặng) */
+
+.wc-mobile-page {
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .wc-mobile-page {
+    scroll-behavior: auto;
+  }
+  .wc-fade-in,
+  .wc-stagger-up,
+  .wc-reveal,
+  .wc-img-fade-in,
+  .wc-success-pop,
+  .wc-overlay-in,
+  .wc-petal,
+  .wc-btn-glow::after {
+    animation: none !important;
+    transition: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+  .wc-reveal {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.wc-card-shell {
+  width: 100%;
+  max-width: 430px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.wc-touch-btn {
+  min-height: 48px;
+  min-width: 48px;
+}
+
+/* ── Fade / stagger ─────────────────────────────────────────────── */
+.wc-fade-in {
+  animation: wc-fade-in 0.5s ease-out both;
+}
+
+.wc-stagger-up {
+  animation: wc-fade-in 0.55s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes wc-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.wc-reveal {
+  opacity: 0;
+  transform: translateY(12px);
+  transition:
+    opacity 0.5s ease-out,
+    transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.wc-reveal.is-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* ── Template card ──────────────────────────────────────────────── */
+.wc-template-card {
+  transition: box-shadow 0.35s ease, transform 0.35s ease;
+}
+
+@media (hover: hover) {
+  .wc-template-card:hover {
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.1);
+    transform: translateY(-2px);
+  }
+}
+
+.wc-template-visual {
+  isolation: isolate;
+}
+
+.wc-template-bg {
+  transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: center center;
+}
+
+@media (hover: hover) {
+  .wc-template-card:hover .wc-template-bg {
+    transform: scale(1.04);
+  }
+}
+
+.wc-template-card.is-tapped .wc-template-bg {
+  transform: scale(1.02);
+}
+
+.wc-template-shade {
+  opacity: 0.45;
+  transition: opacity 0.35s ease;
+}
+
+@media (hover: hover) {
+  .wc-template-card:hover .wc-template-shade {
+    opacity: 0.72;
+  }
+}
+
+.wc-template-card.is-tapped .wc-template-shade {
+  opacity: 0.78;
+}
+
+.wc-template-actions {
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity 0.3s ease,
+    transform 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+  pointer-events: none;
+}
+
+@media (hover: hover) {
+  .wc-template-card:hover .wc-template-actions {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
+  }
+}
+
+.wc-template-card.is-tapped .wc-template-actions {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.wc-btn-primary {
+  transition: transform 0.2s ease, box-shadow 0.25s ease;
+}
+
+.wc-btn-primary:active {
+  transform: scale(0.97);
+}
+
+@media (hover: hover) {
+  .wc-btn-primary:hover {
+    transform: scale(1.02);
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  }
+}
+
+.wc-btn-glow {
+  position: relative;
+  overflow: hidden;
+}
+
+.wc-btn-glow::after {
+  content: "";
+  position: absolute;
+  inset: -50%;
+  background: linear-gradient(
+    105deg,
+    transparent 40%,
+    rgba(255, 255, 255, 0.35) 50%,
+    transparent 60%
+  );
+  animation: wc-shine 3s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@keyframes wc-shine {
+  0%,
+  100% {
+    transform: translateX(-80%) rotate(12deg);
+  }
+  50% {
+    transform: translateX(80%) rotate(12deg);
+  }
+}
+
+/* ── Loading overlay ────────────────────────────────────────────── */
+.wc-overlay {
+  animation: wc-overlay-in 0.35s ease-out both;
+}
+
+@keyframes wc-overlay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.wc-overlay-spinner {
+  animation: wc-spin-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes wc-spin-pulse {
+  0%,
+  100% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+}
+
+/* ── Preview image fade ─────────────────────────────────────────── */
+.wc-img-fade-in {
+  animation: wc-img-in 0.55s ease-out both;
+}
+
+@keyframes wc-img-in {
+  from {
+    opacity: 0;
+    transform: scale(1.03);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.wc-preview-pulse {
+  animation: wc-preview-flash 0.45s ease-out;
+}
+
+@keyframes wc-preview-flash {
+  0% {
+    box-shadow: 0 0 0 0 rgba(225, 29, 72, 0.35);
+  }
+  100% {
+    box-shadow: 0 0 0 12px rgba(225, 29, 72, 0);
+  }
+}
+
+/* ── Success modal ──────────────────────────────────────────────── */
+.wc-success-backdrop {
+  animation: wc-overlay-in 0.3s ease-out both;
+}
+
+.wc-success-pop {
+  animation: wc-success-pop 0.55s cubic-bezier(0.34, 1.4, 0.64, 1) both;
+}
+
+@keyframes wc-success-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.wc-success-check {
+  animation: wc-check-pop 0.6s cubic-bezier(0.34, 1.4, 0.64, 1) 0.15s both;
+}
+
+@keyframes wc-check-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.5);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ── Accordion smooth (radix already animates; soften) ─────────── */
+.wc-accordion [data-state="open"] > .wc-acc-content {
+  animation: wc-acc-open 0.28s ease-out;
+}
+
+@keyframes wc-acc-open {
+  from {
+    opacity: 0.6;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ── Petals / hearts (view page only) ───────────────────────────── */
+.wc-petals {
+  pointer-events: none;
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  z-index: 5;
+}
+
+.wc-petal {
+  position: absolute;
+  top: -12%;
+  font-size: 14px;
+  opacity: 0;
+  animation: wc-petal-fall linear infinite;
+  will-change: transform, opacity;
+}
+
+@keyframes wc-petal-fall {
+  0% {
+    opacity: 0;
+    transform: translateY(0) rotate(0deg) translateX(0);
+  }
+  8% {
+    opacity: 0.45;
+  }
+  92% {
+    opacity: 0.2;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(110vh) rotate(360deg) translateX(20px);
+  }
+}
+
+/* ── Step progress (editor) ─────────────────────────────────────── */
+.wc-step-dot {
+  transition: background-color 0.3s ease, transform 0.3s ease;
+}
+
+.wc-step-dot.is-done {
+  transform: scale(1.08);
+}

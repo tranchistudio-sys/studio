@@ -1,0 +1,22 @@
+packages:
+  "lucide-react": "Icons matching the UI reference"
+  "recharts": "For the dashboard revenue chart"
+  "date-fns": "For calendar manipulation and date formatting"
+  "date-fns/locale/vi": "Vietnamese locale for date-fns"
+  "framer-motion": "For smooth transitions and layout animations"
+  "clsx": "For conditional class names"
+  "tailwind-merge": "For merging Tailwind classes"
+  "react-hook-form": "For form state management"
+  "react-day-picker": "For date picker components"
+
+images:
+  - path: "artifacts/amazing-studio/public/images/logo.png"
+    description: "Elegant minimalist logo for a premium Vietnamese wedding studio 'Amazing Studio', soft rose gold and dark grey, clean typography, transparent background"
+    aspect_ratio: "1:1"
+  - path: "artifacts/amazing-studio/public/images/ai-avatar.png"
+    description: "Friendly professional AI assistant avatar for a wedding studio, soft pastel colors, elegant illustration"
+    aspect_ratio: "1:1"
+
+notes:
+  - "Assuming @workspace/api-client-react exports TanStack query hooks directly."
+  - "Applying exact sidebar layout and features from user screenshot."

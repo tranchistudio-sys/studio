@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Share2, RefreshCw, Plus, Trash2, CheckCircle2, AlertTriangle, ExternalLink,
-  Sparkles, Clock, History, Settings as SettingsIcon, Facebook, Loader2, X, Image as ImageIcon,
+  Sparkles, Clock, History, Settings as SettingsIcon, Facebook, Loader2, X, Image as ImageIcon, Eye, EyeOff,
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -303,70 +303,82 @@ function PoolTab({ notify, goPending }: { notify: Notify; goPending: () => void 
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-2">
         <Select value={contentType} onValueChange={setContentType}>
-          <SelectTrigger className="w-[160px]"><SelectValue placeholder="Loại nội dung" /></SelectTrigger>
+          <SelectTrigger className="flex-1 min-w-[130px] h-9 sm:w-[160px] sm:flex-none"><SelectValue placeholder="Loại nội dung" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">Tất cả loại</SelectItem>
             {CONTENT_TYPES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
           </SelectContent>
         </Select>
         <Select value={sourceType} onValueChange={setSourceType}>
-          <SelectTrigger className="w-[160px]"><SelectValue placeholder="Nguồn" /></SelectTrigger>
+          <SelectTrigger className="flex-1 min-w-[130px] h-9 sm:w-[160px] sm:flex-none"><SelectValue placeholder="Nguồn" /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">Tất cả nguồn</SelectItem>
             {SOURCE_PRIORITIES.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
           </SelectContent>
         </Select>
-        <div className="flex-1" />
-        <Button variant="outline" onClick={onSync} disabled={sync.isPending}>
+        <div className="hidden sm:block sm:flex-1" />
+        <Button variant="outline" className="flex-1 h-9 sm:flex-none" onClick={onSync} disabled={sync.isPending}>
           {sync.isPending ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-1" />}
-          Đồng bộ app/web
+          <span className="sm:hidden">Đồng bộ</span><span className="hidden sm:inline">Đồng bộ app/web</span>
         </Button>
-        <Button onClick={() => setShowUpload(true)}><Plus className="w-4 h-4 mr-1" /> Thêm thủ công</Button>
+        <Button className="flex-1 h-9 sm:flex-none" onClick={() => setShowUpload(true)}>
+          <Plus className="w-4 h-4 mr-1" /><span className="sm:hidden">Thêm</span><span className="hidden sm:inline">Thêm thủ công</span>
+        </Button>
       </div>
 
       {isLoading ? <Spin /> : !items?.length ? (
         <Empty text="Kho trống. Bấm 'Đồng bộ app/web' để lấy váy cưới / album / ý tưởng đang public." />
       ) : (
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {items.map((it) => (
-            <div key={it.id} className="rounded-2xl border bg-card overflow-hidden flex flex-col">
-              <Thumb url={it.images?.[0]} className="w-full h-40" />
-              <div className="p-3 space-y-2 flex-1 flex flex-col">
-                <div className="flex items-start gap-2">
-                  <span className="font-medium text-sm leading-snug line-clamp-2 flex-1">{it.title}</span>
-                  {!it.isEligible && <Badge variant="destructive" className="shrink-0">Ẩn</Badge>}
+        <div className="rental-product-grid grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-2 sm:gap-3">
+          {items.map((it) => {
+            const price = fmtVnd(it.salePrice) || fmtVnd(it.price);
+            return (
+              <div key={it.id} className="gallery-card rental-dress-card concept-card group flex flex-col">
+                {/* Ảnh tỉ lệ 3/4 — giống card Cho thuê đồ */}
+                <div className="relative aspect-[3/4] bg-neutral-100 overflow-hidden">
+                  <Thumb url={it.images?.[0]} className="concept-card-image absolute inset-0 w-full h-full" />
+                  <span className="absolute top-1.5 left-1.5 z-10 text-[9px] sm:text-[10px] bg-white/85 text-neutral-700 px-1.5 py-0.5 rounded-full backdrop-blur-sm">
+                    {ctLabel(it.contentType)}
+                  </span>
+                  {it.images?.length > 0 && (
+                    <span className="absolute top-1.5 right-1.5 z-10 text-[9px] sm:text-[10px] bg-black/55 text-white px-1.5 py-0.5 rounded-full backdrop-blur-sm">
+                      {it.images.length} ảnh
+                    </span>
+                  )}
+                  {!it.isEligible && (
+                    <span className="absolute bottom-1.5 left-1.5 z-10 text-[10px] bg-black/60 text-white px-2 py-0.5 rounded-full backdrop-blur-sm">
+                      Đang ẩn
+                    </span>
+                  )}
                 </div>
-                <div className="flex items-center gap-1.5 flex-wrap text-xs">
-                  <Badge variant="secondary">{ctLabel(it.contentType)}</Badge>
-                  {it.badge && <Badge variant="outline">{it.badge}</Badge>}
-                  {fmtVnd(it.salePrice) ? (
-                    <span className="text-rose-600 font-medium">{fmtVnd(it.salePrice)}</span>
-                  ) : fmtVnd(it.price) ? (
-                    <span className="text-muted-foreground">{fmtVnd(it.price)}</span>
-                  ) : null}
-                  {it.images?.length > 1 && <span className="text-muted-foreground">· {it.images.length} ảnh</span>}
-                </div>
-                <div className="flex-1" />
-                <div className="flex items-center gap-1.5">
-                  <Button size="sm" className="flex-1" onClick={() => onGenerate(it)} disabled={!it.isEligible || generate.isPending}>
-                    <Sparkles className="w-3.5 h-3.5 mr-1" /> Tạo bài
-                  </Button>
-                  <Button
-                    size="sm" variant="outline" title={it.isEligible ? "Ẩn khỏi chọn đăng" : "Cho phép đăng"}
-                    onClick={() => update.mutate({ id: it.id, patch: { isEligible: !it.isEligible } })}
-                  >
-                    {it.isEligible ? "Ẩn" : "Hiện"}
-                  </Button>
-                  <Button
-                    size="sm" variant="ghost" className="text-destructive"
-                    onClick={() => { if (confirm("Xoá item khỏi kho?")) del.mutate(it.id); }}
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </Button>
+                {/* Thông tin + nút (gọn) */}
+                <div className="px-2 py-2 flex flex-col gap-1 flex-1 border-t border-neutral-100/80 bg-white">
+                  <p className="font-medium text-xs sm:text-sm leading-snug line-clamp-2" title={it.title}>{it.title}</p>
+                  {price ? <p className="text-[11px] sm:text-xs font-semibold text-rose-600 leading-tight">{price}</p> : null}
+                  <div className="flex-1" />
+                  <div className="flex items-center gap-1">
+                    <Button size="sm" className="flex-1 h-9 px-2 text-xs" onClick={() => onGenerate(it)} disabled={!it.isEligible || generate.isPending}>
+                      <Sparkles className="w-3.5 h-3.5 mr-1" /> Tạo bài
+                    </Button>
+                    <Button
+                      size="icon" variant="outline" className="h-9 w-9 shrink-0"
+                      title={it.isEligible ? "Ẩn khỏi chọn đăng" : "Cho phép đăng"}
+                      onClick={() => update.mutate({ id: it.id, patch: { isEligible: !it.isEligible } })}
+                    >
+                      {it.isEligible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </Button>
+                    <Button
+                      size="icon" variant="ghost" className="h-9 w-9 shrink-0 text-destructive"
+                      title="Xoá khỏi kho"
+                      onClick={() => { if (confirm("Xoá item khỏi kho?")) del.mutate(it.id); }}
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
 

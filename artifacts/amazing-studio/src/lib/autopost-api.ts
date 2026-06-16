@@ -267,6 +267,24 @@ export function useRetryPost() {
   });
 }
 
+export type PublishNowResult = {
+  ok: boolean;
+  status: string;
+  dryRun?: boolean;
+  postId?: string;
+  permalink?: string | null;
+  error?: string;
+};
+
+// Đăng NGAY 1 bài đã duyệt (bỏ qua giờ hẹn) — để test gấp.
+export function usePublishNow() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => apPost<PublishNowResult>(`/autopost/posts/${id}/publish-now`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["autopost", "posts"] }),
+  });
+}
+
 export function useSaveSchedule() {
   const qc = useQueryClient();
   return useMutation({

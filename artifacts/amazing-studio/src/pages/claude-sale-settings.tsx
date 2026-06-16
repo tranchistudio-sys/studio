@@ -123,7 +123,7 @@ export default function ClaudeSaleSettingsPage() {
     try {
       const r = await fetch(apiUrl("/api/claude-sale/settings"), { method: "PUT", headers: authHeaders(), body: JSON.stringify({ settings }) });
       const d = await r.json();
-      if (r.ok) { setSettings(d.settings); setFlash({ ok: true, msg: "Đã lưu cấu hình. Áp dụng cho cả Claude Sale Test và Messenger." }); }
+      if (r.ok) { setSettings(d.settings); setFlash({ ok: true, msg: "Đã lưu cấu hình. Áp dụng cho cả Lulu Sale Test và Messenger." }); }
       else setFlash({ ok: false, msg: d.error || "Lưu thất bại" });
     } catch (e) { setFlash({ ok: false, msg: `Lỗi: ${String(e).slice(0, 120)}` }); }
     finally { setSaving(false); }
@@ -167,7 +167,7 @@ export default function ClaudeSaleSettingsPage() {
       <div className="max-w-md mx-auto mt-16 text-center px-4">
         <AlertTriangle className="w-10 h-10 text-amber-500 mx-auto mb-3" />
         <p className="font-semibold text-gray-800">Chưa tải được cấu hình</p>
-        <p className="text-sm text-gray-500 mt-1">{flash?.msg || "API Claude Sale chưa sẵn sàng. Hãy khởi động lại server (pnpm dev:api) rồi thử lại."}</p>
+        <p className="text-sm text-gray-500 mt-1">{flash?.msg || "API Lulu Sale chưa sẵn sàng. Hãy khởi động lại server (pnpm dev:api) rồi thử lại."}</p>
         <button onClick={load} className="mt-4 px-4 py-2 rounded-xl bg-rose-500 text-white text-sm">Thử lại</button>
       </div>
     );
@@ -176,8 +176,8 @@ export default function ClaudeSaleSettingsPage() {
   return (
     <div className="max-w-3xl mx-auto pb-28 px-3 sm:px-0">
       <div className="py-4">
-        <h1 className="text-xl font-bold text-gray-800 flex items-center gap-2"><Sparkles className="w-5 h-5 text-rose-500" /> Cài đặt Claude Sale</h1>
-        <p className="text-sm text-gray-500">Một nơi cấu hình duy nhất — áp dụng cho cả Claude Sale Test và chatbot Fanpage.</p>
+        <h1 className="text-xl font-bold text-gray-800 flex items-center gap-2"><Sparkles className="w-5 h-5 text-rose-500" /> Cài đặt Lulu Sale</h1>
+        <p className="text-sm text-gray-500">Một nơi cấu hình duy nhất — áp dụng cho cả Lulu Sale Test và chatbot Fanpage.</p>
       </div>
 
       {/* CẦU DAO TỔNG */}
@@ -186,9 +186,9 @@ export default function ClaudeSaleSettingsPage() {
           <div className="flex items-center gap-3 min-w-0">
             <div className={`w-11 h-11 rounded-xl flex items-center justify-center shrink-0 ${masterEnabled ? "bg-green-500 text-white" : "bg-gray-300 text-gray-600"}`}><Power className="w-6 h-6" /></div>
             <div className="min-w-0">
-              <div className="font-semibold text-gray-800">Cầu dao tổng Claude Sale</div>
+              <div className="font-semibold text-gray-800">Cầu dao tổng Lulu Sale</div>
               <div className={`text-sm font-medium ${masterEnabled ? "text-green-700" : "text-gray-500"}`}>
-                {masterEnabled ? "🟢 ĐANG HOẠT ĐỘNG — Claude chăm lead" : "🔴 ĐANG TẮT — Nhân viên chăm lead"}
+                {masterEnabled ? "🟢 ĐANG HOẠT ĐỘNG — Lulu chăm lead" : "🔴 ĐANG TẮT — Nhân viên chăm lead"}
               </div>
             </div>
           </div>
@@ -240,7 +240,7 @@ export default function ClaudeSaleSettingsPage() {
         </Section>
 
         {/* C. TỐC ĐỘ TRẢ LỜI — delay theo độ dài tin khách */}
-        <Section icon={Gauge} title="C. Tốc độ trả lời" desc="Đặt số giây chờ trước khi AI trả lời, theo độ dài tin khách gửi. Áp dụng cho cả Claude Sale Test và chatbot Fanpage.">
+        <Section icon={Gauge} title="C. Tốc độ trả lời" desc="Đặt số giây chờ trước khi AI trả lời, theo độ dài tin khách gửi. Áp dụng cho cả Lulu Sale Test và chatbot Fanpage.">
           <div className="space-y-2">
             {DELAY_TIERS.map((t) => (
               <div key={t.key as string} className="flex items-center justify-between gap-3">
@@ -312,8 +312,8 @@ export default function ClaudeSaleSettingsPage() {
         </Section>
 
         {/* J. ĐỌC LỊCH THÔNG MINH */}
-        <Section icon={CalendarClock} title="J. Đọc lịch thông minh" desc="CHỈ ĐỌC & đề xuất — Claude không bao giờ tạo/sửa/giữ/khóa booking.">
-          <Toggle checked={settings.calendarEnabled} onChange={(v) => set("calendarEnabled", v)} label="Cho phép Claude đọc & phân tích lịch" />
+        <Section icon={CalendarClock} title="J. Đọc lịch thông minh" desc="CHỈ ĐỌC & đề xuất — Lulu không bao giờ tạo/sửa/giữ/khóa booking.">
+          <Toggle checked={settings.calendarEnabled} onChange={(v) => set("calendarEnabled", v)} label="Cho phép Lulu đọc & phân tích lịch" />
           {settings.calendarEnabled && (
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-2">
               {([
@@ -341,7 +341,7 @@ export default function ClaudeSaleSettingsPage() {
 
         {/* H. KẾT NỐI CHATBOT */}
         <Section icon={Plug} title="H. Kết nối chatbot">
-          <Toggle checked={settings.connectClaudeTest} onChange={(v) => set("connectClaudeTest", v)} label="Claude Sale Test" />
+          <Toggle checked={settings.connectClaudeTest} onChange={(v) => set("connectClaudeTest", v)} label="Lulu Sale Test" />
           <Toggle checked={settings.connectMessenger} onChange={(v) => set("connectMessenger", v)} label="Facebook Messenger" hint="Bật Messenger: Fanpage dùng cùng cấu hình này." />
           <div className="flex items-center gap-3 py-2 opacity-50">
             <div className="h-6 w-11 rounded-full bg-gray-300 shrink-0 relative"><span className="inline-block h-5 w-5 rounded-full bg-white shadow translate-x-0.5 mt-0.5" /></div>
@@ -375,7 +375,7 @@ export default function ClaudeSaleSettingsPage() {
         <div className="fixed inset-0 bg-black/40 z-40 flex items-center justify-center p-4" onClick={() => setShowPreview(false)}>
           <div className="bg-white rounded-2xl max-w-2xl w-full max-h-[85vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between p-4 border-b">
-              <h3 className="font-semibold text-gray-800 flex items-center gap-2"><Eye className="w-4 h-4" /> Prompt Claude đang dùng</h3>
+              <h3 className="font-semibold text-gray-800 flex items-center gap-2"><Eye className="w-4 h-4" /> Prompt Lulu đang dùng</h3>
               <button onClick={() => setShowPreview(false)} className="text-gray-400 hover:text-gray-700"><X className="w-5 h-5" /></button>
             </div>
             <div className="overflow-auto p-4 text-xs space-y-4">

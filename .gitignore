@@ -71,5 +71,21 @@ downloads/*.zip
 
 # Local uploaded files (runtime)
 artifacts/data/object-storage/uploads/
+
+# Customer-uploaded object storage (runtime) — ignore contents, keep dir
+artifacts/api-server/data/object-storage/uploads/*
+!artifacts/api-server/data/object-storage/uploads/.gitkeep
 exports/*.sql
-exports/*.sql
+
+# Backup archives (DB dumps + customer images) — NEVER commit
+*.tar.gz
+*.tgz
+exports/*.zip
+
+# CMS / public uploaded images (runtime, not source)
+artifacts/amazing-studio/public/uploads/
+
+# Claude Code / local session artifacts (machine-specific, not source)
+.claude/
+.agents/
+.canvas/

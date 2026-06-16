@@ -78,6 +78,98 @@ type DuePost = {
   caption_hash: string | null;
 };
 
+type PublishOutcome = {
+  status: "posted" | "skipped" | "failed";
+  dryRun?: boolean;
+  postId?: string;
+  permalink?: string | null;
+  error?: string;
+};
+
+/**
+ * Đăng 1 bài ĐÃ được claim (status='posting'). Lõi dùng chung cho scheduler
+ * (publishDuePosts) và nút "Đăng ngay" (publishPostNow): dedupe chống trùng →
+ * publishToPage (qua DRY_RUN) → cập nhật posted/skipped/failed + đếm pool +
+ * báo lỗi admin. KHÔNG bao giờ throw.
+ */
+async function publishClaimedPost(post: DuePost): Promise<PublishOutcome> {
+  // ── Dedupe chủ động: trùng ảnh/caption đã đăng → skip, KHÔNG gọi Graph API. ──
+  if (post.image_hash || post.caption_hash) {
+    try {
+      const dup = await pool.query(
+        `SELECT 1 FROM autopost_posts
+          WHERE status IN ('posted', 'posting') AND id <> $1 AND page_id IS NOT DISTINCT FROM $2
+            AND ( (image_hash IS NOT NULL AND image_hash = $3)
+               OR (caption_hash IS NOT NULL AND caption_hash = $4) )
+          LIMIT 1`,
+        [post.id, post.page_id, post.image_hash, post.caption_hash],
+      );
+      if (dup.rows.length > 0) {
+        await pool.query(
+          `UPDATE autopost_posts
+              SET status = 'skipped', error_message = 'trùng bài đã đăng (dedupe)', updated_at = now()
+            WHERE id = $1`,
+          [post.id],
+        );
+        console.log(`${TAG} bỏ qua bài #${post.id} — trùng ảnh/caption đã đăng`);
+        return { status: "skipped" };
+      }
+    } catch (e) {
+      console.error(`${TAG} dedupe-check bài #${post.id} lỗi:`, e);
+      // Không chặn việc đăng vì lỗi dedupe-check; tiếp tục như thường.
+    }
+  }
+
+  // ── Đăng (đi qua DRY_RUN bên trong publishToPage). ──
+  try {
+    const r = await publishToPage({
+      pageId: post.page_id ?? undefined,
+      message: post.caption_final,
+      imageUrls: toImageArray(post.images),
+    });
+    await pool.query(
+      `UPDATE autopost_posts
+          SET status = 'posted', facebook_post_id = $2, facebook_post_link = $3,
+              posted_at = now(), error_message = NULL, updated_at = now()
+        WHERE id = $1`,
+      [post.id, r.postId, r.permalink],
+    );
+    if (post.content_pool_id != null) {
+      await pool.query(
+        `UPDATE autopost_content_pool
+            SET times_posted = times_posted + 1, last_posted_at = now(), updated_at = now()
+          WHERE id = $1`,
+        [post.content_pool_id],
+      );
+    }
+    console.log(`${TAG} ✓ đăng bài #${post.id} (${r.dryRun ? "DRY_RUN" : "thật"}) post_id=${r.postId}`);
+    return { status: "posted", dryRun: r.dryRun, postId: r.postId, permalink: r.permalink };
+  } catch (e) {
+    const msg = String(e instanceof Error ? e.message : e).slice(0, 300);
+    try {
+      await pool.query(
+        `UPDATE autopost_posts
+            SET status = 'failed', error_message = $2, retry_count = retry_count + 1, updated_at = now()
+          WHERE id = $1`,
+        [post.id, msg],
+      );
+    } catch (e2) {
+      console.error(`${TAG} ghi trạng thái failed bài #${post.id} lỗi:`, e2);
+    }
+    emitNotification({
+      staffId: null,
+      type: "autopost_failed",
+      priority: "urgent",
+      title: "AutoPost lỗi đăng bài",
+      message: `Bài #${post.id}: ${msg.slice(0, 120)}`,
+      targetModule: "auto-post-facebook",
+      targetId: String(post.id),
+    });
+    console.warn(`${TAG} ✗ đăng bài #${post.id} thất bại: ${msg}`);
+    return { status: "failed", error: msg };
+  }
+}
+
 /**
  * Đăng các bài đã duyệt tới giờ. Atomic-claim chống đua, dedupe chống trùng,
  * báo lỗi admin khi thất bại. Không bao giờ throw (tự bắt mọi lỗi).
@@ -122,85 +214,65 @@ export async function publishDuePosts(nowMs: number = Date.now()): Promise<{ pos
     }
     if ((claim.rowCount ?? 0) === 0) continue; // worker khác đã chiếm / state đổi
 
-    // ── Dedupe chủ động: trùng ảnh/caption đã đăng → skip, KHÔNG gọi Graph API. ──
-    if (post.image_hash || post.caption_hash) {
-      try {
-        const dup = await pool.query(
-          `SELECT 1 FROM autopost_posts
-            WHERE status IN ('posted', 'posting') AND id <> $1 AND page_id IS NOT DISTINCT FROM $2
-              AND ( (image_hash IS NOT NULL AND image_hash = $3)
-                 OR (caption_hash IS NOT NULL AND caption_hash = $4) )
-            LIMIT 1`,
-          [post.id, post.page_id, post.image_hash, post.caption_hash],
-        );
-        if (dup.rows.length > 0) {
-          await pool.query(
-            `UPDATE autopost_posts
-                SET status = 'skipped', error_message = 'trùng bài đã đăng (dedupe)', updated_at = now()
-              WHERE id = $1`,
-            [post.id],
-          );
-          skipped++;
-          console.log(`${TAG} bỏ qua bài #${post.id} — trùng ảnh/caption đã đăng`);
-          continue;
-        }
-      } catch (e) {
-        console.error(`${TAG} dedupe-check bài #${post.id} lỗi:`, e);
-        // Không chặn việc đăng vì lỗi dedupe-check; tiếp tục như thường.
-      }
-    }
-
-    // ── Đăng (đi qua DRY_RUN bên trong publishToPage). ──
-    try {
-      const r = await publishToPage({
-        pageId: post.page_id ?? undefined,
-        message: post.caption_final,
-        imageUrls: toImageArray(post.images),
-      });
-      await pool.query(
-        `UPDATE autopost_posts
-            SET status = 'posted', facebook_post_id = $2, facebook_post_link = $3,
-                posted_at = now(), error_message = NULL, updated_at = now()
-          WHERE id = $1`,
-        [post.id, r.postId, r.permalink],
-      );
-      if (post.content_pool_id != null) {
-        await pool.query(
-          `UPDATE autopost_content_pool
-              SET times_posted = times_posted + 1, last_posted_at = now(), updated_at = now()
-            WHERE id = $1`,
-          [post.content_pool_id],
-        );
-      }
-      posted++;
-      console.log(`${TAG} ✓ đăng bài #${post.id} (${r.dryRun ? "DRY_RUN" : "thật"}) post_id=${r.postId}`);
-    } catch (e) {
-      const msg = String(e instanceof Error ? e.message : e).slice(0, 300);
-      try {
-        await pool.query(
-          `UPDATE autopost_posts
-              SET status = 'failed', error_message = $2, retry_count = retry_count + 1, updated_at = now()
-            WHERE id = $1`,
-          [post.id, msg],
-        );
-      } catch (e2) {
-        console.error(`${TAG} ghi trạng thái failed bài #${post.id} lỗi:`, e2);
-      }
-      emitNotification({
-        staffId: null,
-        type: "autopost_failed",
-        priority: "urgent",
-        title: "AutoPost lỗi đăng bài",
-        message: `Bài #${post.id}: ${msg.slice(0, 120)}`,
-        targetModule: "auto-post-facebook",
-        targetId: String(post.id),
-      });
-      failed++;
-      console.warn(`${TAG} ✗ đăng bài #${post.id} thất bại: ${msg}`);
-    }
+    const outcome = await publishClaimedPost(post);
+    if (outcome.status === "posted") posted++;
+    else if (outcome.status === "skipped") skipped++;
+    else failed++;
   }
 
   return { posted, failed, skipped };
+}
+
+/**
+ * Đăng NGAY 1 bài (bỏ qua việc chờ tới `scheduled_at`) — dùng cho nút "Đăng ngay"
+ * để admin test gấp. Vẫn đi qua DRY_RUN + dedupe y như scheduler. CHỈ đăng được
+ * bài ĐÃ DUYỆT: status IN ('approved','scheduled') + có người duyệt + có caption.
+ * KHÔNG throw — luôn trả object kết quả cho route.
+ */
+export async function publishPostNow(
+  id: number,
+): Promise<{ ok: boolean; status: string; dryRun?: boolean; postId?: string; permalink?: string | null; error?: string }> {
+  // Atomic claim NGAY (không phụ thuộc scheduled_at) — chống đua với scheduler.
+  let claim: { rowCount: number | null };
+  try {
+    claim = await pool.query(
+      `UPDATE autopost_posts SET status = 'posting', updated_at = now()
+        WHERE id = $1 AND status IN ('approved','scheduled')
+          AND approved_by IS NOT NULL AND caption_final IS NOT NULL
+        RETURNING id`,
+      [id],
+    );
+  } catch (e) {
+    return { ok: false, status: "error", error: String(e instanceof Error ? e.message : e).slice(0, 200) };
+  }
+  if ((claim.rowCount ?? 0) === 0) {
+    return { ok: false, status: "not_publishable", error: "Chỉ đăng ngay được bài ĐÃ DUYỆT (chưa duyệt / đang đăng / đã đăng / đã huỷ)" };
+  }
+
+  let row: DuePost | undefined;
+  try {
+    const r = await pool.query(
+      `SELECT id, page_id, images, caption_final, content_pool_id, image_hash, caption_hash
+         FROM autopost_posts WHERE id = $1`,
+      [id],
+    );
+    row = r.rows[0] as DuePost | undefined;
+  } catch (e) {
+    // Đã claim 'posting' nhưng không đọc được dữ liệu → trả bài về 'approved' cho khỏi kẹt.
+    await pool.query(`UPDATE autopost_posts SET status = 'approved', updated_at = now() WHERE id = $1 AND status = 'posting'`, [id]).catch(() => {});
+    return { ok: false, status: "error", error: String(e instanceof Error ? e.message : e).slice(0, 200) };
+  }
+  if (!row) return { ok: false, status: "not_found", error: "Không tìm thấy bài" };
+
+  const outcome = await publishClaimedPost(row);
+  return {
+    ok: outcome.status === "posted",
+    status: outcome.status,
+    dryRun: outcome.dryRun,
+    postId: outcome.postId,
+    permalink: outcome.permalink,
+    error: outcome.error,
+  };
 }
 
 // ─────────────────────────── GENERATE PENDING ────────────────────────────────

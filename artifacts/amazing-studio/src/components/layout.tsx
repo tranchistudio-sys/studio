@@ -51,15 +51,8 @@ const ALL_NAV_ITEMS = [
   { href: "/bookings",        label: "Đơn hàng",             icon: ClipboardList,   adminOnly: false },
   { href: "/revenue",         label: "Doanh thu & Lợi nhuận", icon: TrendingUp,    adminOnly: true },
 
-  // 🧠 Nhóm phụ / ít dùng
-  { href: "/facebook-inbox-ai", label: "Inbox Facebook",     icon: MessageSquare,    adminOnly: false },
-  { href: "/claude-sale-test",  label: "Claude Sale Test",   icon: FlaskConical,     adminOnly: true  },
-  { href: "/claude-sale-settings", label: "Claude Sale Settings", icon: SlidersHorizontal, adminOnly: true },
-  { href: "/claude-sale-monitor",  label: "Claude Sale Monitor",  icon: Activity,          adminOnly: true },
-  { href: "/claude-sale-reengage", label: "Khách cần chăm lại",   icon: RefreshCw,         adminOnly: true },
-  { href: "/sale-learning",     label: "Sale Learning",      icon: Sparkles,         adminOnly: true  },
-  { href: "/auto-post-facebook", label: "AutoPost Facebook", icon: Share2,           adminOnly: true  },
-  // ⏸️ Bộ não ChatGPT/OpenAI cũ — TẠM ẨN khỏi menu (chuẩn bị chuyển sang Claude).
+  // 🧠 Nhóm Facebook & Sale (Lulu) ĐÃ TÁCH RA → xem FACEBOOK_NAV (nhóm thu gọn được, đặt cuối sidebar).
+  // ⏸️ Bộ não ChatGPT/OpenAI cũ — TẠM ẨN khỏi menu (chuẩn bị chuyển sang Lulu).
   //    Code & route vẫn còn (vào trực tiếp /ai-sale-scripts, /ai-test để rollback).
   //    Bỏ comment 2 dòng dưới để hiện lại menu bot cũ.
   // { href: "/ai-sale-scripts",   label: "Kịch bản Sale AI",   icon: Sparkles,         adminOnly: false },
@@ -71,6 +64,18 @@ const ALL_NAV_ITEMS = [
 
   // Khác
   { href: "/quotes",          label: "Báo giá tạm tính",     icon: FileText,        adminOnly: true  },
+];
+
+// 📘 Nhóm Facebook & Sale (Lulu) — gom 1 cụm, có nút thu gọn, đặt CUỐI sidebar.
+//    Route giữ nguyên (/claude-sale-*) để không hỏng link/bookmark; chỉ đổi nhãn hiển thị.
+const FACEBOOK_NAV = [
+  { href: "/facebook-inbox-ai",    label: "Inbox Facebook",     icon: MessageSquare,     adminOnly: false },
+  { href: "/claude-sale-test",     label: "Lulu Sale Test",     icon: FlaskConical,      adminOnly: true  },
+  { href: "/claude-sale-settings", label: "Lulu Sale Settings", icon: SlidersHorizontal, adminOnly: true  },
+  { href: "/claude-sale-monitor",  label: "Lulu Sale Monitor",  icon: Activity,          adminOnly: true  },
+  { href: "/claude-sale-reengage", label: "Khách cần chăm lại", icon: RefreshCw,         adminOnly: true  },
+  { href: "/sale-learning",        label: "Sale Learning",      icon: Sparkles,          adminOnly: true  },
+  { href: "/auto-post-facebook",   label: "AutoPost Facebook",  icon: Share2,            adminOnly: true  },
 ];
 
 const SECONDARY_NAV = [
@@ -174,6 +179,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const visibleSecondary = SECONDARY_NAV.filter(item =>
     effectiveIsAdmin || !item.adminOnly
   );
+  const visibleFacebook = FACEBOOK_NAV.filter(item =>
+    effectiveIsAdmin || !item.adminOnly
+  );
+  // Nhóm Facebook & Sale: thu gọn mặc định, nhớ trạng thái qua localStorage.
+  const [fbGroupOpen, setFbGroupOpen] = useState(() => localStorage.getItem("nav.fbGroupOpen") === "1");
+  const toggleFbGroup = () => setFbGroupOpen(v => {
+    const next = !v;
+    localStorage.setItem("nav.fbGroupOpen", next ? "1" : "0");
+    return next;
+  });
 
   // Current mode label
   const modeLabel = simulateRole
@@ -380,6 +395,39 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 return (
                   <Link key={item.href} href={item.href} className={itemCls}>
                     <item.icon className={iconCls} />
+                    {item.label}
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+
+          {/* ── Facebook & Sale (Lulu) — nhóm thu gọn, đặt cuối sidebar ── */}
+          {visibleFacebook.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-sidebar-border space-y-0.5">
+              <button
+                type="button"
+                onClick={toggleFbGroup}
+                className="w-full flex items-center gap-2 px-4 py-1.5 rounded-lg text-muted-foreground hover:bg-muted transition-colors"
+                title={fbGroupOpen ? "Thu gọn" : "Mở rộng"}
+                aria-expanded={fbGroupOpen}
+              >
+                <MessageSquare className="w-3.5 h-3.5 flex-shrink-0" />
+                <span className="text-[10px] font-semibold uppercase tracking-wider">Facebook &amp; Sale</span>
+                <ChevronDown className={cn("ml-auto w-4 h-4 transition-transform duration-200", fbGroupOpen && "rotate-180")} />
+              </button>
+              {fbGroupOpen && visibleFacebook.map(item => {
+                const isActive = location === item.href || (item.href !== "/" && location.startsWith(item.href));
+                return (
+                  <Link key={item.href} href={item.href}
+                    className={cn(
+                      "flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 group",
+                      isActive
+                        ? "bg-sidebar-accent text-sidebar-accent-foreground shadow-sm"
+                        : "text-sidebar-foreground hover:bg-muted"
+                    )}>
+                    <item.icon className={cn("w-4.5 h-4.5 transition-transform duration-200 group-hover:scale-110",
+                      isActive ? "text-sidebar-accent-foreground" : "text-muted-foreground")} />
                     {item.label}
                   </Link>
                 );

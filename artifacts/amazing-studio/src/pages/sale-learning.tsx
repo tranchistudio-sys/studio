@@ -94,7 +94,7 @@ export default function SaleLearningPage() {
     setBusy(`${action}-${id}`); setErr(null);
     try {
       await api(`/api/sale-learning/playbooks/${id}/${action}`, { method: "POST", body: "{}" });
-      flash(action === "activate" ? "Đã áp dụng cho Claude Sale" : action === "approve" ? "Đã duyệt" : "Đã từ chối");
+      flash(action === "activate" ? "Đã áp dụng cho Lulu Sale" : action === "approve" ? "Đã duyệt" : "Đã từ chối");
       await loadList();
       await openPlaybook(id);
     } catch (e) { setErr(String(e)); }
@@ -204,7 +204,7 @@ export default function SaleLearningPage() {
                     <button onClick={() => act(selected.id, "reject")} disabled={!!busy} className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-white border text-rose-600 hover:bg-rose-50"><X className="w-3.5 h-3.5" /> Từ chối</button>
                   )}
                   {!editing && selected.status !== "rejected" && selected.status !== "active" && (
-                    <button onClick={() => act(selected.id, "activate")} disabled={!!busy} className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-green-600 text-white hover:bg-green-700">{busy === `activate-${selected.id}` ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Rocket className="w-3.5 h-3.5" />} Áp dụng cho Claude Sale</button>
+                    <button onClick={() => act(selected.id, "activate")} disabled={!!busy} className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-green-600 text-white hover:bg-green-700">{busy === `activate-${selected.id}` ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Rocket className="w-3.5 h-3.5" />} Áp dụng cho Lulu Sale</button>
                   )}
                 </div>
               </div>
@@ -219,7 +219,7 @@ export default function SaleLearningPage() {
               ) : (
                 <pre className="whitespace-pre-wrap break-words text-sm text-gray-800 bg-gray-50 rounded-lg p-3 max-h-[60vh] overflow-y-auto font-sans">{selected.content}</pre>
               )}
-              {selected.status === "active" && <div className="mt-2 text-xs text-green-700">✅ Bản này đang được Claude Sale dùng để học phong cách.</div>}
+              {selected.status === "active" && <div className="mt-2 text-xs text-green-700">✅ Bản này đang được Lulu Sale dùng để học phong cách.</div>}
             </>
           )}
         </div>

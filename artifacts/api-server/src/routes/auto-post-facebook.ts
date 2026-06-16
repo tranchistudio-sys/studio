@@ -7,6 +7,7 @@ import { ensureAutoPostSchema } from "../lib/autopost-schema";
 import { syncAppWebPool, addManualPoolItem } from "../lib/autopost-pool";
 import { generateCaptions } from "../lib/autopost-caption";
 import { verifyPageToken } from "../lib/facebook-page-publish";
+import { publishPostNow } from "../autopost-scheduler";
 import {
   syncGoogleDrivePool,
   verifyDriveConnection,
@@ -576,6 +577,17 @@ router.post("/autopost/posts/:id/retry", async (req: Request, res: Response) => 
     );
     if (!r.rows[0]) { res.status(409).json({ error: "Chỉ bài thất bại mới thử lại được" }); return; }
     res.json(r.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// POST /autopost/posts/:id/publish-now — ĐĂNG NGAY bài đã duyệt (bỏ qua giờ hẹn).
+// Vẫn qua DRY_RUN + dedupe như scheduler; chỉ đổi bài 'posted' khi đăng thành công.
+router.post("/autopost/posts/:id/publish-now", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    res.json(await publishPostNow(Number(req.params.id)));
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }

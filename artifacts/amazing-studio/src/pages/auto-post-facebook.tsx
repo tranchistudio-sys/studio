@@ -20,7 +20,7 @@ import {
 import {
   usePool, useSchedules, usePosts, useSettings,
   useSyncPool, useUploadPoolItem, useUpdatePoolItem, useDeletePoolItem,
-  useGenerate, useApprove, useSkipPost, useRetryPost,
+  useGenerate, useApprove, useSkipPost, useRetryPost, usePublishNow,
   useSaveSchedule, useToggleSchedule, useDeleteSchedule, useSaveSettings, useTestFacebook,
   useSyncDrive, useTestDrive, useDriveStatus,
   type PoolItem, type Post, type Schedule, type Slot, type FbTestResult, type AutoPostSettings, type DriveTestResult,
@@ -111,7 +111,7 @@ export default function AutoPostFacebookPage() {
         <div>
           <h1 className="text-xl font-bold">AutoPost Facebook</h1>
           <p className="text-sm text-muted-foreground">
-            Claude viết caption · admin duyệt · scheduler tự đăng theo giờ.{" "}
+            Lulu viết caption · admin duyệt · scheduler tự đăng theo giờ.{" "}
             <span className="font-medium text-amber-600">Chế độ an toàn (DRY_RUN) bật mặc định.</span>
           </p>
         </div>
@@ -139,7 +139,7 @@ export default function AutoPostFacebookPage() {
           <TabsTrigger value="scheduled"><CheckCircle2 className="w-4 h-4 mr-1" /> Đã lên lịch</TabsTrigger>
           <TabsTrigger value="history"><History className="w-4 h-4 mr-1" /> Lịch sử đăng</TabsTrigger>
           <TabsTrigger value="facebook"><Facebook className="w-4 h-4 mr-1" /> Facebook Page</TabsTrigger>
-          <TabsTrigger value="config"><SettingsIcon className="w-4 h-4 mr-1" /> Cấu hình Claude</TabsTrigger>
+          <TabsTrigger value="config"><SettingsIcon className="w-4 h-4 mr-1" /> Cấu hình Lulu</TabsTrigger>
         </TabsList>
 
         <TabsContent value="pending" className="mt-4"><PendingTab notify={notify} /></TabsContent>
@@ -187,7 +187,7 @@ function PendingTab({ notify }: { notify: Notify }) {
   if (isLoading) return <Spin />;
   // Chỉ hiện bài có caption hợp lệ (phòng dữ liệu hỏng/sửa tay DB).
   const valid = (posts ?? []).filter((p) => Array.isArray(p.captionOptions) && p.captionOptions.length > 0);
-  if (!valid.length) return <Empty text="Chưa có bài nào chờ duyệt. Vào 'Kho nội dung' → 'Tạo bài' để Claude viết caption." />;
+  if (!valid.length) return <Empty text="Chưa có bài nào chờ duyệt. Vào 'Kho nội dung' → 'Tạo bài' để Lulu viết caption." />;
   return (
     <div className="grid gap-4 md:grid-cols-2">
       {valid.map((p) => <PendingCard key={p.id} post={p} notify={notify} />)}
@@ -615,11 +615,26 @@ function ScheduledTab({ notify }: { notify: Notify }) {
   const scheduled = usePosts("scheduled");
   const skip = useSkipPost();
   const approve = useApprove();
+  const publishNow = usePublishNow();
   const isLoading = approved.isLoading || scheduled.isLoading;
   const posts = useMemo(
     () => [...(approved.data ?? []), ...(scheduled.data ?? [])].sort((a, b) => (a.scheduledAt ?? "").localeCompare(b.scheduledAt ?? "")),
     [approved.data, scheduled.data],
   );
+
+  const onPublishNow = async (p: Post) => {
+    if (!confirm(`Đăng NGAY bài #${p.id} lên Facebook? (bỏ qua giờ đã hẹn)`)) return;
+    try {
+      const r = await publishNow.mutateAsync(p.id);
+      if (r.ok) {
+        notify(true, r.dryRun
+          ? `Đã chạy thử bài #${p.id} ✅ (DRY_RUN — CHƯA đăng thật lên Facebook). Tắt AUTOPOST_DRY_RUN để đăng thật.`
+          : `Đã đăng bài #${p.id} lên Facebook 🎉`);
+      } else {
+        notify(false, `Không đăng được bài #${p.id}: ${r.error ?? r.status}`);
+      }
+    } catch (e) { notify(false, `Đăng ngay lỗi: ${String((e as Error).message)}`); }
+  };
 
   const reschedule = async (p: Post) => {
     const cur = p.scheduledAt ? toLocalInput(new Date(p.scheduledAt)) : defaultScheduleValue();
@@ -648,6 +663,9 @@ function ScheduledTab({ notify }: { notify: Notify }) {
             <p className="text-sm mt-1 line-clamp-2 whitespace-pre-wrap">{p.captionFinal}</p>
           </div>
           <div className="flex flex-col gap-1.5">
+            <Button size="sm" onClick={() => onPublishNow(p)} disabled={publishNow.isPending} title="Đăng ngay lên Facebook, bỏ qua giờ hẹn">
+              {publishNow.isPending ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Share2 className="w-3.5 h-3.5 mr-1" />} Đăng ngay
+            </Button>
             <Button size="sm" variant="outline" onClick={() => reschedule(p)}>Đổi giờ</Button>
             <Button size="sm" variant="ghost" className="text-destructive" onClick={() => skip.mutate(p.id, { onSuccess: () => notify(true, `Đã huỷ bài #${p.id}`) })}>Huỷ</Button>
           </div>
@@ -771,7 +789,7 @@ function FacebookTab({ notify }: { notify: Notify }) {
   );
 }
 
-// ─────────────────────────────── Tab: Cấu hình Claude ────────────────────────
+// ─────────────────────────────── Tab: Cấu hình Lulu ──────────────────────────
 
 function ConfigTab({ notify }: { notify: Notify }) {
   const { data: settings, isLoading } = useSettings();
@@ -789,7 +807,7 @@ function ConfigTab({ notify }: { notify: Notify }) {
     const bannedWords = banned.split(",").map((s) => s.trim()).filter(Boolean);
     try {
       await save.mutateAsync({ ...(settings ?? {}), tone: tone || undefined, bannedWords });
-      notify(true, "Đã lưu cấu hình Claude");
+      notify(true, "Đã lưu cấu hình Lulu");
     } catch (e) { notify(false, String((e as Error).message)); }
   };
 

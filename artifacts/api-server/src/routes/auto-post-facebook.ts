@@ -6,7 +6,7 @@ import { emitNotification } from "./notifications";
 import { ensureAutoPostSchema } from "../lib/autopost-schema";
 import { syncAppWebPool, addManualPoolItem } from "../lib/autopost-pool";
 import { generateCaptions } from "../lib/autopost-caption";
-import { verifyPageToken } from "../lib/facebook-page-publish";
+import { verifyPageToken, MAX_PHOTOS } from "../lib/facebook-page-publish";
 import { publishPostNow } from "../autopost-scheduler";
 import {
   syncGoogleDrivePool,
@@ -374,8 +374,9 @@ router.post("/autopost/posts/generate", async (req: Request, res: Response) => {
       return;
     }
 
-    // (5) Ảnh + page id.
-    const images = clampImages(item.images, Number(imageCount) || 1);
+    // (5) Ảnh + page id. MẶC ĐỊNH lấy TẤT CẢ ảnh của item (tối đa MAX_PHOTOS) để
+    // 1 bài có nhiều ảnh; chỉ giới hạn khi client truyền imageCount cụ thể.
+    const images = clampImages(item.images, Number(imageCount) || MAX_PHOTOS);
     let pageId: string | null = (cfg.defaultPageId as string | undefined) ?? null;
     if (scheduleId) {
       const schR = await pool.query(`SELECT page_id FROM autopost_schedules WHERE id = $1`, [

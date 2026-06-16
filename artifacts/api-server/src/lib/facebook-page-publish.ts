@@ -19,7 +19,10 @@
 import { pool } from "@workspace/db";
 import { resolvePublicUrl } from "./autopost-images";
 
-const GRAPH = "https://graph.facebook.com/v22.0";
+const GRAPH = "https://graph.facebook.com/v25.0";
+
+/** Giới hạn an toàn: tối đa số ảnh đính kèm trong MỘT bài Facebook (Graph multi-photo). */
+export const MAX_PHOTOS = 50;
 
 /**
  * Lấy page access token: ưu tiên settings.fb_page_access_token, fallback
@@ -103,9 +106,18 @@ export async function publishToPage(p: {
   const pageId = await resolvePageId(p.pageId);
   if (!token || !pageId) throw new Error("Thiếu fb_page_access_token hoặc page_id");
 
-  const urls = (p.imageUrls || [])
+  let urls = (p.imageUrls || [])
     .map(resolvePublicUrl)
     .filter((u) => typeof u === "string" && u.length > 0);
+
+  // Giới hạn an toàn: tối đa MAX_PHOTOS ảnh / bài. Nếu vượt thì cắt bớt + LOG rõ
+  // (không im lặng bỏ ảnh) để admin biết bài đã bị giới hạn.
+  if (urls.length > MAX_PHOTOS) {
+    console.warn(
+      `[AutoPost] Bài có ${urls.length} ảnh, vượt giới hạn ${MAX_PHOTOS} — chỉ đăng ${MAX_PHOTOS} ảnh đầu.`,
+    );
+    urls = urls.slice(0, MAX_PHOTOS);
+  }
 
   // Log URL ảnh CUỐI CÙNG gửi cho Facebook — giúp chẩn đoán lỗi "(#100) url ...".
   for (const u of urls) console.log("[AutoPost] FINAL IMAGE URL:", u);
@@ -117,10 +129,11 @@ export async function publishToPage(p: {
     return { postId: "dryrun_" + Date.now(), permalink: null, dryRun: true };
   }
 
-  // Đăng THẬT: xác minh từng ảnh truy cập công khai được trước khi gọi Graph API.
+  // Đăng THẬT: xác minh TỪNG ảnh truy cập công khai được TRƯỚC khi gọi Graph API.
+  // Ảnh nào lỗi → ném lỗi kèm URL ngay, KHÔNG đăng nửa chừng (chưa upload ảnh nào).
   for (const u of urls) await assertImageReachable(u);
 
-  // SINGLE: 0 hoặc 1 ảnh -> đăng trực tiếp lên /photos kèm caption.
+  // SINGLE: 0 hoặc 1 ảnh -> đăng trực tiếp lên /photos kèm caption (luồng cũ).
   if (urls.length <= 1) {
     const body = new URLSearchParams();
     body.set("access_token", token);
@@ -137,10 +150,10 @@ export async function publishToPage(p: {
     };
   }
 
-  // MULTI: >=2 ảnh -> upload từng ảnh published=false, lấy media_fbid, rồi
-  // tạo feed post đính kèm tất cả ảnh.
+  // MULTI: >=2 ảnh -> (A) upload TỪNG ảnh dạng unpublished (published=false) để lấy
+  // media_fbid, rồi (B) tạo 1 bài /feed đính kèm tất cả ảnh → 1 post NHIỀU ẢNH.
   const mediaFbids: string[] = [];
-  for (const url of urls.slice(0, 10)) {
+  for (const url of urls) {
     const body = new URLSearchParams();
     body.set("access_token", token);
     body.set("url", url);
@@ -148,13 +161,16 @@ export async function publishToPage(p: {
     const r = await fetch(GRAPH + "/" + pageId + "/photos", { method: "POST", body });
     const j = (await r.json()) as { id?: string };
     if (!r.ok) throw new Error("FB upload " + r.status + ": " + JSON.stringify(j).slice(0, 200));
-    mediaFbids.push(j.id ?? "");
+    const fbid = j.id ?? "";
+    console.log("[AutoPost] UPLOADED PHOTO MEDIA_FBID:", fbid);
+    mediaFbids.push(fbid);
   }
 
   const feed = new URLSearchParams();
   feed.set("access_token", token);
   feed.set("message", p.message);
   mediaFbids.forEach((id, i) => feed.set("attached_media[" + i + "]", JSON.stringify({ media_fbid: id })));
+  console.log("[AutoPost] PUBLISH MULTI PHOTO POST:", mediaFbids.length + " ảnh — media_fbid=" + mediaFbids.join(","));
   const r = await fetch(GRAPH + "/" + pageId + "/feed", { method: "POST", body: feed });
   const j = (await r.json()) as { id?: string };
   if (!r.ok) throw new Error("FB feed " + r.status + ": " + JSON.stringify(j).slice(0, 200));

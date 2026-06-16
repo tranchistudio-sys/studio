@@ -591,7 +591,7 @@ function ScheduleDialog({ schedule, onClose, notify }: { schedule: Schedule | nu
                   <SelectTrigger className="flex-1"><SelectValue /></SelectTrigger>
                   <SelectContent>{CONTENT_TYPES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent>
                 </Select>
-                <Input type="number" min={1} max={10} value={s.imageCount} onChange={(e) => updateSlot(i, { imageCount: Number(e.target.value) || 1 })} className="w-[64px]" title="Số ảnh" />
+                <Input type="number" min={1} max={50} value={s.imageCount} onChange={(e) => updateSlot(i, { imageCount: Number(e.target.value) || 1 })} className="w-[64px]" title="Số ảnh" />
                 <Switch checked={s.enabled} onCheckedChange={(v) => updateSlot(i, { enabled: v })} />
                 <Button size="sm" variant="ghost" className="text-destructive" onClick={() => removeSlot(i)}><X className="w-3.5 h-3.5" /></Button>
               </div>

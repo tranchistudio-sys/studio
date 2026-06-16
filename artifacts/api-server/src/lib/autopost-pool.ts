@@ -177,7 +177,7 @@ export function mapPhotoIdeaRow(row: any): PoolItemInput {
 // ───────────────────────── DB functions ─────────────────────────
 // READ-ONLY trên các bảng nguồn. Chỉ GHI vào autopost_content_pool.
 
-async function upsertPoolItem(item: PoolItemInput): Promise<void> {
+export async function upsertPoolItem(item: PoolItemInput): Promise<void> {
   await pool.query(
     `INSERT INTO autopost_content_pool
        (source_type, source_table, source_item_id, content_type, title, images,

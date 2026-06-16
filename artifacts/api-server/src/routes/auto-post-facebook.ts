@@ -6,6 +6,7 @@ import { ensureAutoPostSchema } from "../lib/autopost-schema";
 import { syncAppWebPool, addManualPoolItem } from "../lib/autopost-pool";
 import { generateCaptions } from "../lib/autopost-caption";
 import { verifyPageToken } from "../lib/facebook-page-publish";
+import { syncGoogleDrivePool, verifyDriveConnection } from "../lib/autopost-drive";
 import {
   isValidStatus,
   sha1,
@@ -614,6 +615,28 @@ router.post("/autopost/facebook/test", async (req: Request, res: Response) => {
   try {
     const v = await verifyPageToken();
     res.json(v);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ─────────────────────────── GOOGLE DRIVE (Phase 2) ─────────────────────────
+
+// POST /autopost/drive/test — kiểm tra credential env + liệt kê folder con đã map.
+router.post("/autopost/drive/test", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    res.json(await verifyDriveConnection());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// POST /autopost/drive/sync — đồng bộ ảnh/video từ Google Drive vào pool (read-only).
+router.post("/autopost/drive/sync", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    res.json(await syncGoogleDrivePool());
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }

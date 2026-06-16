@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Share2, RefreshCw, Plus, Trash2, CheckCircle2, AlertTriangle, ExternalLink,
-  Sparkles, Clock, History, Settings as SettingsIcon, Facebook, Loader2, X, Image as ImageIcon, Eye, EyeOff,
+  Sparkles, Clock, History, Settings as SettingsIcon, Facebook, Loader2, X, Image as ImageIcon, Eye, EyeOff, Folder,
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -22,7 +22,8 @@ import {
   useSyncPool, useUploadPoolItem, useUpdatePoolItem, useDeletePoolItem,
   useGenerate, useApprove, useSkipPost, useRetryPost,
   useSaveSchedule, useToggleSchedule, useDeleteSchedule, useSaveSettings, useTestFacebook,
-  type PoolItem, type Post, type Schedule, type Slot, type FbTestResult, type AutoPostSettings,
+  useSyncDrive, useTestDrive,
+  type PoolItem, type Post, type Schedule, type Slot, type FbTestResult, type AutoPostSettings, type DriveTestResult,
 } from "@/lib/autopost-api";
 import { getImageSrc } from "@/lib/imageUtils";
 
@@ -42,11 +43,17 @@ const CONTENT_TYPES: { value: string; label: string }[] = [
   { value: "photo_idea", label: "Ý tưởng chụp" },
   { value: "makeup", label: "Makeup" },
   { value: "hau_truong", label: "Hậu trường" },
+  { value: "product_real", label: "Chụp SP thật" },
+  { value: "new_arrival", label: "Váy mới về" },
+  { value: "reels", label: "Video Reel" },
+  { value: "feedback", label: "Feedback" },
+  { value: "bill", label: "Bill chốt đơn" },
   { value: "service", label: "Dịch vụ" },
   { value: "other", label: "Khác" },
 ];
 const SOURCE_PRIORITIES = [
   { value: "app_web", label: "App / Web" },
+  { value: "google_drive", label: "Google Drive" },
   { value: "upload", label: "Upload thủ công" },
 ];
 
@@ -280,6 +287,7 @@ function PoolTab({ notify, goPending }: { notify: Notify; goPending: () => void 
   );
   const { data: items, isLoading } = usePool(filters);
   const sync = useSyncPool();
+  const syncDrive = useSyncDrive();
   const generate = useGenerate();
   const del = useDeletePoolItem();
   const update = useUpdatePoolItem();
@@ -290,6 +298,14 @@ function PoolTab({ notify, goPending }: { notify: Notify; goPending: () => void 
       const r = await sync.mutateAsync();
       notify(true, `Đồng bộ xong: ${r.dresses} váy/đồ · ${r.albums} album · ${r.ideas} ý tưởng.`);
     } catch (e) { notify(false, `Sync lỗi: ${String((e as Error).message)}`); }
+  };
+  const onSyncDrive = async () => {
+    try {
+      const r = await syncDrive.mutateAsync();
+      if (!r.ok) { notify(false, `Google Drive: ${r.error ?? "lỗi"}`); return; }
+      const types = Object.entries(r.byType).map(([k, v]) => `${k}:${v}`).join(" · ");
+      notify(true, `Drive: nhập ${r.imported} · bỏ qua ${r.skipped}${r.capped ? " (đạt trần, chạy lại để lấy tiếp)" : ""}${types ? " — " + types : ""}`);
+    } catch (e) { notify(false, `Drive sync lỗi: ${String((e as Error).message)}`); }
   };
   const onGenerate = async (it: PoolItem) => {
     try {
@@ -319,7 +335,11 @@ function PoolTab({ notify, goPending }: { notify: Notify; goPending: () => void 
         <div className="hidden sm:block sm:flex-1" />
         <Button variant="outline" className="flex-1 h-9 sm:flex-none" onClick={onSync} disabled={sync.isPending}>
           {sync.isPending ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-1" />}
-          <span className="sm:hidden">Đồng bộ</span><span className="hidden sm:inline">Đồng bộ app/web</span>
+          <span className="sm:hidden">App/web</span><span className="hidden sm:inline">Đồng bộ app/web</span>
+        </Button>
+        <Button variant="outline" className="flex-1 h-9 sm:flex-none" onClick={onSyncDrive} disabled={syncDrive.isPending} title="Đồng bộ ảnh/video từ Google Drive">
+          {syncDrive.isPending ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Folder className="w-4 h-4 mr-1" />}
+          <span className="sm:hidden">Drive</span><span className="hidden sm:inline">Đồng bộ Google Drive</span>
         </Button>
         <Button className="flex-1 h-9 sm:flex-none" onClick={() => setShowUpload(true)}>
           <Plus className="w-4 h-4 mr-1" /><span className="sm:hidden">Thêm</span><span className="hidden sm:inline">Thêm thủ công</span>
@@ -785,9 +805,69 @@ function ConfigTab({ notify }: { notify: Notify }) {
         <Button onClick={onSave} disabled={save.isPending}>{save.isPending && <Loader2 className="w-4 h-4 mr-1 animate-spin" />} Lưu cấu hình</Button>
       </div>
 
-      <div className="rounded-2xl border bg-card p-4 opacity-70">
-        <h3 className="font-semibold">Google Drive (Phase 2)</h3>
-        <p className="text-sm text-muted-foreground mt-1">Nguồn hậu trường / makeup / feedback / bill từ Drive sẽ bổ sung ở giai đoạn 2.</p>
+      <DriveConfigSection notify={notify} />
+    </div>
+  );
+}
+
+function DriveConfigSection({ notify }: { notify: Notify }) {
+  const { data: settings } = useSettings();
+  const save = useSaveSettings();
+  const test = useTestDrive();
+  const [folderId, setFolderId] = useState("");
+  const [result, setResult] = useState<DriveTestResult | null>(null);
+  useEffect(() => { setFolderId(settings?.drive?.folderId ?? ""); }, [settings?.drive?.folderId]);
+
+  const onSaveFolder = async () => {
+    try {
+      await save.mutateAsync({ ...(settings ?? {}), drive: { ...(settings?.drive ?? {}), folderId: folderId.trim() || undefined } });
+      notify(true, "Đã lưu Folder ID Google Drive");
+    } catch (e) { notify(false, String((e as Error).message)); }
+  };
+  const onTest = async () => {
+    try {
+      const r = await test.mutateAsync();
+      setResult(r);
+      notify(r.ok, r.ok ? `Kết nối Drive OK: ${r.folderName}` : `Drive: ${r.missing?.length ? "thiếu " + r.missing.join(", ") : (r.error ?? "lỗi")}`);
+    } catch (e) { notify(false, String((e as Error).message)); }
+  };
+
+  return (
+    <div className="rounded-2xl border bg-card p-4 space-y-3">
+      <h3 className="font-semibold flex items-center gap-1.5"><Folder className="w-4 h-4 text-amber-500" /> Google Drive (Phase 2)</h3>
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        Credential đặt trong <b>biến môi trường</b> (không lưu trên UI): <code>GOOGLE_DRIVE_CLIENT_ID</code>, <code>GOOGLE_DRIVE_CLIENT_SECRET</code>, <code>GOOGLE_DRIVE_REFRESH_TOKEN</code> — refresh token tạo với scope <code>drive.readonly</code> (chỉ đọc).
+      </p>
+      <div>
+        <Label>Folder ID cha — "Amazing Studio AutoPost"</Label>
+        <div className="flex gap-2 mt-1">
+          <Input value={folderId} onChange={(e) => setFolderId(e.target.value)} placeholder="VD: 1AbCdEf… (hoặc đặt GOOGLE_DRIVE_FOLDER_ID)" />
+          <Button variant="outline" onClick={onSaveFolder} disabled={save.isPending}>Lưu</Button>
+        </div>
+      </div>
+      <Button onClick={onTest} disabled={test.isPending}>
+        {test.isPending ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Folder className="w-4 h-4 mr-1" />} Test kết nối Drive
+      </Button>
+      {result && (
+        <div className={`text-sm rounded-lg p-3 ${result.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"}`}>
+          {result.ok ? (
+            <>
+              <p>Folder cha: <b>{result.folderName}</b> · {result.subfolders?.length ?? 0} folder con</p>
+              <ul className="mt-1 space-y-0.5 max-h-48 overflow-auto">
+                {(result.subfolders ?? []).map((s, i) => (
+                  <li key={i} className="text-xs">• {s.name} → <b>{ctLabel(s.mappedType)}</b> ({s.files} file)</li>
+                ))}
+              </ul>
+            </>
+          ) : result.missing?.length ? (
+            <p>Thiếu biến môi trường: {result.missing.join(", ")}</p>
+          ) : (
+            <p>Lỗi: {result.error}</p>
+          )}
+        </div>
+      )}
+      <div className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2">
+        Video Reel được nhập kèm thumbnail; <b>đăng video lên Facebook hoãn Phase 2.1</b> (hiện chỉ đăng ảnh).
       </div>
     </div>
   );

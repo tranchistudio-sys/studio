@@ -87,10 +87,27 @@ export type AutoPostSettings = {
   tone?: string;
   bannedWords?: string[];
   defaultPageId?: string;
+  drive?: { folderId?: string };
   [k: string]: unknown;
 };
 
 export type FbTestResult = { ok: boolean; pageName: string | null; canPost: boolean; error?: string };
+
+export type DriveTestResult = {
+  ok: boolean;
+  missing?: string[];
+  folderName?: string | null;
+  subfolders?: Array<{ name: string; mappedType: string; files: number }>;
+  error?: string;
+};
+export type DriveSyncResult = {
+  ok: boolean;
+  imported: number;
+  skipped: number;
+  byType: Record<string, number>;
+  capped?: boolean;
+  error?: string;
+};
 
 // ─────────────────────────────── Fetch core ──────────────────────────────────
 
@@ -277,4 +294,16 @@ export function useSaveSettings() {
 
 export function useTestFacebook() {
   return useMutation({ mutationFn: () => apPost<FbTestResult>(`/autopost/facebook/test`) });
+}
+
+export function useTestDrive() {
+  return useMutation({ mutationFn: () => apPost<DriveTestResult>(`/autopost/drive/test`) });
+}
+
+export function useSyncDrive() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => apPost<DriveSyncResult>(`/autopost/drive/sync`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["autopost", "pool"] }),
+  });
 }

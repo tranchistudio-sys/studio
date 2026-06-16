@@ -62,6 +62,34 @@ export function isDryRun(): boolean {
 export type PublishResult = { postId: string; permalink: string | null; dryRun: boolean };
 
 /**
+ * Kiểm tra URL ảnh có TẢI CÔNG KHAI được không (HEAD) TRƯỚC khi gửi cho Facebook.
+ * Mục đích: báo lỗi rõ ràng (ảnh nào, HTTP mấy) thay vì lỗi mơ hồ của Graph API
+ * "(#100) url should represent a valid URL". Ném lỗi khi không truy cập được.
+ */
+async function assertImageReachable(url: string): Promise<void> {
+  if (!/^https?:\/\//i.test(url)) {
+    throw new Error(`URL ảnh không hợp lệ (không phải http/https): ${url}`);
+  }
+  let status = 0;
+  try {
+    const r = await fetch(url, { method: "HEAD" });
+    status = r.status;
+    if (r.ok) {
+      // Nếu biết content-type mà không phải ảnh (vd SPA trả index.html) → báo lỗi.
+      const ct = (r.headers?.get?.("content-type") || "").toLowerCase();
+      if (ct && !ct.startsWith("image/")) {
+        throw new Error(`URL không trả ảnh (content-type=${ct}): ${url}`);
+      }
+      return;
+    }
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith("URL không trả ảnh")) throw e;
+    throw new Error(`Ảnh không tải được (HEAD lỗi mạng): ${url} — ${String(e instanceof Error ? e.message : e)}`);
+  }
+  throw new Error(`Ảnh không truy cập công khai được (HTTP ${status}): ${url}`);
+}
+
+/**
  * Đăng bài lên Facebook Page. MAY throw khi thiếu token/page id hoặc khi Graph
  * API trả lỗi — đây là hành vi mong muốn (scheduler ở Task 6 sẽ bắt lỗi và đánh
  * dấu bài đăng thất bại).
@@ -79,12 +107,18 @@ export async function publishToPage(p: {
     .map(resolvePublicUrl)
     .filter((u) => typeof u === "string" && u.length > 0);
 
+  // Log URL ảnh CUỐI CÙNG gửi cho Facebook — giúp chẩn đoán lỗi "(#100) url ...".
+  for (const u of urls) console.log("[AutoPost] FINAL IMAGE URL:", u);
+
   if (isDryRun()) {
     console.log(
       "[AutoPost][DRY_RUN] page=" + pageId + " imgs=" + urls.length + " caption=" + p.message.slice(0, 60),
     );
     return { postId: "dryrun_" + Date.now(), permalink: null, dryRun: true };
   }
+
+  // Đăng THẬT: xác minh từng ảnh truy cập công khai được trước khi gọi Graph API.
+  for (const u of urls) await assertImageReachable(u);
 
   // SINGLE: 0 hoặc 1 ảnh -> đăng trực tiếp lên /photos kèm caption.
   if (urls.length <= 1) {

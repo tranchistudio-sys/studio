@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { normalizeMediaType, hashImageUrl, fetchImageAsBase64 } from "./autopost-images";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { normalizeMediaType, hashImageUrl, fetchImageAsBase64, resolvePublicUrl } from "./autopost-images";
 
 describe("normalizeMediaType", () => {
   it("passes through whitelisted image types", () => {
@@ -23,6 +23,59 @@ describe("normalizeMediaType", () => {
 
   it("returns null for non-whitelisted + non-image extension", () => {
     expect(normalizeMediaType("application/octet-stream", "https://x.com/a.txt")).toBeNull();
+  });
+});
+
+describe("resolvePublicUrl", () => {
+  const ORIGINAL_ENV = { ...process.env };
+  beforeEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+    // Mặc định: không có env public → rơi về domain production fallback.
+    delete process.env.PUBLIC_APP_URL;
+    delete process.env.REPLIT_DOMAINS;
+    delete process.env.REPLIT_DEV_DOMAIN;
+  });
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it("maps /objects/<x> to /api/storage and prefixes the public origin", () => {
+    expect(resolvePublicUrl("/objects/uploads/abc.webp")).toBe(
+      "https://tranchistudio.com/api/storage/objects/uploads/abc.webp",
+    );
+  });
+
+  it("maps /public-objects/<x> through /api/storage too", () => {
+    expect(resolvePublicUrl("/public-objects/x.jpg")).toBe(
+      "https://tranchistudio.com/api/storage/public-objects/x.jpg",
+    );
+  });
+
+  it("keeps /uploads/... at the domain root (served statically)", () => {
+    expect(resolvePublicUrl("/uploads/cms/x.jpg")).toBe("https://tranchistudio.com/uploads/cms/x.jpg");
+  });
+
+  it("adds a leading slash to bare relative paths", () => {
+    expect(resolvePublicUrl("uploads/x.jpg")).toBe("https://tranchistudio.com/uploads/x.jpg");
+  });
+
+  it("prefers PUBLIC_APP_URL when set", () => {
+    process.env.PUBLIC_APP_URL = "https://cdn.example.com/";
+    expect(resolvePublicUrl("/objects/x")).toBe("https://cdn.example.com/api/storage/objects/x");
+  });
+
+  it("leaves a real absolute URL unchanged", () => {
+    expect(resolvePublicUrl("https://other.cdn/a.png")).toBe("https://other.cdn/a.png");
+  });
+
+  it("rewrites a localhost absolute URL to the public origin", () => {
+    expect(resolvePublicUrl("http://localhost:5173/objects/x")).toBe(
+      "https://tranchistudio.com/api/storage/objects/x",
+    );
+  });
+
+  it("returns empty string for empty input", () => {
+    expect(resolvePublicUrl("")).toBe("");
   });
 });
 

@@ -7,9 +7,11 @@ vi.mock("@workspace/db", () => ({
   pool: { query: vi.fn().mockResolvedValue({ rows: [] }) },
 }));
 
-// resolvePublicUrl passthrough: giữ nguyên url để khẳng định dễ kiểm tra.
+// resolvePublicUrl: mô phỏng hành vi thật — luôn trả URL TUYỆT ĐỐI (để HEAD-check
+// trong publishToPage chạy được). Đường dẫn tương đối được gắn origin test.
 vi.mock("./autopost-images", () => ({
-  resolvePublicUrl: (u: string) => u,
+  resolvePublicUrl: (u: string) =>
+    /^https?:\/\//i.test(u) ? u : `https://test.local/${u.replace(/^\//, "")}`,
 }));
 
 import { isDryRun, publishToPage, verifyPageToken } from "./facebook-page-publish";
@@ -51,6 +53,20 @@ describe("isDryRun", () => {
   });
 });
 
+const isHead = (c: unknown[]) => (c[1] as { method?: string } | undefined)?.method === "HEAD";
+
+// fetch mock: HEAD (precheck ảnh) luôn OK + content-type ảnh; POST do postImpl xử lý.
+function headOkThenPost(
+  postImpl: (url: string, opts?: RequestInit) => Promise<unknown>,
+) {
+  return vi.fn((url: unknown, opts?: RequestInit) => {
+    if (opts?.method === "HEAD") {
+      return Promise.resolve({ ok: true, status: 200, headers: { get: () => "image/jpeg" } });
+    }
+    return postImpl(String(url), opts);
+  });
+}
+
 describe("publishToPage", () => {
   it("DRY-RUN by default: returns dryRun result and does NOT call fetch", async () => {
     delete process.env.AUTOPOST_DRY_RUN;
@@ -64,30 +80,32 @@ describe("publishToPage", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("single image: posts to /<pageId>/photos once", async () => {
+  it("single image: HEAD-checks then posts to /<pageId>/photos once", async () => {
     process.env.AUTOPOST_DRY_RUN = "false";
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ post_id: "123_456" }),
-    });
+    const fetchMock = headOkThenPost(() =>
+      Promise.resolve({ ok: true, json: async () => ({ post_id: "123_456" }) }),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await publishToPage({ message: "hi", imageUrls: ["a.jpg"] });
 
     expect(result.postId).toBe("123_456");
     expect(result.dryRun).toBe(false);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0][0])).toContain("/123/photos");
+    const headCalls = fetchMock.mock.calls.filter(isHead);
+    const postCalls = fetchMock.mock.calls.filter((c) => !isHead(c));
+    expect(headCalls).toHaveLength(1);
+    expect(postCalls).toHaveLength(1);
+    expect(String(postCalls[0][0])).toContain("/123/photos");
   });
 
   it("multi image (3): uploads 3 then posts to /<pageId>/feed", async () => {
     process.env.AUTOPOST_DRY_RUN = "false";
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "m1" }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "m2" }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "m3" }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "123_999" }) });
+    let n = 0;
+    const fetchMock = headOkThenPost((url) => {
+      if (url.includes("/feed")) return Promise.resolve({ ok: true, json: async () => ({ id: "123_999" }) });
+      n += 1;
+      return Promise.resolve({ ok: true, json: async () => ({ id: "m" + n }) });
+    });
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await publishToPage({
@@ -96,22 +114,35 @@ describe("publishToPage", () => {
     });
 
     expect(result.postId).toBe("123_999");
-    expect(fetchMock).toHaveBeenCalledTimes(4);
-    expect(String(fetchMock.mock.calls[3][0])).toContain("/123/feed");
+    const postCalls = fetchMock.mock.calls.filter((c) => !isHead(c));
+    expect(postCalls).toHaveLength(4); // 3 upload + 1 feed
+    expect(String(postCalls[postCalls.length - 1][0])).toContain("/123/feed");
   });
 
   it("throws when Facebook returns a non-ok response", async () => {
     process.env.AUTOPOST_DRY_RUN = "false";
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 400,
-      json: async () => ({ error: "bad" }),
+    const fetchMock = headOkThenPost(() =>
+      Promise.resolve({ ok: false, status: 400, json: async () => ({ error: "bad" }) }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      publishToPage({ message: "hi", imageUrls: ["a.jpg"] }),
+    ).rejects.toThrow(/FB photos 400/);
+  });
+
+  it("throws a clear error (and skips POST) when image is not publicly reachable", async () => {
+    process.env.AUTOPOST_DRY_RUN = "false";
+    const fetchMock = vi.fn((_url: unknown, opts?: RequestInit) => {
+      if (opts?.method === "HEAD") return Promise.resolve({ ok: false, status: 404, headers: { get: () => null } });
+      return Promise.resolve({ ok: true, json: async () => ({ post_id: "x" }) });
     });
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
       publishToPage({ message: "hi", imageUrls: ["a.jpg"] }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/HTTP 404/);
+    expect(fetchMock.mock.calls.filter((c) => !isHead(c))).toHaveLength(0);
   });
 
   it("throws when token is missing", async () => {

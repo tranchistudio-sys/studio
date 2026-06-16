@@ -108,6 +108,14 @@ export type DriveSyncResult = {
   capped?: boolean;
   error?: string;
 };
+export type DriveStatus = {
+  connected: boolean;
+  hasClient: boolean;
+  clientIdSource: string | null;
+  clientSecretSource: string | null;
+  folderId: string | null;
+  folderConfigured: boolean;
+};
 
 // ─────────────────────────────── Fetch core ──────────────────────────────────
 
@@ -294,6 +302,10 @@ export function useSaveSettings() {
 
 export function useTestFacebook() {
   return useMutation({ mutationFn: () => apPost<FbTestResult>(`/autopost/facebook/test`) });
+}
+
+export function useDriveStatus() {
+  return useQuery({ queryKey: ["autopost", "drive", "status"], queryFn: () => apGet<DriveStatus>(`/autopost/drive/status`) });
 }
 
 export function useTestDrive() {

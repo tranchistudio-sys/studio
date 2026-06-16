@@ -22,7 +22,7 @@ import {
   useSyncPool, useUploadPoolItem, useUpdatePoolItem, useDeletePoolItem,
   useGenerate, useApprove, useSkipPost, useRetryPost,
   useSaveSchedule, useToggleSchedule, useDeleteSchedule, useSaveSettings, useTestFacebook,
-  useSyncDrive, useTestDrive,
+  useSyncDrive, useTestDrive, useDriveStatus,
   type PoolItem, type Post, type Schedule, type Slot, type FbTestResult, type AutoPostSettings, type DriveTestResult,
 } from "@/lib/autopost-api";
 import { getImageSrc } from "@/lib/imageUtils";
@@ -811,18 +811,40 @@ function ConfigTab({ notify }: { notify: Notify }) {
   );
 }
 
+/** Tách Folder ID từ link Drive đã dán (folders/<id>, /d/<id>, ?id=<id>) hoặc trả lại ID thuần. */
+function extractDriveFolderId(input: string): string {
+  const s = (input ?? "").trim();
+  if (!s) return "";
+  const folders = s.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  if (folders) return folders[1];
+  const dShare = s.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (dShare) return dShare[1];
+  const idParam = s.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (idParam) return idParam[1];
+  if (/^https?:\/\//i.test(s)) return "";
+  return s.replace(/[^a-zA-Z0-9_-]/g, "");
+}
+
 function DriveConfigSection({ notify }: { notify: Notify }) {
   const { data: settings } = useSettings();
+  const { data: status } = useDriveStatus();
   const save = useSaveSettings();
   const test = useTestDrive();
-  const [folderId, setFolderId] = useState("");
+  const [folderInput, setFolderInput] = useState("");
   const [result, setResult] = useState<DriveTestResult | null>(null);
-  useEffect(() => { setFolderId(settings?.drive?.folderId ?? ""); }, [settings?.drive?.folderId]);
+  useEffect(() => { setFolderInput(settings?.drive?.folderId ?? ""); }, [settings?.drive?.folderId]);
+
+  // Cho dán nguyên link Drive → tự tách Folder ID.
+  const extractedId = extractDriveFolderId(folderInput);
+  const looksLikeLink = /^https?:\/\//i.test(folderInput.trim());
 
   const onSaveFolder = async () => {
+    const id = extractDriveFolderId(folderInput);
+    if (folderInput.trim() && !id) { notify(false, "Không tách được Folder ID từ link — kiểm tra lại link Drive."); return; }
     try {
-      await save.mutateAsync({ ...(settings ?? {}), drive: { ...(settings?.drive ?? {}), folderId: folderId.trim() || undefined } });
-      notify(true, "Đã lưu Folder ID Google Drive");
+      await save.mutateAsync({ ...(settings ?? {}), drive: { ...(settings?.drive ?? {}), folderId: id || undefined } });
+      setFolderInput(id);
+      notify(true, id ? `Đã lưu Folder ID: ${id}` : "Đã xoá Folder ID (sẽ dùng GOOGLE_DRIVE_FOLDER_ID)");
     } catch (e) { notify(false, String((e as Error).message)); }
   };
   const onTest = async () => {
@@ -832,7 +854,9 @@ function DriveConfigSection({ notify }: { notify: Notify }) {
       notify(r.ok, r.ok ? `Kết nối Drive OK: ${r.folderName}` : `Drive: ${r.missing?.length ? "thiếu " + r.missing.join(", ") : (r.error ?? "lỗi")}`);
     } catch (e) { notify(false, String((e as Error).message)); }
   };
-  const connected = !!settings?.drive?.connected;
+  // Ưu tiên trạng thái thật từ /status; fallback cờ connected trong settings.
+  const connected = status?.connected ?? !!settings?.drive?.connected;
+  const hasClient = status?.hasClient ?? true;
   const callbackUri = typeof window !== "undefined" ? `${window.location.origin}/api/autopost/drive/callback` : "";
   const onConnect = () => {
     const token = localStorage.getItem("amazingStudioToken_v2") || "";
@@ -845,25 +869,38 @@ function DriveConfigSection({ notify }: { notify: Notify }) {
     <div className="rounded-2xl border bg-card p-4 space-y-3">
       <h3 className="font-semibold flex items-center gap-1.5"><Folder className="w-4 h-4 text-amber-500" /> Google Drive (Phase 2)</h3>
       <p className="text-xs text-muted-foreground leading-relaxed">
-        <b>Client ID / Secret</b> đặt trong biến môi trường (<code>GOOGLE_DRIVE_CLIENT_ID</code>, <code>GOOGLE_DRIVE_CLIENT_SECRET</code>). Bấm <b>Kết nối Google Drive</b> để cấp quyền <b>chỉ đọc</b> (<code>drive.readonly</code>) — refresh token lưu an toàn, không hiển thị.
+        Dùng <code>GOOGLE_DRIVE_CLIENT_ID/SECRET</code>, <b>tự fallback</b> sang <code>GOOGLE_CLIENT_ID/SECRET</code> nếu chưa đặt riêng — <b>không cần tạo lại</b>. Bấm <b>Kết nối Google Drive</b> để cấp quyền <b>chỉ đọc</b> (<code>drive.readonly</code>); refresh token lưu an toàn, không hiển thị.
       </p>
       <div className="flex items-center gap-2 flex-wrap">
-        <Button onClick={onConnect}><Folder className="w-4 h-4 mr-1" /> Kết nối Google Drive</Button>
+        <Button onClick={onConnect} disabled={!hasClient} title={hasClient ? "" : "Chưa có Client ID/Secret trong môi trường"}>
+          <Folder className="w-4 h-4 mr-1" /> Kết nối Google Drive
+        </Button>
         {connected ? (
           <span className="text-xs text-emerald-600 font-medium inline-flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> Đã kết nối</span>
         ) : (
           <span className="text-xs text-muted-foreground">Chưa kết nối</span>
         )}
+        {status?.clientIdSource && (
+          <span className="text-[11px] text-muted-foreground">· client từ <code>{status.clientIdSource}</code></span>
+        )}
       </div>
+      {!hasClient && (
+        <p className="text-[11px] text-red-600">Chưa có Client ID/Secret: đặt <code>GOOGLE_DRIVE_CLIENT_ID/SECRET</code> hoặc <code>GOOGLE_CLIENT_ID/SECRET</code> trong môi trường.</p>
+      )}
       <p className="text-[11px] text-muted-foreground">
         Thêm URL này vào <b>Authorized redirect URIs</b> của OAuth client (Google Cloud Console): <code className="break-all">{callbackUri}</code>
       </p>
       <div>
-        <Label>Folder ID cha — "Amazing Studio AutoPost"</Label>
+        <Label>Link folder hoặc Folder ID cha — "Amazing Studio AutoPost"</Label>
         <div className="flex gap-2 mt-1">
-          <Input value={folderId} onChange={(e) => setFolderId(e.target.value)} placeholder="VD: 1AbCdEf… (hoặc đặt GOOGLE_DRIVE_FOLDER_ID)" />
+          <Input value={folderInput} onChange={(e) => setFolderInput(e.target.value)} placeholder="Dán link Drive (…/folders/1AbC…) hoặc Folder ID 1AbC…" />
           <Button variant="outline" onClick={onSaveFolder} disabled={save.isPending}>Lưu</Button>
         </div>
+        {looksLikeLink && (
+          <p className="text-[11px] mt-1 text-muted-foreground">
+            {extractedId ? <>Tách được Folder ID: <code>{extractedId}</code></> : <span className="text-red-600">Không tách được Folder ID từ link này.</span>}
+          </p>
+        )}
       </div>
       <Button onClick={onTest} disabled={test.isPending}>
         {test.isPending ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Folder className="w-4 h-4 mr-1" />} Test kết nối Drive

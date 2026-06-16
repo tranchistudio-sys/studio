@@ -10,6 +10,7 @@ import { verifyPageToken } from "../lib/facebook-page-publish";
 import {
   syncGoogleDrivePool,
   verifyDriveConnection,
+  driveStatus,
   getOAuthClientEnv,
   getDriveAuthUrl,
   exchangeCodeForRefreshToken,
@@ -650,6 +651,17 @@ router.post("/autopost/facebook/test", async (req: Request, res: Response) => {
 
 // ─────────────────────────── GOOGLE DRIVE (Phase 2) ─────────────────────────
 
+// GET /autopost/drive/status — trạng thái kết nối (đã connect chưa, nguồn env, folder).
+// Read-only; KHÔNG trả token/secret.
+router.get("/autopost/drive/status", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    res.json(await driveStatus());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 // POST /autopost/drive/test — kiểm tra credential env + liệt kê folder con đã map.
 router.post("/autopost/drive/test", async (req: Request, res: Response) => {
   if (!(await requireAdmin(req, res))) return;
@@ -711,7 +723,7 @@ router.get("/autopost/drive/connect", async (req: Request, res: Response) => {
   const role = await getCallerRole(`Bearer ${String(req.query.token ?? "")}`);
   if (role !== "admin") { res.status(403).send(drivePage("Chỉ admin được phép kết nối Google Drive.")); return; }
   if (!getOAuthClientEnv()) {
-    res.status(400).send(drivePage("Thiếu GOOGLE_DRIVE_CLIENT_ID / GOOGLE_DRIVE_CLIENT_SECRET trong môi trường."));
+    res.status(400).send(drivePage("Thiếu Client ID/Secret: đặt GOOGLE_DRIVE_CLIENT_ID/SECRET hoặc GOOGLE_CLIENT_ID/SECRET trong môi trường."));
     return;
   }
   const redirectUri = safeDriveRedirectUri(req.query.redirectUri);

@@ -5,11 +5,12 @@
  * Refresh token nên được tạo với scope `https://www.googleapis.com/auth/drive.readonly`.
  *
  * CREDENTIAL — đọc từ BIẾN MÔI TRƯỜNG (không hardcode, không ghi vào code/DB, không log):
- *   GOOGLE_DRIVE_CLIENT_ID
- *   GOOGLE_DRIVE_CLIENT_SECRET
- *   GOOGLE_DRIVE_REFRESH_TOKEN
+ *   GOOGLE_DRIVE_CLIENT_ID      (FALLBACK: GOOGLE_CLIENT_ID nếu chưa đặt)
+ *   GOOGLE_DRIVE_CLIENT_SECRET  (FALLBACK: GOOGLE_CLIENT_SECRET nếu chưa đặt)
+ *   GOOGLE_DRIVE_REFRESH_TOKEN  (KHÔNG bắt buộc — bấm "Kết nối Google Drive" sẽ tự lấy &
+ *                                  lưu vào autopost_settings.config.drive.refreshToken)
  *   GOOGLE_DRIVE_FOLDER_ID        (folder cha "Amazing Studio AutoPost"; có thể override
- *                                  bằng settings.config.drive.folderId)
+ *                                  bằng settings.config.drive.folderId; nhận cả link Drive)
  *
  * Luồng: quét folder cha → từng folder con map sang contentType → lấy file ảnh/video →
  * bỏ trùng theo Drive fileId → tải ảnh về object storage (/objects/uploads/<uuid>) →
@@ -52,6 +53,7 @@ export function normalizeVi(s: string): string {
 const FOLDER_MAP: Array<[string, string]> = [
   ["ao dai cuoi", "ao_dai_cuoi"],
   ["viet phuc", "viet_phuc"],
+  ["y tuong", "photo_idea"],
   ["vay moi ve", "new_arrival"],
   ["moi ve", "new_arrival"],
   ["vay cuoi", "vay_cuoi"],
@@ -85,14 +87,57 @@ export function classifyMime(mime: string | undefined): "image" | "video" | null
   return null;
 }
 
+/**
+ * Đọc client id/secret cho OAuth, ưu tiên biến chuyên dụng rồi FALLBACK sang biến chung.
+ * Trả kèm TÊN biến đã dùng (để hiển thị nguồn ở /status — KHÔNG trả giá trị).
+ *   GOOGLE_DRIVE_CLIENT_ID  →  fallback  GOOGLE_CLIENT_ID
+ *   GOOGLE_DRIVE_CLIENT_SECRET  →  fallback  GOOGLE_CLIENT_SECRET
+ */
+export function driveClientSource(): {
+  clientId: string;
+  clientSecret: string;
+  idVar: string | null;
+  secretVar: string | null;
+} {
+  let clientId = (process.env.GOOGLE_DRIVE_CLIENT_ID ?? "").trim();
+  let idVar: string | null = clientId ? "GOOGLE_DRIVE_CLIENT_ID" : null;
+  if (!clientId) {
+    clientId = (process.env.GOOGLE_CLIENT_ID ?? "").trim();
+    if (clientId) idVar = "GOOGLE_CLIENT_ID";
+  }
+  let clientSecret = (process.env.GOOGLE_DRIVE_CLIENT_SECRET ?? "").trim();
+  let secretVar: string | null = clientSecret ? "GOOGLE_DRIVE_CLIENT_SECRET" : null;
+  if (!clientSecret) {
+    clientSecret = (process.env.GOOGLE_CLIENT_SECRET ?? "").trim();
+    if (clientSecret) secretVar = "GOOGLE_CLIENT_SECRET";
+  }
+  return { clientId, clientSecret, idVar, secretVar };
+}
+
+/**
+ * Tách Folder ID từ link Google Drive đã dán, hoặc trả lại chính ID nếu người dùng dán ID thuần.
+ * Hỗ trợ: …/folders/<ID>, …/d/<ID>, …?id=<ID>. Không phải URL → coi là ID (lọc ký tự lạ). Pure.
+ */
+export function extractFolderId(input: string | null | undefined): string {
+  const s = (input ?? "").trim();
+  if (!s) return "";
+  const folders = s.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+  if (folders) return folders[1];
+  const dShare = s.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (dShare) return dShare[1];
+  const idParam = s.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (idParam) return idParam[1];
+  if (/^https?:\/\//i.test(s)) return ""; // là URL nhưng không nhận diện được → coi như rỗng
+  return s.replace(/[^a-zA-Z0-9_-]/g, ""); // ID thuần (loại khoảng trắng/ký tự lạ)
+}
+
 /** Đọc credential từ env. Không log giá trị; chỉ trả creds hoặc danh sách biến thiếu. */
 export function readDriveEnv(): { creds: DriveCreds | null; missing: string[] } {
-  const clientId = (process.env.GOOGLE_DRIVE_CLIENT_ID ?? "").trim();
-  const clientSecret = (process.env.GOOGLE_DRIVE_CLIENT_SECRET ?? "").trim();
+  const { clientId, clientSecret } = driveClientSource();
   const refreshToken = (process.env.GOOGLE_DRIVE_REFRESH_TOKEN ?? "").trim();
   const missing: string[] = [];
-  if (!clientId) missing.push("GOOGLE_DRIVE_CLIENT_ID");
-  if (!clientSecret) missing.push("GOOGLE_DRIVE_CLIENT_SECRET");
+  if (!clientId) missing.push("GOOGLE_DRIVE_CLIENT_ID (hoặc GOOGLE_CLIENT_ID)");
+  if (!clientSecret) missing.push("GOOGLE_DRIVE_CLIENT_SECRET (hoặc GOOGLE_CLIENT_SECRET)");
   if (!refreshToken) missing.push("GOOGLE_DRIVE_REFRESH_TOKEN");
   if (missing.length > 0) return { creds: null, missing };
   return { creds: { clientId, clientSecret, refreshToken }, missing: [] };
@@ -100,10 +145,9 @@ export function readDriveEnv(): { creds: DriveCreds | null; missing: string[] } 
 
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 
-/** clientId/secret cho OAuth (từ env). null nếu thiếu. */
+/** clientId/secret cho OAuth (env chuyên dụng hoặc fallback chung). null nếu thiếu. */
 export function getOAuthClientEnv(): { clientId: string; clientSecret: string } | null {
-  const clientId = (process.env.GOOGLE_DRIVE_CLIENT_ID ?? "").trim();
-  const clientSecret = (process.env.GOOGLE_DRIVE_CLIENT_SECRET ?? "").trim();
+  const { clientId, clientSecret } = driveClientSource();
   if (!clientId || !clientSecret) return null;
   return { clientId, clientSecret };
 }
@@ -113,8 +157,7 @@ export function getOAuthClientEnv(): { clientId: string; clientSecret: string } 
  * autopost_settings.config.drive.refreshToken (lưu sau khi kết nối OAuth). Không log token.
  */
 export async function resolveDriveCreds(): Promise<{ creds: DriveCreds | null; missing: string[] }> {
-  const clientId = (process.env.GOOGLE_DRIVE_CLIENT_ID ?? "").trim();
-  const clientSecret = (process.env.GOOGLE_DRIVE_CLIENT_SECRET ?? "").trim();
+  const { clientId, clientSecret } = driveClientSource();
   let refreshToken = (process.env.GOOGLE_DRIVE_REFRESH_TOKEN ?? "").trim();
   if (!refreshToken) {
     try {
@@ -126,9 +169,9 @@ export async function resolveDriveCreds(): Promise<{ creds: DriveCreds | null; m
     }
   }
   const missing: string[] = [];
-  if (!clientId) missing.push("GOOGLE_DRIVE_CLIENT_ID");
-  if (!clientSecret) missing.push("GOOGLE_DRIVE_CLIENT_SECRET");
-  if (!refreshToken) missing.push("GOOGLE_DRIVE_REFRESH_TOKEN (hoặc bấm Kết nối Google Drive)");
+  if (!clientId) missing.push("GOOGLE_DRIVE_CLIENT_ID (hoặc GOOGLE_CLIENT_ID)");
+  if (!clientSecret) missing.push("GOOGLE_DRIVE_CLIENT_SECRET (hoặc GOOGLE_CLIENT_SECRET)");
+  if (!refreshToken) missing.push("refresh_token — bấm Kết nối Google Drive");
   if (missing.length > 0) return { creds: null, missing };
   return { creds: { clientId, clientSecret, refreshToken }, missing: [] };
 }
@@ -239,16 +282,50 @@ async function fetchThumbnail(token: string, thumbnailLink?: string): Promise<{ 
   }
 }
 
-/** Folder cha: ưu tiên settings.config.drive.folderId, fallback env. */
+/** Folder cha: ưu tiên settings.config.drive.folderId, fallback env. Tách ID nếu là link Drive. */
 async function resolveParentFolderId(): Promise<string | null> {
   try {
     const r = await pool.query(`SELECT config FROM autopost_settings WHERE id = 1`);
     const folderId = (r.rows[0]?.config as any)?.drive?.folderId;
-    if (typeof folderId === "string" && folderId.trim()) return folderId.trim();
+    const id = extractFolderId(typeof folderId === "string" ? folderId : "");
+    if (id) return id;
   } catch {
     /* dùng env */
   }
-  return (process.env.GOOGLE_DRIVE_FOLDER_ID ?? "").trim() || null;
+  return extractFolderId(process.env.GOOGLE_DRIVE_FOLDER_ID) || null;
+}
+
+export type DriveStatus = {
+  connected: boolean;          // đã có refresh_token (env hoặc settings) chưa
+  hasClient: boolean;          // đã có client id + secret chưa
+  clientIdSource: string | null;     // TÊN biến env đang dùng cho client id (không phải giá trị)
+  clientSecretSource: string | null; // TÊN biến env đang dùng cho client secret
+  folderId: string | null;     // folder cha đã cấu hình (không phải bí mật)
+  folderConfigured: boolean;
+};
+
+/** Trạng thái kết nối Drive cho UI (GET /status). KHÔNG trả token/secret — chỉ tên biến + cờ. */
+export async function driveStatus(): Promise<DriveStatus> {
+  const { clientId, clientSecret, idVar, secretVar } = driveClientSource();
+  let hasToken = !!(process.env.GOOGLE_DRIVE_REFRESH_TOKEN ?? "").trim();
+  if (!hasToken) {
+    try {
+      const r = await pool.query(`SELECT config FROM autopost_settings WHERE id = 1`);
+      const t = (r.rows[0]?.config as any)?.drive?.refreshToken;
+      if (typeof t === "string" && t.trim()) hasToken = true;
+    } catch {
+      /* coi như chưa kết nối */
+    }
+  }
+  const folderId = await resolveParentFolderId();
+  return {
+    connected: hasToken,
+    hasClient: !!(clientId && clientSecret),
+    clientIdSource: clientId ? idVar : null,
+    clientSecretSource: clientSecret ? secretVar : null,
+    folderId,
+    folderConfigured: !!folderId,
+  };
 }
 
 // ─────────────────────────── Public API ─────────────────────────────────────

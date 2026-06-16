@@ -1,0 +1,10 @@
+import { useEffect, useMemo, useState } from 'react';
+import { Plus, Trash2, ChevronDown, ChevronUp, AlertCircle } from 'lucide-react';
+import { CurrencyInput } from '@/components/ui/currency-input';
+import { Input, Button } from '@/components/ui';
+import { resolveCastAmount, type CastRatePkg, type StaffRate } from '@/lib/resolve-cast';
+import { cn } from '@/lib/utils';
+export type AdditionalServiceStaff={staffId:number;staffName:string;role:string;allocatedQty:number;castPerUnit?:number;castAmount:number};
+export type AdditionalServiceLine={id:string;title:string;qty:number;unitPrice:number;totalPrice:number;unitLabel?:string;notes?:string;taskKey?:string;staffAssignments:AdditionalServiceStaff[]};
+function genId(){return 'as-'+Math.random().toString(36).slice(2,9)}
+function slugTaskKey(title:string){const s=(title||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z0-9]+/g,'_').replace(/^_|_$/g,'');return s||'mac_dinh'}

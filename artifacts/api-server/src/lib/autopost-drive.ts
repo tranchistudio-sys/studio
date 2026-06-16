@@ -98,6 +98,79 @@ export function readDriveEnv(): { creds: DriveCreds | null; missing: string[] } 
   return { creds: { clientId, clientSecret, refreshToken }, missing: [] };
 }
 
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
+
+/** clientId/secret cho OAuth (từ env). null nếu thiếu. */
+export function getOAuthClientEnv(): { clientId: string; clientSecret: string } | null {
+  const clientId = (process.env.GOOGLE_DRIVE_CLIENT_ID ?? "").trim();
+  const clientSecret = (process.env.GOOGLE_DRIVE_CLIENT_SECRET ?? "").trim();
+  if (!clientId || !clientSecret) return null;
+  return { clientId, clientSecret };
+}
+
+/**
+ * Creds đầy đủ để gọi Drive: clientId/secret từ env; refreshToken từ env HOẶC
+ * autopost_settings.config.drive.refreshToken (lưu sau khi kết nối OAuth). Không log token.
+ */
+export async function resolveDriveCreds(): Promise<{ creds: DriveCreds | null; missing: string[] }> {
+  const clientId = (process.env.GOOGLE_DRIVE_CLIENT_ID ?? "").trim();
+  const clientSecret = (process.env.GOOGLE_DRIVE_CLIENT_SECRET ?? "").trim();
+  let refreshToken = (process.env.GOOGLE_DRIVE_REFRESH_TOKEN ?? "").trim();
+  if (!refreshToken) {
+    try {
+      const r = await pool.query(`SELECT config FROM autopost_settings WHERE id = 1`);
+      const t = (r.rows[0]?.config as any)?.drive?.refreshToken;
+      if (typeof t === "string" && t.trim()) refreshToken = t.trim();
+    } catch {
+      /* dùng env */
+    }
+  }
+  const missing: string[] = [];
+  if (!clientId) missing.push("GOOGLE_DRIVE_CLIENT_ID");
+  if (!clientSecret) missing.push("GOOGLE_DRIVE_CLIENT_SECRET");
+  if (!refreshToken) missing.push("GOOGLE_DRIVE_REFRESH_TOKEN (hoặc bấm Kết nối Google Drive)");
+  if (missing.length > 0) return { creds: null, missing };
+  return { creds: { clientId, clientSecret, refreshToken }, missing: [] };
+}
+
+/** URL Google OAuth consent. access_type=offline + prompt=consent để CHẮC CHẮN có refresh_token. */
+export function getDriveAuthUrl(redirectUri: string, state: string): string {
+  const env = getOAuthClientEnv();
+  if (!env) throw new Error("Thiếu GOOGLE_DRIVE_CLIENT_ID / GOOGLE_DRIVE_CLIENT_SECRET");
+  const client = new OAuth2Client(env.clientId, env.clientSecret, redirectUri);
+  return client.generateAuthUrl({
+    access_type: "offline",
+    prompt: "consent",
+    scope: [DRIVE_SCOPE],
+    state,
+  });
+}
+
+/** Đổi authorization code → refresh_token (read-only). KHÔNG log token. */
+export async function exchangeCodeForRefreshToken(code: string, redirectUri: string): Promise<string> {
+  const env = getOAuthClientEnv();
+  if (!env) throw new Error("Thiếu GOOGLE_DRIVE_CLIENT_ID / GOOGLE_DRIVE_CLIENT_SECRET");
+  const client = new OAuth2Client(env.clientId, env.clientSecret, redirectUri);
+  const { tokens } = await client.getToken(code);
+  const refreshToken = tokens.refresh_token;
+  if (!refreshToken) throw new Error("Google không trả refresh_token — thử lại (cần prompt=consent + access_type=offline)");
+  return refreshToken;
+}
+
+/** Lưu refresh token vào autopost_settings.config.drive.refreshToken (không log, không commit). */
+export async function saveDriveRefreshToken(refreshToken: string): Promise<void> {
+  await pool.query(
+    `UPDATE autopost_settings
+        SET config = config || jsonb_build_object(
+              'drive',
+              COALESCE(config->'drive', '{}'::jsonb) || jsonb_build_object('refreshToken', $1::text)
+            ),
+            updated_at = now()
+      WHERE id = 1`,
+    [refreshToken],
+  );
+}
+
 // ─────────────────────────── Drive REST (read-only) ─────────────────────────
 
 async function getAccessToken(creds: DriveCreds): Promise<string> {
@@ -190,8 +263,8 @@ export type DriveTestResult = {
 
 /** Kiểm tra kết nối Drive + liệt kê folder con đã map (cho nút Test). Không throw. */
 export async function verifyDriveConnection(): Promise<DriveTestResult> {
-  const { creds, missing } = readDriveEnv();
-  if (!creds) return { ok: false, missing, error: "Thiếu biến môi trường Google Drive" };
+  const { creds, missing } = await resolveDriveCreds();
+  if (!creds) return { ok: false, missing, error: "Thiếu cấu hình Google Drive" };
   const parentId = await resolveParentFolderId();
   if (!parentId) return { ok: false, error: "Chưa cấu hình Folder ID cha (GOOGLE_DRIVE_FOLDER_ID hoặc trong cấu hình)" };
   try {
@@ -228,8 +301,8 @@ export type DriveSyncResult = {
  * Ảnh: tải về object storage. Video: chỉ lấy thumbnail (đăng video hoãn Phase 2.1).
  */
 export async function syncGoogleDrivePool(): Promise<DriveSyncResult> {
-  const { creds } = readDriveEnv();
-  if (!creds) return { ok: false, imported: 0, skipped: 0, byType: {}, error: "Thiếu biến môi trường Google Drive" };
+  const { creds } = await resolveDriveCreds();
+  if (!creds) return { ok: false, imported: 0, skipped: 0, byType: {}, error: "Thiếu cấu hình Google Drive (chưa kết nối / thiếu env)" };
   const parentId = await resolveParentFolderId();
   if (!parentId) return { ok: false, imported: 0, skipped: 0, byType: {}, error: "Chưa cấu hình Folder ID cha" };
 

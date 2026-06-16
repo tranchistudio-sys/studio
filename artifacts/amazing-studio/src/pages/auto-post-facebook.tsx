@@ -26,6 +26,7 @@ import {
   type PoolItem, type Post, type Schedule, type Slot, type FbTestResult, type AutoPostSettings, type DriveTestResult,
 } from "@/lib/autopost-api";
 import { getImageSrc } from "@/lib/imageUtils";
+import { apiUrl } from "@/lib/api-base";
 
 /**
  * AutoPost Facebook — trang quản trị 7 tab (Task 8). Chỉ admin (AdminRoute).
@@ -831,12 +832,31 @@ function DriveConfigSection({ notify }: { notify: Notify }) {
       notify(r.ok, r.ok ? `Kết nối Drive OK: ${r.folderName}` : `Drive: ${r.missing?.length ? "thiếu " + r.missing.join(", ") : (r.error ?? "lỗi")}`);
     } catch (e) { notify(false, String((e as Error).message)); }
   };
+  const connected = !!settings?.drive?.connected;
+  const callbackUri = typeof window !== "undefined" ? `${window.location.origin}/api/autopost/drive/callback` : "";
+  const onConnect = () => {
+    const token = localStorage.getItem("amazingStudioToken_v2") || "";
+    if (!token) { notify(false, "Chưa đăng nhập"); return; }
+    const url = `${apiUrl("/api/autopost/drive/connect")}?token=${encodeURIComponent(token)}&redirectUri=${encodeURIComponent(callbackUri)}`;
+    window.location.href = url;
+  };
 
   return (
     <div className="rounded-2xl border bg-card p-4 space-y-3">
       <h3 className="font-semibold flex items-center gap-1.5"><Folder className="w-4 h-4 text-amber-500" /> Google Drive (Phase 2)</h3>
       <p className="text-xs text-muted-foreground leading-relaxed">
-        Credential đặt trong <b>biến môi trường</b> (không lưu trên UI): <code>GOOGLE_DRIVE_CLIENT_ID</code>, <code>GOOGLE_DRIVE_CLIENT_SECRET</code>, <code>GOOGLE_DRIVE_REFRESH_TOKEN</code> — refresh token tạo với scope <code>drive.readonly</code> (chỉ đọc).
+        <b>Client ID / Secret</b> đặt trong biến môi trường (<code>GOOGLE_DRIVE_CLIENT_ID</code>, <code>GOOGLE_DRIVE_CLIENT_SECRET</code>). Bấm <b>Kết nối Google Drive</b> để cấp quyền <b>chỉ đọc</b> (<code>drive.readonly</code>) — refresh token lưu an toàn, không hiển thị.
+      </p>
+      <div className="flex items-center gap-2 flex-wrap">
+        <Button onClick={onConnect}><Folder className="w-4 h-4 mr-1" /> Kết nối Google Drive</Button>
+        {connected ? (
+          <span className="text-xs text-emerald-600 font-medium inline-flex items-center gap-1"><CheckCircle2 className="w-3.5 h-3.5" /> Đã kết nối</span>
+        ) : (
+          <span className="text-xs text-muted-foreground">Chưa kết nối</span>
+        )}
+      </div>
+      <p className="text-[11px] text-muted-foreground">
+        Thêm URL này vào <b>Authorized redirect URIs</b> của OAuth client (Google Cloud Console): <code className="break-all">{callbackUri}</code>
       </p>
       <div>
         <Label>Folder ID cha — "Amazing Studio AutoPost"</Label>

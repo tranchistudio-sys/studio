@@ -1,4 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
+import { createHmac } from "node:crypto";
 import { pool } from "@workspace/db";
 import { verifyToken, getCallerRole } from "./auth";
 import { emitNotification } from "./notifications";
@@ -6,7 +7,14 @@ import { ensureAutoPostSchema } from "../lib/autopost-schema";
 import { syncAppWebPool, addManualPoolItem } from "../lib/autopost-pool";
 import { generateCaptions } from "../lib/autopost-caption";
 import { verifyPageToken } from "../lib/facebook-page-publish";
-import { syncGoogleDrivePool, verifyDriveConnection } from "../lib/autopost-drive";
+import {
+  syncGoogleDrivePool,
+  verifyDriveConnection,
+  getOAuthClientEnv,
+  getDriveAuthUrl,
+  exchangeCodeForRefreshToken,
+  saveDriveRefreshToken,
+} from "../lib/autopost-drive";
 import {
   isValidStatus,
   sha1,
@@ -579,7 +587,12 @@ router.get("/autopost/settings", async (req: Request, res: Response) => {
   if (!(await requireAdmin(req, res))) return;
   try {
     const r = await pool.query(`SELECT config FROM autopost_settings WHERE id = 1`);
-    res.json((r.rows[0]?.config as any) ?? {});
+    const cfg = (r.rows[0]?.config as any) ?? {};
+    // KHÔNG trả refresh token Drive ra client — chỉ báo đã kết nối hay chưa.
+    if (cfg && cfg.drive && typeof cfg.drive === "object") {
+      cfg.drive = { folderId: cfg.drive.folderId ?? undefined, connected: !!cfg.drive.refreshToken };
+    }
+    res.json(cfg);
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
@@ -595,6 +608,17 @@ router.put("/autopost/settings", async (req: Request, res: Response) => {
       res.status(401).json({ error: "Token không hợp lệ hoặc hết hạn" });
       return;
     }
+    // Giữ lại refresh token Drive (bị redact ở GET) để lưu settings KHÔNG xoá kết nối.
+    try {
+      const ex = await pool.query(`SELECT config FROM autopost_settings WHERE id = 1`);
+      const exToken = (ex.rows[0]?.config as any)?.drive?.refreshToken;
+      if (exToken) {
+        if (!config.drive || typeof config.drive !== "object") config.drive = {};
+        if (!config.drive.refreshToken) config.drive.refreshToken = exToken;
+      }
+    } catch {
+      /* ignore */
+    }
     const r = await pool.query(
       `INSERT INTO autopost_settings (id, config, updated_at, updated_by)
        VALUES (1, $1::jsonb, now(), $2)
@@ -603,7 +627,11 @@ router.put("/autopost/settings", async (req: Request, res: Response) => {
        RETURNING config`,
       [JSON.stringify(config), approver],
     );
-    res.json((r.rows[0] as any).config);
+    const saved = (r.rows[0] as any).config ?? {};
+    if (saved && saved.drive && typeof saved.drive === "object") {
+      saved.drive = { folderId: saved.drive.folderId ?? undefined, connected: !!saved.drive.refreshToken };
+    }
+    res.json(saved);
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
@@ -639,6 +667,77 @@ router.post("/autopost/drive/sync", async (req: Request, res: Response) => {
     res.json(await syncGoogleDrivePool());
   } catch (e) {
     res.status(500).json({ error: String(e) });
+  }
+});
+
+// ── OAuth 3-legged (Web app) — admin bấm "Kết nối Google Drive" ───────────────
+// State ký HMAC (chống CSRF callback) + chứa redirectUri đã dùng để exchange khớp.
+function driveStateSecret(): string {
+  return process.env.SESSION_SECRET || "autopost-drive-oauth-state";
+}
+function signDriveState(payload: Record<string, unknown>): string {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const sig = createHmac("sha256", driveStateSecret()).update(body).digest("base64url");
+  return `${body}.${sig}`;
+}
+function verifyDriveState(state: string): Record<string, any> | null {
+  const [body, sig] = String(state || "").split(".");
+  if (!body || !sig) return null;
+  const expect = createHmac("sha256", driveStateSecret()).update(body).digest("base64url");
+  if (sig !== expect) return null;
+  try {
+    const p = JSON.parse(Buffer.from(body, "base64url").toString());
+    if (typeof p.exp === "number" && p.exp < Date.now()) return null;
+    return p;
+  } catch {
+    return null;
+  }
+}
+function safeDriveRedirectUri(raw: unknown): string | null {
+  const s = String(raw || "");
+  return /^https?:\/\/[^\s"']+\/api\/autopost\/drive\/callback$/.test(s) ? s : null;
+}
+function drivePage(message: string, ok = false): string {
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<body style="font-family:system-ui,-apple-system,sans-serif;max-width:560px;margin:60px auto;padding:0 20px;text-align:center;color:#222">
+<div style="font-size:42px">${ok ? "✅" : "⚠️"}</div>
+<p style="font-size:16px;line-height:1.6">${message}</p>
+<p><a href="/auto-post-facebook" style="display:inline-block;margin-top:12px;padding:10px 18px;background:#e11d63;color:#fff;border-radius:10px;text-decoration:none;font-weight:600">Quay lại AutoPost</a></p>
+</body>`;
+}
+
+// GET /autopost/drive/connect?token=<jwt>&redirectUri=<...> — bắt đầu OAuth (browser nav).
+router.get("/autopost/drive/connect", async (req: Request, res: Response) => {
+  const role = await getCallerRole(`Bearer ${String(req.query.token ?? "")}`);
+  if (role !== "admin") { res.status(403).send(drivePage("Chỉ admin được phép kết nối Google Drive.")); return; }
+  if (!getOAuthClientEnv()) {
+    res.status(400).send(drivePage("Thiếu GOOGLE_DRIVE_CLIENT_ID / GOOGLE_DRIVE_CLIENT_SECRET trong môi trường."));
+    return;
+  }
+  const redirectUri = safeDriveRedirectUri(req.query.redirectUri);
+  if (!redirectUri) { res.status(400).send(drivePage("redirectUri không hợp lệ.")); return; }
+  try {
+    const state = signDriveState({ exp: Date.now() + 10 * 60 * 1000, r: redirectUri });
+    res.redirect(302, getDriveAuthUrl(redirectUri, state));
+  } catch (e) {
+    res.status(500).send(drivePage(`Lỗi tạo URL OAuth: ${String(e instanceof Error ? e.message : e)}`));
+  }
+});
+
+// GET /autopost/drive/callback?code=&state= — Google redirect về; đổi code → refresh_token.
+router.get("/autopost/drive/callback", async (req: Request, res: Response) => {
+  if (req.query.error) { res.status(400).send(drivePage(`Google từ chối: ${String(req.query.error)}`)); return; }
+  const state = verifyDriveState(String(req.query.state ?? ""));
+  if (!state) { res.status(400).send(drivePage("State không hợp lệ hoặc đã hết hạn — bấm Kết nối lại.")); return; }
+  const redirectUri = safeDriveRedirectUri(state.r);
+  const code = String(req.query.code ?? "");
+  if (!redirectUri || !code) { res.status(400).send(drivePage("Thiếu code/redirectUri.")); return; }
+  try {
+    const refreshToken = await exchangeCodeForRefreshToken(code, redirectUri);
+    await saveDriveRefreshToken(refreshToken); // không log token
+    res.send(drivePage("Đã kết nối Google Drive thành công! Quay lại trang AutoPost → bấm <b>Test kết nối</b> rồi <b>Đồng bộ Google Drive</b>.", true));
+  } catch (e) {
+    res.status(500).send(drivePage(`Đổi token lỗi: ${String(e instanceof Error ? e.message : e)}`));
   }
 });
 

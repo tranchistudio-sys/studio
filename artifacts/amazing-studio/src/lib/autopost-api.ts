@@ -87,7 +87,7 @@ export type AutoPostSettings = {
   tone?: string;
   bannedWords?: string[];
   defaultPageId?: string;
-  drive?: { folderId?: string };
+  drive?: { folderId?: string; connected?: boolean };
   [k: string]: unknown;
 };
 

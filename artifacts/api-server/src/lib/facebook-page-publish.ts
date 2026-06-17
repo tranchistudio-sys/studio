@@ -2,9 +2,11 @@
  * facebook-page-publish.ts — Đăng bài AutoPost lên Facebook Page.
  *
  * ENV / CONFIG (KHÔNG chỉnh sửa bất kỳ file .env nào — chỉ đọc lúc runtime):
- *  - AUTOPOST_DRY_RUN: MẶC ĐỊNH BẬT (true). Chỉ đúng chuỗi "false" (không phân biệt
- *    hoa/thường) mới TẮT dry-run và cho phép đăng thật lên Facebook. Mọi giá trị
- *    khác (kể cả không set) đều giữ dry-run BẬT — sẽ KHÔNG gọi Graph API thật.
+ *  - DRY_RUN: quyết định bởi resolveDryRun() (lib/autopost-config) — ENV THẮNG →
+ *    DB (autopost_settings.config.dryRun) → mặc định BẬT. ENV AUTOPOST_DRY_RUN nếu
+ *    set tường minh sẽ KHÓA (chỉ "false" mới tắt); nếu ENV không set thì admin
+ *    bật/tắt ngay trên UI. Mọi trường hợp mơ hồ/lỗi → BẬT (không đăng thật).
+ *    (isDryRun() bên dưới giữ nguyên ngữ nghĩa ENV-only cho test/log khởi động.)
  *  - FB_PAGE_ACCESS_TOKEN: page access token, đọc từ env làm fallback. Ưu tiên
  *    đọc từ bảng settings key 'fb_page_access_token'.
  *  - FB_PAGE_ID: id của page, đọc từ env làm fallback. Ưu tiên đọc từ bảng
@@ -18,6 +20,7 @@
  */
 import { pool } from "@workspace/db";
 import { resolvePublicUrl } from "./autopost-images";
+import { resolveDryRun } from "./autopost-config";
 
 const GRAPH = "https://graph.facebook.com/v25.0";
 
@@ -122,7 +125,8 @@ export async function publishToPage(p: {
   // Log URL ảnh CUỐI CÙNG gửi cho Facebook — giúp chẩn đoán lỗi "(#100) url ...".
   for (const u of urls) console.log("[AutoPost] FINAL IMAGE URL:", u);
 
-  if (isDryRun()) {
+  // Dry-run: ENV THẮNG → DB (autopost_settings.config.dryRun) → mặc định BẬT.
+  if (await resolveDryRun()) {
     console.log(
       "[AutoPost][DRY_RUN] page=" + pageId + " imgs=" + urls.length + " caption=" + p.message.slice(0, 60),
     );

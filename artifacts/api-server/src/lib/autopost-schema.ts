@@ -106,6 +106,87 @@ CREATE TABLE IF NOT EXISTS autopost_settings (
 
     await pool.query(`INSERT INTO autopost_settings (id, config) VALUES (1, '{}'::jsonb) ON CONFLICT (id) DO NOTHING`);
 
+    // ─── NÂNG CẤP (cộng-thêm, an toàn dữ liệu cũ) ──────────────────────────────
+    // Bảng chiến dịch / batch: mỗi nhóm nội dung có cấu hình riêng (giọng văn,
+    // số bài/ngày, khung giờ, chế độ duyệt…). enabled mặc định false (an toàn).
+    await pool.query(`
+CREATE TABLE IF NOT EXISTS autopost_batches (
+  id serial PRIMARY KEY,
+  name text NOT NULL,
+  description text,
+  page_id text,
+  source_priority text NOT NULL DEFAULT 'app_web',
+  content_types jsonb NOT NULL DEFAULT '[]'::jsonb,
+  tags jsonb NOT NULL DEFAULT '[]'::jsonb,
+  tone text,
+  mode text NOT NULL DEFAULT 'manual',
+  posts_per_day integer NOT NULL DEFAULT 3,
+  caption_options_per_post integer NOT NULL DEFAULT 3,
+  slots jsonb NOT NULL DEFAULT '[]'::jsonb,
+  dry_run boolean,
+  auto_approve_enabled boolean NOT NULL DEFAULT false,
+  auto_approve_after_minutes integer NOT NULL DEFAULT 30,
+  require_manual_approval boolean NOT NULL DEFAULT true,
+  auto_publish_after_approved boolean NOT NULL DEFAULT false,
+  enabled boolean NOT NULL DEFAULT false,
+  sort_order integer NOT NULL DEFAULT 0,
+  config jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+)
+    `);
+
+    // Cột mới cho autopost_posts (idempotent). batch_id KHÔNG ràng buộc FK để an
+    // toàn khi xoá batch (mồ côi vô hại); dùng index để lọc nhanh.
+    for (const col of [
+      `batch_id integer`,
+      `ai_model text`,
+      `used_sample_ids jsonb NOT NULL DEFAULT '[]'::jsonb`,
+      `vision_image_count integer`,
+      `auto_approve_at timestamptz`,
+      `hold_reason text`,
+      `quality_score integer`,
+      `generated_by integer`,
+      `footer_enabled boolean`,
+    ]) {
+      await pool.query(`ALTER TABLE autopost_posts ADD COLUMN IF NOT EXISTS ${col}`);
+    }
+    await pool.query(`CREATE INDEX IF NOT EXISTS ix_autopost_posts_batch ON autopost_posts(batch_id)`);
+    // Cho sweep auto-approve quét nhanh các bài chờ tới hạn.
+    await pool.query(`CREATE INDEX IF NOT EXISTS ix_autopost_posts_autoapprove ON autopost_posts(status, auto_approve_at)`);
+
+    // Nhật ký theo từng bài (ai tạo, model nào, sample nào, lúc duyệt/đăng, lỗi…).
+    await pool.query(`
+CREATE TABLE IF NOT EXISTS autopost_post_log (
+  id serial PRIMARY KEY,
+  post_id integer NOT NULL,
+  event text NOT NULL,
+  detail jsonb NOT NULL DEFAULT '{}'::jsonb,
+  actor text,
+  created_at timestamptz NOT NULL DEFAULT now()
+)
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS ix_autopost_post_log_post ON autopost_post_log(post_id, created_at)`);
+
+    // Kho VĂN PHONG MẪU (RAG nhẹ): admin dán bài hay → AI học giọng (không chép).
+    await pool.query(`
+CREATE TABLE IF NOT EXISTS autopost_style_samples (
+  id serial PRIMARY KEY,
+  title text NOT NULL,
+  content text NOT NULL,
+  tags jsonb NOT NULL DEFAULT '[]'::jsonb,
+  content_type text,
+  tone text,
+  is_active boolean NOT NULL DEFAULT true,
+  priority integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+)
+    `);
+    await pool.query(`CREATE INDEX IF NOT EXISTS ix_autopost_style_active ON autopost_style_samples(is_active, content_type, priority)`);
+    // Ảnh gốc kèm bài mẫu (screenshot đã OCR) — chỉ để admin xem lại; generate KHÔNG dùng.
+    await pool.query(`ALTER TABLE autopost_style_samples ADD COLUMN IF NOT EXISTS images jsonb NOT NULL DEFAULT '[]'::jsonb`);
+
     console.log("[AutoPost] schema ensured");
   } catch (err) {
     console.error("[AutoPost] ensureAutoPostSchema error:", err);

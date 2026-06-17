@@ -1,5 +1,6 @@
 import { callChat } from "./ai-orchestrator";
 import { fetchImageAsBase64, resolvePublicUrl } from "./autopost-images";
+import { stripContacts } from "./autopost-sanitize";
 
 /**
  * TASK 4 — Sinh caption Facebook cho AutoPost (Amazing Studio).
@@ -35,11 +36,50 @@ export type CaptionResult =
       captions: CaptionOption[];
       recommendedIndex: number;
       usedVision: boolean;
+      visionImageCount: number;
       provider: string;
     }
   | { ok: false; reason: string };
 
-export type CaptionOpts = { tone?: string; bannedWords?: string[] };
+export type CaptionOpts = {
+  tone?: string;
+  bannedWords?: string[];
+  /** Khối "văn phong mẫu" (đã build sẵn) nhét vào cuối system prompt — học giọng, không chép. */
+  styleBlock?: string;
+  /** Số caption muốn AI sinh (1–6). Mặc định 3. */
+  captionCount?: number;
+  /** Số ảnh tối đa cho AI đọc (vision). Mặc định 1 (giữ hành vi cũ). */
+  maxVisionImages?: number;
+  /** Phong cách/mood: preset (natural|emotional|elegant|fun|short) hoặc câu mô tả tự do. */
+  style?: string;
+};
+
+/** Cụm "văn mẫu sáo rỗng vô hồn" cần TRÁNH nếu không có ngữ cảnh thật. */
+export const CLICHE_PHRASES: string[] = [
+  "lưu giữ khoảnh khắc tuyệt vời",
+  "khoảnh khắc đáng nhớ",
+  "hạnh phúc viên mãn",
+  "sang trọng đẳng cấp",
+  "đẳng cấp vượt trội",
+  "trọn vẹn yêu thương",
+  "lung linh huyền ảo",
+];
+
+/** Preset phong cách → 1 câu hướng dẫn ngắn cho AI. */
+export const STYLE_PRESETS: Record<string, string> = {
+  natural: "Phong cách: tự nhiên, đời thường, gần gũi, như đang kể chuyện thật.",
+  emotional: "Phong cách: nhiều cảm xúc, ấm áp, chạm tới người đọc (không sến, không lố).",
+  elegant: "Phong cách: sang nhẹ, tinh tế, chữ ít mà sâu, không phô trương.",
+  fun: "Phong cách: vui tươi, dí dỏm, trẻ trung, có thể chèn 1 emoji hợp cảnh.",
+  short: "Phong cách: RẤT ngắn, 1-2 câu, đi thẳng vào điểm nhấn, không lan man.",
+};
+
+/** Trả câu hướng dẫn phong cách từ preset hoặc dùng nguyên văn nếu là mô tả tự do. */
+export function resolveStyleInstruction(style?: string): string {
+  const s = (style ?? "").trim();
+  if (!s) return "";
+  return STYLE_PRESETS[s] ?? `Phong cách yêu cầu: ${s}.`;
+}
 
 /**
  * Danh sách (nhỏ) các cụm từ nhạy cảm / spam mà Facebook hay phạt. Admin có thể
@@ -214,7 +254,7 @@ export function bannedWordsGuard(caption: string, banned: string[]): string[] {
  * JSON.parse; validate captions là mảng chuỗi không rỗng (giữ tối đa 3),
  * recommendedIndex là số (mặc định 0). Trả null khi BẤT KỲ lỗi nào (không throw).
  */
-export function parseCaptions(text: string): { captions: string[]; recommendedIndex: number } | null {
+export function parseCaptions(text: string, maxCount = 3): { captions: string[]; recommendedIndex: number } | null {
   try {
     if (!text || typeof text !== "string") return null;
     let s = text.trim();
@@ -237,7 +277,7 @@ export function parseCaptions(text: string): { captions: string[]; recommendedIn
     const captions = obj.captions
       .filter((c): c is string => typeof c === "string" && c.trim().length > 0)
       .map((c) => c.trim())
-      .slice(0, 3);
+      .slice(0, Math.max(1, Math.min(6, Math.trunc(maxCount) || 3)));
     if (captions.length === 0) return null;
 
     let recommendedIndex = 0;
@@ -252,17 +292,23 @@ export function parseCaptions(text: string): { captions: string[]; recommendedIn
 }
 
 /** Build system prompt (tiếng Việt) — persona + ràng buộc cứng. */
-export function buildSystemPrompt(item: CaptionItem, tone: string, banned: string[]): string {
+export function buildSystemPrompt(item: CaptionItem, tone: string, banned: string[], captionCount = 3, style = ""): string {
   const bannedList = banned.join(", ");
+  const n = Math.max(1, Math.min(6, Math.trunc(captionCount) || 3));
+  const styleLine = resolveStyleInstruction(style);
   const lines = [
     `Bạn là người viết caption Facebook cho Amazing Studio — studio chụp ảnh cưới & beauty.`,
-    `Giọng văn: ${tone}. Viết tự nhiên như người thật, KHÔNG robot, KHÔNG văn mẫu sáo rỗng.`,
+    `Giọng văn: ${tone}. Viết tự nhiên như người thật, có cảm xúc, có HOOK ở 3 giây đầu (câu mở phải hút); KHÔNG robot, KHÔNG nói quá lố, KHÔNG quá bán hàng.`,
+    styleLine || null,
     `Chỉ dùng số tiền/khuyến mãi ĐÚNG theo dữ liệu được cung cấp; TUYỆT ĐỐI KHÔNG bịa giá hay tự thêm con số.`,
     `Viết đúng loại dịch vụ "${item.contentType}"; KHÔNG nói sai sang dịch vụ khác.`,
     `KHÔNG dùng từ ngữ nhạy cảm / bị Facebook hạn chế. Tránh các cụm sau: ${bannedList}.`,
+    `TRÁNH văn mẫu sáo rỗng vô hồn (chỉ dùng khi CÓ ngữ cảnh thật cụ thể), ví dụ: ${CLICHE_PHRASES.map((p) => `"${p}"`).join(", ")}. Hãy tả CỤ THỂ điều thấy được thay vì nói chung chung.`,
+    `KHÔNG tự thêm số điện thoại, địa chỉ, website, link Facebook/TikTok/Zalo, hay tên studio nào — phần thông tin liên hệ sẽ được hệ thống tự gắn ở CUỐI bài. Chỉ viết NỘI DUNG CHÍNH.`,
     `Mỗi caption ngắn gọn 2-4 câu, kèm 2-4 hashtag thuần tiếng Việt (không dấu cũng được).`,
     item.publicLink ? `Chèn đường link này ở CUỐI mỗi caption: ${item.publicLink}` : null,
-    `PHẢI trả về JSON đúng dạng {"captions":["...","...","..."],"recommendedIndex":0} và KHÔNG kèm bất kỳ văn bản nào khác.`,
+    `Tạo ĐÚNG ${n} caption KHÁC NHAU rõ rệt (khác hook/góc nhìn), không trùng ý.`,
+    `PHẢI trả về JSON đúng dạng {"captions":[${Array.from({ length: n }, () => '"..."').join(",")}],"recommendedIndex":0} và KHÔNG kèm bất kỳ văn bản nào khác.`,
   ].filter((l): l is string => !!l);
   return lines.join("\n");
 }
@@ -300,45 +346,55 @@ export async function generateCaptions(item: CaptionItem, opts?: CaptionOpts): P
   try {
     const tone = opts?.tone || DEFAULT_TONE;
     const banned = opts?.bannedWords && opts.bannedWords.length ? opts.bannedWords : DEFAULT_BANNED_WORDS;
+    const captionCount = Math.max(1, Math.min(6, Math.trunc(opts?.captionCount ?? 0) || 3));
+    const maxVision = Math.max(1, Math.min(10, Math.trunc(opts?.maxVisionImages ?? 0) || 1));
+    const styleBlock = typeof opts?.styleBlock === "string" ? opts.styleBlock.trim() : "";
 
-    // Resolve ảnh đầu tiên (null nếu thất bại — fetchImageAsBase64 không throw).
-    const img =
-      item.images && item.images[0]
-        ? await fetchImageAsBase64(resolvePublicUrl(item.images[0]))
-        : null;
+    // Resolve TỐI ĐA `maxVision` ảnh (bỏ ảnh fetch lỗi — fetchImageAsBase64 không throw).
+    const imgs: { mediaType: string; dataBase64: string }[] = [];
+    for (const url of (item.images ?? []).slice(0, maxVision)) {
+      const got = await fetchImageAsBase64(resolvePublicUrl(url));
+      if (got) imgs.push({ mediaType: got.mediaType, dataBase64: got.dataBase64 });
+    }
 
-    const system = buildSystemPrompt(item, tone, banned);
+    const system = buildSystemPrompt(item, tone, banned, captionCount, opts?.style) + (styleBlock ? "\n\n" + styleBlock : "");
     const userText = buildUserText(item);
+    // Khi đọc nhiều ảnh, gợi ý AI quan sát toàn bộ để tả bối cảnh/trang phục/tông màu/cảm xúc.
+    const visionHint =
+      imgs.length > 1
+        ? `\n\nBạn được xem ${imgs.length} ảnh của cùng bộ này — hãy quan sát bối cảnh, trang phục, tông màu, cảm xúc, điểm nổi bật để viết tự nhiên & cụ thể hơn.`
+        : "";
+    const maxTokens = Math.min(2200, 350 + captionCount * 280);
 
     const callOnce = async (withImage: boolean) => {
       const message =
-        withImage && img
-          ? { role: "user" as const, content: userText, images: [{ mediaType: img.mediaType, dataBase64: img.dataBase64 }] }
+        withImage && imgs.length > 0
+          ? { role: "user" as const, content: userText + visionHint, images: imgs }
           : { role: "user" as const, content: userText };
       return await callChat({
         system,
         messages: [message],
         jsonMode: true,
-        maxTokens: 700,
+        maxTokens,
         label: "autopost-caption",
       });
     };
 
     // Attempt 1 — kèm ảnh nếu có.
-    const res1 = await callOnce(!!img);
+    const res1 = await callOnce(imgs.length > 0);
     if (res1.ok) {
-      const parsed1 = parseCaptions(res1.text);
-      if (parsed1) return finalize(parsed1, item, banned, !!img, res1.providerUsed);
+      const parsed1 = parseCaptions(res1.text, captionCount);
+      if (parsed1) return finalize(parsed1, item, banned, imgs.length > 0, imgs.length, res1.providerUsed);
     }
 
-    // Fallback — chỉ khi attempt 1 fail VÀ ta đã dùng ảnh: thử lại không ảnh.
+    // Fallback — chỉ khi attempt 1 fail VÀ ta đã dùng ảnh: thử lại KHÔNG ảnh (metadata-only).
     let lastRes: typeof res1 = res1;
-    if (img && (!res1.ok || parseCaptions(res1.text) == null)) {
+    if (imgs.length > 0 && (!res1.ok || parseCaptions(res1.text, captionCount) == null)) {
       const res2 = await callOnce(false);
       lastRes = res2;
       if (res2.ok) {
-        const parsed2 = parseCaptions(res2.text);
-        if (parsed2) return finalize(parsed2, item, banned, false, res2.providerUsed);
+        const parsed2 = parseCaptions(res2.text, captionCount);
+        if (parsed2) return finalize(parsed2, item, banned, false, 0, res2.providerUsed);
       }
     }
 
@@ -355,9 +411,12 @@ function finalize(
   item: CaptionItem,
   banned: string[],
   usedVision: boolean,
+  visionImageCount: number,
   provider: string,
 ): CaptionResult {
-  const captions: CaptionOption[] = parsed.captions.map((raw) => {
+  const captions: CaptionOption[] = parsed.captions.map((rawText) => {
+    // Sanitize TRƯỚC: xoá mọi liên hệ lạ AI lỡ thêm (footer chính chủ gắn lúc đăng).
+    const raw = stripContacts(rawText);
     const guarded = priceGuard(raw, item);
     const bannedFound = bannedWordsGuard(guarded.text, banned);
     return {
@@ -366,5 +425,5 @@ function finalize(
     };
   });
   const recommendedIndex = clamp(parsed.recommendedIndex, 0, captions.length - 1);
-  return { ok: true, captions, recommendedIndex, usedVision, provider };
+  return { ok: true, captions, recommendedIndex, usedVision, visionImageCount, provider };
 }

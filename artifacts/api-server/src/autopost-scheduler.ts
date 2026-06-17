@@ -26,6 +26,8 @@ import { publishToPage, isDryRun } from "./lib/facebook-page-publish";
 import { generateCaptions } from "./lib/autopost-caption";
 import { emitNotification } from "./routes/notifications";
 import { poolRowToCaptionItem, clampImages, sha1 } from "./lib/autopost-route-helpers";
+import { getBrandFooter, appendFooter } from "./lib/autopost-brand";
+import { stripContacts } from "./lib/autopost-sanitize";
 
 const TAG = "[AutoPost]";
 
@@ -76,6 +78,7 @@ type DuePost = {
   content_pool_id: number | null;
   image_hash: string | null;
   caption_hash: string | null;
+  footer_enabled: boolean | null;
 };
 
 type PublishOutcome = {
@@ -120,11 +123,22 @@ async function publishClaimedPost(post: DuePost): Promise<PublishOutcome> {
     }
   }
 
+  // ── Dựng caption CUỐI: sanitize liên hệ lạ → gắn footer chính chủ (nếu bật). ──
+  const cleaned = stripContacts(post.caption_final ?? "");
+  let finalMessage = cleaned;
+  try {
+    const bf = await getBrandFooter();
+    const useFooter = post.footer_enabled === false ? false : bf.enabled;
+    if (useFooter) finalMessage = appendFooter(cleaned, bf);
+  } catch (e) {
+    console.warn(`${TAG} build footer bài #${post.id} lỗi (đăng không footer):`, String(e).slice(0, 120));
+  }
+
   // ── Đăng (đi qua DRY_RUN bên trong publishToPage). ──
   try {
     const r = await publishToPage({
       pageId: post.page_id ?? undefined,
-      message: post.caption_final,
+      message: finalMessage,
       imageUrls: toImageArray(post.images),
     });
     await pool.query(
@@ -183,7 +197,7 @@ export async function publishDuePosts(nowMs: number = Date.now()): Promise<{ pos
   let due: { rows: DuePost[] };
   try {
     due = await pool.query(
-      `SELECT id, page_id, images, caption_final, content_pool_id, image_hash, caption_hash
+      `SELECT id, page_id, images, caption_final, content_pool_id, image_hash, caption_hash, footer_enabled
          FROM autopost_posts
         WHERE status IN ('approved','scheduled')
           AND approved_by IS NOT NULL
@@ -252,7 +266,7 @@ export async function publishPostNow(
   let row: DuePost | undefined;
   try {
     const r = await pool.query(
-      `SELECT id, page_id, images, caption_final, content_pool_id, image_hash, caption_hash
+      `SELECT id, page_id, images, caption_final, content_pool_id, image_hash, caption_hash, footer_enabled
          FROM autopost_posts WHERE id = $1`,
       [id],
     );

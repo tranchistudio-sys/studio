@@ -78,6 +78,10 @@ export type Post = {
   retryCount: number;
   captionHash: string | null;
   imageHash: string | null;
+  aiModel?: string | null;
+  visionImageCount?: number | null;
+  usedSampleIds?: number[] | null;
+  footerEnabled?: boolean | null;
   poolTitle: string | null;
   createdAt: string;
   updatedAt: string;
@@ -138,7 +142,11 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
     data = text;
   }
   if (!r.ok) {
-    const msg = (data && typeof data === "object" && "error" in data && (data as { error?: string }).error) || `HTTP ${r.status}`;
+    // Hiện lỗi rõ ràng: ưu tiên `error`, kèm `reason` nếu có (vd OCR: "ocr_failed: claude=no_key")
+    // để admin biết là thiếu API key / provider lỗi — KHÔNG chỉ là mã HTTP trống nghĩa.
+    const obj = data && typeof data === "object" ? (data as { error?: string; reason?: string }) : null;
+    const base = (obj && obj.error) || `HTTP ${r.status}`;
+    const msg = obj?.reason ? `${base}: ${obj.reason}` : base;
     throw new Error(String(msg));
   }
   return data as T;
@@ -156,6 +164,43 @@ const K = {
   schedules: () => ["autopost", "schedules"] as const,
   posts: (status?: string) => ["autopost", "posts", status ?? "all"] as const,
   settings: () => ["autopost", "settings"] as const,
+  dryRun: () => ["autopost", "dryrun"] as const,
+  styleSamples: () => ["autopost", "style-samples"] as const,
+  footer: () => ["autopost", "footer"] as const,
+};
+
+// Trạng thái dry-run hiệu lực: env thắng → db → mặc định BẬT.
+export type DryRunState = {
+  dryRun: boolean;
+  source: "env" | "db" | "default";
+  envForced: boolean;
+  canToggle: boolean;
+};
+
+// Bài mẫu trong "Kho văn phong mẫu" (RAG nhẹ).
+export type StyleSample = {
+  id: number;
+  title: string;
+  content: string;
+  tags: string[];
+  contentType: string | null;
+  tone: string | null;
+  isActive: boolean;
+  priority: number;
+  images?: string[];
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type OcrResult = { url: string | null; text: string; provider?: string };
+
+// Chữ ký cuối bài (footer thương hiệu). `text` = footer đã dựng sẵn (preview).
+export type BrandFooter = {
+  enabled: boolean;
+  template: string;
+  name: string; address: string; phone: string; website: string;
+  facebook: string; tiktok: string; note: string;
+  text?: string;
 };
 
 // ─────────────────────────────── Queries ─────────────────────────────────────
@@ -189,6 +234,73 @@ export function usePosts(status?: string) {
 
 export function useSettings() {
   return useQuery({ queryKey: K.settings(), queryFn: () => apGet<AutoPostSettings>(`/autopost/settings`) });
+}
+
+export function useDryRun() {
+  return useQuery({ queryKey: K.dryRun(), queryFn: () => apGet<DryRunState>(`/autopost/dryrun`) });
+}
+
+export function useSetDryRun() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (dryRun: boolean) => apPut<DryRunState>(`/autopost/dryrun`, { dryRun }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: K.dryRun() }),
+  });
+}
+
+// ─── Kho văn phong mẫu ───
+export function useStyleSamples() {
+  return useQuery({ queryKey: K.styleSamples(), queryFn: () => apGet<StyleSample[]>(`/autopost/style-samples`) });
+}
+
+export function useSaveStyleSample() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id?: number; body: Record<string, unknown> }) =>
+      v.id ? apPut(`/autopost/style-samples/${v.id}`, v.body) : apPost(`/autopost/style-samples`, v.body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: K.styleSamples() }),
+  });
+}
+
+export function useDeleteStyleSample() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => apDelete(`/autopost/style-samples/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: K.styleSamples() }),
+  });
+}
+
+// OCR 1 ảnh screenshot → { url (ảnh đã lưu), text (chữ đọc được) }. Gọi lần lượt từng ảnh.
+export function useOcrStyleImage() {
+  return useMutation({
+    mutationFn: (v: { dataBase64: string; mediaType: string }) =>
+      apPost<OcrResult>(`/autopost/style-samples/ocr`, v),
+  });
+}
+
+// ─── Chữ ký cuối bài (footer) ───
+export function useFooter() {
+  return useQuery({ queryKey: K.footer(), queryFn: () => apGet<BrandFooter>(`/autopost/footer`) });
+}
+
+export function useSaveFooter() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: Partial<BrandFooter>) => apPut<BrandFooter>(`/autopost/footer`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: K.footer() }),
+  });
+}
+
+// Viết lại caption cho bài chờ duyệt theo phong cách/mood (Tạo lại / Ngắn hơn / Tình hơn / Vui hơn).
+export function useRegeneratePost() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id: number; style?: string; captionCount?: number; styleSampleIds?: number[] }) =>
+      apPost<Post>(`/autopost/posts/${v.id}/regenerate`, {
+        style: v.style, captionCount: v.captionCount, styleSampleIds: v.styleSampleIds,
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["autopost", "posts"] }),
+  });
 }
 
 // ─────────────────────────────── Mutations ───────────────────────────────────
@@ -228,7 +340,7 @@ export function useDeletePoolItem() {
 export function useGenerate() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (body: { poolId: number; scheduleId?: number; slotId?: number; imageCount?: number }) =>
+    mutationFn: (body: { poolId: number; scheduleId?: number; slotId?: number; imageCount?: number; style?: string; captionCount?: number; styleSampleIds?: number[] }) =>
       apPost<Post>(`/autopost/posts/generate`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["autopost", "posts"] }),
   });
@@ -245,8 +357,8 @@ export function useUpdatePost() {
 export function useApprove() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { id: number; captionFinal: string; scheduledAt: string }) =>
-      apPost(`/autopost/posts/${v.id}/approve`, { captionFinal: v.captionFinal, scheduledAt: v.scheduledAt }),
+    mutationFn: (v: { id: number; captionFinal: string; scheduledAt: string; footerEnabled?: boolean }) =>
+      apPost(`/autopost/posts/${v.id}/approve`, { captionFinal: v.captionFinal, scheduledAt: v.scheduledAt, footerEnabled: v.footerEnabled }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["autopost", "posts"] }),
   });
 }

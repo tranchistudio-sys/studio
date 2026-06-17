@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Share2, RefreshCw, Plus, Trash2, CheckCircle2, AlertTriangle, ExternalLink,
   Sparkles, Clock, History, Settings as SettingsIcon, Facebook, Loader2, X, Image as ImageIcon, Eye, EyeOff, Folder,
+  BookOpen, Wand2, Pencil, ArrowUp, ArrowDown, GripVertical, Scissors,
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -23,7 +24,10 @@ import {
   useGenerate, useApprove, useSkipPost, useRetryPost, usePublishNow,
   useSaveSchedule, useToggleSchedule, useDeleteSchedule, useSaveSettings, useTestFacebook,
   useSyncDrive, useTestDrive, useDriveStatus,
+  useStyleSamples, useSaveStyleSample, useDeleteStyleSample, useRegeneratePost, useOcrStyleImage,
+  useFooter, useSaveFooter,
   type PoolItem, type Post, type Schedule, type Slot, type FbTestResult, type AutoPostSettings, type DriveTestResult,
+  type StyleSample,
 } from "@/lib/autopost-api";
 import { getImageSrc } from "@/lib/imageUtils";
 import { apiUrl } from "@/lib/api-base";
@@ -56,6 +60,14 @@ const SOURCE_PRIORITIES = [
   { value: "app_web", label: "App / Web" },
   { value: "google_drive", label: "Google Drive" },
   { value: "upload", label: "Upload thủ công" },
+];
+// Phong cách viết caption (khớp preset backend: natural|emotional|elegant|fun|short).
+const STYLE_PRESETS: { value: string; label: string }[] = [
+  { value: "natural", label: "Tự nhiên" },
+  { value: "emotional", label: "Tình cảm" },
+  { value: "elegant", label: "Sang nhẹ" },
+  { value: "fun", label: "Vui" },
+  { value: "short", label: "Ngắn gọn" },
 ];
 
 function ctLabel(v: string | null): string {
@@ -139,6 +151,7 @@ export default function AutoPostFacebookPage() {
           <TabsTrigger value="scheduled"><CheckCircle2 className="w-4 h-4 mr-1" /> Đã lên lịch</TabsTrigger>
           <TabsTrigger value="history"><History className="w-4 h-4 mr-1" /> Lịch sử đăng</TabsTrigger>
           <TabsTrigger value="facebook"><Facebook className="w-4 h-4 mr-1" /> Facebook Page</TabsTrigger>
+          <TabsTrigger value="style"><BookOpen className="w-4 h-4 mr-1" /> Văn phong mẫu</TabsTrigger>
           <TabsTrigger value="config"><SettingsIcon className="w-4 h-4 mr-1" /> Cấu hình Lulu</TabsTrigger>
         </TabsList>
 
@@ -148,6 +161,7 @@ export default function AutoPostFacebookPage() {
         <TabsContent value="scheduled" className="mt-4"><ScheduledTab notify={notify} /></TabsContent>
         <TabsContent value="history" className="mt-4"><HistoryTab notify={notify} /></TabsContent>
         <TabsContent value="facebook" className="mt-4"><FacebookTab notify={notify} /></TabsContent>
+        <TabsContent value="style" className="mt-4"><StyleTab notify={notify} /></TabsContent>
         <TabsContent value="config" className="mt-4"><ConfigTab notify={notify} /></TabsContent>
       </Tabs>
     </div>
@@ -201,18 +215,35 @@ function PendingCard({ post, notify }: { post: Post; notify: Notify }) {
   const [idx, setIdx] = useState(initIdx);
   const [text, setText] = useState(options[initIdx]?.text ?? post.captionFinal ?? "");
   const [when, setWhen] = useState(defaultScheduleValue());
+  const [style, setStyle] = useState("natural");
+  const { data: footer } = useFooter();
+  const [footerOn, setFooterOn] = useState(post.footerEnabled ?? true);
   const approve = useApprove();
   const skip = useSkipPost();
+  const regen = useRegeneratePost();
 
   const pickOption = (i: number) => {
     setIdx(i);
     if (options[i]) setText(options[i].text);
   };
 
+  // Viết lại caption theo phong cách/mood; cập nhật ngay ô caption từ kết quả trả về.
+  const onRegenerate = async (s: string) => {
+    setStyle(s);
+    try {
+      const updated = await regen.mutateAsync({ id: post.id, style: s });
+      const opts = updated.captionOptions ?? [];
+      const ri = updated.captionRecommendedIndex != null && opts[updated.captionRecommendedIndex] ? updated.captionRecommendedIndex : 0;
+      setIdx(ri);
+      setText(opts[ri]?.text ?? "");
+      notify(true, "Đã viết lại caption ✨");
+    } catch (e) { notify(false, `Viết lại lỗi: ${String((e as Error).message)}`); }
+  };
+
   const onApprove = async () => {
     if (!text.trim()) { notify(false, "Caption không được rỗng"); return; }
     try {
-      await approve.mutateAsync({ id: post.id, captionFinal: text, scheduledAt: new Date(when).toISOString() });
+      await approve.mutateAsync({ id: post.id, captionFinal: text, scheduledAt: new Date(when).toISOString(), footerEnabled: footerOn });
       notify(true, `Đã duyệt bài #${post.id} — sẽ đăng lúc ${fmtDateTime(new Date(when).toISOString())}`);
     } catch (e) { notify(false, `Duyệt lỗi: ${String((e as Error).message)}`); }
   };
@@ -242,6 +273,29 @@ function PendingCard({ post, notify }: { post: Post; notify: Notify }) {
         </div>
       </div>
 
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="text-xs text-muted-foreground mr-0.5 inline-flex items-center gap-1"><Wand2 className="w-3.5 h-3.5" /> Phong cách</span>
+        <Select value={style} onValueChange={setStyle}>
+          <SelectTrigger className="h-8 w-[116px] text-xs"><SelectValue /></SelectTrigger>
+          <SelectContent>{STYLE_PRESETS.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}</SelectContent>
+        </Select>
+        <Button size="sm" variant="outline" className="h-8 text-xs" disabled={regen.isPending} onClick={() => onRegenerate(style)}>
+          {regen.isPending ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5 mr-1" />} Tạo lại
+        </Button>
+        <Button size="sm" variant="ghost" className="h-8 text-xs" disabled={regen.isPending} onClick={() => onRegenerate("short")}>Ngắn hơn</Button>
+        <Button size="sm" variant="ghost" className="h-8 text-xs" disabled={regen.isPending} onClick={() => onRegenerate("emotional")}>Tình hơn</Button>
+        <Button size="sm" variant="ghost" className="h-8 text-xs" disabled={regen.isPending} onClick={() => onRegenerate("fun")}>Vui hơn</Button>
+        <Button size="sm" variant="ghost" className="h-8 text-xs" disabled={regen.isPending} onClick={() => onRegenerate("elegant")}>Sang hơn</Button>
+      </div>
+
+      {(post.visionImageCount != null || post.aiModel || (post.usedSampleIds?.length ?? 0) > 0) && (
+        <p className="text-[11px] text-muted-foreground flex items-center gap-2 flex-wrap">
+          {post.visionImageCount != null && <span>AI đọc {post.visionImageCount} ảnh</span>}
+          {(post.usedSampleIds?.length ?? 0) > 0 && <span>· học {post.usedSampleIds!.length} bài mẫu</span>}
+          {post.aiModel && <span>· model {post.aiModel}</span>}
+        </p>
+      )}
+
       <RadioGroup value={String(idx)} onValueChange={(v) => pickOption(Number(v))} className="space-y-1.5">
         {options.map((o, i) => (
           <label key={i} className={`flex gap-2 items-start text-sm rounded-lg border p-2 cursor-pointer ${idx === i ? "border-primary bg-primary/5" : "border-border"}`}>
@@ -255,9 +309,19 @@ function PendingCard({ post, notify }: { post: Post; notify: Notify }) {
       </RadioGroup>
 
       <div>
-        <Label className="text-xs">Caption sẽ đăng (sửa tay được)</Label>
+        <Label className="text-xs">Nội dung AI viết (sửa tay được — footer gắn tự động)</Label>
         <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={4} className="mt-1" />
       </div>
+
+      {footer?.text && (
+        <div className="rounded-lg border bg-muted/30 p-2.5 space-y-1.5">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <Switch checked={footerOn} onCheckedChange={setFooterOn} />
+            <span className="text-xs font-medium">Gắn chữ ký cuối bài (Amazing Studio)</span>
+          </label>
+          {footerOn && <p className="text-[11px] text-muted-foreground whitespace-pre-wrap border-t pt-1.5">{footer.text}</p>}
+        </div>
+      )}
 
       <div className="flex items-end gap-2 flex-wrap">
         <div className="flex-1 min-w-[180px]">
@@ -786,6 +850,512 @@ function FacebookTab({ notify }: { notify: Notify }) {
         <span>Chế độ DRY_RUN đang bật mặc định — bài "đăng" chỉ ghi log thử, chưa lên Facebook thật. Tắt bằng biến môi trường <code>AUTOPOST_DRY_RUN=false</code> khi đã sẵn sàng.</span>
       </div>
     </div>
+  );
+}
+
+// ─────────────────────────────── Tab: Văn phong mẫu ──────────────────────────
+
+function StyleTab({ notify }: { notify: Notify }) {
+  const { data: samples, isLoading } = useStyleSamples();
+  const del = useDeleteStyleSample();
+  const save = useSaveStyleSample();
+  const [editing, setEditing] = useState<StyleSample | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [ocrOpen, setOcrOpen] = useState(false);
+
+  const toggleActive = (s: StyleSample) =>
+    save.mutate({
+      id: s.id,
+      body: { title: s.title, content: s.content, tags: s.tags, contentType: s.contentType, tone: s.tone, isActive: !s.isActive, priority: s.priority, images: s.images ?? [] },
+    });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start gap-2 flex-wrap">
+        <p className="text-sm text-muted-foreground flex-1 min-w-[200px]">
+          Dán bài viết <b>hay</b> (hoặc <b>ném ảnh chụp màn hình</b> để AI đọc chữ) — Lulu học <b>giọng văn</b> khi viết caption, <b>không chép</b> nguyên văn. Gắn đúng nhóm dịch vụ / tag để chọn mẫu phù hợp.
+        </p>
+        <Button variant="outline" onClick={() => setOcrOpen(true)} className="shrink-0"><ImageIcon className="w-4 h-4 mr-1" /> Đọc từ ảnh</Button>
+        <Button onClick={() => setCreating(true)} className="shrink-0"><Plus className="w-4 h-4 mr-1" /> Thêm bài mẫu</Button>
+      </div>
+
+      {isLoading ? <Spin /> : !samples?.length ? (
+        <Empty text="Chưa có bài mẫu nào. Bấm 'Thêm bài mẫu' và dán 1 caption hay của Amazing Studio để AI học gu." />
+      ) : (
+        <div className="space-y-2">
+          {samples.map((s) => (
+            <div key={s.id} className={`rounded-xl border bg-card p-3 ${!s.isActive ? "opacity-60" : ""}`}>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-semibold">{s.title}</span>
+                {s.contentType && <Badge variant="secondary">{ctLabel(s.contentType)}</Badge>}
+                {s.tags.map((t) => <Badge key={t} variant="outline">{t}</Badge>)}
+                <span className="text-xs text-muted-foreground">ưu tiên {s.priority}</span>
+                <div className="flex-1" />
+                <Switch checked={s.isActive} onCheckedChange={() => toggleActive(s)} />
+                <Button size="icon" variant="outline" className="h-8 w-8" title="Sửa" onClick={() => setEditing(s)}><Pencil className="w-3.5 h-3.5" /></Button>
+                <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" title="Xoá" onClick={() => { if (confirm("Xoá bài mẫu này?")) del.mutate(s.id); }}><Trash2 className="w-3.5 h-3.5" /></Button>
+              </div>
+              <p className="text-sm mt-1.5 whitespace-pre-wrap line-clamp-3 text-muted-foreground">{s.content}</p>
+              {(s.images?.length ?? 0) > 0 && (
+                <div className="flex gap-1.5 mt-2">
+                  {s.images!.slice(0, 5).map((u, i) => <Thumb key={i} url={u} className="w-12 h-12 rounded-md" />)}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {(creating || editing) && (
+        <StyleDialog sample={editing} onClose={() => { setCreating(false); setEditing(null); }} notify={notify} />
+      )}
+      {ocrOpen && <OcrDialog onClose={() => setOcrOpen(false)} notify={notify} />}
+    </div>
+  );
+}
+
+function StyleDialog({ sample, onClose, notify }: { sample: StyleSample | null; onClose: () => void; notify: Notify }) {
+  const save = useSaveStyleSample();
+  const [title, setTitle] = useState(sample?.title ?? "");
+  const [content, setContent] = useState(sample?.content ?? "");
+  const [contentType, setContentType] = useState(sample?.contentType ?? "all");
+  const [tags, setTags] = useState((sample?.tags ?? []).join(", "));
+  const [tone, setTone] = useState(sample?.tone ?? "");
+  const [priority, setPriority] = useState(String(sample?.priority ?? 0));
+  const [isActive, setIsActive] = useState(sample?.isActive ?? true);
+
+  const onSave = async () => {
+    if (!title.trim()) { notify(false, "Cần nhập tiêu đề"); return; }
+    if (!content.trim()) { notify(false, "Cần nhập nội dung bài mẫu"); return; }
+    try {
+      await save.mutateAsync({
+        id: sample?.id,
+        body: {
+          title,
+          content,
+          contentType: contentType === "all" ? null : contentType,
+          tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
+          tone: tone || null,
+          priority: Number(priority) || 0,
+          isActive,
+        },
+      });
+      notify(true, sample ? "Đã cập nhật bài mẫu" : "Đã thêm bài mẫu");
+      onClose();
+    } catch (e) { notify(false, `Lưu lỗi: ${String((e as Error).message)}`); }
+  };
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{sample ? "Sửa bài mẫu" : "Thêm bài mẫu"}</DialogTitle>
+          <DialogDescription>Dán nguyên 1 caption hay. AI học GIỌNG, tuyệt đối không chép lại.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div><Label>Tiêu đề</Label><Input value={title} onChange={(e) => setTitle(e.target.value)} className="mt-1" placeholder="VD: Mẫu cưới ngọt ngào" /></div>
+          <div><Label>Nội dung bài mẫu</Label><Textarea value={content} onChange={(e) => setContent(e.target.value)} rows={6} className="mt-1" placeholder="Dán caption hay vào đây..." /></div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <Label>Nhóm dịch vụ</Label>
+              <Select value={contentType} onValueChange={setContentType}>
+                <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">Tất cả (dùng chung)</SelectItem>
+                  {CONTENT_TYPES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div><Label>Ưu tiên</Label><Input type="number" value={priority} onChange={(e) => setPriority(e.target.value)} className="mt-1" /></div>
+          </div>
+          <div><Label>Tag phong cách (cách nhau dấu phẩy)</Label><Input value={tags} onChange={(e) => setTags(e.target.value)} className="mt-1" placeholder="cưới, beauty, bầu, áo dài, váy mới, hậu trường, bill, feedback" /></div>
+          <div><Label>Giọng (tuỳ chọn)</Label><Input value={tone} onChange={(e) => setTone(e.target.value)} className="mt-1" placeholder="VD: ngọt ngào, dí dỏm" /></div>
+          <div className="flex items-center gap-2"><Switch checked={isActive} onCheckedChange={setIsActive} /> <span className="text-sm">Cho AI dùng mẫu này</span></div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Huỷ</Button>
+          <Button onClick={onSave} disabled={save.isPending}>{save.isPending && <Loader2 className="w-4 h-4 mr-1 animate-spin" />} Lưu</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── "Đọc bài mẫu từ ảnh" ─────────────────────────────────────────────────────
+// WORKFLOW ĐÚNG CỦA STUDIO: 1 bài viết dài thường phải chụp thành NHIỀU ảnh. Vì vậy
+// MẶC ĐỊNH: chọn nhiều ảnh cùng lúc = 1 BÀI MẪU DUY NHẤT. OCR từng ảnh THEO THỨ TỰ
+// rồi GHÉP text lại thành 1 nội dung → admin sửa → lưu 1 bài mẫu (kèm tất cả ảnh gốc).
+// TUYỆT ĐỐI KHÔNG tự biến mỗi ảnh thành 1 mẫu riêng. "Tách thành nhiều mẫu" chỉ là
+// nút phụ, admin chủ động bấm khi thật sự cần.
+type OcrImage = {
+  key: string; objectUrl: string; dataBase64: string; mediaType: string;
+  url: string | null; text: string;
+  status: "pending" | "reading" | "ok" | "error"; error?: string;
+};
+
+function fileToBase64(file: File): Promise<{ dataBase64: string; mediaType: string }> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader();
+    fr.onload = () => {
+      const res = String(fr.result || "");
+      resolve({ dataBase64: res.split(",")[1] ?? "", mediaType: file.type || "image/jpeg" });
+    };
+    fr.onerror = () => reject(new Error("đọc file lỗi"));
+    fr.readAsDataURL(file);
+  });
+}
+
+// Ghép text các ảnh (theo đúng thứ tự mảng) thành 1 nội dung bài mẫu.
+function joinOcrTexts(imgs: OcrImage[]): string {
+  return imgs.map((i) => i.text.trim()).filter(Boolean).join("\n");
+}
+
+function OcrDialog({ onClose, notify }: { onClose: () => void; notify: Notify }) {
+  const ocr = useOcrStyleImage();
+  const save = useSaveStyleSample();
+  const [images, setImages] = useState<OcrImage[]>([]);
+  // Nội dung bài mẫu đã ghép từ tất cả ảnh — đây là "nguồn sự thật" khi lưu.
+  const [mergedText, setMergedText] = useState("");
+  // Admin đã tự sửa ô nội dung? Nếu rồi thì KHÔNG tự ghép đè khi sắp xếp/đọc lại.
+  const [mergedEdited, setMergedEdited] = useState(false);
+  const [reading, setReading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [dragKey, setDragKey] = useState<string | null>(null);
+
+  // Trường mô tả của BÀI MẪU (1 mẫu duy nhất).
+  const [title, setTitle] = useState("");
+  const [contentType, setContentType] = useState("all");
+  const [tags, setTags] = useState("");
+  const [tone, setTone] = useState("");
+  const [priority, setPriority] = useState("0");
+  const [isActive, setIsActive] = useState(true);
+
+  const MAX_IMAGES = 10;
+  // Ref giữ danh sách ảnh hiện tại để handler 'paste' (gắn 1 lần khi mở modal) luôn
+  // đọc được SỐ LƯỢNG mới nhất mà không bị "stale closure".
+  const imagesRef = useRef<OcrImage[]>([]);
+  useEffect(() => { imagesRef.current = images; }, [images]);
+
+  // Ghép lại nội dung từ mảng ảnh MỚI (chỉ khi admin chưa tự sửa tay).
+  const applyMerge = (imgs: OcrImage[]) => {
+    if (!mergedEdited) setMergedText(joinOcrTexts(imgs));
+  };
+
+  // Thêm 1 loạt File vào kho ảnh — dùng CHUNG cho nút "Chọn ảnh" và dán Ctrl+V.
+  // Tôn trọng giới hạn 10 ảnh; nếu dư thì chỉ lấy đủ chỗ + báo nhẹ.
+  const addFiles = async (files: File[], fromPicker: boolean) => {
+    const room = MAX_IMAGES - imagesRef.current.length;
+    if (room <= 0) { notify(false, "Tối đa 10 ảnh cho một bài mẫu"); return; }
+    const accept = files.slice(0, room);
+    const next: OcrImage[] = [];
+    for (const f of accept) {
+      try {
+        const { dataBase64, mediaType } = await fileToBase64(f);
+        next.push({
+          key: `${f.name || "anh"}-${f.size}-${Math.random().toString(36).slice(2)}`,
+          objectUrl: URL.createObjectURL(f), dataBase64, mediaType, url: null,
+          text: "", status: "pending",
+        });
+      } catch { /* bỏ file lỗi */ }
+    }
+    if (!next.length) return;
+    // Gợi ý tiêu đề từ tên ảnh đầu (chỉ khi chọn file thật — ảnh dán có tên 'image.png' vô nghĩa).
+    if (fromPicker && accept[0]?.name) {
+      const t = accept[0].name.replace(/\.[^.]+$/, "").slice(0, 60);
+      setTitle((prev) => (prev.trim() ? prev : t));
+    }
+    setImages((d) => [...d, ...next].slice(0, MAX_IMAGES));
+    if (files.length > room) notify(false, "Tối đa 10 ảnh cho một bài mẫu");
+  };
+
+  const onPick = (files: FileList | null) => {
+    if (!files?.length) return;
+    void addFiles(Array.from(files), true);
+  };
+
+  // Dán ảnh bằng Ctrl+V khi modal đang mở. Gắn ở cấp document để bắt được dù focus
+  // ở textarea hay bất kỳ đâu trong popup. Tự gỡ khi modal đóng (component unmount)
+  // → KHÔNG ảnh hưởng Ctrl+V ở các màn khác. Nếu clipboard không có ảnh thì bỏ qua
+  // (để dán chữ vào textarea chạy bình thường).
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      const imgs: File[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        if (it.kind === "file" && it.type.startsWith("image/")) {
+          const f = it.getAsFile();
+          if (f) imgs.push(f);
+        }
+      }
+      if (!imgs.length) return; // không có ảnh → để paste mặc định chạy
+      e.preventDefault();
+      void addFiles(imgs, false);
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const removeImage = (key: string) => {
+    const next = images.filter((x) => x.key !== key);
+    setImages(next);
+    applyMerge(next);
+  };
+
+  // Đổi vị trí ảnh from→to (giữ thứ tự đọc). Ghép lại nội dung theo thứ tự mới.
+  const reorder = (from: number, to: number) => {
+    if (to < 0 || to >= images.length || from === to) return;
+    const next = images.slice();
+    const [it] = next.splice(from, 1);
+    next.splice(to, 0, it);
+    setImages(next);
+    applyMerge(next);
+  };
+
+  const onDropOn = (targetKey: string) => {
+    if (!dragKey || dragKey === targetKey) { setDragKey(null); return; }
+    const from = images.findIndex((i) => i.key === dragKey);
+    const to = images.findIndex((i) => i.key === targetKey);
+    setDragKey(null);
+    if (from >= 0 && to >= 0) reorder(from, to);
+  };
+
+  // OCR từng ảnh THEO THỨ TỰ → cập nhật trạng thái từng ảnh → ghép text khi xong.
+  const onRead = async () => {
+    if (!images.length) return;
+    setReading(true);
+    const order = images; // snapshot thứ tự hiện tại
+    const results: Record<string, { url: string | null; text: string }> = {};
+    for (const img of order) {
+      if (img.status === "ok") { results[img.key] = { url: img.url, text: img.text }; continue; }
+      setImages((arr) => arr.map((x) => (x.key === img.key ? { ...x, status: "reading" } : x)));
+      try {
+        const r = await ocr.mutateAsync({ dataBase64: img.dataBase64, mediaType: img.mediaType });
+        results[img.key] = { url: r.url, text: r.text };
+        setImages((arr) => arr.map((x) => (x.key === img.key ? { ...x, status: "ok", url: r.url, text: r.text } : x)));
+      } catch (e) {
+        setImages((arr) => arr.map((x) => (x.key === img.key ? { ...x, status: "error", error: String((e as Error).message) } : x)));
+      }
+    }
+    setReading(false);
+    // Ghép theo đúng thứ tự ảnh (trừ khi admin đã tự sửa tay nội dung).
+    if (!mergedEdited) {
+      const joined = order.map((i) => (results[i.key]?.text ?? i.text).trim()).filter(Boolean).join("\n");
+      setMergedText(joined);
+    }
+    const okCount = order.filter((i) => (results[i.key]?.text ?? "").trim()).length;
+    notify(okCount > 0, okCount > 0 ? "Đã đọc & ghép xong. Sửa lại nội dung nếu cần rồi bấm Lưu." : "Không đọc được chữ — gõ tay hoặc thử lại ảnh khác.");
+  };
+
+  // LƯU MẶC ĐỊNH: tạo ĐÚNG 1 bài mẫu = nội dung đã ghép + tất cả ảnh gốc (theo thứ tự).
+  const onSave = async () => {
+    const content = mergedText.trim();
+    if (!content) { notify(false, "Chưa có nội dung. Hãy bấm 'Đọc chữ từ ảnh' hoặc gõ tay vào ô nội dung."); return; }
+    const finalTitle = title.trim() || (images.length > 1 ? `Mẫu từ ${images.length} ảnh` : "Mẫu từ ảnh");
+    const urls = images.map((i) => i.url).filter((u): u is string => !!u);
+    setSaving(true);
+    try {
+      await save.mutateAsync({
+        body: {
+          title: finalTitle,
+          content,
+          contentType: contentType === "all" ? null : contentType,
+          tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
+          tone: tone || null,
+          priority: Number(priority) || 0,
+          isActive,
+          images: urls,
+        },
+      });
+      notify(true, "Đã lưu 1 bài mẫu vào kho");
+      onClose();
+    } catch (e) {
+      notify(false, `Lưu lỗi: ${String((e as Error).message)}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // TUỲ CHỌN PHỤ: tách mỗi ảnh (đã đọc chữ) thành 1 bài mẫu riêng. KHÔNG phải mặc định.
+  const onSplit = async () => {
+    const ready = images.filter((d) => d.text.trim());
+    if (ready.length < 2) { notify(false, "Cần ≥ 2 ảnh đã đọc được chữ để tách"); return; }
+    if (!confirm(`Tách thành ${ready.length} bài mẫu riêng (mỗi ảnh = 1 mẫu)?`)) return;
+    setSaving(true);
+    const tagArr = tags.split(",").map((t) => t.trim()).filter(Boolean);
+    const base = title.trim() || "Mẫu ảnh";
+    let ok = 0;
+    for (let i = 0; i < ready.length; i++) {
+      const d = ready[i];
+      try {
+        await save.mutateAsync({
+          body: {
+            title: `${base} ${i + 1}`,
+            content: d.text.trim(),
+            contentType: contentType === "all" ? null : contentType,
+            tags: tagArr,
+            tone: tone || null,
+            priority: Number(priority) || 0,
+            isActive,
+            images: d.url ? [d.url] : [],
+          },
+        });
+        ok++;
+      } catch { /* tiếp tục mẫu khác */ }
+    }
+    setSaving(false);
+    notify(ok > 0, ok > 0 ? `Đã tách & lưu ${ok} bài mẫu` : "Lưu lỗi");
+    if (ok > 0) onClose();
+  };
+
+  const readCount = images.filter((d) => d.status === "ok").length;
+  const splittable = images.filter((d) => d.text.trim()).length;
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-2xl max-h-[88vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Đọc bài mẫu từ ảnh</DialogTitle>
+          <DialogDescription>
+            Một bài viết dài có thể chụp thành nhiều ảnh. Chọn <b>tất cả ảnh của CÙNG một bài</b> — AI đọc chữ từng ảnh theo thứ tự rồi <b>ghép thành 1 bài mẫu</b>. Kéo–thả để sắp thứ tự, sửa nội dung nếu đọc sai, rồi Lưu. (AI học từ phần CHỮ; ảnh chỉ lưu kèm để xem lại.)
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 flex-wrap">
+            <label className={`inline-flex items-center gap-1.5 text-sm border rounded-lg px-3 h-9 ${images.length >= 10 ? "opacity-50" : "cursor-pointer hover:bg-muted"}`}>
+              <Plus className="w-4 h-4" /> Chọn ảnh ({images.length}/10)
+              <input type="file" accept="image/*" multiple className="hidden" disabled={images.length >= 10}
+                onChange={(e) => { onPick(e.target.files); e.currentTarget.value = ""; }} />
+            </label>
+            <Button size="sm" onClick={onRead} disabled={!images.length || reading}>
+              {reading ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Sparkles className="w-4 h-4 mr-1" />} Đọc chữ từ ảnh
+            </Button>
+            {readCount > 0 && <span className="text-xs text-muted-foreground">đã đọc {readCount}/{images.length}</span>}
+          </div>
+          <p className="text-[11px] text-muted-foreground -mt-1">
+            💡 Mẹo: chụp màn hình bài viết rồi nhấn <b>Ctrl + V</b> để dán thẳng ảnh vào đây — không cần bấm "Chọn ảnh". Dán nhiều lần để thêm nhiều ảnh.
+          </p>
+
+          {/* Danh sách ảnh — thumbnail theo thứ tự, kéo–thả / nút ↑↓ để sắp lại, xoá từng ảnh. */}
+          {images.length > 0 && (
+            <div className="space-y-2">
+              {images.map((d, idx) => (
+                <div
+                  key={d.key}
+                  draggable
+                  onDragStart={() => setDragKey(d.key)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={() => onDropOn(d.key)}
+                  className={`flex items-start gap-2 rounded-xl border p-2 bg-card ${dragKey === d.key ? "opacity-50" : ""}`}
+                >
+                  <div className="flex flex-col items-center gap-0.5 pt-1 text-muted-foreground">
+                    <GripVertical className="w-4 h-4 cursor-grab shrink-0" />
+                    <span className="text-[11px] font-semibold">{idx + 1}</span>
+                  </div>
+                  <img src={d.objectUrl} alt="" className="w-16 h-16 object-cover rounded-md flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    {d.status === "error" ? (
+                      // Lỗi đọc: hiện ĐẦY ĐỦ (xuống dòng + cuộn nếu dài) — KHÔNG cắt cụt. Kèm
+                      // tooltip hover (title) + nút sao chép để admin gửi/đối chiếu lỗi dễ dàng.
+                      <div className="min-h-[2rem]">
+                        <p
+                          className="text-xs text-red-600 whitespace-pre-wrap break-words max-h-24 overflow-y-auto"
+                          title={`Đọc lỗi: ${d.error ?? "không rõ"}`}
+                        >
+                          Đọc lỗi: {d.error ?? "không rõ"}
+                        </p>
+                        <button
+                          type="button"
+                          className="mt-0.5 text-[11px] underline text-muted-foreground hover:text-foreground"
+                          onClick={() => {
+                            const msg = `Đọc lỗi: ${d.error ?? "không rõ"}`;
+                            navigator.clipboard?.writeText(msg).then(
+                              () => notify(true, "Đã sao chép lỗi"),
+                              () => notify(false, "Không sao chép được"),
+                            );
+                          }}
+                        >
+                          Sao chép lỗi
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="text-xs text-muted-foreground line-clamp-2 whitespace-pre-wrap min-h-[2rem]">
+                        {d.status === "reading" ? "Đang đọc…" :
+                         d.text.trim() ? d.text.trim() : "Chưa đọc chữ"}
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {d.status === "reading" && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
+                    {d.status === "ok" && <CheckCircle2 className="w-4 h-4 text-emerald-500" />}
+                    {d.status === "error" && <AlertTriangle className="w-4 h-4 text-red-500" />}
+                    <Button size="icon" variant="ghost" className="h-7 w-7" title="Lên" disabled={idx === 0} onClick={() => reorder(idx, idx - 1)}><ArrowUp className="w-3.5 h-3.5" /></Button>
+                    <Button size="icon" variant="ghost" className="h-7 w-7" title="Xuống" disabled={idx === images.length - 1} onClick={() => reorder(idx, idx + 1)}><ArrowDown className="w-3.5 h-3.5" /></Button>
+                    <Button size="icon" variant="ghost" className="h-7 w-7 text-destructive" title="Xoá ảnh" onClick={() => removeImage(d.key)}><X className="w-3.5 h-3.5" /></Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Nội dung bài mẫu đã ghép — ô lớn, admin sửa được. */}
+          <div>
+            <Label>Nội dung bài mẫu đã đọc</Label>
+            <Textarea
+              value={mergedText}
+              onChange={(e) => { setMergedText(e.target.value); setMergedEdited(true); }}
+              rows={8}
+              className="mt-1 text-sm"
+              placeholder="Bấm 'Đọc chữ từ ảnh' để AI đọc & ghép nội dung tất cả ảnh vào đây — hoặc gõ tay. Admin có thể sửa lại nếu đọc sai."
+            />
+            <p className="text-[11px] text-muted-foreground mt-1">Đây là phần AI sẽ học giọng. Tất cả ảnh ở trên được gộp thành <b>1 bài mẫu duy nhất</b>.</p>
+          </div>
+
+          {/* Trường mô tả của bài mẫu (1 mẫu). */}
+          <div className="rounded-xl border p-3 space-y-2 bg-muted/30">
+            <div><Label className="text-xs">Tiêu đề</Label><Input value={title} onChange={(e) => setTitle(e.target.value)} className="h-9 mt-1" placeholder="VD: Mẫu cưới ngọt ngào" /></div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <Label className="text-xs">Nhóm dịch vụ</Label>
+                <Select value={contentType} onValueChange={setContentType}>
+                  <SelectTrigger className="h-9 mt-1"><SelectValue placeholder="Nhóm dịch vụ" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Tất cả (dùng chung)</SelectItem>
+                    {CONTENT_TYPES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div><Label className="text-xs">Ưu tiên</Label><Input type="number" value={priority} onChange={(e) => setPriority(e.target.value)} className="h-9 mt-1" placeholder="0" /></div>
+            </div>
+            <div><Label className="text-xs">Tag phong cách (cách nhau dấu phẩy)</Label><Input value={tags} onChange={(e) => setTags(e.target.value)} className="h-9 mt-1" placeholder="cưới, áo dài, beauty..." /></div>
+            <div><Label className="text-xs">Giọng (tuỳ chọn)</Label><Input value={tone} onChange={(e) => setTone(e.target.value)} className="h-9 mt-1" placeholder="VD: ngọt ngào, dí dỏm" /></div>
+            <div className="flex items-center gap-2 pt-1"><Switch checked={isActive} onCheckedChange={setIsActive} /> <span className="text-sm">Cho AI dùng mẫu này</span></div>
+          </div>
+        </div>
+
+        <DialogFooter className="flex-col-reverse gap-2 sm:flex-row sm:justify-between">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-muted-foreground"
+            onClick={onSplit}
+            disabled={saving || splittable < 2}
+            title="Tuỳ chọn phụ: lưu mỗi ảnh thành 1 bài mẫu riêng"
+          >
+            <Scissors className="w-3.5 h-3.5 mr-1" /> Tách thành nhiều mẫu{splittable >= 2 ? ` (${splittable})` : ""}
+          </Button>
+          <div className="flex items-center gap-2 sm:ml-auto">
+            <Button variant="outline" onClick={onClose}>Huỷ</Button>
+            <Button onClick={onSave} disabled={saving || !mergedText.trim()}>
+              {saving && <Loader2 className="w-4 h-4 mr-1 animate-spin" />} Lưu 1 bài mẫu
+            </Button>
+          </div>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

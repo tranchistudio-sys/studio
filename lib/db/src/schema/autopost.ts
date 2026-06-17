@@ -71,9 +71,57 @@ export const autopostPosts = pgTable("autopost_posts", {
   imageHash: text("image_hash"),
   sourceType: text("source_type"),
   sourceItemId: text("source_item_id"),
+  // Nâng cấp (cộng-thêm): gắn batch, vết AI, auto-approve, hold, điểm chất lượng.
+  batchId: integer("batch_id"),
+  aiModel: text("ai_model"),
+  usedSampleIds: jsonb("used_sample_ids").notNull().default(sql`'[]'::jsonb`),
+  visionImageCount: integer("vision_image_count"),
+  autoApproveAt: timestamp("auto_approve_at", { withTimezone: true }),
+  holdReason: text("hold_reason"),
+  qualityScore: integer("quality_score"),
+  generatedBy: integer("generated_by"),
+  footerEnabled: boolean("footer_enabled"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-}, (t) => ({ byStatus: index("ix_autopost_posts_status_sched").on(t.status, t.scheduledAt) }));
+}, (t) => ({
+  byStatus: index("ix_autopost_posts_status_sched").on(t.status, t.scheduledAt),
+  byBatch: index("ix_autopost_posts_batch").on(t.batchId),
+  byAutoApprove: index("ix_autopost_posts_autoapprove").on(t.status, t.autoApproveAt),
+}));
+
+export const autopostBatches = pgTable("autopost_batches", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description"),
+  pageId: text("page_id"),
+  sourcePriority: text("source_priority").notNull().default("app_web"),
+  contentTypes: jsonb("content_types").notNull().default(sql`'[]'::jsonb`),
+  tags: jsonb("tags").notNull().default(sql`'[]'::jsonb`),
+  tone: text("tone"),
+  mode: text("mode").notNull().default("manual"),
+  postsPerDay: integer("posts_per_day").notNull().default(3),
+  captionOptionsPerPost: integer("caption_options_per_post").notNull().default(3),
+  slots: jsonb("slots").notNull().default(sql`'[]'::jsonb`),
+  dryRun: boolean("dry_run"),
+  autoApproveEnabled: boolean("auto_approve_enabled").notNull().default(false),
+  autoApproveAfterMinutes: integer("auto_approve_after_minutes").notNull().default(30),
+  requireManualApproval: boolean("require_manual_approval").notNull().default(true),
+  autoPublishAfterApproved: boolean("auto_publish_after_approved").notNull().default(false),
+  enabled: boolean("enabled").notNull().default(false),
+  sortOrder: integer("sort_order").notNull().default(0),
+  config: jsonb("config").notNull().default(sql`'{}'::jsonb`),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const autopostPostLog = pgTable("autopost_post_log", {
+  id: serial("id").primaryKey(),
+  postId: integer("post_id").notNull(),
+  event: text("event").notNull(),
+  detail: jsonb("detail").notNull().default(sql`'{}'::jsonb`),
+  actor: text("actor"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({ byPost: index("ix_autopost_post_log_post").on(t.postId, t.createdAt) }));
 
 export const autopostSettings = pgTable("autopost_settings", {
   id: integer("id").primaryKey().default(1),
@@ -81,3 +129,17 @@ export const autopostSettings = pgTable("autopost_settings", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   updatedBy: integer("updated_by"),
 });
+
+export const autopostStyleSamples = pgTable("autopost_style_samples", {
+  id: serial("id").primaryKey(),
+  title: text("title").notNull(),
+  content: text("content").notNull(),
+  tags: jsonb("tags").notNull().default(sql`'[]'::jsonb`),
+  contentType: text("content_type"),
+  tone: text("tone"),
+  isActive: boolean("is_active").notNull().default(true),
+  priority: integer("priority").notNull().default(0),
+  images: jsonb("images").notNull().default(sql`'[]'::jsonb`),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => ({ byActive: index("ix_autopost_style_active").on(t.isActive, t.contentType, t.priority) }));

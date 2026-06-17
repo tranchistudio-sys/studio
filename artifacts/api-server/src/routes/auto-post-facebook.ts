@@ -23,6 +23,10 @@ import {
   poolRowToCaptionItem,
   clampImages,
 } from "../lib/autopost-route-helpers";
+import { describeDryRun, patchAutopostConfig, getAutopostConfig } from "../lib/autopost-config";
+import { pickRelevantSamples, getSamplesByIds, buildStyleBlock, ocrImageToText } from "../lib/autopost-style";
+import { persistImageBuffer } from "../lib/autopost-storage";
+import { getBrandFooter, buildFooterText } from "../lib/autopost-brand";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AutoPost Facebook (Amazing Studio) — admin router (Task 5).
@@ -338,6 +342,8 @@ const POST_SELECT = `
          p.error_message AS "errorMessage", p.retry_count AS "retryCount",
          p.caption_hash AS "captionHash", p.image_hash AS "imageHash",
          p.source_type AS "sourceType", p.source_item_id AS "sourceItemId",
+         p.ai_model AS "aiModel", p.vision_image_count AS "visionImageCount",
+         p.used_sample_ids AS "usedSampleIds", p.footer_enabled AS "footerEnabled",
          p.created_at AS "createdAt", p.updated_at AS "updatedAt",
          cp.title AS "poolTitle"
     FROM autopost_posts p
@@ -347,7 +353,7 @@ const POST_SELECT = `
 router.post("/autopost/posts/generate", async (req: Request, res: Response) => {
   if (!(await requireAdmin(req, res))) return;
   try {
-    const { poolId, scheduleId, slotId, imageCount } = req.body ?? {};
+    const { poolId, scheduleId, slotId, imageCount, captionCount, styleSampleIds, style } = req.body ?? {};
 
     // (1) Lấy item pool (phải tồn tại & is_eligible).
     const poolR = await pool.query(
@@ -358,17 +364,32 @@ router.post("/autopost/posts/generate", async (req: Request, res: Response) => {
     if (!row) { res.status(404).json({ error: "Không tìm thấy item trong pool" }); return; }
     if (!row.is_eligible) { res.status(400).json({ error: "Item không đủ điều kiện đăng" }); return; }
 
-    // (2) Settings → tone + bannedWords + defaultPageId.
+    // (2) Settings → tone + bannedWords + defaultPageId + số caption/ảnh-vision.
     const cfgR = await pool.query(`SELECT config FROM autopost_settings WHERE id = 1`);
     const cfg = (cfgR.rows[0]?.config as any) ?? {};
     const tone = typeof cfg.tone === "string" ? cfg.tone : undefined;
     const bannedWords = Array.isArray(cfg.bannedWords) ? cfg.bannedWords : undefined;
+    const opcfg = await getAutopostConfig();
+    const wantCaptions = Math.max(1, Math.min(6, Number(captionCount) || opcfg.captionOptionsPerPost));
 
     // (3) item chuẩn hóa.
     const item = poolRowToCaptionItem(row);
 
+    // (3b) VĂN PHONG MẪU: id cụ thể (nếu client chọn) hoặc tự chọn theo content_type.
+    const samples = Array.isArray(styleSampleIds) && styleSampleIds.length
+      ? await getSamplesByIds(styleSampleIds.map(Number))
+      : await pickRelevantSamples({ contentType: item.contentType, limit: 4 });
+    const styleBlock = buildStyleBlock(samples);
+
     // (4) Sinh caption — KHÔNG crash khi thất bại.
-    const result = await generateCaptions(item, { tone, bannedWords });
+    const result = await generateCaptions(item, {
+      tone,
+      bannedWords,
+      styleBlock,
+      captionCount: wantCaptions,
+      maxVisionImages: opcfg.maxVisionImagesPerPost,
+      style: typeof style === "string" ? style : undefined,
+    });
     if (!result.ok) {
       res.status(502).json({ error: "caption_failed", reason: result.reason });
       return;
@@ -385,16 +406,20 @@ router.post("/autopost/posts/generate", async (req: Request, res: Response) => {
       if (schR.rows[0]?.page_id) pageId = schR.rows[0].page_id;
     }
 
-    // (6) INSERT bài (pending_review).
+    // (6) INSERT bài (pending_review) — kèm vết AI: model, số ảnh vision, sample dùng, người tạo.
     const captionOptions = result.captions.map((c) => ({ text: c.text, flags: c.flags }));
+    const generatedBy = verifyToken(req.headers.authorization);
+    const usedSampleIds = samples.map((s) => s.id);
     const ins = await pool.query(
       `INSERT INTO autopost_posts
          (content_pool_id, schedule_id, slot_id, page_id, content_type, images,
           caption_options, caption_recommended_index, status, image_hash,
-          source_type, source_item_id, updated_at)
+          source_type, source_item_id, ai_model, vision_image_count, used_sample_ids,
+          generated_by, updated_at)
        VALUES ($1, $2, $3, $4, $5, $6::jsonb,
                $7::jsonb, $8, 'pending_review', $9,
-               $10, $11, now())
+               $10, $11, $12, $13, $14::jsonb,
+               $15, now())
        RETURNING id`,
       [
         row.id,
@@ -408,6 +433,10 @@ router.post("/autopost/posts/generate", async (req: Request, res: Response) => {
         images[0] ? sha1(images[0]) : null,
         row.source_type ?? null,
         row.source_item_id ?? null,
+        result.provider,
+        result.visionImageCount,
+        JSON.stringify(usedSampleIds),
+        generatedBy,
       ],
     );
     const newId = (ins.rows[0] as any).id;
@@ -425,6 +454,71 @@ router.post("/autopost/posts/generate", async (req: Request, res: Response) => {
 
     // (8) Trả bài vừa tạo.
     const out = await pool.query(`${POST_SELECT} WHERE p.id = $1`, [newId]);
+    res.json(out.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// POST /autopost/posts/:id/regenerate — viết lại caption cho bài CHỜ DUYỆT theo
+// phong cách/mood (Tạo lại / Ngắn hơn / Tình hơn / Vui hơn). Cập nhật caption_options,
+// KHÔNG đổi status. Chỉ áp dụng cho bài chưa duyệt.
+router.post("/autopost/posts/:id/regenerate", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const id = Number(req.params.id);
+    const { style, captionCount, styleSampleIds } = req.body ?? {};
+    const pr = await pool.query(
+      `SELECT id, content_pool_id, content_type, images, status FROM autopost_posts WHERE id = $1`,
+      [id],
+    );
+    const post = pr.rows[0] as any;
+    if (!post) { res.status(404).json({ error: "Không tìm thấy bài" }); return; }
+    if (post.status !== "pending_review" && post.status !== "draft_ai") {
+      res.status(400).json({ error: "Chỉ viết lại được bài CHƯA duyệt" });
+      return;
+    }
+
+    // Item: ưu tiên pool item (đủ giá/link); fallback dữ liệu của chính bài.
+    let item: ReturnType<typeof poolRowToCaptionItem> | null = null;
+    if (post.content_pool_id) {
+      const poolR = await pool.query(`SELECT * FROM autopost_content_pool WHERE id = $1`, [post.content_pool_id]);
+      if (poolR.rows[0]) item = poolRowToCaptionItem(poolR.rows[0]);
+    }
+    if (!item) {
+      item = poolRowToCaptionItem({ content_type: post.content_type, title: `Bài #${id}`, images: post.images });
+    }
+
+    const cfgR = await pool.query(`SELECT config FROM autopost_settings WHERE id = 1`);
+    const cfg = (cfgR.rows[0]?.config as any) ?? {};
+    const tone = typeof cfg.tone === "string" ? cfg.tone : undefined;
+    const bannedWords = Array.isArray(cfg.bannedWords) ? cfg.bannedWords : undefined;
+    const opcfg = await getAutopostConfig();
+    const wantCaptions = Math.max(1, Math.min(6, Number(captionCount) || opcfg.captionOptionsPerPost));
+
+    const samples = Array.isArray(styleSampleIds) && styleSampleIds.length
+      ? await getSamplesByIds(styleSampleIds.map(Number))
+      : await pickRelevantSamples({ contentType: item.contentType, limit: 4 });
+    const styleBlock = buildStyleBlock(samples);
+
+    const result = await generateCaptions(item, {
+      tone, bannedWords, styleBlock,
+      captionCount: wantCaptions,
+      maxVisionImages: opcfg.maxVisionImagesPerPost,
+      style: typeof style === "string" ? style : undefined,
+    });
+    if (!result.ok) { res.status(502).json({ error: "caption_failed", reason: result.reason }); return; }
+
+    const captionOptions = result.captions.map((c) => ({ text: c.text, flags: c.flags }));
+    await pool.query(
+      `UPDATE autopost_posts
+          SET caption_options = $2::jsonb, caption_recommended_index = $3, ai_model = $4,
+              vision_image_count = $5, used_sample_ids = $6::jsonb, updated_at = now()
+        WHERE id = $1`,
+      [id, JSON.stringify(captionOptions), result.recommendedIndex, result.provider,
+       result.visionImageCount, JSON.stringify(samples.map((s) => s.id))],
+    );
+    const out = await pool.query(`${POST_SELECT} WHERE p.id = $1`, [id]);
     res.json(out.rows[0]);
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -517,7 +611,7 @@ router.patch("/autopost/posts/:id", async (req: Request, res: Response) => {
 router.post("/autopost/posts/:id/approve", async (req: Request, res: Response) => {
   if (!(await requireAdmin(req, res))) return;
   try {
-    const { captionFinal, scheduledAt } = req.body ?? {};
+    const { captionFinal, scheduledAt, footerEnabled } = req.body ?? {};
     if (typeof captionFinal !== "string" || captionFinal.trim().length === 0) {
       res.status(400).json({ error: "captionFinal phải là chuỗi không rỗng" });
       return;
@@ -532,14 +626,17 @@ router.post("/autopost/posts/:id/approve", async (req: Request, res: Response) =
       res.status(401).json({ error: "Token không hợp lệ hoặc hết hạn" });
       return;
     }
+    // footerEnabled per-post: boolean → đặt; undefined → giữ nguyên (COALESCE).
+    const footerVal = typeof footerEnabled === "boolean" ? footerEnabled : null;
     const r = await pool.query(
       `UPDATE autopost_posts
           SET caption_final = $1, status = 'approved', approved_by = $2,
-              approved_at = now(), scheduled_at = $3, caption_hash = $4, updated_at = now()
+              approved_at = now(), scheduled_at = $3, caption_hash = $4,
+              footer_enabled = COALESCE($6, footer_enabled), updated_at = now()
         WHERE id = $5
           AND status IN ('pending_review', 'draft_ai', 'approved', 'scheduled')
         RETURNING id, status`,
-      [captionFinal, approver, when, sha1(captionFinal), Number(req.params.id)],
+      [captionFinal, approver, when, sha1(captionFinal), Number(req.params.id), footerVal],
     );
     if (!r.rows[0]) {
       res.status(409).json({ error: "Bài không tồn tại hoặc không ở trạng thái duyệt được" });
@@ -657,6 +754,292 @@ router.post("/autopost/facebook/test", async (req: Request, res: Response) => {
   try {
     const v = await verifyPageToken();
     res.json(v);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ─────────────────────────────── DRY RUN ─────────────────────────────────────
+
+// GET /autopost/dryrun — trạng thái dry-run HIỆU LỰC (env thắng → db → mặc định
+// BẬT). Trả { dryRun, source: 'env'|'db'|'default', envForced, canToggle }.
+router.get("/autopost/dryrun", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    res.json(await describeDryRun());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// PUT /autopost/dryrun — đặt dry-run ở DB (body { dryRun: boolean }). KHÔNG ghi
+// đè ENV: nếu ENV đang khóa thì vẫn lưu DB (dùng khi sau này gỡ ENV) và trả về
+// trạng thái hiệu lực thật (vẫn theo ENV) để UI báo rõ. Không bao giờ tự bật
+// đăng-thật do mơ hồ: chỉ dryRun=false tường minh mới mở.
+router.put("/autopost/dryrun", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const approver = verifyToken(req.headers.authorization);
+    if (approver == null) {
+      res.status(401).json({ error: "Token không hợp lệ hoặc hết hạn" });
+      return;
+    }
+    const dryRun = (req.body ?? {}).dryRun;
+    if (typeof dryRun !== "boolean") {
+      res.status(400).json({ error: "dryRun phải là boolean (true = chế độ thử, false = đăng thật)" });
+      return;
+    }
+    await patchAutopostConfig({ dryRun }, approver);
+    res.json(await describeDryRun());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ─────────────────────── CẤU HÌNH VẬN HÀNH (operational) ─────────────────────
+
+// GET /autopost/config — config đã chuẩn hoá (số bài/caption/ảnh-vision, auto-approve…).
+router.get("/autopost/config", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    res.json(await getAutopostConfig());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// PUT /autopost/config — gộp các key vận hành vào config (giữ tone/bannedWords/drive).
+router.put("/autopost/config", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const approver = verifyToken(req.headers.authorization);
+    if (approver == null) { res.status(401).json({ error: "Token không hợp lệ hoặc hết hạn" }); return; }
+    const b = req.body ?? {};
+    const patch: Record<string, unknown> = {};
+    const intKeys: Array<[string, number, number]> = [
+      ["postsPerTick", 1, 50], ["postsPerDay", 1, 50],
+      ["captionOptionsPerPost", 1, 6], ["maxVisionImagesPerPost", 1, 10],
+      ["autoApproveAfterMinutes", 1, 1440],
+    ];
+    for (const [k, min, max] of intKeys) {
+      if (b[k] != null) {
+        const n = Number(b[k]);
+        if (Number.isFinite(n)) patch[k] = Math.min(max, Math.max(min, Math.trunc(n)));
+      }
+    }
+    for (const k of ["autoApproveEnabled", "autoPublishAfterApproved", "requireManualApproval"]) {
+      if (typeof b[k] === "boolean") patch[k] = b[k];
+    }
+    await patchAutopostConfig(patch, approver);
+    res.json(await getAutopostConfig());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ─────────────────────── CHỮ KÝ CUỐI BÀI (footer thương hiệu) ────────────────
+
+// GET /autopost/footer — cấu hình footer + text preview đã dựng sẵn.
+router.get("/autopost/footer", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const bf = await getBrandFooter();
+    res.json({ ...bf, text: buildFooterText(bf) });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// PUT /autopost/footer — lưu cấu hình footer (gộp đủ field, giữ field không gửi).
+router.put("/autopost/footer", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const approver = verifyToken(req.headers.authorization);
+    if (approver == null) { res.status(401).json({ error: "Token không hợp lệ hoặc hết hạn" }); return; }
+    const b = req.body ?? {};
+    const cur = await getBrandFooter();
+    const next: Record<string, unknown> = {
+      enabled: typeof b.enabled === "boolean" ? b.enabled : cur.enabled,
+      template: b.template != null ? String(b.template) : cur.template,
+      name: b.name != null ? String(b.name) : cur.name,
+      address: b.address != null ? String(b.address) : cur.address,
+      phone: b.phone != null ? String(b.phone) : cur.phone,
+      website: b.website != null ? String(b.website) : cur.website,
+      facebook: b.facebook != null ? String(b.facebook) : cur.facebook,
+      tiktok: b.tiktok != null ? String(b.tiktok) : cur.tiktok,
+      note: b.note != null ? String(b.note) : cur.note,
+    };
+    await patchAutopostConfig({ footer: next }, approver);
+    const bf = await getBrandFooter();
+    res.json({ ...bf, text: buildFooterText(bf) });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// ─────────────────────────── VĂN PHONG MẪU (style bank) ──────────────────────
+
+// GET /autopost/style-samples — liệt kê bài mẫu (mới/ưu tiên cao trước).
+router.get("/autopost/style-samples", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const r = await pool.query(
+      `SELECT id, title, content, tags, content_type AS "contentType", tone,
+              is_active AS "isActive", priority, images, created_at AS "createdAt", updated_at AS "updatedAt"
+         FROM autopost_style_samples
+        ORDER BY priority DESC, id DESC`,
+    );
+    res.json(r.rows);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// Chuẩn hoá payload bài mẫu từ body (dùng chung create/update).
+function styleSampleFields(b: any): { title: string; content: string; tags: string[]; contentType: string | null; tone: string | null; isActive: boolean; priority: number; images: string[] } {
+  const tags = Array.isArray(b?.tags)
+    ? b.tags.filter((t: unknown): t is string => typeof t === "string" && t.trim().length > 0).map((t: string) => t.trim())
+    : [];
+  // images: chỉ chấp nhận objectPath nội bộ (/objects/...) — KHÔNG nhận base64/URL ngoài ở đây.
+  const images = Array.isArray(b?.images)
+    ? b.images.filter((u: unknown): u is string => typeof u === "string" && u.startsWith("/objects/")).slice(0, 10)
+    : [];
+  return {
+    title: String(b?.title ?? "").trim(),
+    content: String(b?.content ?? "").trim(),
+    tags,
+    contentType: b?.contentType ? String(b.contentType) : null,
+    tone: b?.tone ? String(b.tone) : null,
+    isActive: typeof b?.isActive === "boolean" ? b.isActive : true,
+    priority: Number.isFinite(Number(b?.priority)) ? Math.trunc(Number(b.priority)) : 0,
+    images,
+  };
+}
+
+// POST /autopost/style-samples — thêm bài mẫu (paste text, hoặc text OCR + ảnh gốc).
+router.post("/autopost/style-samples", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const f = styleSampleFields(req.body);
+    if (!f.title) { res.status(400).json({ error: "Cần nhập tiêu đề" }); return; }
+    if (!f.content) { res.status(400).json({ error: "Cần nhập nội dung bài mẫu" }); return; }
+    const r = await pool.query(
+      `INSERT INTO autopost_style_samples (title, content, tags, content_type, tone, is_active, priority, images, updated_at)
+       VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8::jsonb, now()) RETURNING id`,
+      [f.title, f.content, JSON.stringify(f.tags), f.contentType, f.tone, f.isActive, f.priority, JSON.stringify(f.images)],
+    );
+    res.json({ id: (r.rows[0] as any).id });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// PUT /autopost/style-samples/:id — sửa bài mẫu.
+router.put("/autopost/style-samples/:id", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const f = styleSampleFields(req.body);
+    if (!f.title) { res.status(400).json({ error: "Cần nhập tiêu đề" }); return; }
+    if (!f.content) { res.status(400).json({ error: "Cần nhập nội dung bài mẫu" }); return; }
+    const r = await pool.query(
+      `UPDATE autopost_style_samples
+          SET title=$1, content=$2, tags=$3::jsonb, content_type=$4, tone=$5, is_active=$6, priority=$7, images=$8::jsonb, updated_at=now()
+        WHERE id=$9 RETURNING id`,
+      [f.title, f.content, JSON.stringify(f.tags), f.contentType, f.tone, f.isActive, f.priority, JSON.stringify(f.images), Number(req.params.id)],
+    );
+    if (!r.rows[0]) { res.status(404).json({ error: "Không tìm thấy bài mẫu" }); return; }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// POST /autopost/style-samples/ocr — nhận 1 ảnh base64 → lưu ảnh gốc + AI OCR đọc chữ.
+// Trả { url, text }. Frontend gọi lần lượt cho từng ảnh (tối đa 10) để có tiến độ.
+router.post("/autopost/style-samples/ocr", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const b = req.body ?? {};
+    const dataBase64 = String(b.dataBase64 ?? "").replace(/^data:[^;]+;base64,/, "");
+    const mediaType = String(b.mediaType ?? "image/jpeg");
+    if (!dataBase64) { res.status(400).json({ error: "Thiếu ảnh (dataBase64)" }); return; }
+
+    // Lưu ảnh gốc để admin xem lại (không chặn OCR nếu lưu lỗi).
+    let url: string | null = null;
+    try {
+      url = await persistImageBuffer(Buffer.from(dataBase64, "base64"), mediaType, "style-sample");
+    } catch (e) {
+      console.warn("[AutoPost] lưu ảnh OCR lỗi:", String(e).slice(0, 120));
+    }
+
+    const ocr = await ocrImageToText({ mediaType, dataBase64 });
+    if (!ocr.ok) { res.status(502).json({ error: "ocr_failed", reason: ocr.reason, url }); return; }
+    res.json({ url, text: ocr.text, provider: ocr.provider });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// DELETE /autopost/style-samples/:id — xoá bài mẫu.
+router.delete("/autopost/style-samples/:id", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    await pool.query(`DELETE FROM autopost_style_samples WHERE id = $1`, [Number(req.params.id)]);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// POST /autopost/style-samples/test — "Test viết theo văn phong này". Sinh caption
+// NGAY để xem trước, KHÔNG lưu bài. Nhận poolId HOẶC item ad-hoc (title/contentType/images).
+router.post("/autopost/style-samples/test", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const b = req.body ?? {};
+    const cfgR = await pool.query(`SELECT config FROM autopost_settings WHERE id = 1`);
+    const cfg = (cfgR.rows[0]?.config as any) ?? {};
+    const tone = typeof cfg.tone === "string" ? cfg.tone : undefined;
+    const bannedWords = Array.isArray(cfg.bannedWords) ? cfg.bannedWords : undefined;
+    const opcfg = await getAutopostConfig();
+
+    let item;
+    if (b.poolId) {
+      const pr = await pool.query(`SELECT * FROM autopost_content_pool WHERE id = $1`, [Number(b.poolId)]);
+      if (!pr.rows[0]) { res.status(404).json({ error: "Không tìm thấy item trong pool" }); return; }
+      item = poolRowToCaptionItem(pr.rows[0]);
+    } else {
+      const images = Array.isArray(b.images) ? b.images.filter((x: unknown): x is string => typeof x === "string") : [];
+      item = poolRowToCaptionItem({
+        content_type: b.contentType ?? "other",
+        title: b.title ?? "Bài test",
+        images,
+        price: b.price ?? null,
+        public_link: b.publicLink ?? null,
+      });
+    }
+
+    const samples = Array.isArray(b.styleSampleIds) && b.styleSampleIds.length
+      ? await getSamplesByIds(b.styleSampleIds.map(Number))
+      : await pickRelevantSamples({ contentType: item.contentType, limit: 4 });
+    const styleBlock = buildStyleBlock(samples);
+    const wantCaptions = Math.max(1, Math.min(6, Number(b.captionCount) || opcfg.captionOptionsPerPost));
+
+    const result = await generateCaptions(item, {
+      tone, bannedWords, styleBlock,
+      captionCount: wantCaptions,
+      maxVisionImages: opcfg.maxVisionImagesPerPost,
+    });
+    if (!result.ok) { res.status(502).json({ error: "caption_failed", reason: result.reason }); return; }
+    res.json({
+      captions: result.captions,
+      recommendedIndex: result.recommendedIndex,
+      usedVision: result.usedVision,
+      visionImageCount: result.visionImageCount,
+      provider: result.provider,
+      usedSampleIds: samples.map((s) => s.id),
+      usedSampleTitles: samples.map((s) => s.title),
+    });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }

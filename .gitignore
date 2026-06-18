@@ -89,3 +89,6 @@ artifacts/amazing-studio/public/uploads/
 .claude/
 .agents/
 .canvas/
+
+# Full backup folder (DB dumps + full code copy + customer images) — NEVER commit
+BACKUP_FULL_TRANCHISTUDIO/

@@ -1,3 +1,4 @@
 backup.tar.gz filter=lfs diff=lfs merge=lfs -text
 amazing-studio-export.tar.gz filter=lfs diff=lfs merge=lfs -text
 exports/Amazing_Studio_FULL_System_20260610_1454.tar.gz filter=lfs diff=lfs merge=lfs -text
+BACKUP_FULL_TRANCHISTUDIO_20260614_092037.tar.gz filter=lfs diff=lfs merge=lfs -text

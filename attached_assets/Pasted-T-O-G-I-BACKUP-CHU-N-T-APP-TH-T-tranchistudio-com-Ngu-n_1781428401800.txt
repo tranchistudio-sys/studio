@@ -1,0 +1,95 @@
+TẠO GÓI BACKUP CHUẨN TỪ APP THẬT tranchistudio.com
+
+Nguồn thật:
+- Replit production: https://replit.com/@Amazingstudio/Amazing-Studio-Manager
+- Domain thật: https://tranchistudio.com/
+
+Mục tiêu:
+Tạo 1 file backup đầy đủ để tải về, gồm:
+1. Toàn bộ CODE hiện tại đang chạy
+2. Toàn bộ DATABASE production mới nhất
+3. Toàn bộ HÌNH ẢNH / uploads / object storage đang được domain thật sử dụng
+
+Yêu cầu an toàn:
+- Không drizzle push
+- Không migrate
+- Không xoá database
+- Không ghi đè production
+- Không sửa code
+- Không push Git
+- Chỉ export / backup / nén file để download
+
+Hãy chạy trong Replit production.
+
+Việc cần làm:
+
+1. Tạo thư mục backup:
+mkdir -p BACKUP_FULL_TRANCHISTUDIO
+
+2. Export database production:
+pg_dump "$DATABASE_URL" \
+  --no-owner \
+  --no-privileges \
+  -Fc \
+  -f BACKUP_FULL_TRANCHISTUDIO/database_production_latest.dump
+
+pg_dump "$DATABASE_URL" \
+  --no-owner \
+  --no-privileges \
+  -f BACKUP_FULL_TRANCHISTUDIO/database_production_latest.sql
+
+3. Copy toàn bộ code, bỏ qua thư mục rác/nặng:
+rsync -a ./ BACKUP_FULL_TRANCHISTUDIO/code/ \
+  --exclude BACKUP_FULL_TRANCHISTUDIO \
+  --exclude node_modules \
+  --exclude .git \
+  --exclude .cache \
+  --exclude dist \
+  --exclude build \
+  --exclude .env \
+  --exclude .env.* \
+  --exclude backups
+
+4. Copy toàn bộ hình ảnh/object storage nếu có:
+mkdir -p BACKUP_FULL_TRANCHISTUDIO/uploads
+
+if [ -d "artifacts/data/object-storage" ]; then
+  rsync -a artifacts/data/object-storage/ BACKUP_FULL_TRANCHISTUDIO/uploads/object-storage/
+fi
+
+if [ -d "uploads" ]; then
+  rsync -a uploads/ BACKUP_FULL_TRANCHISTUDIO/uploads/uploads/
+fi
+
+if [ -d "public/uploads" ]; then
+  rsync -a public/uploads/ BACKUP_FULL_TRANCHISTUDIO/uploads/public-uploads/
+fi
+
+if [ -d "attached_assets" ]; then
+  rsync -a attached_assets/ BACKUP_FULL_TRANCHISTUDIO/uploads/attached_assets/
+fi
+
+5. Tạo file README:
+cat > BACKUP_FULL_TRANCHISTUDIO/README.txt <<'EOF'
+Backup full Amazing Studio Manager từ production tranchistudio.com.
+
+Bao gồm:
+- code/: toàn bộ source code hiện tại, đã loại trừ node_modules, .git, .env
+- database_production_latest.dump: database PostgreSQL dạng custom restore bằng pg_restore
+- database_production_latest.sql: database PostgreSQL dạng SQL text
+- uploads/: toàn bộ hình ảnh/object-storage/upload tìm thấy trong Replit
+
+Lưu ý:
+Không chứa .env/token.
+Không dùng để push ngược lên production.
+Chỉ dùng restore local/test.
+EOF
+
+6. Nén toàn bộ thành 1 file:
+tar -czf BACKUP_FULL_TRANCHISTUDIO_$(date +%Y%m%d_%H%M%S).tar.gz BACKUP_FULL_TRANCHISTUDIO
+
+7. In kết quả:
+ls -lh BACKUP_FULL_TRANCHISTUDIO_*.tar.gz
+du -sh BACKUP_FULL_TRANCHISTUDIO
+
+Sau khi xong, báo tôi tên file .tar.gz để tôi bấm tải về.

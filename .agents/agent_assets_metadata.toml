@@ -48,3 +48,9 @@ id = "9nqJcRd7CliT-mHFrdKvq"
 uri = "file://exports/Amazing_Studio_FULL_System_20260610_1454.tar.gz"
 type = "unspecified"
 title = "Amazing Studio - Toàn bộ Code + Ảnh + Database (138MB)"
+
+[[outputs]]
+id = "qyaDJaJK6hBd85mJmAL_R"
+uri = "file://BACKUP_FULL_TRANCHISTUDIO_20260614_092037.tar.gz"
+type = "unspecified"
+title = "BACKUP FULL TRANCHISTUDIO - Code + Database + 155 ảnh (309MB)"

@@ -25,9 +25,9 @@ import {
   useSaveSchedule, useToggleSchedule, useDeleteSchedule, useSaveSettings, useTestFacebook,
   useSyncDrive, useTestDrive, useDriveStatus,
   useStyleSamples, useSaveStyleSample, useDeleteStyleSample, useRegeneratePost, useOcrStyleImage,
-  useFooter, useSaveFooter,
+  useSignatures, useSaveSignature, useDeleteSignature, useDefaultSignature,
   type PoolItem, type Post, type Schedule, type Slot, type FbTestResult, type AutoPostSettings, type DriveTestResult,
-  type StyleSample,
+  type StyleSample, type Signature,
 } from "@/lib/autopost-api";
 import { getImageSrc } from "@/lib/imageUtils";
 import { apiUrl } from "@/lib/api-base";
@@ -72,6 +72,27 @@ const STYLE_PRESETS: { value: string; label: string }[] = [
 
 function ctLabel(v: string | null): string {
   return CONTENT_TYPES.find((c) => c.value === v)?.label ?? v ?? "—";
+}
+
+// CHỦ ĐỀ VĂN PHONG (14) — dùng cho Văn phong mẫu. Quyết định AI lấy mẫu cho loại bài nào.
+const STYLE_TOPICS: { value: string; label: string }[] = [
+  { value: "all", label: "Tất cả / Dùng chung" },
+  { value: "beauty", label: "Chụp Beauty" },
+  { value: "album_cuoi", label: "Chụp Album cưới / Prewedding / Cổng cưới / Cưới studio" },
+  { value: "cuoi_ngoai_canh", label: "Chụp cưới ngoại cảnh" },
+  { value: "tiec_cuoi", label: "Tiệc cưới / Phóng sự cưới" },
+  { value: "ao_dai_co_trang", label: "Áo dài / Việt phục / Yếm / Sườn xám / Cổ trang" },
+  { value: "gia_dinh", label: "Chụp Gia đình" },
+  { value: "bau", label: "Chụp Bầu / Mẹ bầu" },
+  { value: "vay_cuoi", label: "Váy cưới / Váy mới" },
+  { value: "trang_phuc_beauty_moi", label: "Trang phục beauty mới" },
+  { value: "makeup", label: "Makeup / Khoe makeup / Layout makeup" },
+  { value: "hau_truong", label: "Hậu trường" },
+  { value: "feedback", label: "Feedback khách hàng" },
+  { value: "bill", label: "Bill chốt đơn" },
+];
+function topicLabel(v?: string | null): string {
+  return STYLE_TOPICS.find((t) => t.value === v)?.label ?? "Tất cả / Dùng chung";
 }
 
 function fmtVnd(v: string | number | null): string {
@@ -152,6 +173,7 @@ export default function AutoPostFacebookPage() {
           <TabsTrigger value="history"><History className="w-4 h-4 mr-1" /> Lịch sử đăng</TabsTrigger>
           <TabsTrigger value="facebook"><Facebook className="w-4 h-4 mr-1" /> Facebook Page</TabsTrigger>
           <TabsTrigger value="style"><BookOpen className="w-4 h-4 mr-1" /> Văn phong mẫu</TabsTrigger>
+          <TabsTrigger value="signature"><Pencil className="w-4 h-4 mr-1" /> Chữ ký tiệm</TabsTrigger>
           <TabsTrigger value="config"><SettingsIcon className="w-4 h-4 mr-1" /> Cấu hình Lulu</TabsTrigger>
         </TabsList>
 
@@ -162,6 +184,7 @@ export default function AutoPostFacebookPage() {
         <TabsContent value="history" className="mt-4"><HistoryTab notify={notify} /></TabsContent>
         <TabsContent value="facebook" className="mt-4"><FacebookTab notify={notify} /></TabsContent>
         <TabsContent value="style" className="mt-4"><StyleTab notify={notify} /></TabsContent>
+        <TabsContent value="signature" className="mt-4"><SignatureTab notify={notify} /></TabsContent>
         <TabsContent value="config" className="mt-4"><ConfigTab notify={notify} /></TabsContent>
       </Tabs>
     </div>
@@ -216,7 +239,7 @@ function PendingCard({ post, notify }: { post: Post; notify: Notify }) {
   const [text, setText] = useState(options[initIdx]?.text ?? post.captionFinal ?? "");
   const [when, setWhen] = useState(defaultScheduleValue());
   const [style, setStyle] = useState("natural");
-  const { data: footer } = useFooter();
+  const { data: sigDefault } = useDefaultSignature();
   const [footerOn, setFooterOn] = useState(post.footerEnabled ?? true);
   const approve = useApprove();
   const skip = useSkipPost();
@@ -309,17 +332,17 @@ function PendingCard({ post, notify }: { post: Post; notify: Notify }) {
       </RadioGroup>
 
       <div>
-        <Label className="text-xs">Nội dung AI viết (sửa tay được — footer gắn tự động)</Label>
+        <Label className="text-xs">Nội dung AI viết (sửa tay được — chữ ký gắn tự động)</Label>
         <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={4} className="mt-1" />
       </div>
 
-      {footer?.text && (
+      {sigDefault?.content && (
         <div className="rounded-lg border bg-muted/30 p-2.5 space-y-1.5">
           <label className="flex items-center gap-2 cursor-pointer">
             <Switch checked={footerOn} onCheckedChange={setFooterOn} />
             <span className="text-xs font-medium">Gắn chữ ký cuối bài (Amazing Studio)</span>
           </label>
-          {footerOn && <p className="text-[11px] text-muted-foreground whitespace-pre-wrap border-t pt-1.5">{footer.text}</p>}
+          {footerOn && <p className="text-[11px] text-muted-foreground whitespace-pre-wrap border-t pt-1.5">{sigDefault.content}</p>}
         </div>
       )}
 
@@ -866,7 +889,7 @@ function StyleTab({ notify }: { notify: Notify }) {
   const toggleActive = (s: StyleSample) =>
     save.mutate({
       id: s.id,
-      body: { title: s.title, content: s.content, tags: s.tags, contentType: s.contentType, tone: s.tone, isActive: !s.isActive, priority: s.priority, images: s.images ?? [] },
+      body: { title: s.title, content: s.content, tags: s.tags, contentType: s.contentType, tone: s.tone, isActive: !s.isActive, priority: s.priority, images: s.images ?? [], styleTopicKey: s.styleTopicKey ?? "all", styleTopicLabel: s.styleTopicLabel ?? topicLabel(s.styleTopicKey) },
     });
 
   return (
@@ -887,9 +910,8 @@ function StyleTab({ notify }: { notify: Notify }) {
             <div key={s.id} className={`rounded-xl border bg-card p-3 ${!s.isActive ? "opacity-60" : ""}`}>
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-semibold">{s.title}</span>
-                {s.contentType && <Badge variant="secondary">{ctLabel(s.contentType)}</Badge>}
+                <Badge variant="secondary">{topicLabel(s.styleTopicKey)} · ưu tiên {s.priority}</Badge>
                 {s.tags.map((t) => <Badge key={t} variant="outline">{t}</Badge>)}
-                <span className="text-xs text-muted-foreground">ưu tiên {s.priority}</span>
                 <div className="flex-1" />
                 <Switch checked={s.isActive} onCheckedChange={() => toggleActive(s)} />
                 <Button size="icon" variant="outline" className="h-8 w-8" title="Sửa" onClick={() => setEditing(s)}><Pencil className="w-3.5 h-3.5" /></Button>
@@ -918,7 +940,7 @@ function StyleDialog({ sample, onClose, notify }: { sample: StyleSample | null; 
   const save = useSaveStyleSample();
   const [title, setTitle] = useState(sample?.title ?? "");
   const [content, setContent] = useState(sample?.content ?? "");
-  const [contentType, setContentType] = useState(sample?.contentType ?? "all");
+  const [topicKey, setTopicKey] = useState(sample?.styleTopicKey ?? "all");
   const [tags, setTags] = useState((sample?.tags ?? []).join(", "));
   const [tone, setTone] = useState(sample?.tone ?? "");
   const [priority, setPriority] = useState(String(sample?.priority ?? 0));
@@ -933,7 +955,8 @@ function StyleDialog({ sample, onClose, notify }: { sample: StyleSample | null; 
         body: {
           title,
           content,
-          contentType: contentType === "all" ? null : contentType,
+          styleTopicKey: topicKey,
+          styleTopicLabel: topicLabel(topicKey),
           tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
           tone: tone || null,
           priority: Number(priority) || 0,
@@ -957,12 +980,11 @@ function StyleDialog({ sample, onClose, notify }: { sample: StyleSample | null; 
           <div><Label>Nội dung bài mẫu</Label><Textarea value={content} onChange={(e) => setContent(e.target.value)} rows={6} className="mt-1" placeholder="Dán caption hay vào đây..." /></div>
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <Label>Nhóm dịch vụ</Label>
-              <Select value={contentType} onValueChange={setContentType}>
+              <Label>Chủ đề văn phong</Label>
+              <Select value={topicKey} onValueChange={setTopicKey}>
                 <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">Tất cả (dùng chung)</SelectItem>
-                  {CONTENT_TYPES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
+                  {STYLE_TOPICS.map((t) => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
                 </SelectContent>
               </Select>
             </div>
@@ -971,6 +993,109 @@ function StyleDialog({ sample, onClose, notify }: { sample: StyleSample | null; 
           <div><Label>Tag phong cách (cách nhau dấu phẩy)</Label><Input value={tags} onChange={(e) => setTags(e.target.value)} className="mt-1" placeholder="cưới, beauty, bầu, áo dài, váy mới, hậu trường, bill, feedback" /></div>
           <div><Label>Giọng (tuỳ chọn)</Label><Input value={tone} onChange={(e) => setTone(e.target.value)} className="mt-1" placeholder="VD: ngọt ngào, dí dỏm" /></div>
           <div className="flex items-center gap-2"><Switch checked={isActive} onCheckedChange={setIsActive} /> <span className="text-sm">Cho AI dùng mẫu này</span></div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Huỷ</Button>
+          <Button onClick={onSave} disabled={save.isPending}>{save.isPending && <Loader2 className="w-4 h-4 mr-1 animate-spin" />} Lưu</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─────────────────────────────── Tab: Chữ ký tiệm ────────────────────────────
+// Quản lý chữ ký cố định gắn cuối bài (bảng autopost_signatures). Chọn 1 mặc định.
+// AI KHÔNG viết lại chữ ký — hệ thống nối nguyên văn lúc đăng (giữ Unicode/số/web).
+
+function SignatureTab({ notify }: { notify: Notify }) {
+  const { data: sigs, isLoading } = useSignatures();
+  const del = useDeleteSignature();
+  const save = useSaveSignature();
+  const [editing, setEditing] = useState<Signature | null>(null);
+  const [creating, setCreating] = useState(false);
+
+  const toggleActive = (s: Signature) =>
+    save.mutate({ id: s.id, body: { name: s.name, content: s.content, isActive: !s.isActive, isDefault: s.isDefault } });
+  const makeDefault = (s: Signature) =>
+    save.mutate({ id: s.id, body: { name: s.name, content: s.content, isActive: true, isDefault: true } });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start gap-2 flex-wrap">
+        <p className="text-sm text-muted-foreground flex-1 min-w-[200px]">
+          Chữ ký cố định gắn vào <b>cuối mỗi bài</b> khi bật "Gắn chữ ký cuối bài". AI <b>không</b> viết lại — hệ thống nối <b>nguyên văn</b> (giữ Unicode, số điện thoại, website, địa chỉ). Chọn <b>1 chữ ký mặc định</b>.
+        </p>
+        <Button onClick={() => setCreating(true)} className="shrink-0"><Plus className="w-4 h-4 mr-1" /> Thêm chữ ký</Button>
+      </div>
+
+      {isLoading ? <Spin /> : !sigs?.length ? (
+        <Empty text="Chưa có chữ ký nào. Bấm 'Thêm chữ ký' để tạo." />
+      ) : (
+        <div className="space-y-2">
+          {sigs.map((s) => (
+            <div key={s.id} className={`rounded-xl border bg-card p-3 ${!s.isActive ? "opacity-60" : ""}`}>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-semibold">{s.name}</span>
+                {s.isDefault && <Badge>Mặc định</Badge>}
+                <Badge variant={s.isActive ? "secondary" : "outline"}>{s.isActive ? "Đang bật" : "Tắt"}</Badge>
+                <div className="flex-1" />
+                {!s.isDefault && <Button size="sm" variant="outline" className="h-8" onClick={() => makeDefault(s)}>Đặt mặc định</Button>}
+                <Switch checked={s.isActive} onCheckedChange={() => toggleActive(s)} />
+                <Button size="icon" variant="outline" className="h-8 w-8" title="Sửa" onClick={() => setEditing(s)}><Pencil className="w-3.5 h-3.5" /></Button>
+                <Button size="icon" variant="ghost" className="h-8 w-8 text-destructive" title="Xoá" onClick={() => { if (confirm("Xoá chữ ký này?")) del.mutate(s.id); }}><Trash2 className="w-3.5 h-3.5" /></Button>
+              </div>
+              <p className="text-sm mt-1.5 whitespace-pre-wrap text-muted-foreground">{s.content}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {(creating || editing) && (
+        <SignatureDialog signature={editing} onClose={() => { setCreating(false); setEditing(null); }} notify={notify} />
+      )}
+    </div>
+  );
+}
+
+function SignatureDialog({ signature, onClose, notify }: { signature: Signature | null; onClose: () => void; notify: Notify }) {
+  const save = useSaveSignature();
+  const [name, setName] = useState(signature?.name ?? "");
+  const [content, setContent] = useState(signature?.content ?? "");
+  const [isActive, setIsActive] = useState(signature?.isActive ?? true);
+  const [isDefault, setIsDefault] = useState(signature?.isDefault ?? false);
+  const [preview, setPreview] = useState(false);
+
+  const onSave = async () => {
+    if (!name.trim()) { notify(false, "Cần nhập tên chữ ký"); return; }
+    if (!content.trim()) { notify(false, "Cần nhập nội dung chữ ký"); return; }
+    try {
+      await save.mutateAsync({ id: signature?.id, body: { name, content, isActive, isDefault } });
+      notify(true, signature ? "Đã cập nhật chữ ký" : "Đã thêm chữ ký");
+      onClose();
+    } catch (e) { notify(false, `Lưu lỗi: ${String((e as Error).message)}`); }
+  };
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{signature ? "Sửa chữ ký" : "Thêm chữ ký"}</DialogTitle>
+          <DialogDescription>Chữ ký gắn nguyên văn vào cuối bài. Giữ đúng xuống dòng, emoji, ký tự Unicode in đậm.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div><Label>Tên chữ ký</Label><Input value={name} onChange={(e) => setName(e.target.value)} className="mt-1" placeholder="VD: Amazing Studio (mặc định)" /></div>
+          <div><Label>Nội dung chữ ký</Label><Textarea value={content} onChange={(e) => setContent(e.target.value)} rows={9} className="mt-1 font-mono text-xs" placeholder="Dán chữ ký (giữ nguyên Unicode, xuống dòng)..." /></div>
+          <div className="flex items-center gap-4 flex-wrap">
+            <label className="flex items-center gap-2 cursor-pointer"><Switch checked={isActive} onCheckedChange={setIsActive} /> <span className="text-sm">Bật</span></label>
+            <label className="flex items-center gap-2 cursor-pointer"><Switch checked={isDefault} onCheckedChange={setIsDefault} /> <span className="text-sm">Đặt làm mặc định</span></label>
+            <Button type="button" variant="outline" size="sm" onClick={() => setPreview((p) => !p)}><Eye className="w-4 h-4 mr-1" /> Xem trước</Button>
+          </div>
+          {preview && (
+            <div className="rounded-lg border bg-muted/30 p-2.5">
+              <p className="text-[11px] text-muted-foreground mb-1">Xem trước (gắn ở cuối bài):</p>
+              <p className="text-sm whitespace-pre-wrap">{content || "(trống)"}</p>
+            </div>
+          )}
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>Huỷ</Button>
@@ -1161,7 +1286,8 @@ function OcrDialog({ onClose, notify }: { onClose: () => void; notify: Notify })
         body: {
           title: finalTitle,
           content,
-          contentType: contentType === "all" ? null : contentType,
+          styleTopicKey: contentType,
+          styleTopicLabel: topicLabel(contentType),
           tags: tags.split(",").map((t) => t.trim()).filter(Boolean),
           tone: tone || null,
           priority: Number(priority) || 0,
@@ -1194,7 +1320,8 @@ function OcrDialog({ onClose, notify }: { onClose: () => void; notify: Notify })
           body: {
             title: `${base} ${i + 1}`,
             content: d.text.trim(),
-            contentType: contentType === "all" ? null : contentType,
+            styleTopicKey: contentType,
+          styleTopicLabel: topicLabel(contentType),
             tags: tagArr,
             tone: tone || null,
             priority: Number(priority) || 0,
@@ -1319,12 +1446,11 @@ function OcrDialog({ onClose, notify }: { onClose: () => void; notify: Notify })
             <div><Label className="text-xs">Tiêu đề</Label><Input value={title} onChange={(e) => setTitle(e.target.value)} className="h-9 mt-1" placeholder="VD: Mẫu cưới ngọt ngào" /></div>
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <Label className="text-xs">Nhóm dịch vụ</Label>
+                <Label className="text-xs">Chủ đề văn phong</Label>
                 <Select value={contentType} onValueChange={setContentType}>
-                  <SelectTrigger className="h-9 mt-1"><SelectValue placeholder="Nhóm dịch vụ" /></SelectTrigger>
+                  <SelectTrigger className="h-9 mt-1"><SelectValue placeholder="Chủ đề văn phong" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">Tất cả (dùng chung)</SelectItem>
-                    {CONTENT_TYPES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
+                    {STYLE_TOPICS.map((t) => <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>)}
                   </SelectContent>
                 </Select>
               </div>

@@ -148,19 +148,23 @@ export async function getSaleContext(): Promise<string> {
     let albumLines = "";
     try {
       const albumRes = await pool.query(
-        `SELECT name, slug FROM gallery_albums WHERE status = 'visible' AND deleted_at IS NULL AND slug IS NOT NULL ORDER BY sort_order, id`,
+        `SELECT name, slug, tags_text FROM gallery_albums WHERE status = 'visible' AND deleted_at IS NULL AND slug IS NOT NULL ORDER BY sort_order, id`,
       );
-      albumLines = (albumRes.rows as Array<{ name: string; slug: string }>)
-        .map((a) => `${a.name.trim()}: ${base}/bo-anh/${a.slug}`)
+      albumLines = (albumRes.rows as Array<{ name: string; slug: string; tags_text: string | null }>)
+        .map((a) => {
+          const tags = (a.tags_text ?? "").trim();
+          // [nhóm/tag] giúp AI chọn ĐÚNG album theo nhu cầu khách (beauty/cưới/gia đình…), không lẫn nhóm.
+          return `${a.name.trim()}${tags ? ` [nhóm/tag: ${tags}]` : ""}: ${base}/bo-anh/${a.slug}`;
+        })
         .join("\n");
     } catch { /* bỏ qua nếu lỗi */ }
 
-    const linkBlock = `LINK THAM KHẢO (gửi cho khách ở Bước 4 & 7 khi phù hợp):
-Trang chủ: ${base}/
-Bảng giá: ${base}/bang-gia
-Bộ ảnh thật / gallery: ${base}/bo-anh
-Cho thuê trang phục: ${base}/cho-thue-do
-${albumLines ? `\nCONCEPT/ALBUM ẢNH THẬT ĐANG CÓ (gửi link bộ phù hợp ở Bước 4):\n${albumLines}` : ""}`;
+    const linkBlock = `LINK (CHỈ gửi khi khách CHỦ ĐỘNG hỏi/đòi — TUYỆT ĐỐI KHÔNG tự dán link khi khách chưa yêu cầu):
+- Khách hỏi web/trang chủ → ${base}/
+- Khách hỏi bảng giá chi tiết → ${base}/bang-gia
+- Khách hỏi xem trang phục cho thuê → ${base}/cho-thue-do
+⚠️ QUY TẮC LINK ẢNH (RẤT QUAN TRỌNG): ảnh mẫu đã do HỆ THỐNG tự gửi trong chat. Em TUYỆT ĐỐI KHÔNG tự dán link /bo-anh/... để "khoe thêm mẫu" hay thay cho ảnh. CHỈ gửi link MỘT bộ khi khách NÓI RÕ muốn xem CHI TIẾT / CẢ BỘ / NGUYÊN ALBUM của bộ đó. Nếu hết ảnh mới để gửi, em chỉ hỏi gu/phong cách — KHÔNG dán link thay thế.
+${albumLines ? `\n[NỘI BỘ — danh sách bộ đang có để em BIẾT, KHÔNG dán link cho khách trừ khi khách đòi xem cả bộ đó]:\n${albumLines}` : ""}`;
 
     const text = `THÔNG TIN STUDIO
 - Tên: ${studioName} — chuyên chụp ảnh cưới, beauty/thời trang, chụp tiệc cưới, chụp gia đình và cho thuê trang phục cưới.
@@ -178,6 +182,51 @@ CHÍNH SÁCH:
   } catch (err) {
     console.error("[Claude] getSaleContext — dùng fallback:", String(err).slice(0, 200));
     return FALLBACK_CONTEXT;
+  }
+}
+
+// Khách CÓ ĐANG muốn concept mới/lạ không? CHỈ khi đúng → mới nạp "Ý tưởng chụp ảnh".
+// Khớp đúng các cụm khách hay nói (có/không dấu): "ý tưởng mới", "concept lạ", "độc đáo
+// hơn", "không thích mấy mẫu này", "muốn cái mới mẻ hơn"… Mặc định KHÔNG dùng Ý tưởng.
+const NEW_CONCEPT_RE =
+  /(ý tưởng|y tuong|concept|độc đáo|doc dao|độc lạ|doc la|mới mẻ|moi me|lạ hơn|la hon|cái mới|cai moi|gì mới|gi moi|gì lạ|gi la|khác hơn|khac hon|sáng tạo|sang tao|không thích|khong thich|chán mẫu|chan mau|chưa ưng|chua ung|có gì hay hơn|co gi hay hon)/i;
+
+/** true nếu khách đang muốn concept mới/lạ (mở khóa nguồn "Ý tưởng chụp ảnh"). */
+export function wantsNewConcept(message: string): boolean {
+  return NEW_CONCEPT_RE.test((message ?? "").toLowerCase());
+}
+
+let ideasCache: { text: string; at: number } | null = null;
+
+/**
+ * Khối "Ý TƯỞNG CHỤP" (photo_ideas) — NGUỒN PHỤ, chỉ append vào context khi
+ * wantsNewConcept() = true. Không có link công khai (trang khóa mật khẩu) nên chỉ
+ * mô tả bằng lời. "" nếu không có ý tưởng nào / lỗi. KHÔNG bao giờ throw.
+ */
+export async function getPhotoIdeasBlock(): Promise<string> {
+  if (ideasCache && Date.now() - ideasCache.at < TTL_MS) return ideasCache.text;
+  try {
+    const res = await pool.query(
+      `SELECT name, description, tags_text FROM photo_ideas
+        WHERE deleted_at IS NULL AND (visibility_status = 'public' OR visibility_status IS NULL)
+        ORDER BY sort_order, id LIMIT 18`,
+    );
+    const rows = res.rows as Array<{ name: string; description: string | null; tags_text: string | null }>;
+    if (rows.length === 0) { ideasCache = { text: "", at: Date.now() }; return ""; }
+    const lines = rows.map((r) => {
+      const desc = cleanDesc(r.description).slice(0, 120);
+      const tags = (r.tags_text ?? "").trim();
+      const tail = [desc, tags ? `tag: ${tags}` : ""].filter(Boolean).join(", ");
+      return `- ${(r.name ?? "").trim()}${tail ? `: ${tail}` : ""}`;
+    });
+    const text = `Ý TƯỞNG CHỤP (CONCEPT GỢI Ý — KHÔNG phải sản phẩm/dịch vụ có sẵn của studio):
+Chỉ dùng khi khách muốn concept mới/lạ hoặc chưa ưng mẫu có sẵn. Khi gợi ý PHẢI nói rõ đây là Ý TƯỞNG tham khảo; nếu khách thích thì studio sẽ kiểm tra trang phục/đạo cụ có sẵn hay cần đầu tư thêm. KHÔNG có link công khai nên mô tả bằng lời, TUYỆT ĐỐI không bịa link.
+${lines.join("\n")}`;
+    ideasCache = { text, at: Date.now() };
+    return text;
+  } catch (err) {
+    console.error("[Claude] getPhotoIdeasBlock lỗi:", String(err).slice(0, 160));
+    return "";
   }
 }
 

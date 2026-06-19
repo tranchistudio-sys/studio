@@ -21,7 +21,62 @@ export type StyleSample = {
   contentType: string | null;
   tone: string | null;
   priority: number;
+  /** Chủ đề văn phong (1 trong 14 key dưới). Quyết định AI lấy mẫu cho loại bài nào. */
+  styleTopicKey: string;
+  styleTopicLabel: string;
 };
+
+/** 14 CHỦ ĐỀ VĂN PHONG — khớp đúng dropdown UI "Chủ đề văn phong". */
+export const STYLE_TOPIC_LABELS: Record<string, string> = {
+  all: "Tất cả / Dùng chung",
+  beauty: "Chụp Beauty",
+  album_cuoi: "Chụp Album cưới / Prewedding / Cổng cưới / Cưới studio",
+  cuoi_ngoai_canh: "Chụp cưới ngoại cảnh",
+  tiec_cuoi: "Tiệc cưới / Phóng sự cưới",
+  ao_dai_co_trang: "Áo dài / Việt phục / Yếm / Sườn xám / Cổ trang",
+  gia_dinh: "Chụp Gia đình",
+  bau: "Chụp Bầu / Mẹ bầu",
+  vay_cuoi: "Váy cưới / Váy mới",
+  trang_phuc_beauty_moi: "Trang phục beauty mới",
+  makeup: "Makeup / Khoe makeup / Layout makeup",
+  hau_truong: "Hậu trường",
+  feedback: "Feedback khách hàng",
+  bill: "Bill chốt đơn",
+};
+
+export function styleTopicLabel(key: string): string {
+  return STYLE_TOPIC_LABELS[key] ?? STYLE_TOPIC_LABELS.all;
+}
+
+export function isValidStyleTopic(key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(STYLE_TOPIC_LABELS, key);
+}
+
+/**
+ * Map content_type của KHO nội dung → chủ đề văn phong, để khi generate caption
+ * tự chọn mẫu ĐÚNG chủ đề. content_type không có trong map → "all" (dùng mẫu chung).
+ */
+const CONTENT_TYPE_TO_STYLE_TOPIC: Record<string, string> = {
+  beauty: "beauty",
+  album_cuoi: "album_cuoi",
+  cuoi_ngoai_canh: "cuoi_ngoai_canh",
+  tiec_cuoi: "tiec_cuoi",
+  ao_dai_cuoi: "ao_dai_co_trang",
+  viet_phuc: "ao_dai_co_trang",
+  gia_dinh: "gia_dinh",
+  bau: "bau",
+  vay_cuoi: "vay_cuoi",
+  new_arrival: "vay_cuoi",
+  makeup: "makeup",
+  hau_truong: "hau_truong",
+  feedback: "feedback",
+  bill: "bill",
+};
+
+export function topicForContentType(ct?: string | null): string {
+  const key = (ct ?? "").trim();
+  return CONTENT_TYPE_TO_STYLE_TOPIC[key] ?? "all";
+}
 
 function toTags(raw: unknown): string[] {
   let arr: unknown = raw;
@@ -33,6 +88,8 @@ function toTags(raw: unknown): string[] {
 }
 
 function normalizeRow(r: any): StyleSample {
+  const topicRaw = r.styleTopicKey ?? r.style_topic_key ?? "all";
+  const topicKey = isValidStyleTopic(String(topicRaw)) ? String(topicRaw) : "all";
   return {
     id: Number(r.id),
     title: String(r.title ?? ""),
@@ -41,6 +98,8 @@ function normalizeRow(r: any): StyleSample {
     contentType: r.contentType ?? r.content_type ?? null,
     tone: r.tone ?? null,
     priority: Number(r.priority ?? 0) || 0,
+    styleTopicKey: topicKey,
+    styleTopicLabel: r.styleTopicLabel ?? r.style_topic_label ?? styleTopicLabel(topicKey),
   };
 }
 
@@ -49,14 +108,16 @@ function normalizeRow(r: any): StyleSample {
  * tags → priority cao. Mẫu KHÔNG gán content_type được coi là "dùng chung".
  */
 export async function pickRelevantSamples(opts: {
-  contentType?: string | null;
+  /** Chủ đề văn phong cần lấy (1 trong 14 key). Mặc định "all". */
+  topicKey?: string | null;
   tags?: string[];
   limit?: number;
 }): Promise<StyleSample[]> {
   const limit = Math.max(1, Math.min(8, opts.limit ?? 4));
+  const topic = (opts.topicKey ?? "all").trim() || "all";
   try {
     const r = await pool.query(
-      `SELECT id, title, content, tags, content_type, tone, priority
+      `SELECT id, title, content, tags, content_type, tone, priority, style_topic_key, style_topic_label
          FROM autopost_style_samples
         WHERE is_active = true
         ORDER BY priority DESC, id DESC
@@ -64,12 +125,14 @@ export async function pickRelevantSamples(opts: {
     );
     const rows = r.rows.map(normalizeRow);
     if (rows.length === 0) return [];
-    const ct = (opts.contentType ?? "").trim();
     const tagSet = new Set((opts.tags ?? []).map((t) => t.toLowerCase()));
-    const scored = rows.map((s) => {
+    // CHỈ lấy mẫu ĐÚNG chủ đề HOẶC "Dùng chung" — TUYỆT ĐỐI không lấy chủ đề khác.
+    // Ưu tiên 1: mẫu đúng chủ đề (score +100). Ưu tiên 2 (fallback): mẫu "all" (+20).
+    const candidates = rows.filter((s) => s.styleTopicKey === topic || s.styleTopicKey === "all");
+    const scored = candidates.map((s) => {
       let score = s.priority;
-      if (ct && s.contentType === ct) score += 100; // đúng loại nội dung
-      else if (!s.contentType) score += 20; // mẫu dùng chung
+      if (topic !== "all" && s.styleTopicKey === topic) score += 100; // đúng chủ đề
+      else if (s.styleTopicKey === "all") score += 20; // dùng chung (fallback)
       const overlap = s.tags.filter((t) => tagSet.has(t.toLowerCase())).length;
       score += overlap * 10;
       return { s, score };
@@ -88,7 +151,7 @@ export async function getSamplesByIds(ids: number[]): Promise<StyleSample[]> {
   if (clean.length === 0) return [];
   try {
     const r = await pool.query(
-      `SELECT id, title, content, tags, content_type, tone, priority
+      `SELECT id, title, content, tags, content_type, tone, priority, style_topic_key, style_topic_label
          FROM autopost_style_samples WHERE id = ANY($1::int[])`,
       [clean],
     );

@@ -167,6 +167,8 @@ const K = {
   dryRun: () => ["autopost", "dryrun"] as const,
   styleSamples: () => ["autopost", "style-samples"] as const,
   footer: () => ["autopost", "footer"] as const,
+  signatures: () => ["autopost", "signatures"] as const,
+  signatureDefault: () => ["autopost", "signature-default"] as const,
 };
 
 // Trạng thái dry-run hiệu lực: env thắng → db → mặc định BẬT.
@@ -188,6 +190,9 @@ export type StyleSample = {
   isActive: boolean;
   priority: number;
   images?: string[];
+  /** Chủ đề văn phong (14 chủ đề) — AI lấy mẫu đúng chủ đề khi viết caption. */
+  styleTopicKey?: string;
+  styleTopicLabel?: string;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -201,6 +206,17 @@ export type BrandFooter = {
   name: string; address: string; phone: string; website: string;
   facebook: string; tiktok: string; note: string;
   text?: string;
+};
+
+// Chữ ký tiệm (bảng autopost_signatures) — admin tự quản, chọn 1 mặc định.
+export type Signature = {
+  id: number;
+  name: string;
+  content: string;
+  isActive: boolean;
+  isDefault: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 // ─────────────────────────────── Queries ─────────────────────────────────────
@@ -288,6 +304,39 @@ export function useSaveFooter() {
   return useMutation({
     mutationFn: (body: Partial<BrandFooter>) => apPut<BrandFooter>(`/autopost/footer`, body),
     onSuccess: () => qc.invalidateQueries({ queryKey: K.footer() }),
+  });
+}
+
+// ─── Chữ ký tiệm (signatures) ───
+export function useSignatures() {
+  return useQuery({ queryKey: K.signatures(), queryFn: () => apGet<Signature[]>(`/autopost/signatures`) });
+}
+
+// Chữ ký mặc định đang bật (nội dung để preview nút "Gắn chữ ký cuối bài").
+export function useDefaultSignature() {
+  return useQuery({ queryKey: K.signatureDefault(), queryFn: () => apGet<{ content: string }>(`/autopost/signatures/default`) });
+}
+
+export function useSaveSignature() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { id?: number; body: Record<string, unknown> }) =>
+      v.id ? apPut(`/autopost/signatures/${v.id}`, v.body) : apPost(`/autopost/signatures`, v.body),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: K.signatures() });
+      qc.invalidateQueries({ queryKey: K.signatureDefault() });
+    },
+  });
+}
+
+export function useDeleteSignature() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => apDelete(`/autopost/signatures/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: K.signatures() });
+      qc.invalidateQueries({ queryKey: K.signatureDefault() });
+    },
   });
 }
 

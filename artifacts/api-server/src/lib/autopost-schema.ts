@@ -1,4 +1,5 @@
 import { pool } from "@workspace/db";
+import { ensureSignatureSeed } from "./autopost-signature";
 
 export async function ensureAutoPostSchema(): Promise<void> {
   try {
@@ -186,6 +187,26 @@ CREATE TABLE IF NOT EXISTS autopost_style_samples (
     await pool.query(`CREATE INDEX IF NOT EXISTS ix_autopost_style_active ON autopost_style_samples(is_active, content_type, priority)`);
     // Ảnh gốc kèm bài mẫu (screenshot đã OCR) — chỉ để admin xem lại; generate KHÔNG dùng.
     await pool.query(`ALTER TABLE autopost_style_samples ADD COLUMN IF NOT EXISTS images jsonb NOT NULL DEFAULT '[]'::jsonb`);
+    // CHỦ ĐỀ VĂN PHONG (14 chủ đề) — AI lấy mẫu ĐÚNG chủ đề khi viết caption. Mặc định "all".
+    await pool.query(`ALTER TABLE autopost_style_samples ADD COLUMN IF NOT EXISTS style_topic_key TEXT NOT NULL DEFAULT 'all'`);
+    await pool.query(`ALTER TABLE autopost_style_samples ADD COLUMN IF NOT EXISTS style_topic_label TEXT NOT NULL DEFAULT 'Tất cả / Dùng chung'`);
+    await pool.query(`CREATE INDEX IF NOT EXISTS ix_autopost_style_topic ON autopost_style_samples(is_active, style_topic_key, priority)`);
+
+    // CHỮ KÝ TIỆM (signature cuối bài) — bảng RIÊNG cho admin quản lý nhiều mẫu chữ ký.
+    // An toàn: CREATE IF NOT EXISTS, không drop/không xoá data, không đụng bảng khác.
+    await pool.query(`
+CREATE TABLE IF NOT EXISTS autopost_signatures (
+  id serial PRIMARY KEY,
+  name text NOT NULL,
+  content text NOT NULL,
+  is_active boolean NOT NULL DEFAULT true,
+  is_default boolean NOT NULL DEFAULT false,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+)
+    `);
+    // Seed chữ ký mặc định lần đầu (chỉ khi bảng rỗng — không ghi đè data admin đã sửa).
+    await ensureSignatureSeed();
 
     console.log("[AutoPost] schema ensured");
   } catch (err) {

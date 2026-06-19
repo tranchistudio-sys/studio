@@ -164,11 +164,13 @@ router.post("/webhook/facebook", async (req, res) => {
 
           if (imageAttachments.length > 0) {
             const psid = senderId;
+            const imageUrls: string[] = [];
             for (let attIdx = 0; attIdx < imageAttachments.length; attIdx++) {
               const att = imageAttachments[attIdx];
               const payload = att.payload as Record<string, unknown> | undefined;
               const imgUrl = (payload?.url ?? payload?.sticker_id ?? "") as string;
               if (!imgUrl) continue;
+              imageUrls.push(imgUrl);
               const imgMessage = `[image:${imgUrl}]`;
               const attMid = mid ? `${mid}#${attIdx}` : null;
               try {
@@ -195,6 +197,15 @@ router.post("/webhook/facebook", async (req, res) => {
                 .where(eq(crmLeadsTable.facebookUserId, psid));
             }
             logEvent({ at: new Date().toISOString(), type: "message", summary: `🖼️ [${psid}] ${imageAttachments.length} ảnh`, psid });
+            // KÍCH HOẠT Lulu trả lời ảnh: ảnh đã lưu (alreadyInserted) → AI Vision phân loại + tư vấn.
+            if (imageUrls.length > 0) {
+              processIncomingFacebookMessage(psid, `[image:${imageUrls[0]}]`, mid, activePageId, {
+                alreadyInserted: true,
+                imageUrls,
+              }).catch((err) => {
+                console.error("[CRM] processIncomingFacebookMessage (image) error:", err);
+              });
+            }
             continue;
           }
 

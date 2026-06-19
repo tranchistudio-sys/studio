@@ -252,6 +252,10 @@ const ESCALATION_KEYWORDS: Array<{ re: RegExp; reason: string }> = [
   { re: /chuy[eể]n kho[aả]n|ck cho|s[ốo] t[àa]i kho[aả]n|stk\b/i, reason: "Khách muốn chuyển khoản" },
   { re: /đặt c[oọ]c|dat coc|ti[eề]n c[oọ]c|c[oọ]c gi[ữu] l[iị]ch/i, reason: "Khách muốn đặt cọc" },
   { re: /g[ặa]p ng[uư][oơ]i th[aậ]t|g[ặa]p nh[aâ]n vi[eê]n|n[oó]i chuy[eệ]n v[oớ]i ng[uư][oơ]i/i, reason: "Khách muốn gặp người thật" },
+  // Deal giá sâu / than mắc / so sánh giá → không tự deal, để nhân viên xử lý.
+  { re: /gi[ảa]m th[eê]m|gi[ảa]m gi[áa]|b[ớo]t (ch[uú]t|gi[áa]|th[eê]m)|r[ẻe] h[ơo]n|b[eê]n kia r[ẻe]|m[ắa]c qu[áa]|đ[ắa]t qu[áa]|\bdeal\b/i, reason: "Khách xin giảm giá / so sánh giá / than mắc" },
+  // Hủy / dời lịch / hoàn cọc / phát sinh → cần nhân viên xác nhận.
+  { re: /h[ủu]y l[ịi]ch|h[ủu]y đơn|d[ờo]i l[ịi]ch|đ[ổo]i l[ịi]ch|ho[àa]n c[ọo]c|ho[àa]n ti[eề]n|ph[áa]t sinh/i, reason: "Khách muốn hủy/dời lịch hoặc có phát sinh" },
 ];
 export function detectEscalation(text: string): string | null {
   for (const k of ESCALATION_KEYWORDS) if (k.re.test(text)) return k.reason;

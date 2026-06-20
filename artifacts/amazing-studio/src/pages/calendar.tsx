@@ -1696,7 +1696,10 @@ function ShowFormPanel({
         return true;
       });
     };
-    if (isEdit && isMulti && hasSiblingEdit) {
+    // Reconcile hợp đồng gộp phải chạy MIỄN LÀ đang sửa hợp đồng đã load siblings,
+    // kể cả khi xoá xuống còn 1 dịch vụ (isMulti=false) — nếu không, remove-child bị
+    // bỏ qua và dịch vụ đã gỡ vẫn sống sót trong DB + vẫn bị tính tiền.
+    if (isEdit && hasSiblingEdit) {
       setSaving(true);
       try {
         // Update customer info (avatar/name/phone/facebook/zalo) for multi-service edit
@@ -1754,6 +1757,36 @@ function ShowFormPanel({
               }),
             });
             if (!res.ok) throw new Error("Lỗi thêm dịch vụ mới");
+          }
+        }
+        // ── BUG FIX (tiền bạc): xoá các dịch vụ con đã bị gỡ khỏi form ──
+        // Trước đây vòng lặp trên CHỈ PUT sibling cũ + POST dịch vụ mới, KHÔNG xoá
+        // sibling user đã xoá khỏi form → child booking vẫn còn trong DB. Vì tổng
+        // của hợp đồng cha = Σ children (recalcParentTotalFromChildren ở backend),
+        // dịch vụ đã xoá vẫn bị tính tiền (đội tổng + còn lại lên). Phải gọi
+        // remove-child để xoá đúng. Chạy SAU vòng add/PUT để luôn còn ≥1 dịch vụ con
+        // (backend chặn xoá dịch vụ con cuối cùng).
+        if (booking?.id) {
+          const keptSiblingIds = new Set(
+            subDrafts
+              .map(s => s.siblingId)
+              .filter((v): v is number => typeof v === "number"),
+          );
+          const removedSiblingIds = siblingBookings
+            .map(s => s.id)
+            .filter(sid => !keptSiblingIds.has(sid));
+          for (const childId of removedSiblingIds) {
+            const delRes = await authFetch(`${BASE}/api/bookings/${booking.id}/remove-child/${childId}`, {
+              method: "DELETE",
+            });
+            // 404 = dịch vụ con đã KHÔNG còn là con hợp lệ của hợp đồng này (đã bị xoá
+            // trước đó / parentId lệch) → coi như đã gỡ xong, KHÔNG abort cả lượt lưu.
+            // Lỗi khác (400/500) vẫn ném ra để không che giấu sự cố thật.
+            if (!delRes.ok && delRes.status !== 404) {
+              const errBody = await delRes.json().catch(() => null);
+              throw new Error(errBody?.error || "Lỗi xoá dịch vụ đã gỡ khỏi hợp đồng");
+            }
+            qc.invalidateQueries({ queryKey: ["booking-full", childId] });
           }
         }
         // Sync booking-dresses for multi-service edit

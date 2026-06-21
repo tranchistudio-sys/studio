@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db, pool } from "@workspace/db";
-import { bookingsTable, customersTable, paymentsTable, expensesTable, tasksTable, staffTable, servicePackagesTable, packageItemsTable, photoshopJobsTable, servicesTable, bookingChangeLogTable, contractsTable } from "@workspace/db/schema";
+import { bookingsTable, customersTable, paymentsTable, expensesTable, tasksTable, staffTable, servicePackagesTable, packageItemsTable, photoshopJobsTable, servicesTable, bookingChangeLogTable, contractsTable, bookingDressesTable, bookingItemsTable, staffJobEarningsTable, staffAllowancesTable, attendanceLogsTable } from "@workspace/db/schema";
 import { eq, and, desc, inArray, or, ilike, sql, asc, gte, lte } from "drizzle-orm";
 import { verifyToken, getCallerRole } from "./auth";
 import { computeBookingEarnings } from "./job-earnings";
@@ -1491,25 +1491,41 @@ router.delete("/bookings/:id", async (req, res) => {
     return res.status(403).json({ error: "Bạn chỉ được xoá đơn do mình tạo" });
   }
 
-  // Check if this is a parent contract — cascade delete children first
-  if (target?.isParentContract) {
+  // Gom id cần xoá: nếu là hợp đồng cha → kèm toàn bộ dịch vụ con.
+  const idsToDelete = [id];
+  if (target.isParentContract) {
     const children = await db.select({ id: bookingsTable.id }).from(bookingsTable).where(eq(bookingsTable.parentId, id));
-    if (children.length > 0) {
-      const childIds = children.map(c => c.id);
-      await db.delete(tasksTable).where(inArray(tasksTable.bookingId, childIds));
-      await db.delete(expensesTable).where(inArray(expensesTable.bookingId, childIds));
-      await db.delete(contractsTable).where(inArray(contractsTable.bookingId, childIds));
-      await db.delete(paymentsTable).where(inArray(paymentsTable.bookingId, childIds));
-      await db.delete(bookingsTable).where(inArray(bookingsTable.id, childIds));
-    }
+    for (const c of children) idsToDelete.push(c.id);
   }
 
-  // Delete the booking itself + related data
-  await db.delete(tasksTable).where(eq(tasksTable.bookingId, id));
-  await db.delete(expensesTable).where(eq(expensesTable.bookingId, id));
-  await db.delete(contractsTable).where(eq(contractsTable.bookingId, id));
-  await db.delete(paymentsTable).where(eq(paymentsTable.bookingId, id));
-  await db.delete(bookingsTable).where(eq(bookingsTable.id, id));
+  // A1: dọn dữ liệu liên quan NGUYÊN TỬ trong 1 transaction — hoặc xoá/gỡ hết, hoặc
+  // rollback toàn bộ. Tránh "xoá dở dang" để lại râu ria (lương ma, job hậu kỳ ma…).
+  await db.transaction(async (tx) => {
+    await tx.delete(tasksTable).where(inArray(tasksTable.bookingId, idsToDelete));
+    await tx.delete(expensesTable).where(inArray(expensesTable.bookingId, idsToDelete));
+    await tx.delete(contractsTable).where(inArray(contractsTable.bookingId, idsToDelete));
+    await tx.delete(paymentsTable).where(inArray(paymentsTable.bookingId, idsToDelete));
+    // Giải phóng váy/đồ đang giữ để không còn báo "Trùng lịch" với đơn đã xoá.
+    await tx.delete(bookingDressesTable).where(inArray(bookingDressesTable.bookingId, idsToDelete));
+    await tx.delete(bookingItemsTable).where(inArray(bookingItemsTable.bookingId, idsToDelete));
+    await tx.delete(bookingChangeLogTable).where(inArray(bookingChangeLogTable.bookingId, idsToDelete));
+    await tx.delete(photoshopJobsTable).where(inArray(photoshopJobsTable.bookingId, idsToDelete));
+    // 💰 Lương: xoá thu nhập/phụ cấp gắn booking_id HOẶC service_booking_id (đơn con
+    // multi-service) → tránh lương ma / phụ cấp ma sau khi xoá đơn.
+    await tx.delete(staffJobEarningsTable).where(
+      or(inArray(staffJobEarningsTable.bookingId, idsToDelete), inArray(staffJobEarningsTable.serviceBookingId, idsToDelete)),
+    );
+    await tx.delete(staffAllowancesTable).where(
+      or(inArray(staffAllowancesTable.bookingId, idsToDelete), inArray(staffAllowancesTable.serviceBookingId, idsToDelete)),
+    );
+    // Chấm công: GIỮ log, chỉ gỡ liên kết (đúng ý schema set null) → không mất công đã ghi.
+    await tx.update(attendanceLogsTable).set({ bookingId: null }).where(inArray(attendanceLogsTable.bookingId, idsToDelete));
+    // Thiệp cưới: GIỮ thiệp (sản phẩm của khách), chỉ gỡ link (cột raw SQL, không có schema Drizzle).
+    await tx.execute(sql`UPDATE wedding_cards SET booking_id = NULL WHERE booking_id IN (${sql.join(idsToDelete, sql`, `)})`);
+    // Cuối cùng: xoá chính booking (cha + con).
+    await tx.delete(bookingsTable).where(inArray(bookingsTable.id, idsToDelete));
+  });
+
   emitNotification({ staffId: null, type: "booking_cancelled", title: "Xóa đơn hàng", message: `Đơn #${id} đã bị xóa`, targetModule: "calendar", targetId: String(id), bookingId: id });
   res.status(204).send();
   } catch (err) {

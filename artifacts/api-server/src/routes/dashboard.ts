@@ -36,17 +36,29 @@ router.get("/dashboard/stats", async (_req, res) => {
   const totalExpenseThisMonth = monthTransactions.filter(t => t.type === "expense").reduce((s, t) => s + parseFloat(t.amount), 0);
   const profitThisMonth = totalIncomeThisMonth - totalExpenseThisMonth;
 
-  const [allPaymentsSum] = await db.select({ total: sum(paymentsTable.amount) }).from(paymentsTable);
+  // A2: "đã thu / doanh thu" KHÔNG tính phiếu đã hủy (voided) và KHÔNG cộng refund như tiền thu.
+  const [allPaymentsSum] = await db.select({ total: sum(paymentsTable.amount) }).from(paymentsTable)
+    .where(and(
+      ne(paymentsTable.paymentType, "refund"),
+      sql`COALESCE(${paymentsTable.status}, 'active') != 'voided'`,
+    ));
   const totalRevenue = parseFloat(allPaymentsSum.total ?? "0");
 
   const allPayments = await db.select().from(paymentsTable)
-    .where(and(gte(paymentsTable.paidAt, new Date(startOfMonth)), lte(paymentsTable.paidAt, new Date(endOfMonth + "T23:59:59"))));
+    .where(and(
+      gte(paymentsTable.paidAt, new Date(startOfMonth)),
+      lte(paymentsTable.paidAt, new Date(endOfMonth + "T23:59:59")),
+      ne(paymentsTable.paymentType, "refund"),
+      sql`COALESCE(${paymentsTable.status}, 'active') != 'voided'`,
+    ));
   const revenueThisMonth = allPayments.reduce((s, p) => s + parseFloat(p.amount), 0);
 
   const allBookings = await db.select().from(bookingsTable);
   const allPaymentsAll = await db.select().from(paymentsTable);
   const totalOwed = allBookings.reduce((s, b) => s + parseFloat(b.totalAmount), 0);
-  const totalPaidAll = allPaymentsAll.filter(p => p.paymentType !== "refund").reduce((s, p) => s + parseFloat(p.amount), 0);
+  const totalPaidAll = allPaymentsAll
+    .filter(p => p.paymentType !== "refund" && (p.status ?? "active") !== "voided")
+    .reduce((s, p) => s + parseFloat(p.amount), 0);
   const totalDebt = Math.max(0, totalOwed - totalPaidAll);
 
   const upcomingRows = await db

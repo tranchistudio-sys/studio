@@ -42,18 +42,19 @@ async function sumActivePayments(
   bookingId: number,
   client?: { query: <T>(sql: string, params: unknown[]) => Promise<{ rows: T[] }> },
 ): Promise<number> {
+  // A4: tiền đã thu hợp lệ — loại phiếu đã hủy (voided) và KHÔNG cộng refund (refund tách riêng, không làm paidAmount phồng).
   const sql = `SELECT COALESCE(SUM(amount::numeric), 0) AS total_paid
-    FROM payments WHERE booking_id = $1 AND COALESCE(status, 'active') <> 'voided'`;
+    FROM payments WHERE booking_id = $1 AND payment_type <> 'refund' AND COALESCE(status, 'active') <> 'voided'`;
   if (client) {
     const result = await client.query<{ total_paid: string }>(sql, [bookingId]);
     return parseFloat(result.rows[0].total_paid);
   }
   const rows = await db
-    .select({ amount: paymentsTable.amount, status: paymentsTable.status })
+    .select({ amount: paymentsTable.amount, status: paymentsTable.status, paymentType: paymentsTable.paymentType })
     .from(paymentsTable)
     .where(eq(paymentsTable.bookingId, bookingId));
   return rows
-    .filter((p) => (p.status ?? "active") !== "voided")
+    .filter((p) => (p.status ?? "active") !== "voided" && p.paymentType !== "refund")
     .reduce((s, p) => s + parseFloat(p.amount), 0);
 }
 

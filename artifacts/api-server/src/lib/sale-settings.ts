@@ -77,6 +77,15 @@ export type ClaudeSaleSettings = {
   calGapH: number;                 // giờ nghỉ giữa các show
   calWeekendCaution: boolean;      // T7/CN phải kiểm tra kỹ, không khẳng định
   calWindowDays: number;           // số ngày lịch sắp tới đưa cho Claude đọc
+
+  // K. DUYỆT NGƯỜI THẬT (Human Review) — khi Lulu không chắc thì dừng bot, báo đỏ cho nhân viên.
+  humanReviewEnabled: boolean;            // bật/tắt chế độ duyệt người thật
+  lowConfidenceThreshold: number;         // 0..1 — chỉ áp cho ẢNH (imageIntent.confidence)
+  holdMessageAfterSeconds: number;        // delay trước khi gửi câu giữ khách
+  followUpHoldAfterMinutes: number;       // (reserved phase 2) nhắc lại sau N phút
+  autoPauseThreadWhenEscalated: boolean;  // escalate → set ai_mode='takeover' (bot im)
+  allowAiSuggestedReply: boolean;         // lưu câu trả lời nháp của AI cho nhân viên tham khảo
+  saveHumanAnswerAsPlaybook: boolean;     // cho phép nút "Lưu thành kịch bản" (draft)
 };
 
 // ─── Mặc định ────────────────────────────────────────────────────────────────
@@ -144,6 +153,14 @@ export function defaultClaudeSaleSettings(): ClaudeSaleSettings {
     calGapH: 1,
     calWeekendCaution: true,
     calWindowDays: 21,
+
+    humanReviewEnabled: true,
+    lowConfidenceThreshold: 0.65,
+    holdMessageAfterSeconds: 10,
+    followUpHoldAfterMinutes: 5,
+    autoPauseThreadWhenEscalated: true,
+    allowAiSuggestedReply: true,
+    saveHumanAnswerAsPlaybook: true,
   };
 }
 
@@ -232,6 +249,14 @@ export function normalizeClaudeSaleSettings(raw: unknown): ClaudeSaleSettings {
     calGapH: num(s.calGapH, d.calGapH, 0, 8),
     calWeekendCaution: bool(s.calWeekendCaution, d.calWeekendCaution),
     calWindowDays: num(s.calWindowDays, d.calWindowDays, 1, 60),
+
+    humanReviewEnabled: bool(s.humanReviewEnabled, d.humanReviewEnabled),
+    lowConfidenceThreshold: num(s.lowConfidenceThreshold, d.lowConfidenceThreshold, 0, 1),
+    holdMessageAfterSeconds: num(s.holdMessageAfterSeconds, d.holdMessageAfterSeconds, 0, 120),
+    followUpHoldAfterMinutes: num(s.followUpHoldAfterMinutes, d.followUpHoldAfterMinutes, 1, 120),
+    autoPauseThreadWhenEscalated: bool(s.autoPauseThreadWhenEscalated, d.autoPauseThreadWhenEscalated),
+    allowAiSuggestedReply: bool(s.allowAiSuggestedReply, d.allowAiSuggestedReply),
+    saveHumanAnswerAsPlaybook: bool(s.saveHumanAnswerAsPlaybook, d.saveHumanAnswerAsPlaybook),
   };
 }
 
@@ -406,6 +431,14 @@ export const NAME_MARKER_RE = /<<\s*NAME\s*:?\s*([^>]*?)\s*>>/i;
  * Code tách ra trước khi gửi khách (khách KHÔNG thấy). Khớp toàn cục để lấy nhiều marker.
  */
 export const PRICE_IMAGE_MARKER_RE = /<<\s*(?:PRICE_IMAGE|SEND_IMAGE|IMG)\s*:?\s*([^>]*?)\s*>>/i;
+
+/**
+ * Sentinel Claude chèn khi muốn GỬI ẢNH MẪU THẬT cho khách (bộ ảnh/đồ thuê/concept
+ * đúng nhóm). Nội dung trong ngoặc (TÙY CHỌN) là NHÓM nhu cầu (vd beauty,
+ * wedding_album, rental_outfit, new_concept_idea); để trống thì hệ thống tự suy từ
+ * ảnh khách gửi / tin nhắn. Code tách ra trước khi gửi khách (khách KHÔNG thấy).
+ */
+export const SAMPLE_IMAGE_MARKER_RE = /<<\s*(?:SAMPLE_IMAGES?|SAMPLE|MAU|ANH_MAU)\s*:?\s*([^>]*?)\s*>>/i;
 
 /**
  * Quy tắc ĐỌC LỊCH THÔNG MINH (read-only) + escalation. Trả "" nếu tắt tính năng.

@@ -1445,6 +1445,10 @@ router.delete("/bookings/:parentId/remove-child/:childId", async (req, res) => {
       await tx.delete(expensesTable).where(eq(expensesTable.bookingId, childId));
       await tx.delete(contractsTable).where(eq(contractsTable.bookingId, childId));
       await tx.delete(paymentsTable).where(eq(paymentsTable.bookingId, childId));
+      // Giải phóng váy/đồ đang giữ — nếu không xoá, hàng booking_dresses mồ côi vẫn
+      // bị query trùng-lịch (/dresses/:id/conflict) tính → báo "Trùng lịch" với đơn
+      // đã xoá. (FK schema khai báo onDelete cascade nhưng DB thật chưa có ràng buộc.)
+      await tx.delete(bookingDressesTable).where(eq(bookingDressesTable.bookingId, childId));
       await tx.delete(bookingsTable).where(eq(bookingsTable.id, childId));
 
       await tx.insert(bookingChangeLogTable).values({

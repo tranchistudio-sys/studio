@@ -37,6 +37,9 @@ export type ChatRequest = {
   messages: ChatMessage[];
   maxTokens?: number;
   temperature?: number;
+  /** Override timeout mỗi provider (ms) cho riêng request này. Mặc định dùng cfg.timeoutMs (12s).
+   *  Dùng cho tác vụ sinh văn bản DÀI (vd Brain Lab viết lại toàn bộ bộ luật ~8K ký tự, mất 15-40s). */
+  timeoutMs?: number;
   /** Ép trả JSON hợp lệ (dùng cho Website advisor). */
   jsonMode?: boolean;
   /** Override model cho từng provider (hiếm dùng). */
@@ -233,12 +236,13 @@ export async function callChat(req: ChatRequest): Promise<AiChatResult> {
     }
 
     const model = resolveModelFor(provider, req);
+    const timeoutMs = req.timeoutMs && req.timeoutMs > 0 ? req.timeoutMs : cfg.timeoutMs;
     let lastErr: ProviderError | null = null;
 
     for (let attempt = 0; attempt <= cfg.retries; attempt++) {
       const t0 = Date.now();
       try {
-        const text = await callOneProvider(provider, apiKey, model, req, cfg.timeoutMs);
+        const text = await callOneProvider(provider, apiKey, model, req, timeoutMs);
         const latencyMs = Date.now() - t0;
         attempts.push({ provider, ok: true, latencyMs });
 

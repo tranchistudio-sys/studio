@@ -24,9 +24,10 @@ import {
   clampImages,
 } from "../lib/autopost-route-helpers";
 import { describeDryRun, patchAutopostConfig, getAutopostConfig } from "../lib/autopost-config";
-import { pickRelevantSamples, getSamplesByIds, buildStyleBlock, ocrImageToText } from "../lib/autopost-style";
+import { pickRelevantSamples, getSamplesByIds, buildStyleBlock, ocrImageToText, topicForContentType, styleTopicLabel, isValidStyleTopic } from "../lib/autopost-style";
 import { persistImageBuffer } from "../lib/autopost-storage";
 import { getBrandFooter, buildFooterText } from "../lib/autopost-brand";
+import { listSignatures, getDefaultSignatureContent } from "../lib/autopost-signature";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AutoPost Facebook (Amazing Studio) — admin router (Task 5).
@@ -378,7 +379,7 @@ router.post("/autopost/posts/generate", async (req: Request, res: Response) => {
     // (3b) VĂN PHONG MẪU: id cụ thể (nếu client chọn) hoặc tự chọn theo content_type.
     const samples = Array.isArray(styleSampleIds) && styleSampleIds.length
       ? await getSamplesByIds(styleSampleIds.map(Number))
-      : await pickRelevantSamples({ contentType: item.contentType, limit: 4 });
+      : await pickRelevantSamples({ topicKey: topicForContentType(item.contentType), limit: 4 });
     const styleBlock = buildStyleBlock(samples);
 
     // (4) Sinh caption — KHÔNG crash khi thất bại.
@@ -498,7 +499,7 @@ router.post("/autopost/posts/:id/regenerate", async (req: Request, res: Response
 
     const samples = Array.isArray(styleSampleIds) && styleSampleIds.length
       ? await getSamplesByIds(styleSampleIds.map(Number))
-      : await pickRelevantSamples({ contentType: item.contentType, limit: 4 });
+      : await pickRelevantSamples({ topicKey: topicForContentType(item.contentType), limit: 4 });
     const styleBlock = buildStyleBlock(samples);
 
     const result = await generateCaptions(item, {
@@ -877,6 +878,101 @@ router.put("/autopost/footer", async (req: Request, res: Response) => {
   }
 });
 
+// ─────────────────────────── CHỮ KÝ TIỆM (signatures) ───────────────────────
+// Bảng riêng autopost_signatures: admin tự quản nhiều mẫu chữ ký, chọn 1 mặc định.
+// Chữ ký gắn cuối bài lúc đăng (autopost-scheduler) — AI KHÔNG sửa, không hardcode.
+
+// Chuẩn hoá payload chữ ký (dùng chung create/update). GIỮ NGUYÊN content (Unicode/xuống dòng).
+function signatureFields(b: any): { name: string; content: string; isActive: boolean; isDefault: boolean } {
+  return {
+    name: String(b?.name ?? "").trim(),
+    content: String(b?.content ?? ""),
+    isActive: typeof b?.isActive === "boolean" ? b.isActive : true,
+    isDefault: typeof b?.isDefault === "boolean" ? b.isDefault : false,
+  };
+}
+
+// Đảm bảo chỉ 1 chữ ký là mặc định (gỡ cờ default ở các chữ ký khác).
+async function clearOtherDefaults(keepId: number): Promise<void> {
+  await pool.query(
+    `UPDATE autopost_signatures SET is_default = false, updated_at = now() WHERE id <> $1 AND is_default = true`,
+    [keepId],
+  );
+}
+
+// GET /autopost/signatures — danh sách chữ ký (mặc định lên đầu).
+router.get("/autopost/signatures", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    res.json(await listSignatures());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// GET /autopost/signatures/default — chữ ký mặc định đang bật (cho preview nút gắn).
+router.get("/autopost/signatures/default", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    res.json({ content: await getDefaultSignatureContent() });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// POST /autopost/signatures — thêm chữ ký.
+router.post("/autopost/signatures", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const f = signatureFields(req.body);
+    if (!f.name) { res.status(400).json({ error: "Cần nhập tên chữ ký" }); return; }
+    if (!f.content.trim()) { res.status(400).json({ error: "Cần nhập nội dung chữ ký" }); return; }
+    const r = await pool.query(
+      `INSERT INTO autopost_signatures (name, content, is_active, is_default, updated_at)
+       VALUES ($1, $2, $3, $4, now()) RETURNING id`,
+      [f.name, f.content, f.isActive, f.isDefault],
+    );
+    const id = Number((r.rows[0] as any).id);
+    if (f.isDefault) await clearOtherDefaults(id);
+    res.json({ id });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// PUT /autopost/signatures/:id — sửa chữ ký.
+router.put("/autopost/signatures/:id", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const f = signatureFields(req.body);
+    const id = Number(req.params.id);
+    if (!f.name) { res.status(400).json({ error: "Cần nhập tên chữ ký" }); return; }
+    if (!f.content.trim()) { res.status(400).json({ error: "Cần nhập nội dung chữ ký" }); return; }
+    const r = await pool.query(
+      `UPDATE autopost_signatures
+          SET name=$1, content=$2, is_active=$3, is_default=$4, updated_at=now()
+        WHERE id=$5 RETURNING id`,
+      [f.name, f.content, f.isActive, f.isDefault, id],
+    );
+    if (!r.rows[0]) { res.status(404).json({ error: "Không tìm thấy chữ ký" }); return; }
+    if (f.isDefault) await clearOtherDefaults(id);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// DELETE /autopost/signatures/:id — xoá chữ ký.
+router.delete("/autopost/signatures/:id", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    await pool.query(`DELETE FROM autopost_signatures WHERE id = $1`, [Number(req.params.id)]);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
 // ─────────────────────────── VĂN PHONG MẪU (style bank) ──────────────────────
 
 // GET /autopost/style-samples — liệt kê bài mẫu (mới/ưu tiên cao trước).
@@ -885,7 +981,9 @@ router.get("/autopost/style-samples", async (req: Request, res: Response) => {
   try {
     const r = await pool.query(
       `SELECT id, title, content, tags, content_type AS "contentType", tone,
-              is_active AS "isActive", priority, images, created_at AS "createdAt", updated_at AS "updatedAt"
+              is_active AS "isActive", priority, images,
+              style_topic_key AS "styleTopicKey", style_topic_label AS "styleTopicLabel",
+              created_at AS "createdAt", updated_at AS "updatedAt"
          FROM autopost_style_samples
         ORDER BY priority DESC, id DESC`,
     );
@@ -896,7 +994,7 @@ router.get("/autopost/style-samples", async (req: Request, res: Response) => {
 });
 
 // Chuẩn hoá payload bài mẫu từ body (dùng chung create/update).
-function styleSampleFields(b: any): { title: string; content: string; tags: string[]; contentType: string | null; tone: string | null; isActive: boolean; priority: number; images: string[] } {
+function styleSampleFields(b: any): { title: string; content: string; tags: string[]; contentType: string | null; tone: string | null; isActive: boolean; priority: number; images: string[]; styleTopicKey: string; styleTopicLabel: string } {
   const tags = Array.isArray(b?.tags)
     ? b.tags.filter((t: unknown): t is string => typeof t === "string" && t.trim().length > 0).map((t: string) => t.trim())
     : [];
@@ -904,6 +1002,9 @@ function styleSampleFields(b: any): { title: string; content: string; tags: stri
   const images = Array.isArray(b?.images)
     ? b.images.filter((u: unknown): u is string => typeof u === "string" && u.startsWith("/objects/")).slice(0, 10)
     : [];
+  // Chủ đề văn phong: validate key trong 14 chủ đề; label luôn lấy chuẩn từ server theo key.
+  const rawTopic = String(b?.styleTopicKey ?? "all").trim();
+  const styleTopicKey = isValidStyleTopic(rawTopic) ? rawTopic : "all";
   return {
     title: String(b?.title ?? "").trim(),
     content: String(b?.content ?? "").trim(),
@@ -913,6 +1014,8 @@ function styleSampleFields(b: any): { title: string; content: string; tags: stri
     isActive: typeof b?.isActive === "boolean" ? b.isActive : true,
     priority: Number.isFinite(Number(b?.priority)) ? Math.trunc(Number(b.priority)) : 0,
     images,
+    styleTopicKey,
+    styleTopicLabel: styleTopicLabel(styleTopicKey),
   };
 }
 
@@ -924,9 +1027,9 @@ router.post("/autopost/style-samples", async (req: Request, res: Response) => {
     if (!f.title) { res.status(400).json({ error: "Cần nhập tiêu đề" }); return; }
     if (!f.content) { res.status(400).json({ error: "Cần nhập nội dung bài mẫu" }); return; }
     const r = await pool.query(
-      `INSERT INTO autopost_style_samples (title, content, tags, content_type, tone, is_active, priority, images, updated_at)
-       VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8::jsonb, now()) RETURNING id`,
-      [f.title, f.content, JSON.stringify(f.tags), f.contentType, f.tone, f.isActive, f.priority, JSON.stringify(f.images)],
+      `INSERT INTO autopost_style_samples (title, content, tags, content_type, tone, is_active, priority, images, style_topic_key, style_topic_label, updated_at)
+       VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8::jsonb, $9, $10, now()) RETURNING id`,
+      [f.title, f.content, JSON.stringify(f.tags), f.contentType, f.tone, f.isActive, f.priority, JSON.stringify(f.images), f.styleTopicKey, f.styleTopicLabel],
     );
     res.json({ id: (r.rows[0] as any).id });
   } catch (e) {
@@ -943,9 +1046,9 @@ router.put("/autopost/style-samples/:id", async (req: Request, res: Response) =>
     if (!f.content) { res.status(400).json({ error: "Cần nhập nội dung bài mẫu" }); return; }
     const r = await pool.query(
       `UPDATE autopost_style_samples
-          SET title=$1, content=$2, tags=$3::jsonb, content_type=$4, tone=$5, is_active=$6, priority=$7, images=$8::jsonb, updated_at=now()
-        WHERE id=$9 RETURNING id`,
-      [f.title, f.content, JSON.stringify(f.tags), f.contentType, f.tone, f.isActive, f.priority, JSON.stringify(f.images), Number(req.params.id)],
+          SET title=$1, content=$2, tags=$3::jsonb, content_type=$4, tone=$5, is_active=$6, priority=$7, images=$8::jsonb, style_topic_key=$9, style_topic_label=$10, updated_at=now()
+        WHERE id=$11 RETURNING id`,
+      [f.title, f.content, JSON.stringify(f.tags), f.contentType, f.tone, f.isActive, f.priority, JSON.stringify(f.images), f.styleTopicKey, f.styleTopicLabel, Number(req.params.id)],
     );
     if (!r.rows[0]) { res.status(404).json({ error: "Không tìm thấy bài mẫu" }); return; }
     res.json({ ok: true });
@@ -1021,7 +1124,7 @@ router.post("/autopost/style-samples/test", async (req: Request, res: Response) 
 
     const samples = Array.isArray(b.styleSampleIds) && b.styleSampleIds.length
       ? await getSamplesByIds(b.styleSampleIds.map(Number))
-      : await pickRelevantSamples({ contentType: item.contentType, limit: 4 });
+      : await pickRelevantSamples({ topicKey: topicForContentType(item.contentType), limit: 4 });
     const styleBlock = buildStyleBlock(samples);
     const wantCaptions = Math.max(1, Math.min(6, Number(b.captionCount) || opcfg.captionOptionsPerPost));
 

@@ -2,11 +2,16 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { pool } from "@workspace/db";
 import { verifyToken } from "./auth";
 import { askClaudeForReply, resolveModel, type ClaudeHistoryItem } from "../lib/claude-sale";
-import { getSaleContext, getSaleContextInfo, resolvePriceImagesByCodes } from "../lib/sale-context";
+import { getSaleContext, getSaleContextInfo, resolvePriceImagesByCodes, wantsNewConcept, getPhotoIdeasBlock } from "../lib/sale-context";
+import { classifyCustomerImageFromData, buildImageRoutingBlock } from "../lib/sale-vision";
+import { selectSampleImages, extractRecentSampleUrls, SAMPLES_EXHAUSTED_NOTE } from "../lib/sale-samples";
 import { getActivePlaybook } from "../lib/sale-playbook";
+import { getActiveBrainRules } from "../lib/sale-brain-lab";
 import { getClaudeSaleSettings, computeReplyDelayMs } from "../lib/sale-settings";
 import { getScheduleContext } from "../lib/sale-calendar";
 import { getMasterEnabled } from "../lib/sale-master";
+import { detectEscalation } from "../lib/sale-lead-flags";
+import { HOLD_MESSAGE, imageEscalationReason } from "../lib/sale-human-review";
 
 /**
  * KARU / Claude Sale Test — sân test nội bộ cho admin.
@@ -68,9 +73,13 @@ router.post("/claude-sale-test/chat", async (req, res) => {
   const body = req.body as {
     message?: string;
     messages?: Array<{ direction?: string; text?: string }>;
+    imageBase64?: string;
+    imageMediaType?: string;
   };
   const message = (body.message ?? "").trim();
-  if (!message) return res.status(400).json({ error: "Thiếu nội dung tin nhắn" });
+  const imageBase64 = (body.imageBase64 ?? "").trim();
+  const hasImage = imageBase64.length > 0;
+  if (!message && !hasImage) return res.status(400).json({ error: "Thiếu nội dung tin nhắn hoặc ảnh" });
 
   const apiKey = (process.env.ANTHROPIC_API_KEY ?? "").trim();
   if (!apiKey) {
@@ -86,13 +95,37 @@ router.post("/claude-sale-test/chat", async (req, res) => {
           message: String(m.text).trim(),
         }))
     : [];
-  const history: ClaudeHistoryItem[] = [...prior, { direction: "incoming", message }];
+  const incomingText = message || (hasImage ? "[Khách gửi một hình ảnh]" : "");
+  const history: ClaudeHistoryItem[] = [...prior, { direction: "incoming", message: incomingText }];
 
   const model = resolveModel();
   const startedAt = Date.now();
   try {
-    const context = await getSaleContext();
+    let context = await getSaleContext();
+    // "Ý tưởng chụp ảnh" là NGUỒN PHỤ: chỉ nạp khi khách thật sự muốn concept mới/lạ.
+    if (wantsNewConcept(message)) {
+      const ideas = await getPhotoIdeasBlock();
+      if (ideas) context += `\n\n${ideas}`;
+    }
+    // ẢNH (sân test): AI Vision phân loại → route đúng nguồn dữ liệu, giống luồng Messenger.
+    let imageIntent: Awaited<ReturnType<typeof classifyCustomerImageFromData>> | null = null;
+    if (hasImage) {
+      const convo = prior.filter((h) => !h.message.startsWith("[image:")).slice(-6)
+        .map((h) => `${h.direction === "incoming" ? "Khách" : "Em"}: ${h.message}`).join("\n");
+      imageIntent = await classifyCustomerImageFromData({
+        dataBase64: imageBase64,
+        mediaType: body.imageMediaType,
+        messageText: message,
+        conversationContext: convo,
+      });
+      context += `\n\n${buildImageRoutingBlock(imageIntent)}`;
+      if (imageIntent.service_intent === "new_concept_idea" || imageIntent.should_use_photo_ideas) {
+        const ideas = await getPhotoIdeasBlock();
+        if (ideas) context += `\n\n${ideas}`;
+      }
+    }
     const styleGuide = await getActivePlaybook();
+    const brainRules = await getActiveBrainRules();
     const settings = await getClaudeSaleSettings();
     let scheduleContext = "";
     if (settings.calendarEnabled) {
@@ -101,13 +134,14 @@ router.post("/claude-sale-test/chat", async (req, res) => {
     const reply = await askClaudeForReply({
       apiKey,
       model,
-      customerMessage: message,
+      customerMessage: incomingText,
       customerName: "Khách test",
       history,
       context,
       styleGuide,
       settings,
       scheduleContext,
+      brainRules,
     });
     const responseTimeMs = Date.now() - startedAt;
     // Ảnh bảng giá nhóm (theo marker <<PRICE_IMAGE: MÃ>> của Claude) → trả objectPath
@@ -117,18 +151,70 @@ router.post("/claude-sale-test/chat", async (req, res) => {
       const hits = await resolvePriceImagesByCodes(reply.priceImageCodes ?? []);
       priceImages = hits.map((h) => h.objectPath);
     } catch { /* không chặn câu trả lời nếu lỗi ảnh */ }
+
+    // ẢNH MẪU THẬT (gallery / cho thuê đồ / ý tưởng) — gửi HÌNH trực tiếp thay vì link.
+    // Marker <<SAMPLE>> của Claude hoặc tự suy nhóm từ ảnh/tin khách. [] nếu không có ảnh đúng nhóm.
+    let sampleImages: Awaited<ReturnType<typeof selectSampleImages>>["images"] = [];
+    let sampleLinks: Awaited<ReturnType<typeof selectSampleImages>>["links"] = [];
+    let sampleNote: string | null = null;
+    try {
+      const contextText = prior
+        .filter((h) => !h.message.startsWith("[image:"))
+        .slice(-4)
+        .map((h) => h.message)
+        .join("\n");
+      // Tin nhắn gần nhất của bot (để xét khách "đồng ý" sau khi bot mời gửi mẫu).
+      const lastBotText = [...prior].reverse().find((h) => h.direction === "outgoing")?.message ?? null;
+      const sel = await selectSampleImages({
+        sampleRequested: reply.sampleRequested,
+        sampleIntents: reply.sampleIntents,
+        messageText: incomingText,
+        contextText,
+        lastBotText,
+        visionIntent: imageIntent,
+        settings,
+        excludeUrls: extractRecentSampleUrls(prior),
+        maxTotal: 2,
+      });
+      sampleImages = sel.images;
+      sampleLinks = sel.links;
+      if (sel.exhausted) sampleNote = SAMPLES_EXHAUSTED_NOTE;
+    } catch (e) { console.error("[ClaudeSaleTest] sampleImages lỗi:", String(e).slice(0, 160)); }
+
+    // ── DEV MODE: mô phỏng Human Review (KHÔNG ghi DB, KHÔNG pause thread thật) ──
+    const escalationReason =
+      reply.escalation
+      || detectEscalation(incomingText)
+      || imageEscalationReason(imageIntent, settings.lowConfidenceThreshold);
+    const wouldEscalate = !!escalationReason && settings.humanReviewEnabled;
+
     return res.json({
       reply: reply.messages.length > 0 ? reply.messages : reply.raw ? [reply.raw] : ["(Claude không trả về nội dung)"],
       raw: reply.raw,
+      replyText: reply.raw,
       model,
       responseTimeMs,
       // Delay cấu hình theo độ dài tin khách (để sân test mô phỏng đúng tốc độ Fanpage).
-      replyDelayMs: computeReplyDelayMs(message, settings),
+      replyDelayMs: computeReplyDelayMs(incomingText, settings),
       // Sân test KHÔNG đụng DB: chỉ hiển thị để admin thấy AI sẽ làm gì.
       escalation: reply.escalation,
       learnedName: reply.learnedName,
+      // DEV MODE — Human Review (mô phỏng; test không ghi DB nên humanReviewId luôn null).
+      escalated: wouldEscalate,
+      escalationReason,
+      holdMessage: wouldEscalate ? HOLD_MESSAGE : null,
+      botPaused: wouldEscalate && settings.autoPauseThreadWhenEscalated,
+      usedPlaybook: !!styleGuide,
+      humanReviewId: null,
       // Ảnh bảng giá nhóm để render inline (objectPath /objects/...; FE dùng getImageSrc).
       priceImages,
+      // Ảnh mẫu thật (gửi HÌNH trực tiếp) + link xem thêm. DEV MODE hiển thị nguồn ảnh.
+      sampleImages,
+      sampleLinks,
+      // Khách đòi xem thêm nhưng đã hết mẫu mới → câu nhắn khéo (null nếu không rơi vào case này).
+      sampleNote,
+      // Kết quả AI Vision (DEV MODE) — null nếu khách không gửi ảnh.
+      imageIntent,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -27,6 +27,7 @@ import { generateCaptions } from "./lib/autopost-caption";
 import { emitNotification } from "./routes/notifications";
 import { poolRowToCaptionItem, clampImages, sha1 } from "./lib/autopost-route-helpers";
 import { getBrandFooter, appendFooter } from "./lib/autopost-brand";
+import { getDefaultSignatureContent, appendSignature } from "./lib/autopost-signature";
 import { stripContacts } from "./lib/autopost-sanitize";
 
 const TAG = "[AutoPost]";
@@ -123,15 +124,24 @@ async function publishClaimedPost(post: DuePost): Promise<PublishOutcome> {
     }
   }
 
-  // ── Dựng caption CUỐI: sanitize liên hệ lạ → gắn footer chính chủ (nếu bật). ──
+  // ── Dựng caption CUỐI: sanitize liên hệ lạ → gắn CHỮ KÝ TIỆM chính chủ (nếu bật). ──
+  // Nguồn chữ ký: bảng autopost_signatures (mặc định đang bật). Nếu chưa có chữ ký
+  // nào → fallback footer cũ (autopost_settings.config.footer) để không vỡ bài cũ.
   const cleaned = stripContacts(post.caption_final ?? "");
   let finalMessage = cleaned;
   try {
-    const bf = await getBrandFooter();
-    const useFooter = post.footer_enabled === false ? false : bf.enabled;
-    if (useFooter) finalMessage = appendFooter(cleaned, bf);
+    const wantSignature = post.footer_enabled === false ? false : true; // mặc định BẬT
+    if (wantSignature) {
+      const sig = await getDefaultSignatureContent();
+      if (sig) {
+        finalMessage = appendSignature(cleaned, sig);
+      } else {
+        const bf = await getBrandFooter();
+        if (bf.enabled) finalMessage = appendFooter(cleaned, bf);
+      }
+    }
   } catch (e) {
-    console.warn(`${TAG} build footer bài #${post.id} lỗi (đăng không footer):`, String(e).slice(0, 120));
+    console.warn(`${TAG} build chữ ký bài #${post.id} lỗi (đăng không chữ ký):`, String(e).slice(0, 120));
   }
 
   // ── Đăng (đi qua DRY_RUN bên trong publishToPage). ──

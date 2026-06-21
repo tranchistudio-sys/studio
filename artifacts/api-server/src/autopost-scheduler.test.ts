@@ -15,10 +15,14 @@ vi.mock("./lib/autopost-caption", () => ({
 vi.mock("./routes/notifications", () => ({
   emitNotification: vi.fn(),
 }));
-// Footer là no-op trong test scheduler (footer có unit test riêng) → message giữ nguyên.
+// Footer/chữ ký là no-op trong test scheduler (có unit test riêng) → message giữ nguyên.
 vi.mock("./lib/autopost-brand", () => ({
   getBrandFooter: async () => ({ enabled: false, template: "", name: "", address: "", phone: "", website: "", facebook: "", tiktok: "", note: "" }),
   appendFooter: (c: string) => c,
+}));
+vi.mock("./lib/autopost-signature", () => ({
+  getDefaultSignatureContent: async () => "",
+  appendSignature: (c: string) => c,
 }));
 
 import { pool } from "@workspace/db";

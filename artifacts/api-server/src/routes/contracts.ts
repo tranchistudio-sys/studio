@@ -244,6 +244,11 @@ router.get("/contracts/:id/sign", async (req, res): Promise<void> => {
   </div>
 
   <script>
+    // URL lưu chữ ký do SERVER render sẵn (đường dẫn tuyệt đối theo id).
+    // KHÔNG suy ra từ window.location vì Messenger/Zalo/Facebook hay chèn thêm
+    // ?fbclid=... vào link → cách replace('/sign','') cũ tạo ra URL sai (POST /api/contracts/:id?fbclid=.../mark-signed)
+    // → 404 → "Lỗi khi lưu chữ ký". Dùng hằng số tuyệt đối là chắc chắn nhất.
+    var MARK_SIGNED_URL = ${JSON.stringify(`/api/contracts/${id}/mark-signed`)};
     var c = document.getElementById('sigCanvas');
     if (c) {
       var ctx = c.getContext('2d');
@@ -300,7 +305,7 @@ router.get("/contracts/:id/sign", async (req, res): Promise<void> => {
         try {
           var now = new Date();
           var sigData = c.toDataURL('image/png');
-          var resp = await fetch(window.location.href.replace('/sign', '') + '/mark-signed', {
+          var resp = await fetch(MARK_SIGNED_URL, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ signedAt: now.toISOString(), signatureData: sigData, customerName: name, customerPhone: phone })
@@ -338,7 +343,7 @@ router.get("/contracts/:id/sign", async (req, res): Promise<void> => {
           window.history.back();
           return;
         }
-        window.location.href = window.location.href.replace('/sign', '');
+        window.location.href = window.location.pathname;
       };
     }
   </script>
@@ -415,48 +420,54 @@ router.get("/contracts/:id/public", async (req, res): Promise<void> => {
 
 router.post("/contracts/:id/mark-signed", async (req, res): Promise<void> => {
   const id = parseInt(req.params.id);
-  const { customerName, customerPhone, signedAt, signatureData } = req.body ?? {};
-  const [existing] = await db.select().from(contractsTable).where(eq(contractsTable.id, id));
-  if (!existing) {
-    res.status(404).json({ error: "Không tìm thấy hợp đồng" });
-    return;
-  }
-
-  await db.update(contractsTable).set({
-    status: "signed",
-    signedAt: signedAt ?? new Date().toISOString(),
-    ...(signatureData ? { signatureImageUrl: signatureData } : {}),
-    ...(customerName ? { signerName: customerName } : {}),
-    ...(customerPhone ? { signerPhone: customerPhone } : {}),
-  }).where(eq(contractsTable.id, id));
-
-  if (existing.customerId && (customerName !== undefined || customerPhone !== undefined)) {
-    const customerUpdate: Record<string, unknown> = {};
-    if (customerName !== undefined) customerUpdate.name = customerName;
-    if (customerPhone !== undefined) customerUpdate.phone = customerPhone;
-    if (Object.keys(customerUpdate).length) {
-      await db.update(customersTable).set(customerUpdate).where(eq(customersTable.id, existing.customerId));
+  try {
+    const { customerName, customerPhone, signedAt, signatureData } = req.body ?? {};
+    const [existing] = await db.select().from(contractsTable).where(eq(contractsTable.id, id));
+    if (!existing) {
+      res.status(404).json({ error: "Không tìm thấy hợp đồng" });
+      return;
     }
+
+    await db.update(contractsTable).set({
+      status: "signed",
+      signedAt: signedAt ?? new Date().toISOString(),
+      ...(signatureData ? { signatureImageUrl: signatureData } : {}),
+      ...(customerName ? { signerName: customerName } : {}),
+      ...(customerPhone ? { signerPhone: customerPhone } : {}),
+    }).where(eq(contractsTable.id, id));
+
+    if (existing.customerId && (customerName !== undefined || customerPhone !== undefined)) {
+      const customerUpdate: Record<string, unknown> = {};
+      if (customerName !== undefined) customerUpdate.name = customerName;
+      if (customerPhone !== undefined) customerUpdate.phone = customerPhone;
+      if (Object.keys(customerUpdate).length) {
+        await db.update(customersTable).set(customerUpdate).where(eq(customersTable.id, existing.customerId));
+      }
+    }
+
+    if (existing.bookingId) {
+      await db.update(bookingsTable).set({
+        status: "completed",
+      }).where(eq(bookingsTable.id, existing.bookingId));
+    }
+
+    // Tạo thông báo nội bộ
+    const [customer] = existing.customerId
+      ? await db.select({ name: customersTable.name }).from(customersTable).where(eq(customersTable.id, existing.customerId))
+      : [null];
+    await db.insert(notificationsTable).values({
+      type: "contract_signed",
+      title: "Khách ký hợp đồng online",
+      body: `${customer?.name ?? "Khách hàng"} vừa ký hợp đồng ${existing.contractCode} online thành công.`,
+      isRead: false,
+    } as Record<string, unknown>).catch(() => null);
+
+    res.json({ ok: true });
+  } catch (err) {
+    // Trả lỗi rõ ràng + log để chẩn đoán (trước đây lỗi DB sẽ làm treo request → khách thấy "Lỗi kết nối")
+    console.error(`[contracts/${id}/mark-signed] Lưu chữ ký thất bại:`, err);
+    res.status(500).json({ error: "Không lưu được chữ ký", detail: err instanceof Error ? err.message : String(err) });
   }
-
-  if (existing.bookingId) {
-    await db.update(bookingsTable).set({
-      status: "completed",
-    }).where(eq(bookingsTable.id, existing.bookingId));
-  }
-
-  // Tạo thông báo nội bộ
-  const [customer] = existing.customerId
-    ? await db.select({ name: customersTable.name }).from(customersTable).where(eq(customersTable.id, existing.customerId))
-    : [null];
-  await db.insert(notificationsTable).values({
-    type: "contract_signed",
-    title: "Khách ký hợp đồng online",
-    body: `${customer?.name ?? "Khách hàng"} vừa ký hợp đồng ${existing.contractCode} online thành công.`,
-    isRead: false,
-  } as Record<string, unknown>).catch(() => null);
-
-  res.json({ ok: true });
 });
 
 router.get("/customers/:customerId/contracts", async (req, res): Promise<void> => {

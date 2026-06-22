@@ -22,3 +22,4 @@ export * from "./crm_leads";
 export * from "./legacy";
 export * from "./cms";
 export * from "./autopost";
+export * from "./lulu-brain";

@@ -47,8 +47,14 @@ type SimResult = {
   sampleImages: SampleImage[]; sampleNote: string | null; responseTimeMs: number;
 };
 
-type Tab = "active" | "ai" | "draft" | "test" | "history";
+type Tab = "active" | "aifix" | "fixtest" | "history";
 type ConvoMsg = { direction: "incoming" | "outgoing"; text: string };
+// Map các key tab CŨ (deep-link / bookmark) sang tab mới.
+const LEGACY_TAB_MAP: Record<string, Tab> = {
+  active: "active", history: "history",
+  ai: "aifix", aifix: "aifix",
+  draft: "fixtest", test: "fixtest", fixtest: "fixtest",
+};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 function token(): string | null { return localStorage.getItem("amazingStudioToken_v2"); }
@@ -57,6 +63,7 @@ function authHeaders(): Record<string, string> {
   return { "Content-Type": "application/json", ...(t ? { Authorization: `Bearer ${t}` } : {}) };
 }
 const DRAFT_KEY = "luluBrainLab.draftId";
+const QUEUE_KEY = "luluBrainLab.fixQueue"; // giữ hàng đợi sửa lỗi qua refresh (lưu nhẹ, bỏ base64 ảnh)
 
 // Chat "Nhờ AI sửa Lulu": ảnh chấp nhận + ngưỡng tin cậy.
 const IMG_ACCEPT = ["image/jpeg", "image/png", "image/webp"];
@@ -200,6 +207,20 @@ export default function LuluBrainLabPage() {
   const [changeRequests, setChangeRequests] = useState<ChangeRequest[]>([]);
   const [testCases, setTestCases] = useState<TestCase[]>([]);
   const [busy, setBusy] = useState(false);
+  // Hàng đợi sửa lỗi (state FE) — khôi phục từ localStorage để GIỮ QUA REFRESH (bỏ ảnh base64 cho nhẹ).
+  const [fixQueue, setFixQueue] = useState<QueueCard[]>(() => {
+    try {
+      const raw = localStorage.getItem(QUEUE_KEY);
+      if (!raw) return [];
+      const arr = JSON.parse(raw) as QueueCard[];
+      // Card đang xử lý dở lúc refresh → coi như lỗi để chạy lại / bỏ qua.
+      return arr.map((c) => (c.status === "analyzing" || c.status === "applying")
+        ? { ...c, status: "error" as QueueStatus, error: "Phiên trước bị gián đoạn — bấm Chạy lại / Bỏ qua." } : c);
+    } catch { return []; }
+  });
+  const [newDraftPrompt, setNewDraftPrompt] = useState(false);
+  const [testPrefill, setTestPrefill] = useState("");                                  // #2: prefill ô test khi "Test lại câu vừa sửa"
+  const [lastApplied, setLastApplied] = useState<{ newVer: number; prevId: number; prevVer: number } | null>(null); // #5: rollback 1 chạm
 
   const showOk = (msg: string) => { setFlash({ kind: "ok", msg }); setTimeout(() => setFlash(null), 4000); };
   const showErr = (msg: string) => { setFlash({ kind: "err", msg }); setTimeout(() => setFlash(null), 6000); };
@@ -222,20 +243,40 @@ export default function LuluBrainLabPage() {
     try { const d = await apiGet<{ cases: TestCase[] }>("/lulu-brain/test-cases"); setTestCases(d.cases); }
     catch { /* không chặn */ }
   }, []);
+  // Bản nháp đang mở = nguồn chân lý từ server (một bản nháp duy nhất). DRAFT_KEY chỉ là gợi ý phụ.
+  const loadDraft = useCallback(async () => {
+    try {
+      const d = await apiGet<{ draft: BrainVersion | null }>("/lulu-brain/draft");
+      if (d.draft) { setDraft(d.draft); localStorage.setItem(DRAFT_KEY, String(d.draft.id)); }
+      else { setDraft(null); localStorage.removeItem(DRAFT_KEY); }
+    } catch { /* không chặn */ }
+  }, []);
 
   useEffect(() => {
-    loadActive(); loadVersions(); loadChangeRequests(); loadTestCases();
-    const savedId = Number(localStorage.getItem(DRAFT_KEY) || 0);
-    if (savedId) {
-      apiGet<{ version: BrainVersion }>(`/lulu-brain/versions/${savedId}`)
-        .then((d) => { if (d.version.status === "draft") setDraft(d.version); else localStorage.removeItem(DRAFT_KEY); })
-        .catch(() => localStorage.removeItem(DRAFT_KEY));
-    }
-  }, [loadActive, loadVersions, loadChangeRequests, loadTestCases]);
+    loadActive(); loadVersions(); loadChangeRequests(); loadTestCases(); loadDraft();
+    // Deep-link ?tab= (gồm cả key cũ ai/draft/test → gộp về "fixtest").
+    try {
+      const t = new URLSearchParams(window.location.search).get("tab");
+      if (t && LEGACY_TAB_MAP[t]) setTab(LEGACY_TAB_MAP[t]);
+    } catch { /* ignore */ }
+  }, [loadActive, loadVersions, loadChangeRequests, loadTestCases, loadDraft]);
+
+  // Lưu hàng đợi sửa lỗi vào localStorage (bỏ base64 ảnh cho nhẹ; chỉ giữ số lượng ảnh).
+  useEffect(() => {
+    try {
+      const light = fixQueue.map((c) => ({ ...c, images: [], imgCount: c.imgCount ?? c.images.length }));
+      localStorage.setItem(QUEUE_KEY, JSON.stringify(light));
+    } catch { /* quota — bỏ qua */ }
+  }, [fixQueue]);
 
   const setCurrentDraft = (v: BrainVersion) => {
     setDraft(v);
     localStorage.setItem(DRAFT_KEY, String(v.id));
+  };
+  // Cập nhật / xoá bản nháp đang mở (dùng chung cho tab Sửa & Test).
+  const onDraftChange = (v: BrainVersion | null) => {
+    if (v) setCurrentDraft(v);
+    else { setDraft(null); localStorage.removeItem(DRAFT_KEY); }
   };
 
   // ── Tạo bản nháp từ version ──
@@ -243,15 +284,43 @@ export default function LuluBrainLabPage() {
     setBusy(true);
     try {
       const d = await apiSend<{ draft: BrainVersion }>("POST", `/lulu-brain/versions/${vid}/draft-from`, {});
-      setCurrentDraft(d.draft); setTab("draft"); showOk("Đã tạo bản nháp. Bạn có thể sửa rồi test.");
+      setCurrentDraft(d.draft); setTab("fixtest"); showOk("Đã có bản nháp. Chat test rồi báo lỗi để AI sửa nha.");
+    } catch (e) { showErr(String((e as Error).message)); } finally { setBusy(false); }
+  };
+
+  // ── "+ Tạo bản nháp mới" ──
+  // - Chưa có nháp → tạo ngay từ bản đang chạy.
+  // - Đã có nháp + chưa force → hỏi confirm (tiếp tục sửa / tạo mới).
+  // - force=true → tạo bản nháp MỚI từ bản đang chạy (hủy nháp cũ → rejected, giữ lịch sử).
+  const createNewDraft = async (force = false) => {
+    if (!active) { showErr("Chưa có bản đang chạy để tạo nháp."); return; }
+    if (draft && !force) { setNewDraftPrompt(true); return; }
+    setBusy(true);
+    try {
+      const d = await apiSend<{ draft: BrainVersion; reusedExisting?: boolean }>(
+        "POST", `/lulu-brain/versions/${active.id}/draft-from`, force ? { force: true } : {});
+      setCurrentDraft(d.draft);
+      showOk(d.reusedExisting
+        ? `Đang sửa Version ${d.draft.versionNumber} — Bản nháp.`
+        : `Đã tạo Version ${d.draft.versionNumber} — Bản nháp từ Version ${active.versionNumber}.`);
+      loadVersions();
+    } catch (e) { showErr(String((e as Error).message)); } finally { setBusy(false); setNewDraftPrompt(false); }
+  };
+
+  // #5 — Rollback 1 chạm: quay lại version cũ ngay sau khi áp dụng (dùng endpoint rollback có sẵn).
+  const quickRollback = async (sourceId: number, sourceVer: number) => {
+    if (!confirm(`Quay lại Version ${sourceVer} làm bản chạy thật?\n\nHệ thống tạo version mới từ nội dung Version ${sourceVer}; Fanpage quay lại đúng nội dung đó. Không xóa lịch sử.`)) return;
+    setBusy(true);
+    try {
+      await apiSend("POST", `/lulu-brain/versions/${sourceId}/rollback`, { note: "Quay lại nhanh sau khi áp dụng" });
+      showOk(`Đã quay lại Version ${sourceVer}.`); setLastApplied(null); loadActive(); loadVersions();
     } catch (e) { showErr(String((e as Error).message)); } finally { setBusy(false); }
   };
 
   const TABS: { key: Tab; label: string; icon: typeof Brain }[] = [
     { key: "active", label: "Não đang dùng", icon: Brain },
-    { key: "ai", label: "Nhờ AI sửa Lulu", icon: Sparkles },
-    { key: "draft", label: "Bản nháp", icon: Pencil },
-    { key: "test", label: "Test chatbot", icon: FlaskConical },
+    { key: "aifix", label: "Nhờ AI sửa Lulu", icon: Sparkles },
+    { key: "fixtest", label: "Sửa & Test Lulu", icon: FlaskConical },
     { key: "history", label: "Version History", icon: History },
   ];
 
@@ -283,10 +352,51 @@ export default function LuluBrainLabPage() {
           <button key={t.key} onClick={() => setTab(t.key)}
             className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 whitespace-nowrap transition-colors ${tab === t.key ? "border-violet-600 text-violet-700" : "border-transparent text-gray-500 hover:text-gray-700"}`}>
             <t.icon className="w-4 h-4" />{t.label}
-            {t.key === "draft" && draft && <span className="ml-1 w-2 h-2 rounded-full bg-amber-500" />}
+            {(t.key === "fixtest" || t.key === "aifix") && draft && <span className="ml-1 w-2 h-2 rounded-full bg-amber-500" />}
           </button>
         ))}
       </div>
+
+      {/* Thanh trạng thái version + nút tạo bản nháp mới (hiện ở mọi tab) */}
+      <div className="flex items-center justify-between gap-3 flex-wrap bg-white border rounded-xl px-3 py-2">
+        <div className="text-sm flex items-center gap-x-3 gap-y-1 flex-wrap">
+          <span className="text-gray-500">Bản nháp đang sửa:</span>
+          {draft
+            ? <span className="font-semibold text-amber-700 flex items-center gap-1"><Pencil className="w-3.5 h-3.5" /> Version {draft.versionNumber} — Bản nháp</span>
+            : <span className="text-gray-400">Chưa có — bấm “+ Tạo bản nháp mới” để bắt đầu.</span>}
+          {active && <span className="text-gray-400">· Đang chạy thật: <b className="text-emerald-700">Version {active.versionNumber}</b></span>}
+        </div>
+        <button disabled={busy} onClick={() => createNewDraft(false)}
+          className="flex items-center gap-1.5 bg-violet-600 text-white text-sm px-3 py-1.5 rounded-lg hover:bg-violet-700 disabled:opacity-50">
+          <Plus className="w-4 h-4" /> Tạo bản nháp mới
+        </button>
+      </div>
+
+      {/* Confirm khi đã có bản nháp mà bấm tạo mới */}
+      {newDraftPrompt && draft && (
+        <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 space-y-2">
+          <p className="text-sm text-amber-800">Đang có <b>Version {draft.versionNumber} — Bản nháp</b>. Bạn muốn tiếp tục sửa hay tạo bản nháp mới từ bản đang chạy{active ? ` (Version ${active.versionNumber})` : ""}?</p>
+          <div className="flex gap-2 flex-wrap">
+            <button onClick={() => setNewDraftPrompt(false)} className="text-sm border px-3 py-1.5 rounded-lg hover:bg-white">Tiếp tục sửa Version {draft.versionNumber}</button>
+            <button disabled={busy} onClick={() => createNewDraft(true)} className="text-sm bg-violet-600 text-white px-3 py-1.5 rounded-lg hover:bg-violet-700 disabled:opacity-50">Tạo bản nháp mới từ bản đang chạy</button>
+          </div>
+          <p className="text-[11px] text-amber-700">Lưu ý: tạo bản nháp mới sẽ HỦY Version {draft.versionNumber} (vẫn còn trong Version History, không xóa).</p>
+        </div>
+      )}
+
+      {/* #5 — Vừa áp dụng: cho quay lại nhanh nếu version mới lỗi */}
+      {lastApplied && (
+        <div className="flex items-center justify-between gap-2 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2 flex-wrap">
+          <span className="text-sm text-emerald-800 flex items-center gap-1.5"><ShieldCheck className="w-4 h-4 text-emerald-500" /> Đã áp dụng <b>Version {lastApplied.newVer}</b> lên Fanpage thật.</span>
+          <div className="flex gap-2 items-center">
+            <button disabled={busy} onClick={() => quickRollback(lastApplied.prevId, lastApplied.prevVer)}
+              className="flex items-center gap-1.5 text-sm border border-amber-300 text-amber-700 px-3 py-1.5 rounded-lg hover:bg-amber-50 disabled:opacity-50">
+              <RotateCcw className="w-4 h-4" /> Quay lại Version {lastApplied.prevVer}
+            </button>
+            <button onClick={() => setLastApplied(null)} className="text-sm text-gray-400 px-2 hover:text-gray-600">Đóng</button>
+          </div>
+        </div>
+      )}
 
       {/* ─── TAB 1: Não đang dùng ─── */}
       {tab === "active" && (
@@ -299,6 +409,10 @@ export default function LuluBrainLabPage() {
                 <span className="text-lg font-bold">Version {active.versionNumber}</span>
                 <StatusBadge status={active.status} />
                 <span className="text-sm text-gray-600">— {active.title}</span>
+              </div>
+              <div className="flex items-center gap-2 text-sm bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg px-3 py-2">
+                <ShieldCheck className="w-4 h-4 flex-shrink-0 text-emerald-500" />
+                <span>Fanpage thật đang trả lời khách theo <b>Version {active.versionNumber}</b>. Chỉ đổi khi bạn bấm “Áp dụng version này”.</span>
               </div>
               <div className="text-xs text-gray-500 flex flex-wrap gap-x-4 gap-y-1">
                 <span>Tạo bởi: {active.createdByName || "—"} · {fmtDate(active.createdAt)}</span>
@@ -323,31 +437,29 @@ export default function LuluBrainLabPage() {
         </div>
       )}
 
-      {/* ─── TAB 2: Nhờ AI sửa Lulu ─── */}
-      {tab === "ai" && (
-        <AiTab active={active} busy={busy} setBusy={setBusy} showOk={showOk} showErr={showErr}
-          onDraft={(d) => { setCurrentDraft(d); setTab("draft"); }}
-          changeRequests={changeRequests} reloadCR={loadChangeRequests} effectiveIsAdmin={effectiveIsAdmin} />
+      {/* ─── TAB: Nhờ AI sửa Lulu (tab riêng — báo lỗi/dán ảnh, AI gom sửa vào bản nháp) ─── */}
+      {tab === "aifix" && (
+        <AiFixTab active={active} draft={draft} showOk={showOk} showErr={showErr}
+          onDraftChange={onDraftChange} goTest={(msg) => { if (msg) setTestPrefill(msg); setTab("fixtest"); }}
+          queue={fixQueue} setQueue={setFixQueue} onCreateDraft={() => createNewDraft(false)} />
       )}
 
-      {/* ─── TAB 3: Bản nháp ─── */}
-      {tab === "draft" && (
-        <DraftTab draft={draft} active={active} effectiveIsAdmin={effectiveIsAdmin}
-          setDraft={(v) => { if (v) setCurrentDraft(v); else { setDraft(null); localStorage.removeItem(DRAFT_KEY); } }}
-          showOk={showOk} showErr={showErr}
+      {/* ─── TAB: Sửa & Test Lulu (chat test 1 cột + báo lỗi từng câu) ─── */}
+      {tab === "fixtest" && (
+        <FixTestTab draft={draft} active={active} testCases={testCases} effectiveIsAdmin={effectiveIsAdmin}
+          busy={busy} setBusy={setBusy} showOk={showOk} showErr={showErr}
+          onDraftChange={onDraftChange}
           onApplied={() => { loadActive(); loadVersions(); }}
-          goTest={() => setTab("test")} />
+          changeRequests={changeRequests} reloadCR={loadChangeRequests}
+          createDraftFromActive={() => createNewDraft(false)}
+          prefill={testPrefill} onConsumePrefill={() => setTestPrefill("")}
+          onAppliedInfo={(info) => setLastApplied(info)} />
       )}
 
-      {/* ─── TAB 4: Test chatbot ─── */}
-      {tab === "test" && (
-        <TestTab draft={draft} testCases={testCases} showOk={showOk} showErr={showErr} />
-      )}
-
-      {/* ─── TAB 5: Version History ─── */}
+      {/* ─── TAB 3: Version History ─── */}
       {tab === "history" && (
         <HistoryTab versions={versions} effectiveIsAdmin={effectiveIsAdmin} busy={busy} setBusy={setBusy}
-          showOk={showOk} showErr={showErr}
+          showOk={showOk} showErr={showErr} currentDraftId={draft?.id ?? null}
           reload={() => { loadVersions(); loadActive(); }}
           onCloneDraft={draftFromVersion} />
       )}
@@ -451,7 +563,7 @@ function AiTab({ active, busy, setBusy, showOk, showErr, onDraft, changeRequests
       const d = await apiSend<{ draft: BrainVersion }>("POST", "/lulu-brain/ai-draft",
         { instruction: analysisToInstruction(a), basedOnVersionId: active?.id });
       setMsgs((p) => p.map((m) => (m.id === msgId && m.role === "card" ? { ...m, done: "draft" } : m)));
-      showOk("Đã tạo bản nháp đề xuất. Lulu CHƯA đổi — xem & test ở tab Bản nháp.");
+      showOk(`Đã gom sửa vào Version ${d.draft.versionNumber} (bản nháp). Lulu CHƯA đổi — test lại ở khung chat phía trên.`);
       onDraft(d.draft);
     } catch (e) { showErr(String((e as Error).message)); } finally { setBusy(false); }
   };
@@ -531,7 +643,7 @@ function AiTab({ active, busy, setBusy, showOk, showErr, onDraft, changeRequests
                   {a.affectedRules.length > 0 && <CardField label="Rule sẽ sửa" value={a.affectedRules.join(", ")} />}
                   <div className="text-[11px] text-gray-500 pt-0.5">Độ chắc của AI: {(a.confidence * 100).toFixed(0)}%</div>
                   {m.done ? (
-                    <div className="text-emerald-700 text-xs font-medium flex items-center gap-1 pt-1"><Check className="w-3.5 h-3.5" /> {m.done === "draft" ? "Đã tạo bản nháp đề xuất (xem tab Bản nháp)" : "Đã lưu góp ý cho cả nhóm"}</div>
+                    <div className="text-emerald-700 text-xs font-medium flex items-center gap-1 pt-1"><Check className="w-3.5 h-3.5" /> {m.done === "draft" ? "Đã gom sửa vào bản nháp (test lại ở khung chat trên)" : "Đã lưu góp ý cho cả nhóm"}</div>
                   ) : (
                     <div className="flex gap-2 flex-wrap pt-1.5">
                       <button disabled={busy} onClick={() => makeDraft(m.id, a)}
@@ -620,7 +732,7 @@ function AdvancedMode({ active, busy, setBusy, showOk, showErr, onDraft, changeR
     try {
       const d = await apiSend<{ draft: BrainVersion }>("POST", "/lulu-brain/ai-draft",
         { instruction: text, basedOnVersionId: active?.id, changeRequestId });
-      showOk("Đã tạo bản nháp đề xuất. Lulu CHƯA đổi — xem & test ở tab Bản nháp."); onDraft(d.draft);
+      showOk(`Đã gom sửa vào Version ${d.draft.versionNumber} (bản nháp). Lulu CHƯA đổi — test lại ở khung chat phía trên.`); onDraft(d.draft);
       if (changeRequestId) reloadCR();
     } catch (e) { showErr(String((e as Error).message)); } finally { setBusy(false); }
   };
@@ -701,252 +813,640 @@ function AdvancedMode({ active, busy, setBusy, showOk, showErr, onDraft, changeR
 }
 
 // ─── TAB 3 component ────────────────────────────────────────────────────────────
-function DraftTab({ draft, active, effectiveIsAdmin, setDraft, showOk, showErr, onApplied, goTest }: {
-  draft: BrainVersion | null; active: BrainVersion | null; effectiveIsAdmin: boolean;
-  setDraft: (v: BrainVersion | null) => void; showOk: (m: string) => void; showErr: (m: string) => void;
-  onApplied: () => void; goTest: () => void;
+// Tab "Nhờ AI sửa Lulu" — HÀNG ĐỢI SỬA LỖI: nhập lỗi/ảnh → đưa vào hàng đợi (phân tích ở NỀN, KHÔNG
+// chờ màn hình) → mỗi card hiện "AI hiểu lỗi như sau" → ADMIN duyệt mới áp dụng vào bản nháp.
+// Phân tích = analyze-screenshot (nhanh, không sửa nháp); chỉ khi bấm Áp dụng mới gọi ai-draft (chậm)
+// gom vào CÙNG bản nháp. Backend analyze-screenshot đã nhận images[] (tối đa 6) → tái dùng.
+type QueueStatus = "analyzing" | "review" | "applying" | "applied" | "error";
+type QueueImage = { url: string; base64: string; mediaType: string };
+type QueueCard = {
+  id: string; text: string; images: QueueImage[];
+  status: QueueStatus; analysis: ScreenshotAnalysis | null;
+  manualOpen: boolean; manualText: string;
+  appliedVersion: number | null; error: string | null;
+  imgCount?: number; // số ảnh (giữ lại khi khôi phục từ localStorage — ảnh base64 không lưu cho nhẹ)
+};
+const QUEUE_STATUS: Record<QueueStatus, { label: string; cls: string }> = {
+  analyzing: { label: "Đang phân tích…", cls: "bg-blue-100 text-blue-700 border-blue-200" },
+  review: { label: "Đã hiểu lỗi — chờ duyệt", cls: "bg-amber-100 text-amber-700 border-amber-200" },
+  applying: { label: "Đang áp dụng…", cls: "bg-violet-100 text-violet-700 border-violet-200" },
+  applied: { label: "Đã áp dụng", cls: "bg-emerald-100 text-emerald-700 border-emerald-200" },
+  error: { label: "Lỗi xử lý", cls: "bg-rose-100 text-rose-700 border-rose-200" },
+};
+
+function AiFixTab({ active, draft, showOk, showErr, onDraftChange, goTest, queue, setQueue, onCreateDraft }: {
+  active: BrainVersion | null; draft: BrainVersion | null;
+  showOk: (m: string) => void; showErr: (m: string) => void;
+  onDraftChange: (v: BrainVersion | null) => void; goTest: (msg?: string) => void;
+  queue: QueueCard[]; setQueue: React.Dispatch<React.SetStateAction<QueueCard[]>>;
+  onCreateDraft: () => void;
 }) {
-  const [content, setContent] = useState(draft?.promptContent ?? "");
-  const [title, setTitle] = useState(draft?.title ?? "");
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { setContent(draft?.promptContent ?? ""); setTitle(draft?.title ?? ""); }, [draft?.id]);
+  const [text, setText] = useState("");
+  const [imgs, setImgs] = useState<Array<{ file: File; url: string }>>([]);
+  const [dragOver, setDragOver] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const newId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+  const anyApplying = queue.some((c) => c.status === "applying");
+  const verLabel = draft ? `Version ${draft.versionNumber}` : "bản nháp";
 
-  if (!draft) {
-    return <div className="bg-white border rounded-xl p-6 text-center text-gray-500">
-      Chưa có bản nháp. Vào <b>Nhờ AI sửa Lulu</b> hoặc bấm <b>Tạo bản nháp từ version này</b> ở tab Não đang dùng.
-    </div>;
-  }
-
-  const diff = lineDiff(active?.promptContent ?? "", content);
-  const dirty = content !== draft.promptContent || title !== draft.title;
-  // Lưới an toàn marker: tính LIVE theo nội dung đang sửa → admin thêm lại marker là tự mở khoá nút Áp dụng.
-  const lostMarkers = missingMarkers(content, active?.promptContent ?? "");
-  const hasLostMarkers = lostMarkers.length > 0;
-
-  const save = async () => {
-    setBusy(true);
+  // Thêm NHIỀU ảnh (chọn nhiều / kéo-thả / dán). Lọc loại + size, gộp vào danh sách (cap MAX_IMAGES).
+  const acceptFiles = useCallback(async (files: FileList | File[] | null | undefined) => {
+    const list = (files ? Array.from(files) : []).filter((f) => {
+      if (!IMG_ACCEPT.includes(f.type)) { showErr("Chỉ nhận ảnh jpg, png, webp"); return false; }
+      if (f.size > IMG_MAX_BYTES) { showErr(`"${f.name}" quá lớn (tối đa 5MB)`); return false; }
+      return true;
+    });
+    if (!list.length) return;
     try {
-      const d = await apiSend<{ version: BrainVersion }>("PUT", `/lulu-brain/versions/${draft.id}`, { title, promptContent: content });
-      setDraft(d.version); showOk("Đã lưu bản nháp.");
-    } catch (e) { showErr(String((e as Error).message)); } finally { setBusy(false); }
-  };
-  const saveThenTest = async () => { await save(); goTest(); };
-  const cancel = async () => {
-    if (!confirm("Hủy bản nháp này? (giữ trong lịch sử, không xóa)")) return;
-    setBusy(true);
-    try { await apiSend("POST", `/lulu-brain/versions/${draft.id}/reject`, {}); setDraft(null); showOk("Đã hủy bản nháp."); }
-    catch (e) { showErr(String((e as Error).message)); } finally { setBusy(false); }
-  };
-  const apply = async () => {
-    if (hasLostMarkers) { showErr(`Không thể áp dụng: bản nháp đang thiếu ${lostMarkers.join(", ")}. Thêm lại đủ marker rồi mới áp dụng.`); return; }
-    if (dirty) { showErr("Hãy Lưu bản nháp trước khi áp dụng."); return; }
-    if (!confirm(`Áp dụng bản nháp này thành bản chạy THẬT? Version đang chạy sẽ chuyển sang lưu trữ. Khách thật sẽ dùng não mới từ lúc này.`)) return;
-    setBusy(true);
+      const items = await Promise.all(list.map(async (file) => ({ file, url: await fileToDataUrl(file) })));
+      setImgs((prev) => {
+        if (prev.length + items.length > MAX_IMAGES) showErr(`Tối đa ${MAX_IMAGES} ảnh mỗi lần.`);
+        return [...prev, ...items].slice(0, MAX_IMAGES);
+      });
+    } catch { showErr("Không đọc được ảnh"); }
+  }, [showErr]);
+
+  // Ctrl+V dán ảnh screenshot (gỡ listener khi rời tab).
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const items = e.clipboardData?.items; if (!items) return;
+      const files: File[] = [];
+      for (const it of Array.from(items)) {
+        if (it.kind === "file" && it.type.startsWith("image/")) { const f = it.getAsFile(); if (f) files.push(f); }
+      }
+      if (files.length) { e.preventDefault(); acceptFiles(files); }
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [acceptFiles]);
+
+  const onDrop = (e: React.DragEvent) => { e.preventDefault(); setDragOver(false); if (e.dataTransfer?.files?.length) acceptFiles(e.dataTransfer.files); };
+
+  // Phân tích 1 card ở NỀN (analyze-screenshot — KHÔNG đụng bản nháp).
+  const analyzeCard = useCallback(async (card: QueueCard) => {
+    setQueue((p) => p.map((c) => (c.id === card.id ? { ...c, status: "analyzing", error: null } : c)));
     try {
-      await apiSend("POST", `/lulu-brain/versions/${draft.id}/apply`, {});
-      showOk("Đã áp dụng. Lulu khách thật dùng não mới từ bây giờ."); setDraft(null); onApplied();
-    } catch (e) { showErr(String((e as Error).message)); } finally { setBusy(false); }
+      const images = card.images.map((im) => ({ imageBase64: im.base64, imageMediaType: im.mediaType }));
+      const a = (await apiSend<{ analysis: ScreenshotAnalysis }>("POST", "/lulu-brain/analyze-screenshot",
+        { text: card.text, ...(images.length ? { images } : {}) })).analysis;
+      setQueue((p) => p.map((c) => (c.id === card.id ? { ...c, status: "review", analysis: a } : c)));
+    } catch (e) {
+      setQueue((p) => p.map((c) => (c.id === card.id ? { ...c, status: "error", error: String((e as Error).message) } : c)));
+    }
+  }, [setQueue]);
+
+  // Đưa vào hàng đợi: tạo card + clear ô nhập NGAY + chạy phân tích nền (không chặn).
+  const enqueue = async () => {
+    const t = text.trim();
+    if (!t && imgs.length === 0) { showErr("Nhập mô tả lỗi hoặc thêm ảnh giúp em nha."); return; }
+    let images: QueueImage[] = [];
+    try {
+      images = await Promise.all(imgs.map(async ({ file, url }) => {
+        const { blob, mimeType } = await convertToWebP(file);
+        const base64 = await fileToDataUrl(new File([blob], file.name || "shot", { type: mimeType }));
+        return { url, base64, mediaType: mimeType };
+      }));
+    } catch { showErr("Không xử lý được ảnh"); return; }
+    const card: QueueCard = { id: newId(), text: t, images, status: "analyzing", analysis: null, manualOpen: false, manualText: "", appliedVersion: null, error: null };
+    setQueue((p) => [card, ...p]);
+    setText(""); setImgs([]);
+    analyzeCard(card);
   };
+
+  // Áp dụng 1 card vào bản nháp (gọi ai-draft — gom vào CÙNG bản nháp; chưa có thì backend tự tạo).
+  const applyCard = async (card: QueueCard, manualInstruction?: string) => {
+    if (anyApplying) { showErr("Đang áp dụng một lỗi khác — chờ xong rồi áp dụng tiếp nha."); return; }
+    const instruction = (manualInstruction ?? [card.text, card.analysis ? analysisToInstruction(card.analysis) : ""].filter(Boolean).join("\n")).trim();
+    if (!instruction) { showErr("Chưa có nội dung để sửa."); return; }
+    setQueue((p) => p.map((c) => (c.id === card.id ? { ...c, status: "applying", error: null } : c)));
+    try {
+      const d = await apiSend<{ draft: BrainVersion }>("POST", "/lulu-brain/ai-draft", { instruction });
+      onDraftChange(d.draft);
+      setQueue((p) => p.map((c) => (c.id === card.id ? { ...c, status: "applied", appliedVersion: d.draft.versionNumber, manualOpen: false } : c)));
+      showOk(`Đã áp dụng vào Version ${d.draft.versionNumber} — Bản nháp.`);
+    } catch (e) {
+      setQueue((p) => p.map((c) => (c.id === card.id ? { ...c, status: "error", error: String((e as Error).message) } : c)));
+    }
+  };
+
+  const patchCard = (id: string, patch: Partial<QueueCard>) => setQueue((p) => p.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+  const removeCard = (id: string) => setQueue((p) => p.filter((c) => c.id !== id));
 
   return (
     <div className="space-y-3">
-      <div className="bg-white border rounded-xl p-4 space-y-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          <span className="font-bold">Bản nháp · Version {draft.versionNumber}</span>
-          <StatusBadge status={draft.status} />
-          {draft.basedOnVersionId && <span className="text-xs text-gray-400">dựa trên version #{draft.basedOnVersionId}</span>}
+      {/* Banner: đang nạp lỗi vào version nào */}
+      {draft ? (
+        <div className="flex items-center gap-2 text-sm bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-3 py-2">
+          <Pencil className="w-4 h-4 flex-shrink-0" /> <span>Đang nạp lỗi vào: <b>Version {draft.versionNumber} — Bản nháp</b></span>
         </div>
-
-        {/* Banner an toàn — LUÔN hiện khi đang xem bản nháp. */}
-        <div className="flex items-start gap-2 text-sm bg-sky-50 border border-sky-200 text-sky-800 rounded-lg p-3">
-          <ShieldCheck className="w-5 h-5 flex-shrink-0 mt-0.5 text-sky-500" />
-          <span>Đây là <b>BẢN NHÁP</b>, Lulu <b>CHƯA đổi</b> với khách thật. {effectiveIsAdmin ? "Cần bấm Áp dụng (bên dưới) mới chạy thật." : "Cần Admin bấm Áp dụng mới chạy thật."}</span>
+      ) : (
+        <div className="flex items-center justify-between gap-2 text-sm bg-amber-50 border border-amber-200 text-amber-800 rounded-lg px-3 py-2 flex-wrap">
+          <span>Chưa có bản nháp. Lỗi đầu tiên được <b>áp dụng</b> sẽ tự tạo bản nháp từ bản đang chạy{active ? ` (Version ${active.versionNumber})` : ""}.</span>
+          <button onClick={onCreateDraft} className="inline-flex items-center gap-1.5 bg-violet-600 text-white text-xs px-3 py-1.5 rounded-lg hover:bg-violet-700"><Plus className="w-3.5 h-3.5" /> Tạo bản nháp mới</button>
         </div>
+      )}
 
-        {draft.changeSummary && (
-          <div className="bg-violet-50 border border-violet-200 rounded-lg p-3">
-            <p className="text-xs font-semibold text-violet-700 mb-1 flex items-center gap-1"><Sparkles className="w-3.5 h-3.5" /> AI đã thay đổi gì</p>
-            <p className="text-xs text-gray-700 whitespace-pre-wrap">{draft.changeSummary}</p>
-          </div>
-        )}
-
-        {/* Diff vs active */}
-        <div className="grid sm:grid-cols-2 gap-2">
-          <div className="border rounded-lg p-2 bg-rose-50/40">
-            <p className="text-[11px] font-semibold text-rose-600 mb-1 flex items-center gap-1"><GitCompareArrows className="w-3.5 h-3.5" /> Bỏ / khác so với bản đang chạy ({diff.removed.length})</p>
-            <div className="text-[11px] text-rose-700/80 max-h-40 overflow-auto space-y-0.5">
-              {diff.removed.length ? diff.removed.map((l, i) => <div key={i} className="line-through decoration-rose-300">− {l}</div>) : <span className="text-gray-400">—</span>}
-            </div>
-          </div>
-          <div className="border rounded-lg p-2 bg-emerald-50/40">
-            <p className="text-[11px] font-semibold text-emerald-600 mb-1 flex items-center gap-1"><Plus className="w-3.5 h-3.5" /> Thêm mới ({diff.added.length})</p>
-            <div className="text-[11px] text-emerald-700/90 max-h-40 overflow-auto space-y-0.5">
-              {diff.added.length ? diff.added.map((l, i) => <div key={i}>+ {l}</div>) : <span className="text-gray-400">—</span>}
-            </div>
-          </div>
-        </div>
-
-        {hasLostMarkers ? (
-          <div className="flex items-start gap-2 text-xs bg-rose-50 border-2 border-rose-300 rounded-lg p-3 text-rose-700">
-            <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5 text-rose-500" />
-            <div className="space-y-1">
-              <p className="font-bold">⛔ Bản nháp đang THIẾU dấu hiệu kỹ thuật quan trọng — đã KHOÁ nút Áp dụng.</p>
-              <p>Thiếu: {lostMarkers.map((m) => <code key={m} className="bg-rose-100 border border-rose-200 rounded px-1 mx-0.5">{m}</code>)}</p>
-              <p>Mất marker này, Lulu sẽ không gửi được ảnh mẫu / ảnh bảng giá / chuyển người thật. Hãy <b>sửa tay thêm lại đủ marker</b> vào ô bộ luật bên dưới — nút Áp dụng sẽ tự mở lại.</p>
-            </div>
-          </div>
-        ) : (
-          <div className="flex items-start gap-2 text-[11px] bg-amber-50 border border-amber-200 rounded-lg p-2 text-amber-700">
-            <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-            <span>Đừng xóa các dòng có dấu hiệu kỹ thuật <code>&lt;&lt;SAMPLE&gt;&gt;</code>, <code>&lt;&lt;PRICE_IMAGE&gt;&gt;</code>, <code>&lt;&lt;NAME&gt;&gt;</code>, <code>&lt;&lt;NEEDS_HUMAN&gt;&gt;</code> — hệ thống cần chúng để gửi ảnh / báo người thật.</span>
-          </div>
-        )}
-
-        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Tên bản nháp" className="w-full border rounded-lg px-3 py-2 text-sm" />
+      {/* Ô nhập lỗi + ảnh */}
+      <div className="bg-white border-2 border-violet-200 rounded-xl p-4 space-y-3"
+        onDragOver={(e) => { e.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)} onDrop={onDrop}>
         <div>
-          <p className="text-xs font-semibold text-gray-500 mb-1">SỬA TAY BỘ LUẬT (editor)</p>
-          <textarea value={content} onChange={(e) => setContent(e.target.value)} rows={18}
-            className="w-full border rounded-lg px-3 py-2 text-xs font-mono leading-relaxed" />
+          <h3 className="font-semibold flex items-center gap-2 text-violet-700"><Wand2 className="w-4 h-4" /> Nhờ AI sửa Lulu</h3>
+          <p className="text-xs text-gray-500 mt-0.5">Báo lỗi / dán đoạn chat sai / mô tả lỗi (kèm nhiều ảnh). Bấm gửi → lỗi xuống <b>hàng đợi</b> bên dưới, AI phân tích ở nền; bạn nhập lỗi tiếp được ngay. AI <b>KHÔNG</b> tự sửa — bạn duyệt rồi mới áp dụng.</p>
+        </div>
+        {dragOver && <div className="text-center text-violet-600 text-xs border-2 border-dashed border-violet-300 rounded-lg py-2">Thả ảnh vào đây (được nhiều tấm)</div>}
+        <textarea value={text} onChange={(e) => setText(e.target.value)} rows={4}
+          placeholder="Dán lỗi hoặc mô tả lỗi của Lulu tại đây. Ví dụ: Khách hỏi beauty nhưng Lulu gửi ảnh cưới. Hãy sửa để chỉ gửi ảnh beauty."
+          className="w-full border rounded-lg px-3 py-2 text-sm" />
+        {imgs.length > 0 && (
+          <div className="flex flex-wrap items-end gap-2">
+            {imgs.map((a, i) => (
+              <div key={i} className="relative"><img src={a.url} alt={`ảnh ${i + 1}`} className="h-16 rounded-lg border object-cover" />
+                <button onClick={() => setImgs((p) => p.filter((_, j) => j !== i))} className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white rounded-full w-5 h-5 flex items-center justify-center"><X className="w-3 h-3" /></button>
+              </div>
+            ))}
+            <span className="text-[11px] text-gray-400 self-center">{imgs.length}/{MAX_IMAGES} ảnh</span>
+          </div>
+        )}
+        <div className="flex items-center gap-2 flex-wrap">
+          <input type="file" accept="image/jpeg,image/png,image/webp" multiple ref={fileRef} onChange={(e) => { acceptFiles(e.target.files); e.target.value = ""; }} className="hidden" />
+          <button onClick={() => fileRef.current?.click()} className="flex items-center gap-1.5 border rounded-lg px-3 py-2 text-sm hover:bg-gray-50 shrink-0"><ImageIcon className="w-4 h-4 text-gray-500" /> Thêm ảnh</button>
+          <button onClick={enqueue} className="flex items-center gap-1.5 bg-violet-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-violet-700">
+            <Plus className="w-4 h-4" /> {draft ? `Đưa vào hàng đợi của Version ${draft.versionNumber}` : "Đưa vào hàng đợi phân tích"}
+          </button>
+        </div>
+        <p className="text-[11px] text-gray-400 flex items-center gap-1"><AlertTriangle className="w-3 h-3" /> Thêm nhiều ảnh: bấm “Thêm ảnh”, kéo-thả, hoặc Ctrl+V dán (tối đa {MAX_IMAGES}). Nên che tên/SĐT khách.</p>
+      </div>
+
+      {/* Hàng đợi sửa lỗi */}
+      <div className="space-y-2">
+        <h3 className="font-semibold text-sm flex items-center gap-2 text-gray-700"><History className="w-4 h-4" /> Hàng đợi sửa lỗi {queue.length > 0 && <span className="text-xs text-gray-400">({queue.length})</span>}</h3>
+        {queue.length === 0 ? (
+          <p className="text-sm text-gray-400 bg-white border rounded-xl p-4 text-center">Chưa có lỗi nào. Nhập lỗi phía trên rồi bấm “Đưa vào hàng đợi”.</p>
+        ) : queue.map((c) => {
+          const meta = QUEUE_STATUS[c.status];
+          const a = c.analysis;
+          const unsure = a ? (!a.readable || a.confidence < CONFIDENCE_MIN) : false;
+          return (
+            <div key={c.id} className="bg-white border rounded-xl p-3 space-y-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full border ${meta.cls}`}>{meta.label}</span>
+                {c.status === "applied" && c.appliedVersion != null
+                  ? <span className="text-xs text-emerald-700 font-medium">Đã áp dụng vào Version {c.appliedVersion} — Bản nháp</span>
+                  : <span className="text-xs text-gray-500">Thuộc {draft ? `Version ${draft.versionNumber} — Bản nháp` : "bản nháp (tạo khi áp dụng)"}</span>}
+              </div>
+
+              {c.images.length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {c.images.map((im, i) => <img key={i} src={im.url} alt={`ảnh ${i + 1}`} className="h-12 rounded border object-cover" />)}
+                </div>
+              ) : (c.imgCount ? <p className="text-[11px] text-gray-400">📎 {c.imgCount} ảnh (đính ở phiên trước)</p> : null)}
+              {c.text && <p className="text-xs text-gray-600 whitespace-pre-wrap"><span className="text-gray-400">Bạn nhập: </span>{c.text}</p>}
+
+              {c.status === "analyzing" && <p className="text-xs text-blue-600 flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> AI đang đọc &amp; phân tích lỗi…</p>}
+              {c.status === "applying" && <p className="text-xs text-violet-600 flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Đang áp dụng vào bản nháp (~30–90s)…</p>}
+              {c.status === "error" && (
+                <div className="text-xs text-rose-600 space-y-1.5">
+                  <p>{c.error || "Có lỗi khi xử lý."}</p>
+                  <div className="flex gap-2"><button onClick={() => analyzeCard(c)} className="border px-2 py-1 rounded-lg hover:bg-gray-50">Chạy lại phân tích</button><button onClick={() => removeCard(c.id)} className="border px-2 py-1 rounded-lg hover:bg-gray-50">Bỏ qua</button></div>
+                </div>
+              )}
+
+              {/* Card review: "AI hiểu lỗi như sau" + nút duyệt */}
+              {c.status === "review" && a && (
+                <div className="space-y-2">
+                  <div className="bg-violet-50 border border-violet-200 rounded-lg p-2.5 text-xs space-y-1">
+                    <p className="font-semibold text-violet-700 flex items-center gap-1"><Sparkles className="w-3.5 h-3.5" /> AI hiểu lỗi như sau:</p>
+                    {a.issueTitle && <p><span className="text-gray-500">Lỗi: </span>{a.issueTitle}</p>}
+                    {a.exampleCustomerMessage && <p><span className="text-gray-500">Khách hỏi: </span>{a.exampleCustomerMessage}</p>}
+                    {a.currentWrongBehavior && <p><span className="text-gray-500">Lulu đang sai: </span>{a.currentWrongBehavior}</p>}
+                    {a.expectedBehavior && <p><span className="text-gray-500">Sẽ sửa theo hướng: </span>{a.expectedBehavior}</p>}
+                    {a.affectedRules.length > 0 && <p><span className="text-gray-500">Rule liên quan: </span>{a.affectedRules.join(", ")}</p>}
+                    <p className="text-[11px] text-gray-400">Độ chắc của AI: {(a.confidence * 100).toFixed(0)}%{unsure && <span className="text-rose-500 font-medium"> · ⚠ Cần kiểm tra lại</span>}</p>
+                  </div>
+                  {c.manualOpen ? (
+                    <div className="space-y-1.5">
+                      <textarea value={c.manualText} onChange={(e) => patchCard(c.id, { manualText: e.target.value })} rows={4} className="w-full border rounded-lg px-3 py-2 text-sm" placeholder="Viết lại yêu cầu sửa bằng tay…" />
+                      <div className="flex gap-2 flex-wrap">
+                        <button disabled={anyApplying} onClick={() => applyCard(c, c.manualText)} className="flex items-center gap-1.5 bg-emerald-600 text-white text-xs px-3 py-1.5 rounded-lg hover:bg-emerald-700 disabled:opacity-50"><Check className="w-3.5 h-3.5" /> Áp dụng bản sửa tay vào {verLabel}</button>
+                        <button onClick={() => patchCard(c.id, { manualOpen: false })} className="text-xs border px-3 py-1.5 rounded-lg hover:bg-gray-50">Hủy sửa tay</button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex gap-2 flex-wrap">
+                      <button disabled={anyApplying} onClick={() => applyCard(c)} className="flex items-center gap-1.5 bg-violet-600 text-white text-xs px-3 py-1.5 rounded-lg hover:bg-violet-700 disabled:opacity-50"><Wand2 className="w-3.5 h-3.5" /> Áp dụng vào {draft ? `Version ${draft.versionNumber}` : "bản nháp"}</button>
+                      <button onClick={() => patchCard(c.id, { manualOpen: true, manualText: analysisToInstruction(a) })} className="flex items-center gap-1.5 text-xs border px-3 py-1.5 rounded-lg hover:bg-gray-50"><Pencil className="w-3.5 h-3.5" /> Sửa tay rồi áp dụng</button>
+                      <button onClick={() => analyzeCard(c)} className="flex items-center gap-1.5 text-xs border px-3 py-1.5 rounded-lg hover:bg-gray-50"><RotateCcw className="w-3.5 h-3.5" /> Chạy lại phân tích</button>
+                      <button onClick={() => removeCard(c.id)} className="flex items-center gap-1.5 text-xs text-rose-600 border border-rose-200 px-3 py-1.5 rounded-lg hover:bg-rose-50"><X className="w-3.5 h-3.5" /> Bỏ qua</button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {c.status === "applied" && (
+                <div className="flex gap-2 flex-wrap">
+                  <button onClick={() => goTest(a?.exampleCustomerMessage || c.text)} className="flex items-center gap-1.5 bg-emerald-600 text-white text-xs px-3 py-1.5 rounded-lg hover:bg-emerald-700"><FlaskConical className="w-3.5 h-3.5" /> Test lại câu này ở “Sửa &amp; Test”</button>
+                  <button onClick={() => removeCard(c.id)} className="text-xs border px-3 py-1.5 rounded-lg hover:bg-gray-50">Bỏ khỏi danh sách</button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// FixTestTab — tab chính "Sửa & Test Lulu": khung chat 1 cột test bản nháp (hoặc bản đang chạy
+// nếu chưa có nháp). Mỗi câu Lulu trả lời có nút "Báo lỗi / Sửa phản hồi này" → AI gom sửa vào
+// ĐÚNG bản nháp hiện tại (tạo mới từ bản đang chạy nếu chưa có). KHÔNG gửi Messenger thật.
+type TestTurn =
+  | { id: string; role: "customer"; text: string; imageUrl?: string }
+  | { id: string; role: "lulu"; result: SimResult; forText: string; fixed?: boolean };
+
+function FixTestTab({
+  draft, active, testCases = [], effectiveIsAdmin, busy, setBusy, showOk, showErr,
+  onDraftChange, onApplied, changeRequests = [], reloadCR, createDraftFromActive,
+  prefill = "", onConsumePrefill, onAppliedInfo,
+}: {
+  draft: BrainVersion | null; active: BrainVersion | null; testCases: TestCase[];
+  effectiveIsAdmin: boolean; busy: boolean; setBusy: (b: boolean) => void;
+  showOk: (m: string) => void; showErr: (m: string) => void;
+  onDraftChange: (v: BrainVersion | null) => void; onApplied: () => void;
+  changeRequests: ChangeRequest[]; reloadCR: () => void; createDraftFromActive: () => void;
+  prefill?: string; onConsumePrefill?: () => void;
+  onAppliedInfo?: (info: { newVer: number; prevId: number; prevVer: number }) => void;
+}) {
+  const testingDraft = !!draft;
+  const testingVersion = draft?.versionNumber ?? active?.versionNumber ?? null;
+
+  // ── Chat test (1 cột) ──
+  const [turns, setTurns] = useState<TestTurn[]>([]);
+  const [convo, setConvo] = useState<ConvoMsg[]>([]);
+  const [input, setInput] = useState("");
+  const [attached, setAttached] = useState<{ dataUrl: string; mediaType: string } | null>(null);
+  const [sending, setSending] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const newId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+  // ── Báo lỗi / sửa phản hồi ──
+  const [fixingId, setFixingId] = useState<string | null>(null);
+  const [fixText, setFixText] = useState("");
+  const [fixing, setFixing] = useState(false);
+
+  // ── Sửa tay nâng cao (ẩn mặc định) ──
+  const [advOpen, setAdvOpen] = useState(false);
+  const [content, setContent] = useState(draft?.promptContent ?? "");
+  const [title, setTitle] = useState(draft?.title ?? "");
+  const [savingEdit, setSavingEdit] = useState(false);
+  // Đồng bộ editor khi bản nháp đổi (kể cả khi AI cập nhật tại chỗ → promptContent đổi nhưng id giữ nguyên).
+  useEffect(() => { setContent(draft?.promptContent ?? ""); setTitle(draft?.title ?? ""); }, [draft?.id, draft?.promptContent, draft?.title]);
+  useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); }, [turns, sending]);
+  // #2 — "Test lại câu vừa sửa": prefill ô nhập rồi báo parent xoá cờ.
+  useEffect(() => { if (prefill) { setInput(prefill); onConsumePrefill?.(); } }, [prefill]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // #4 — Soi nhanh trước khi áp dụng.
+  const [scanResults, setScanResults] = useState<Array<{ q: string; reply: string; intent: string | null }>>([]);
+  const [scanning, setScanning] = useState(false);
+
+  const lostMarkers = draft ? missingMarkers(content, active?.promptContent ?? "") : [];
+  const hasLostMarkers = lostMarkers.length > 0;
+  const dirty = draft ? (content !== draft.promptContent || title !== draft.title) : false;
+  const diff = lineDiff(active?.promptContent ?? "", content);
+
+  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0]; e.target.value = ""; if (!f) return;
+    if (f.size > 5 * 1024 * 1024) { showErr("Ảnh tối đa 5MB"); return; }
+    try { const dataUrl = await fileToDataUrl(f); setAttached({ dataUrl, mediaType: f.type }); }
+    catch { showErr("Không đọc được ảnh"); }
+  };
+
+  const send = async () => {
+    const text = input.trim();
+    if ((!text && !attached) || sending) return;
+    const img = attached;
+    setTurns((p) => [...p, { id: newId(), role: "customer", text: text || "[ảnh]", imageUrl: img?.dataUrl }]);
+    setInput(""); setAttached(null); setSending(true);
+    const priorForApi = convo.map((c) => ({ direction: c.direction, text: c.text }));
+    try {
+      const d = await apiSend<{ draft: SimResult | null; active: SimResult | null }>("POST", "/lulu-brain/test", {
+        message: text, messages: priorForApi,
+        ...(draft ? { draftVersionId: draft.id, compareWithActive: false } : { compareWithActive: true }),
+        ...(img ? { imageBase64: img.dataUrl, imageMediaType: img.mediaType } : {}),
+      });
+      const res = draft ? d.draft : d.active;
+      if (!res) { showErr("Lulu chưa trả lời được — thử gửi lại nha."); return; }
+      setTurns((p) => [...p, { id: newId(), role: "lulu", result: res, forText: text || "[ảnh]" }]);
+      const next: ConvoMsg[] = [...convo, { direction: "incoming", text: text || "[ảnh]" }];
+      if (res.reply?.length) next.push({ direction: "outgoing", text: res.reply.join("\n\n") });
+      setConvo(next);
+    } catch (e) { showErr(String((e as Error).message)); } finally { setSending(false); }
+  };
+
+  const clearChat = () => { setTurns([]); setConvo([]); setFixingId(null); setFixText(""); };
+
+  // Báo lỗi 1 câu trả lời → gom sửa vào bản nháp hiện tại (AI viết lại bộ luật; chưa có nháp thì tạo từ active).
+  const submitFix = async (turn: Extract<TestTurn, { role: "lulu" }>) => {
+    const want = fixText.trim();
+    if (!want) { showErr("Nhập yêu cầu sửa giúp em nha."); return; }
+    setFixing(true);
+    const instruction = [
+      `Tình huống test: khách nhắn: "${turn.forText}".`,
+      `Lulu trả lời (đang bị xem là CHƯA ĐÚNG): "${turn.result.reply.join(" / ") || turn.result.raw}".`,
+      `YÊU CẦU SỬA: ${want}`,
+      `Hãy sửa bộ luật để lần sau Lulu xử lý ĐÚNG tình huống này và các tình huống tương tự.`,
+    ].join("\n");
+    try {
+      const d = await apiSend<{ draft: BrainVersion }>("POST", "/lulu-brain/ai-draft", { instruction });
+      onDraftChange(d.draft);
+      setTurns((p) => p.map((t) => (t.id === turn.id ? { ...t, fixed: true } : t)));
+      setFixingId(null); setFixText("");
+      showOk(`Đã gửi sửa vào Version ${d.draft.versionNumber} (bản nháp). Gửi lại câu khách để test lại nha.`);
+    } catch (e) { showErr(String((e as Error).message)); } finally { setFixing(false); }
+  };
+
+  // ── Hành động bản nháp ──
+  const saveEdit = async () => {
+    if (!draft) return;
+    setSavingEdit(true);
+    try {
+      const d = await apiSend<{ version: BrainVersion }>("PUT", `/lulu-brain/versions/${draft.id}`, { title, promptContent: content });
+      onDraftChange(d.version); showOk("Đã lưu bản nháp.");
+    } catch (e) { showErr(String((e as Error).message)); } finally { setSavingEdit(false); }
+  };
+  const cancelDraft = async () => {
+    if (!draft) return;
+    if (!confirm("Hủy bản nháp này? (vẫn giữ trong lịch sử, không xóa)")) return;
+    setBusy(true);
+    try { await apiSend("POST", `/lulu-brain/versions/${draft.id}/reject`, {}); onDraftChange(null); clearChat(); showOk("Đã hủy bản nháp."); }
+    catch (e) { showErr(String((e as Error).message)); } finally { setBusy(false); }
+  };
+  const applyDraft = async () => {
+    if (!draft) return;
+    if (hasLostMarkers) { showErr(`Không thể áp dụng: bản nháp đang thiếu ${lostMarkers.join(", ")}. Thêm lại đủ marker rồi mới áp dụng.`); return; }
+    if (dirty) { showErr("Hãy Lưu bản nháp (ở Sửa tay nâng cao) trước khi áp dụng."); return; }
+    if (!confirm(`Áp dụng Version ${draft.versionNumber} lên Fanpage thật?\n\nSau khi áp dụng, khách nhắn Fanpage sẽ được Lulu trả lời theo Version ${draft.versionNumber}. Version đang chạy hiện tại sẽ được lưu trong lịch sử.`)) return;
+    const prev = active;                       // #5: nhớ bản đang chạy để cho quay lại nhanh
+    const appliedVer = draft.versionNumber;
+    setBusy(true);
+    try {
+      await apiSend("POST", `/lulu-brain/versions/${draft.id}/apply`, {});
+      showOk(`Đã áp dụng Version ${appliedVer}. Fanpage thật dùng não mới từ bây giờ.`);
+      onDraftChange(null); clearChat(); onApplied();
+      if (prev) onAppliedInfo?.({ newVer: appliedVer, prevId: prev.id, prevVer: prev.versionNumber });
+    } catch (e) { showErr(String((e as Error).message)); } finally { setBusy(false); }
+  };
+
+  // #4 — Soi nhanh: chạy 5 câu khách mẫu qua bản nháp (read-only, không gửi Messenger).
+  const QUICK_SCAN_QS = ["Anh muốn chụp cool boy", "Cho anh xem mẫu beauty", "Em đang bầu 7 tháng muốn chụp ảnh", "Chụp cổng giá bao nhiêu?", "Bên mình có cho thuê váy cưới không?"];
+  const quickScan = async () => {
+    if (!draft || scanning) return;
+    setScanning(true); setScanResults([]);
+    try {
+      for (const q of QUICK_SCAN_QS) {
+        try {
+          const d = await apiSend<{ draft: SimResult | null }>("POST", "/lulu-brain/test", { message: q, messages: [], draftVersionId: draft.id, compareWithActive: false });
+          const r = d.draft;
+          setScanResults((p) => [...p, { q, reply: (r?.reply?.join(" ") || r?.raw || "(không trả lời)").slice(0, 200), intent: r?.detectedIntent ?? null }]);
+        } catch (e) {
+          setScanResults((p) => [...p, { q, reply: `Lỗi: ${String((e as Error).message).slice(0, 80)}`, intent: null }]);
+        }
+      }
+    } finally { setScanning(false); }
+  };
+
+  const exampleChips = testCases.slice(0, 6);
+
+  return (
+    <div className="space-y-3">
+      {/* Banner: đang test version nào + không gửi Messenger */}
+      <div className={`flex items-start gap-2 text-sm rounded-lg p-3 border ${testingDraft ? "bg-amber-50 border-amber-200 text-amber-800" : "bg-emerald-50 border-emerald-200 text-emerald-800"}`}>
+        <FlaskConical className="w-5 h-5 flex-shrink-0 mt-0.5" />
+        <div>
+          <p>Đang test: <b>Version {testingVersion ?? "—"} — {testingDraft ? "Bản nháp" : "Đang chạy thật"}</b></p>
+          <p className="text-[12px] mt-0.5">Khung test mô phỏng — <b>KHÔNG gửi Messenger thật</b>, không tạo đơn. {!testingDraft && "Chưa có bản nháp: bấm “Báo lỗi / Sửa phản hồi này” ở câu trả lời sẽ tự tạo bản nháp mới từ bản đang chạy."}</p>
+        </div>
+      </div>
+
+      {/* Marker bị mất → khoá Áp dụng */}
+      {draft && hasLostMarkers && (
+        <div className="flex items-start gap-2 text-xs bg-rose-50 border-2 border-rose-300 rounded-lg p-3 text-rose-700">
+          <AlertTriangle className="w-5 h-5 flex-shrink-0 mt-0.5 text-rose-500" />
+          <div className="space-y-1">
+            <p className="font-bold">⛔ Bản nháp đang THIẾU dấu hiệu kỹ thuật — đã KHOÁ nút Áp dụng.</p>
+            <p>Thiếu: {lostMarkers.map((m) => <code key={m} className="bg-rose-100 border border-rose-200 rounded px-1 mx-0.5">{m}</code>)}. Mở “Sửa tay nâng cao” thêm lại đủ marker → nút Áp dụng tự mở lại.</p>
+          </div>
+        </div>
+      )}
+
+      {/* Thanh thao tác bản nháp */}
+      <div className="flex gap-2 flex-wrap items-center">
+        {draft ? (
+          <>
+            <StatusBadge status={draft.status} />
+            {dirty && (
+              <button disabled={savingEdit} onClick={saveEdit} className="flex items-center gap-1.5 border text-sm px-3 py-2 rounded-lg hover:bg-gray-50 disabled:opacity-50">
+                {savingEdit ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Lưu bản nháp
+              </button>
+            )}
+            <button disabled={busy} onClick={cancelDraft} className="flex items-center gap-1.5 text-rose-600 border border-rose-200 text-sm px-3 py-2 rounded-lg hover:bg-rose-50 disabled:opacity-50">
+              <Trash2 className="w-4 h-4" /> Hủy bản nháp
+            </button>
+            <button disabled={scanning} onClick={quickScan} title="Chạy thử 5 câu khách mẫu qua bản nháp trước khi áp dụng"
+              className="flex items-center gap-1.5 border text-sm px-3 py-2 rounded-lg hover:bg-gray-50 disabled:opacity-50">
+              {scanning ? <Loader2 className="w-4 h-4 animate-spin" /> : <FlaskConical className="w-4 h-4" />} Soi nhanh 5 câu
+            </button>
+            {effectiveIsAdmin ? (
+              <button disabled={busy || hasLostMarkers || dirty} onClick={applyDraft}
+                title={hasLostMarkers ? `Đang thiếu marker: ${lostMarkers.join(", ")}` : dirty ? "Lưu bản nháp trước" : undefined}
+                className="flex items-center gap-1.5 bg-emerald-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed ml-auto">
+                {hasLostMarkers ? <AlertTriangle className="w-4 h-4" /> : <ShieldCheck className="w-4 h-4" />} Áp dụng version này
+              </button>
+            ) : (
+              <span className="ml-auto text-[11px] text-gray-400 self-center">Áp dụng cần quyền admin</span>
+            )}
+          </>
+        ) : (
+          <button disabled={busy || !active} onClick={createDraftFromActive} className="flex items-center gap-1.5 bg-violet-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-violet-700 disabled:opacity-50">
+            <Plus className="w-4 h-4" /> Tạo bản nháp mới để bắt đầu sửa
+          </button>
+        )}
+      </div>
+
+      {/* #4 — Kết quả "Soi nhanh" 5 câu mẫu qua bản nháp */}
+      {scanResults.length > 0 && (
+        <div className="bg-white border rounded-xl p-3 space-y-1.5">
+          <p className="text-xs font-semibold text-gray-600 flex items-center gap-1.5"><FlaskConical className="w-3.5 h-3.5 text-violet-600" /> Soi nhanh — Lulu trả lời thử {scanResults.length}/{QUICK_SCAN_QS.length} câu mẫu (theo bản nháp) {scanning && <Loader2 className="w-3 h-3 animate-spin" />}</p>
+          {scanResults.map((s, i) => (
+            <div key={i} className="text-xs border-t pt-1.5">
+              <p className="text-sky-700">❓ {s.q}{s.intent && <span className="text-gray-400"> · intent: {s.intent}</span>}</p>
+              <p className="text-gray-700 whitespace-pre-wrap mt-0.5">💬 {s.reply}</p>
+            </div>
+          ))}
+          <button onClick={() => setScanResults([])} className="text-[11px] text-gray-400 hover:text-rose-500 pt-1">Ẩn kết quả</button>
+        </div>
+      )}
+
+      {/* Khung chat test */}
+      <div className="bg-white border rounded-xl flex flex-col" style={{ height: "min(64vh, 600px)" }}>
+        <div className="px-4 py-2.5 border-b flex items-center justify-between">
+          <h3 className="font-semibold text-sm flex items-center gap-2"><MessageSquare className="w-4 h-4 text-violet-600" /> Chat test — Lulu trả lời theo Version {testingVersion ?? "—"}</h3>
+          {turns.length > 0 && <button onClick={clearChat} className="text-[11px] text-gray-400 hover:text-rose-500">Xóa hội thoại</button>}
         </div>
 
-        <div className="flex gap-2 flex-wrap">
-          <button disabled={busy || !dirty} onClick={save} className="flex items-center gap-1.5 border text-sm px-3 py-2 rounded-lg hover:bg-gray-50 disabled:opacity-50"><Save className="w-4 h-4" /> Lưu bản nháp</button>
-          <button disabled={busy} onClick={saveThenTest} className="flex items-center gap-1.5 bg-sky-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-sky-700 disabled:opacity-50"><FlaskConical className="w-4 h-4" /> {dirty ? "Lưu & Test" : "Test bản nháp"}</button>
-          <button disabled={busy} onClick={cancel} className="flex items-center gap-1.5 text-rose-600 border border-rose-200 text-sm px-3 py-2 rounded-lg hover:bg-rose-50 disabled:opacity-50"><Trash2 className="w-4 h-4" /> Hủy bản nháp</button>
-          {effectiveIsAdmin ? (
-            <button disabled={busy || hasLostMarkers} onClick={apply}
-              title={hasLostMarkers ? `Đang thiếu marker: ${lostMarkers.join(", ")} — thêm lại mới áp dụng được` : undefined}
-              className="flex items-center gap-1.5 bg-emerald-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed ml-auto">
-              {hasLostMarkers ? <AlertTriangle className="w-4 h-4" /> : <ShieldCheck className="w-4 h-4" />} Áp dụng bản nháp
-            </button>
+        <div ref={scrollRef} className="flex-1 overflow-auto p-4 space-y-3">
+          {turns.length === 0 && (
+            <div className="text-center text-gray-400 text-sm py-6 space-y-2">
+              <MessageSquare className="w-8 h-8 mx-auto opacity-40" />
+              <p>Nhập câu khách hỏi để xem Lulu trả lời.<br />Trả lời sai chỗ nào, bấm “Báo lỗi / Sửa phản hồi này” ngay câu đó.</p>
+            </div>
+          )}
+          {turns.map((t) => t.role === "customer" ? (
+            <div key={t.id} className="flex justify-end">
+              <div className="max-w-[80%] bg-sky-600 text-white rounded-2xl rounded-br-sm px-3 py-2 text-sm">
+                {t.imageUrl && <img src={t.imageUrl} alt="ảnh khách" className="rounded-lg max-h-40 border border-white/30 mb-1" />}
+                <span className="whitespace-pre-wrap break-words">{t.text}</span>
+              </div>
+            </div>
           ) : (
-            <span className="ml-auto text-[11px] text-gray-400 self-center">Áp dụng cần quyền admin</span>
+            <div key={t.id} className="flex gap-2 items-start">
+              <div className="w-7 h-7 rounded-full bg-violet-100 flex items-center justify-center text-violet-600 shrink-0"><Bot className="w-4 h-4" /></div>
+              <div className="max-w-[88%] w-full space-y-1.5">
+                {/* Ảnh mẫu */}
+                {t.result.sampleImages.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {t.result.sampleImages.map((s, i) => (
+                      <div key={i} className="w-24">
+                        <img src={getImageSrc(s.imageUrl) ?? undefined} alt={s.title} className="w-24 h-24 object-cover rounded-lg border" />
+                        <p className="text-[10px] text-gray-500 truncate mt-0.5">{s.title}</p>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {/* Ảnh bảng giá */}
+                {t.result.priceImages.map((p, i) => (
+                  <img key={`p${i}`} src={getImageSrc(p) ?? undefined} alt="bảng giá" className="max-w-[200px] rounded-lg border" />
+                ))}
+                {/* Câu trả lời */}
+                {(t.result.reply.length ? t.result.reply : [t.result.raw || "(Lulu không trả lời)"]).map((m, i) => (
+                  <div key={i} className="bg-gray-50 border rounded-2xl rounded-bl-sm px-3 py-2 text-sm whitespace-pre-wrap break-words">{m}</div>
+                ))}
+                {t.result.sampleNote && <p className="text-[11px] text-amber-600 italic">{t.result.sampleNote}</p>}
+                <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-400">
+                  {t.result.detectedIntent && <span>intent: <b className="text-violet-600">{t.result.detectedIntent}</b></span>}
+                  <span>{t.result.responseTimeMs}ms</span>
+                  {t.result.escalated && <span className="text-rose-600 font-medium">⚠ Sẽ chuyển người thật ({t.result.escalationReason})</span>}
+                </div>
+                {/* Báo lỗi / sửa phản hồi này */}
+                {t.fixed ? (
+                  <div className="text-emerald-700 text-xs font-medium flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Đã gửi sửa vào bản nháp — gửi lại câu khách để test lại.</div>
+                ) : fixingId === t.id ? (
+                  <div className="border border-violet-200 rounded-lg p-2 bg-violet-50/50 space-y-2">
+                    <textarea value={fixText} onChange={(e) => setFixText(e.target.value)} rows={3} autoFocus
+                      placeholder="Nói rõ Lulu sai gì & cần sửa thế nào. Vd: “Khách hỏi chụp bầu mà gửi ảnh cưới — phải gửi nhóm ảnh bầu và hỏi tháng thai.”"
+                      className="w-full border rounded-lg px-3 py-2 text-sm" />
+                    <div className="flex gap-2">
+                      <button disabled={fixing} onClick={() => submitFix(t)} className="flex items-center gap-1.5 bg-violet-600 text-white text-sm px-3 py-1.5 rounded-lg hover:bg-violet-700 disabled:opacity-50">
+                        {fixing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />} Gửi cho AI sửa vào bản nháp
+                      </button>
+                      <button disabled={fixing} onClick={() => { setFixingId(null); setFixText(""); }} className="text-sm px-3 py-1.5 rounded-lg border hover:bg-gray-50 disabled:opacity-50">Thôi</button>
+                    </div>
+                    <p className="text-[11px] text-gray-400">AI viết lại bộ luật mất khoảng 30–90 giây. Mọi lỗi đều gom vào cùng một bản nháp.</p>
+                  </div>
+                ) : (
+                  <button onClick={() => { setFixingId(t.id); setFixText(""); }} className="flex items-center gap-1.5 text-[12px] text-rose-600 border border-rose-200 px-2 py-1 rounded-lg hover:bg-rose-50">
+                    <AlertTriangle className="w-3.5 h-3.5" /> Báo lỗi / Sửa phản hồi này
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+          {sending && (
+            <div className="flex gap-2 items-center text-gray-400 text-sm">
+              <div className="w-7 h-7 rounded-full bg-violet-100 flex items-center justify-center text-violet-600 shrink-0"><Bot className="w-4 h-4" /></div>
+              <Loader2 className="w-4 h-4 animate-spin" /> Lulu đang trả lời…
+            </div>
           )}
         </div>
+
+        {/* Câu hỏi mẫu nhanh (điền vào ô nhập) */}
+        {exampleChips.length > 0 && (
+          <div className="px-3 pt-2 flex flex-wrap gap-1.5">
+            {exampleChips.map((tc) => (
+              <button key={tc.id} onClick={() => setInput(tc.customerMessage)} disabled={sending}
+                className="text-[11px] bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded-full text-gray-600 disabled:opacity-50" title={tc.title}>{tc.customerMessage}</button>
+            ))}
+          </div>
+        )}
+
+        {/* Composer */}
+        <div className="p-3 border-t flex items-center gap-2">
+          <input type="file" accept="image/*" ref={fileRef} onChange={onFile} className="hidden" />
+          <button onClick={() => fileRef.current?.click()} className="p-2 border rounded-lg hover:bg-gray-50 shrink-0" title="Đính ảnh khách gửi"><ImageIcon className="w-4 h-4 text-gray-500" /></button>
+          {attached && (
+            <div className="relative shrink-0"><img src={attached.dataUrl} alt="" className="w-10 h-10 rounded object-cover border" />
+              <button onClick={() => setAttached(null)} className="absolute -top-1 -right-1 bg-rose-500 text-white rounded-full w-4 h-4 flex items-center justify-center"><X className="w-2.5 h-2.5" /></button></div>
+          )}
+          <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+            placeholder="Nhập câu khách hỏi…" className="flex-1 border rounded-lg px-3 py-2 text-sm" />
+          <button disabled={sending || (!input.trim() && !attached)} onClick={send} className="flex items-center gap-1.5 bg-violet-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-violet-700 disabled:opacity-50 shrink-0">
+            {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Gửi
+          </button>
+        </div>
+      </div>
+
+      {/* Sửa tay nâng cao (ẩn mặc định): chỉ editor bộ luật + diff cho người rành kỹ thuật */}
+      <div className="bg-white border rounded-xl">
+        <button onClick={() => setAdvOpen(!advOpen)} className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-gray-600 hover:bg-gray-50">
+          <span className="flex items-center gap-2"><Pencil className="w-4 h-4" /> Sửa tay nâng cao (sửa trực tiếp bộ luật)</span>
+          <ChevronDown className={`w-4 h-4 transition-transform ${advOpen ? "rotate-180" : ""}`} />
+        </button>
+        {advOpen && (
+          <div className="p-4 border-t space-y-4">
+            {draft ? (
+              <div className="space-y-3">
+                {draft.changeSummary && (
+                  <div className="bg-violet-50 border border-violet-200 rounded-lg p-3">
+                    <p className="text-xs font-semibold text-violet-700 mb-1 flex items-center gap-1"><Sparkles className="w-3.5 h-3.5" /> Đã sửa gì trong bản nháp này</p>
+                    <p className="text-xs text-gray-700 whitespace-pre-wrap">{draft.changeSummary}</p>
+                  </div>
+                )}
+                <div className="grid sm:grid-cols-2 gap-2">
+                  <div className="border rounded-lg p-2 bg-rose-50/40">
+                    <p className="text-[11px] font-semibold text-rose-600 mb-1 flex items-center gap-1"><GitCompareArrows className="w-3.5 h-3.5" /> Bỏ / khác so với bản đang chạy ({diff.removed.length})</p>
+                    <div className="text-[11px] text-rose-700/80 max-h-32 overflow-auto space-y-0.5">
+                      {diff.removed.length ? diff.removed.map((l, i) => <div key={i} className="line-through decoration-rose-300">− {l}</div>) : <span className="text-gray-400">—</span>}
+                    </div>
+                  </div>
+                  <div className="border rounded-lg p-2 bg-emerald-50/40">
+                    <p className="text-[11px] font-semibold text-emerald-600 mb-1 flex items-center gap-1"><Plus className="w-3.5 h-3.5" /> Thêm mới ({diff.added.length})</p>
+                    <div className="text-[11px] text-emerald-700/90 max-h-32 overflow-auto space-y-0.5">
+                      {diff.added.length ? diff.added.map((l, i) => <div key={i}>+ {l}</div>) : <span className="text-gray-400">—</span>}
+                    </div>
+                  </div>
+                </div>
+                <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Tên bản nháp" className="w-full border rounded-lg px-3 py-2 text-sm" />
+                <textarea value={content} onChange={(e) => setContent(e.target.value)} rows={16} className="w-full border rounded-lg px-3 py-2 text-xs font-mono leading-relaxed" />
+                <button disabled={savingEdit || !dirty} onClick={saveEdit} className="flex items-center gap-1.5 border text-sm px-3 py-2 rounded-lg hover:bg-gray-50 disabled:opacity-50"><Save className="w-4 h-4" /> Lưu bản nháp</button>
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500">Chưa có bản nháp. Bấm “Tạo bản nháp từ bản đang chạy” ở trên, hoặc dùng “Nhờ AI sửa Lulu” / báo lỗi ở một câu trả lời để tạo.</p>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
 // ─── TAB 4 component ────────────────────────────────────────────────────────────
-function TestTab({ draft, testCases = [], showOk, showErr }: {
-  draft: BrainVersion | null; testCases: TestCase[];
-  showOk: (m: string) => void; showErr: (m: string) => void;
-}) {
-  const [convo, setConvo] = useState<ConvoMsg[]>([]);
-  const [msg, setMsg] = useState("");
-  const [attached, setAttached] = useState<{ dataUrl: string; mediaType: string } | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [draftRes, setDraftRes] = useState<SimResult | null>(null);
-  const [activeRes, setActiveRes] = useState<SimResult | null>(null);
-  const [activeCaseId, setActiveCaseId] = useState<number | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
-
-  if (!draft) {
-    return <div className="bg-white border rounded-xl p-6 text-center text-gray-500">
-      Chưa có bản nháp để test. Tạo/sửa bản nháp ở tab <b>Bản nháp</b> trước.
-    </div>;
-  }
-
-  const loadCase = (tc: TestCase) => {
-    setConvo(tc.priorContext.map((p) => ({ direction: p.direction, text: p.text })));
-    setMsg(tc.customerMessage); setActiveCaseId(tc.id); setDraftRes(null); setActiveRes(null);
-  };
-
-  const send = async () => {
-    if (!msg.trim() && !attached) return;
-    setLoading(true); setDraftRes(null); setActiveRes(null);
-    const priorForApi = convo.map((c) => ({ direction: c.direction, text: c.text }));
-    try {
-      const d = await apiSend<{ draft: SimResult | null; active: SimResult | null }>("POST", "/lulu-brain/test", {
-        message: msg, messages: priorForApi, draftVersionId: draft.id, compareWithActive: true,
-        ...(attached ? { imageBase64: attached.dataUrl, imageMediaType: attached.mediaType } : {}),
-      });
-      setDraftRes(d.draft); setActiveRes(d.active);
-      // Ghi câu khách + câu trả lời bản nháp vào hội thoại để test nhiều lượt.
-      const newConvo: ConvoMsg[] = [...convo, { direction: "incoming", text: msg || "[ảnh]" }];
-      if (d.draft?.reply?.length) newConvo.push({ direction: "outgoing", text: d.draft.reply.join("\n\n") });
-      setConvo(newConvo); setMsg(""); setAttached(null);
-    } catch (e) { showErr(String((e as Error).message)); } finally { setLoading(false); }
-  };
-
-  const onFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]; if (!f) return;
-    if (f.size > 5 * 1024 * 1024) { showErr("Ảnh tối đa 5MB"); return; }
-    try { const dataUrl = await fileToDataUrl(f); setAttached({ dataUrl, mediaType: f.type }); }
-    catch { showErr("Không đọc được ảnh"); }
-  };
-
-  const saveResult = async (passed: boolean) => {
-    if (!draftRes) return;
-    let failReason: string | undefined;
-    if (!passed) { failReason = prompt("Lỗi gì? (ghi chú ngắn)") ?? undefined; }
-    try {
-      await apiSend("POST", "/lulu-brain/test-result", {
-        brainVersionId: draft.id, testCaseId: activeCaseId,
-        actualReply: draftRes.reply.join("\n\n"), detectedIntent: draftRes.detectedIntent,
-        sampleImages: draftRes.sampleImages.map((s) => s.imageUrl), passed, failReason,
-      });
-      showOk(passed ? "Đã lưu Pass." : "Đã lưu Fail + ghi chú.");
-    } catch (e) { showErr(String((e as Error).message)); }
-  };
-
-  return (
-    <div className="space-y-3">
-      <div className="bg-white border rounded-xl p-3">
-        <p className="text-xs text-gray-500 mb-2">Đang test bản nháp <b>Version {draft.versionNumber}</b> — so với bản đang chạy thật. Chọn case mẫu hoặc tự nhập câu khách.</p>
-        <div className="flex flex-wrap gap-1.5 mb-2">
-          {testCases.map((tc) => (
-            <button key={tc.id} onClick={() => loadCase(tc)} className={`text-[11px] px-2 py-1 rounded-full border ${activeCaseId === tc.id ? "bg-violet-100 border-violet-300 text-violet-700" : "bg-gray-50 hover:bg-gray-100 text-gray-600"}`}>{tc.title}</button>
-          ))}
-        </div>
-        {convo.length > 0 && (
-          <div className="border rounded-lg p-2 mb-2 max-h-40 overflow-auto space-y-1 bg-gray-50">
-            {convo.map((c, i) => (
-              <div key={i} className={`text-xs flex gap-1.5 ${c.direction === "incoming" ? "" : "justify-end"}`}>
-                {c.direction === "incoming" ? <User className="w-3 h-3 text-gray-400 mt-0.5" /> : null}
-                <span className={`px-2 py-1 rounded-lg ${c.direction === "incoming" ? "bg-white border" : "bg-sky-100 text-sky-800"}`}>{c.text}</span>
-                {c.direction === "outgoing" ? <Bot className="w-3 h-3 text-sky-400 mt-0.5" /> : null}
-              </div>
-            ))}
-            <button onClick={() => { setConvo([]); setActiveCaseId(null); setDraftRes(null); setActiveRes(null); }} className="text-[10px] text-gray-400 hover:text-rose-500">Xóa hội thoại</button>
-          </div>
-        )}
-        <div className="flex items-center gap-2">
-          <input type="file" accept="image/*" ref={fileRef} onChange={onFile} className="hidden" />
-          <button onClick={() => fileRef.current?.click()} className="p-2 border rounded-lg hover:bg-gray-50" title="Đính ảnh khách gửi"><ImageIcon className="w-4 h-4 text-gray-500" /></button>
-          {attached && (
-            <div className="relative"><img src={attached.dataUrl} alt="" className="w-10 h-10 rounded object-cover border" />
-              <button onClick={() => setAttached(null)} className="absolute -top-1 -right-1 bg-rose-500 text-white rounded-full w-4 h-4 flex items-center justify-center"><X className="w-2.5 h-2.5" /></button></div>
-          )}
-          <input value={msg} onChange={(e) => setMsg(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-            placeholder="Nhập câu khách giả lập…" className="flex-1 border rounded-lg px-3 py-2 text-sm" />
-          <button disabled={loading} onClick={send} className="flex items-center gap-1.5 bg-violet-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-violet-700 disabled:opacity-50">
-            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Gửi
-          </button>
-        </div>
-      </div>
-
-      <div className="flex flex-col md:flex-row gap-3">
-        <ReplyColumn title="Bản đang chạy thật" accent="bg-gray-600" result={activeRes} />
-        <ReplyColumn title="Bản nháp (mới)" accent="bg-violet-600" result={draftRes} />
-      </div>
-
-      {draftRes && (
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-gray-500">Kết quả bản nháp:</span>
-          <button onClick={() => saveResult(true)} className="flex items-center gap-1 bg-emerald-600 text-white text-sm px-3 py-1.5 rounded-lg hover:bg-emerald-700"><Check className="w-4 h-4" /> Pass</button>
-          <button onClick={() => saveResult(false)} className="flex items-center gap-1 bg-rose-600 text-white text-sm px-3 py-1.5 rounded-lg hover:bg-rose-700"><X className="w-4 h-4" /> Fail + ghi chú</button>
-        </div>
-      )}
-    </div>
-  );
-}
+// (TestTab cũ — bảng so sánh 2 cột + Pass/Fail — đã được thay bằng FixTestTab phía trên.)
 
 // ─── TAB 5 component ────────────────────────────────────────────────────────────
-function HistoryTab({ versions = [], effectiveIsAdmin, busy, setBusy, showOk, showErr, reload, onCloneDraft }: {
+function HistoryTab({ versions = [], effectiveIsAdmin, busy, setBusy, showOk, showErr, reload, onCloneDraft, currentDraftId }: {
   versions: BrainVersion[]; effectiveIsAdmin: boolean; busy: boolean; setBusy: (b: boolean) => void;
   showOk: (m: string) => void; showErr: (m: string) => void; reload: () => void; onCloneDraft: (id: number) => void;
+  currentDraftId: number | null;
 }) {
   const [viewing, setViewing] = useState<BrainVersion | null>(null);
 
@@ -966,7 +1466,9 @@ function HistoryTab({ versions = [], effectiveIsAdmin, busy, setBusy, showOk, sh
         <div key={v.id} className="bg-white border rounded-xl p-3">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-bold">Version {v.versionNumber}</span>
-            <StatusBadge status={v.status} />
+            {v.id === currentDraftId
+              ? <span className="inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full border bg-amber-100 text-amber-800 border-amber-300">Bản nháp hiện tại</span>
+              : <StatusBadge status={v.status} />}
             <span className="text-sm text-gray-600">{v.title}</span>
           </div>
           <div className="text-[11px] text-gray-500 flex flex-wrap gap-x-4 mt-1">

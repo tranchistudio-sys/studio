@@ -13,6 +13,11 @@ import {
 import { getImageSrc } from "@/lib/imageUtils";
 import { useToast } from "@/hooks/use-toast";
 import { getPublicPageUrl } from "@/lib/public-site-url";
+import {
+  useBulkSelect, BulkActionBar, BulkMoveDialog, TriCheckbox,
+  itemIdsInCategorySubtree, subtreeSelectState, type TriState,
+} from "@/components/cms-bulk-select";
+import { CheckSquare } from "lucide-react";
 
 interface Album {
   id: number; name: string; slug: string | null; description: string | null;
@@ -25,6 +30,8 @@ interface Photo {
   mimeType: string | null;
   status: "visible" | "hidden"; sortOrder: number;
 }
+// Ảnh đã upload-presign sẵn nhưng CHƯA gắn vào album (dùng khi tạo album mới kèm nhiều ảnh 1 lần).
+type PendingPhoto = { id: number; objectPath: string; mimeType?: string };
 interface Capabilities {
   videoUpload: boolean;
   videoMaxSizeMb: number;
@@ -82,11 +89,15 @@ interface CatNodeHandlers {
   onDelete: (cat: GalleryCat) => void;
   onReorder: (parentId: number | null, orderedIds: number[]) => void;
   effectiveIsAdmin: boolean;
+  selectMode?: boolean;
+  catSelectState?: (id: number) => TriState;
+  onToggleCatSelect?: (id: number) => void;
 }
 function CatNode({ cat, depth, allCats, handlers }: {
   cat: GalleryCat; depth: number; allCats: GalleryCat[]; handlers: CatNodeHandlers;
 }) {
-  const { expanded, selectedId, onSelect, onToggle, counts, onAddChild, onEdit, onDelete, onReorder, effectiveIsAdmin } = handlers;
+  const { expanded, selectedId, onSelect, onToggle, counts, onAddChild, onEdit, onDelete, onReorder, effectiveIsAdmin,
+    selectMode, catSelectState, onToggleCatSelect } = handlers;
   const children = useMemo(
     () => allCats.filter(c => c.parentId === cat.id).sort((a, b) => a.sortOrder - b.sortOrder),
     [allCats, cat.id]
@@ -101,6 +112,15 @@ function CatNode({ cat, depth, allCats, handlers }: {
         style={{ paddingLeft: 4 + depth * 14 }}
         onClick={() => onSelect(cat.id)}
       >
+        {selectMode && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onToggleCatSelect?.(cat.id); }}
+            className="flex-shrink-0"
+            title="Chọn toàn bộ ảnh trong danh mục này (gồm mục con)"
+          >
+            <TriCheckbox state={catSelectState ? catSelectState(cat.id) : "none"} className="w-4 h-4" />
+          </button>
+        )}
         {hasChildren ? (
           <button onClick={e => { e.stopPropagation(); onToggle(cat.id); }} className="w-4 h-4 flex items-center justify-center text-muted-foreground">
             {isOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
@@ -226,19 +246,99 @@ export default function CmsGalleryPage() {
     setSearch(""); setStatusFilter("all"); setSelectedTags(new Set());
   }
 
+  // ── Tích chọn hàng loạt ─────────────────────────────────────────────────────
+  const { toast } = useToast();
+  const bulk = useBulkSelect();
+  const [moveOpen, setMoveOpen] = useState(false);
+  // Cần TOÀN BỘ album (không lọc theo danh mục đang xem) để chọn theo mục mẹ/con.
+  const { data: allAlbums = [] } = useQuery<Album[]>({
+    queryKey: ["cms-albums", "all"],
+    queryFn: () => fetch(`${CMS_BASE}/api/cms/albums`, { headers: authHeaders() }).then(r => r.json()),
+  });
+  const bulkInvalidate = () => {
+    qc.invalidateQueries({ queryKey: ["cms-albums"] });
+    qc.invalidateQueries({ queryKey: ["cms-categories", "gallery"] });
+  };
+  const bulkMove = useMutation({
+    mutationFn: async (categoryId: number) => {
+      const r = await fetch(`${CMS_BASE}/api/cms/albums/bulk-category`, {
+        method: "PATCH", headers: authHeaders(),
+        body: JSON.stringify({ ids: [...bulk.selected], categoryId }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error ?? "Lỗi chuyển danh mục");
+      return r.json() as Promise<{ affected: number }>;
+    },
+    onSuccess: (d) => { bulkInvalidate(); setMoveOpen(false); bulk.exit(); toast({ title: `Đã chuyển ${d.affected} album` }); },
+    onError: (e: Error) => toast({ title: "Lỗi chuyển danh mục", description: e.message, variant: "destructive" }),
+  });
+  const bulkDelete = useMutation({
+    mutationFn: async () => {
+      const r = await fetch(`${CMS_BASE}/api/cms/albums/bulk-delete`, {
+        method: "POST", headers: authHeaders(), body: JSON.stringify({ ids: [...bulk.selected] }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error ?? "Lỗi xoá");
+      return r.json() as Promise<{ affected: number }>;
+    },
+    onSuccess: (d) => { bulkInvalidate(); bulk.exit(); toast({ title: `Đã đưa ${d.affected} album vào thùng rác` }); },
+    onError: (e: Error) => toast({ title: "Lỗi xoá", description: e.message, variant: "destructive" }),
+  });
+  const bulkPriority = useMutation({
+    mutationFn: async () => {
+      const r = await fetch(`${CMS_BASE}/api/cms/albums/bulk-priority`, {
+        method: "PATCH", headers: authHeaders(), body: JSON.stringify({ ids: [...bulk.selected] }),
+      });
+      if (!r.ok) throw new Error((await r.json()).error ?? "Lỗi ưu tiên");
+      return r.json() as Promise<{ affected: number }>;
+    },
+    onSuccess: (d) => { bulkInvalidate(); bulk.exit(); toast({ title: `Đã ưu tiên ${d.affected} album lên đầu` }); },
+    onError: (e: Error) => toast({ title: "Lỗi ưu tiên", description: e.message, variant: "destructive" }),
+  });
+  const bulkBusy = bulkMove.isPending || bulkDelete.isPending || bulkPriority.isPending;
+
+  const catSelectState = useCallback((catId: number): TriState =>
+    subtreeSelectState(itemIdsInCategorySubtree(allAlbums, cats, catId), bulk.selected),
+    [allAlbums, cats, bulk.selected]);
+  const toggleCatSelect = useCallback((catId: number) => {
+    const ids = itemIdsInCategorySubtree(allAlbums, cats, catId);
+    if (ids.length === 0) { toast({ title: "Danh mục này chưa có album" }); return; }
+    const st = subtreeSelectState(ids, bulk.selected);
+    bulk.toggleMany(ids, st !== "all");
+    toast({ title: st === "all" ? `Đã bỏ chọn ${ids.length} album` : `Đã chọn ${ids.length} album trong danh mục này` });
+  }, [allAlbums, cats, bulk, toast]);
+  function handleBulkDelete() {
+    const n = bulk.selected.size;
+    if (n === 0) return;
+    if (confirm(`Đưa ${n} album đã chọn vào thùng rác? (Danh mục KHÔNG bị xoá)`)) bulkDelete.mutate();
+  }
+
   const saveAlbum = useMutation({
-    mutationFn: async (a: Partial<Album>) => {
+    // newPhotos: chỉ dùng khi TẠO album mới — thêm cả mảng ảnh ngay sau khi tạo (1 lần Lưu).
+    mutationFn: async ({ album: a, newPhotos }: { album: Partial<Album>; newPhotos?: PendingPhoto[] }) => {
       const url = a.id ? `${CMS_BASE}/api/cms/albums/${a.id}` : `${CMS_BASE}/api/cms/albums`;
       const method = a.id ? "PATCH" : "POST";
       const r = await fetch(url, { method, headers: authHeaders(), body: JSON.stringify(a) });
-      if (!r.ok) throw new Error((await r.json()).error ?? "Lỗi lưu");
-      return r.json();
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? "Lỗi lưu album");
+      const saved = await r.json();
+      // Album mới + có ảnh chọn sẵn → POST cả mảng (backend tự gán sort_order theo thứ tự mảng → giữ đúng thứ tự).
+      if (newPhotos && newPhotos.length && saved?.id) {
+        const pr = await fetch(`${CMS_BASE}/api/cms/albums/${saved.id}/photos`, {
+          method: "POST", headers: authHeaders(),
+          body: JSON.stringify({ photos: newPhotos.map(p => ({ imageUrl: p.objectPath, mimeType: p.mimeType ?? null })) }),
+        });
+        if (!pr.ok) {
+          const err = (await pr.json().catch(() => ({}))).error ?? `lỗi ${pr.status}`;
+          throw new Error(`Đã tạo album "${saved.name ?? ""}" nhưng THÊM ẢNH lỗi: ${err}. Mở album rồi thêm lại ở tab "Ảnh album".`);
+        }
+      }
+      return saved;
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["cms-albums"] });
       qc.invalidateQueries({ queryKey: ["cms-categories", "gallery"] });
+      qc.invalidateQueries({ queryKey: ["cms-photos"] });
       setEditAlbum(null);
     },
+    onError: (e) => toast({ title: "Lỗi lưu album", description: String((e as Error).message) }),
   });
 
   const deleteAlbum = useMutation({
@@ -379,7 +479,7 @@ export default function CmsGalleryPage() {
               target="_blank"
               rel="noopener noreferrer"
               className="w-6 h-6 flex items-center justify-center rounded hover:bg-muted text-muted-foreground hover:text-foreground"
-              title="Xem trang Concept ảnh trên website"
+              title="Xem trang Ảnh sản phẩm thật trên website"
             >
               <Globe className="w-3.5 h-3.5" />
             </a>
@@ -427,6 +527,9 @@ export default function CmsGalleryPage() {
                       onDelete: handleDeleteCat,
                       onReorder: handleReorderCats,
                       effectiveIsAdmin,
+                      selectMode: bulk.selectMode,
+                      catSelectState,
+                      onToggleCatSelect: toggleCatSelect,
                     }}
                   />
                 )}
@@ -457,14 +560,27 @@ export default function CmsGalleryPage() {
               {filteredAlbums.length} album{albumsLoading ? " · đang tải..." : ""}
             </p>
           </div>
-          <Button
-            onClick={() => setEditAlbum({ status: "visible", categoryId: selectedCatId ?? null })}
-            className="gap-1.5 whitespace-nowrap"
-          >
-            <Plus className="w-4 h-4" />
-            <span className="hidden sm:inline">Tạo album</span>
-            <span className="sm:hidden">Tạo</span>
-          </Button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <Button
+              variant={bulk.selectMode ? "default" : "outline"}
+              onClick={() => (bulk.selectMode ? bulk.exit() : bulk.enter())}
+              className="gap-1.5 whitespace-nowrap"
+              title="Chọn nhiều album để thao tác hàng loạt"
+            >
+              <CheckSquare className="w-4 h-4" />
+              <span className="hidden sm:inline">{bulk.selectMode ? "Xong" : "Tích chọn"}</span>
+            </Button>
+            {!bulk.selectMode && (
+              <Button
+                onClick={() => setEditAlbum({ status: "visible", categoryId: selectedCatId ?? null })}
+                className="gap-1.5 whitespace-nowrap"
+              >
+                <Plus className="w-4 h-4" />
+                <span className="hidden sm:inline">Tạo album</span>
+                <span className="sm:hidden">Tạo</span>
+              </Button>
+            )}
+          </div>
         </div>
 
         <div className="px-4 py-2 border-b bg-background space-y-1.5">
@@ -590,12 +706,22 @@ export default function CmsGalleryPage() {
               }}
               className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4"
               renderItem={(a, dh) => {
-                const canReorder = selectedCatId === null && search.trim() === "" && !hasExtraFilter;
+                const canReorder = selectedCatId === null && search.trim() === "" && !hasExtraFilter && !bulk.selectMode;
+                const isSel = bulk.selected.has(a.id);
                 return (
-                <div className="group rounded-2xl border border-border bg-card overflow-hidden hover:shadow-md transition-shadow">
+                <div
+                  className={`group rounded-2xl border bg-card overflow-hidden transition-shadow ${
+                    bulk.selectMode
+                      ? `cursor-pointer ${isSel ? "border-primary ring-2 ring-primary/40" : "border-border hover:border-primary/40"}`
+                      : "border-border hover:shadow-md"
+                  }`}
+                  onClick={bulk.selectMode ? () => bulk.toggle(a.id) : undefined}
+                >
                   <div className="relative aspect-[4/3] bg-muted">
                     <LazyImage src={a.coverImageUrl} alt={a.name} className="w-full h-full" />
-                    {canReorder && (
+                    {bulk.selectMode ? (
+                      <div className="absolute top-2 left-2"><TriCheckbox state={isSel} /></div>
+                    ) : canReorder && (
                     <div className="absolute top-2 left-2">
                       <span {...dh} className={`${dh.className} bg-white/90 dark:bg-black/60 rounded-md p-1 shadow-sm`}>
                         <GripVertical className="w-4 h-4" />
@@ -616,6 +742,7 @@ export default function CmsGalleryPage() {
                       </p>
                       <p className="text-xs text-muted-foreground">{a.photoCount} ảnh</p>
                     </div>
+                    {!bulk.selectMode && (
                     <div className="flex gap-1.5">
                       <Button size="sm" variant="outline" className="flex-1 gap-1" onClick={() => { setEditTab("photos"); setEditAlbum(a); }}>
                         <Images className="w-3.5 h-3.5" /> Ảnh ({a.photoCount})
@@ -631,6 +758,7 @@ export default function CmsGalleryPage() {
                         </Button>
                       )}
                     </div>
+                    )}
                   </div>
                 </div>
                 );
@@ -643,9 +771,29 @@ export default function CmsGalleryPage() {
       {editAlbum && (
         <AlbumEditorModal
           album={editAlbum} cats={cats} onClose={() => setEditAlbum(null)}
-          onSave={a => saveAlbum.mutate(a)} saving={saveAlbum.isPending}
+          onSave={(a, newPhotos) => saveAlbum.mutate({ album: a, newPhotos })} saving={saveAlbum.isPending}
           defaultTab={editTab} effectiveIsAdmin={effectiveIsAdmin}
           onCategoryCreated={() => qc.invalidateQueries({ queryKey: ["cms-categories", "gallery"] })}
+        />
+      )}
+
+      {bulk.selectMode && (
+        <BulkActionBar
+          count={bulk.selected.size}
+          busy={bulkBusy}
+          onPriority={() => bulk.selected.size > 0 && bulkPriority.mutate()}
+          onMove={() => bulk.selected.size > 0 && setMoveOpen(true)}
+          onDelete={handleBulkDelete}
+          onClear={bulk.clear}
+        />
+      )}
+      {moveOpen && (
+        <BulkMoveDialog
+          cats={cats}
+          count={bulk.selected.size}
+          busy={bulkMove.isPending}
+          onConfirm={(cid) => bulkMove.mutate(cid)}
+          onClose={() => setMoveOpen(false)}
         />
       )}
     </div>
@@ -670,7 +818,7 @@ function AlbumEditorModal({
   album, cats, onClose, onSave, saving, defaultTab = "info", effectiveIsAdmin, onCategoryCreated,
 }: {
   album: Partial<Album>; cats: GalleryCat[]; onClose: () => void;
-  onSave: (a: Partial<Album>) => void; saving: boolean;
+  onSave: (a: Partial<Album>, newPhotos?: PendingPhoto[]) => void; saving: boolean;
   defaultTab?: "info" | "photos";
   effectiveIsAdmin: boolean;
   onCategoryCreated?: () => void;
@@ -679,6 +827,22 @@ function AlbumEditorModal({
   const [tab, setTab] = useState<"info" | "photos">(album.id ? defaultTab : "info");
   const commonTags = useCommonTags(GALLERY_TAG_KEY, GALLERY_TAG_DEFAULTS);
   const [creatingCat, setCreatingCat] = useState<string | null>(null);
+
+  // ── Album MỚI: upload nhiều ảnh + chọn bìa NGAY trong modal (lưu 1 lần) ──
+  const [pending, setPending] = useState<PendingPhoto[]>([]);
+  const [coverId, setCoverId] = useState<number | null>(null);
+  const pendIdRef = useRef(1);
+  const addPending = (imgs: UploadedImage[]) => {
+    const added = imgs.map(im => ({ id: pendIdRef.current++, objectPath: im.objectPath, mimeType: im.mimeType }));
+    if (!added.length) return;
+    setPending(prev => [...prev, ...added]);
+    setCoverId(c => c ?? added[0].id);   // chưa chọn bìa → mặc định lấy ảnh đầu tiên
+  };
+  const removePending = (id: number) => setPending(prev => {
+    const next = prev.filter(p => p.id !== id);
+    setCoverId(c => (c === id ? (next[0]?.id ?? null) : c));
+    return next;
+  });
 
   // Bấm chip danh mục gợi ý: chọn danh mục trùng tên nếu có, chưa có thì tạo mới
   const normCat = (s: string) =>
@@ -829,25 +993,86 @@ function AlbumEditorModal({
               <option value="hidden">Ẩn</option>
             </select>
           </div>
-          <div>
-            <label className="text-sm font-medium">Ảnh bìa</label>
-            {draft.coverImageUrl && (
-              <div className="mt-1.5 mb-2">
-                <LazyImage src={draft.coverImageUrl} className="w-32 h-24 rounded-md" />
-              </div>
-            )}
-            <MultiImageUploader
-              multiple={false}
-              label="Bấm hoặc kéo thả ảnh bìa"
-              onUploaded={imgs => setDraft(d => ({ ...d, coverImageUrl: imgs[0]?.objectPath }))}
-            />
-          </div>
+          {/* SỬA album: ảnh bìa upload riêng (quản lý ảnh ở tab "Ảnh album"). */}
+          {draft.id && (
+            <div>
+              <label className="text-sm font-medium">Ảnh bìa</label>
+              {draft.coverImageUrl && (
+                <div className="mt-1.5 mb-2">
+                  <LazyImage src={draft.coverImageUrl} className="w-32 h-24 rounded-md" />
+                </div>
+              )}
+              <MultiImageUploader
+                multiple={false}
+                label="Bấm hoặc kéo thả ảnh bìa"
+                onUploaded={imgs => setDraft(d => ({ ...d, coverImageUrl: imgs[0]?.objectPath }))}
+              />
+            </div>
+          )}
+
+          {/* TẠO album mới: upload nhiều ảnh + chọn bìa NGAY tại đây, lưu 1 lần. */}
+          {!draft.id && (
+            <div>
+              <label className="text-sm font-medium block mb-1">Ảnh album</label>
+              <MultiImageUploader
+                multiple
+                useQueue={false}
+                label="Kéo thả / dán Ctrl+V / bấm để thêm nhiều ảnh"
+                onUploaded={addPending}
+              />
+              {pending.length > 0 && (
+                <div className="mt-2">
+                  <p className="text-[11px] text-muted-foreground mb-1">{pending.length} ảnh · kéo để đổi thứ tự · bấm ⭐ để chọn ảnh bìa (mặc định: ảnh đầu)</p>
+                  <SortableList
+                    items={pending}
+                    onReorder={ids => setPending(prev => ids.map(id => prev.find(p => p.id === id)).filter(Boolean) as PendingPhoto[])}
+                    className="grid grid-cols-3 sm:grid-cols-4 gap-2"
+                    renderItem={(p, dh) => {
+                      const isCover = coverId === p.id;
+                      return (
+                        <div className={`relative group rounded-lg overflow-hidden border bg-card ${isCover ? "border-amber-400 ring-2 ring-amber-300" : "border-border"}`}>
+                          <LazyImage src={p.objectPath} className="aspect-square w-full" />
+                          {isCover && (
+                            <div className="absolute top-1 left-1 bg-amber-400 text-amber-950 text-[10px] font-bold px-1.5 py-0.5 rounded-full flex items-center gap-0.5 shadow">
+                              <Star className="w-3 h-3 fill-current" /> Bìa
+                            </div>
+                          )}
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-end justify-between p-1.5 gap-1">
+                            <span {...dh} className={`${dh.className} bg-white/90 rounded p-1`}><GripVertical className="w-4 h-4" /></span>
+                            <div className="flex items-center gap-1">
+                              <button type="button" onClick={() => setCoverId(p.id)} disabled={isCover}
+                                className={`rounded p-1 transition ${isCover ? "bg-amber-400 text-amber-950" : "bg-white/90 text-amber-600 hover:bg-amber-100"}`}
+                                title={isCover ? "Đang là ảnh bìa" : "Đặt làm ảnh bìa"}>
+                                <Star className={`w-4 h-4 ${isCover ? "fill-current" : ""}`} />
+                              </button>
+                              <button type="button" onClick={() => removePending(p.id)}
+                                className="bg-destructive text-destructive-foreground rounded p-1 hover:scale-110 transition-transform" title="Xoá ảnh này">
+                                <X className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
         </div>
         )}
         <div className="px-5 py-3 border-t flex justify-end gap-2 flex-shrink-0">
           <Button variant="outline" onClick={onClose}>{tab === "photos" ? "Đóng" : "Huỷ"}</Button>
           {tab === "info" && (
-            <Button onClick={() => onSave(draft)} disabled={saving || !draft.name?.trim()}>
+            <Button
+              onClick={() => {
+                if (draft.id) { onSave(draft); return; }
+                // Album mới: bìa = ảnh đã chọn (⭐) hoặc ảnh đầu; gửi kèm toàn bộ ảnh theo thứ tự.
+                const cover = pending.find(p => p.id === coverId) ?? pending[0];
+                onSave({ ...draft, coverImageUrl: cover?.objectPath ?? draft.coverImageUrl ?? null }, pending);
+              }}
+              disabled={saving || !draft.name?.trim()}
+            >
               {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />} Lưu
             </Button>
           )}

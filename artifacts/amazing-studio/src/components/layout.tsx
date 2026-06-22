@@ -70,7 +70,7 @@ const ALL_NAV_ITEMS = [
 //    Route giữ nguyên (/claude-sale-*) để không hỏng link/bookmark; chỉ đổi nhãn hiển thị.
 const FACEBOOK_NAV = [
   { href: "/facebook-inbox-ai",    label: "Inbox Facebook",     icon: MessageSquare,     adminOnly: false },
-  { href: "/claude-sale-test",     label: "Lulu Sale Test",     icon: FlaskConical,      adminOnly: true  },
+  // "Lulu Sale Test" đã gộp vào "Lulu Brain Lab" → tab "Sửa & Test Lulu" (1 nơi test duy nhất).
   { href: "/claude-sale-settings", label: "Lulu Sale Settings", icon: SlidersHorizontal, adminOnly: true  },
   { href: "/lulu-brain-lab",       label: "Lulu Brain Lab",     icon: Brain,             adminOnly: false },
   { href: "/claude-sale-monitor",  label: "Lulu Sale Monitor",  icon: Activity,          adminOnly: true  },
@@ -101,7 +101,7 @@ type CmsNavItem = {
 const CMS_NAV: CmsNavItem[] = [
   { href: "/",               label: "Trang chủ",     icon: Home,       adminOnly: false, publicPreview: true },
   { href: "/cms/home-settings", label: "Cài đặt Trang chủ", icon: LayoutTemplate, adminOnly: false, publicPath: "/" },
-  { href: "/cms/gallery",    label: "Concept ảnh",  icon: Images,     adminOnly: false, publicPath: "/bo-anh" },
+  { href: "/cms/gallery",    label: "Ảnh sản phẩm thật",  icon: Images,     adminOnly: false, publicPath: "/bo-anh" },
   { href: "/cms/pricing",    label: "Bảng giá",      icon: DollarSign, adminOnly: false, publicPath: "/bang-gia" },
   { href: "/cms/categories", label: "Cho thuê đồ",   icon: Shirt,      adminOnly: false, publicPath: "/cho-thue-do" },
   { href: "/cms/photo-ideas", label: "Ý tưởng chụp ảnh", icon: Lightbulb, adminOnly: false, publicPath: "/y-tuong-chup-anh" },
@@ -123,6 +123,25 @@ const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 function authFetch(url: string) {
   const token = localStorage.getItem("amazingStudioToken_v2");
   return fetch(url, { headers: token ? { Authorization: `Bearer ${token}` } : {} });
+}
+
+/**
+ * Nhóm menu thu gọn/mở rộng trong sidebar.
+ * - Người dùng đã tự bấm mở/đóng → nhớ qua localStorage (ưu tiên cao nhất).
+ * - Chưa từng bấm → tự MỞ nếu nhóm đang chứa trang active, còn lại thu gọn cho gọn sidebar.
+ */
+function useNavGroup(key: string, hasActive: boolean): [boolean, () => void] {
+  const storageKey = `nav.group.${key}`;
+  const [pref, setPref] = useState<string | null>(() => {
+    try { return localStorage.getItem(storageKey); } catch { return null; }
+  });
+  const open = pref !== null ? pref === "1" : hasActive;
+  const toggle = () => {
+    const next = open ? "0" : "1";
+    try { localStorage.setItem(storageKey, next); } catch { /* ignore */ }
+    setPref(next);
+  };
+  return [open, toggle];
 }
 
 export function Layout({ children }: { children: React.ReactNode }) {
@@ -184,13 +203,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const visibleFacebook = FACEBOOK_NAV.filter(item =>
     effectiveIsAdmin || !item.adminOnly
   );
-  // Nhóm Facebook & Sale: thu gọn mặc định, nhớ trạng thái qua localStorage.
-  const [fbGroupOpen, setFbGroupOpen] = useState(() => localStorage.getItem("nav.fbGroupOpen") === "1");
-  const toggleFbGroup = () => setFbGroupOpen(v => {
-    const next = !v;
-    localStorage.setItem("nav.fbGroupOpen", next ? "1" : "0");
-    return next;
-  });
+  // Các nhóm menu thu gọn/mở rộng (nhớ qua localStorage; chưa chọn thì tự mở nhóm chứa trang đang xem).
+  const toolsActive = visibleSecondary.some(i => location === i.href || (i.href !== "/" && location.startsWith(i.href)));
+  const cmsItems = CMS_NAV.filter(item => isAdmin || !item.adminOnly);
+  const cmsActive = cmsItems.some(i => !i.publicPreview && (location === i.href || location.startsWith(i.href + "/")));
+  const facebookActive = visibleFacebook.some(i => location === i.href || (i.href !== "/" && location.startsWith(i.href)));
+  const [toolsOpen, toggleTools] = useNavGroup("tools", toolsActive);
+  const [cmsOpen, toggleCms] = useNavGroup("cms", cmsActive);
+  const [fbGroupOpen, toggleFbGroup] = useNavGroup("facebook", facebookActive);
 
   // Current mode label
   const modeLabel = simulateRole
@@ -331,8 +351,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
 
           <div className="mt-3 pt-3 border-t border-sidebar-border space-y-0.5">
-            <p className="px-4 mb-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Công cụ</p>
-            {visibleSecondary.map(item => {
+            <button type="button" onClick={toggleTools}
+              className="w-full flex items-center gap-2 px-4 py-1.5 rounded-lg text-muted-foreground hover:bg-muted transition-colors"
+              title={toolsOpen ? "Thu gọn" : "Mở rộng"} aria-expanded={toolsOpen}>
+              <Settings className="w-3.5 h-3.5 flex-shrink-0" />
+              <span className="text-[10px] font-semibold uppercase tracking-wider">Công cụ</span>
+              <ChevronDown className={cn("ml-auto w-4 h-4 transition-transform duration-200", toolsOpen && "rotate-180")} />
+            </button>
+            {toolsOpen && visibleSecondary.map(item => {
               const isActive = location === item.href || (item.href !== "/" && location.startsWith(item.href));
               return (
                 <Link key={item.href} href={item.href}
@@ -351,10 +377,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
 
           {/* ── Quản lý website public ── */}
-          {CMS_NAV.some(item => isAdmin || !item.adminOnly) && (
+          {cmsItems.length > 0 && (
             <div className="mt-3 pt-3 border-t border-sidebar-border space-y-0.5">
-              <p className="px-4 mb-1 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Quản lý website</p>
-              {CMS_NAV.filter(item => isAdmin || !item.adminOnly).map(item => {
+              <button type="button" onClick={toggleCms}
+                className="w-full flex items-center gap-2 px-4 py-1.5 rounded-lg text-muted-foreground hover:bg-muted transition-colors"
+                title={cmsOpen ? "Thu gọn" : "Mở rộng"} aria-expanded={cmsOpen}>
+                <Globe className="w-3.5 h-3.5 flex-shrink-0" />
+                <span className="text-[10px] font-semibold uppercase tracking-wider">Quản lý website</span>
+                <ChevronDown className={cn("ml-auto w-4 h-4 transition-transform duration-200", cmsOpen && "rotate-180")} />
+              </button>
+              {cmsOpen && CMS_NAV.filter(item => isAdmin || !item.adminOnly).map(item => {
                 const isActive = !item.publicPreview && (location === item.href || location.startsWith(item.href + "/"));
                 const itemCls = cn(
                   "flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 group",

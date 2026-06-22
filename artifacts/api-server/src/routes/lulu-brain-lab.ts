@@ -5,11 +5,12 @@ import { callChat } from "../lib/ai-orchestrator";
 import { DEFAULT_BRAIN_RULES } from "../lib/claude-sale";
 import { simulateReply } from "../lib/sale-brain-runner";
 import {
-  ensureBrainLabTables, getActiveVersion, getVersion, listVersions,
-  createDraftVersion, updateDraftVersion, rejectVersion, applyDraftVersion, rollbackToVersion,
+  ensureBrainLabTables, getActiveVersion, getVersion, listVersions, getOpenDraftVersion,
+  createDraftVersion, updateDraftVersion, rejectVersion, rejectOtherDrafts, applyDraftVersion, rollbackToVersion,
   createChangeRequest, listChangeRequests, setChangeRequestStatus,
   listTestCases, getTestCase, createTestCase, deleteTestCase,
-  saveTestResult, listTestResults, missingMarkers,
+  saveTestResult, listTestResults, missingMarkers, recoverMissingMarkers,
+  type BrainVersion,
   type ChangeRequestStatus,
 } from "../lib/sale-brain-lab";
 
@@ -67,6 +68,19 @@ router.get("/lulu-brain/active", async (req, res) => {
   }
 });
 
+// ─── Bản nháp đang mở (một bản nháp duy nhất để gom mọi sửa) ───────────────────
+// FE tab "Sửa & Test Lulu" gọi cái này lúc mở để biết đang sửa/test version nào.
+router.get("/lulu-brain/draft", async (req, res) => {
+  if (!(await requireStaff(req, res))) return;
+  try {
+    const draft = await getOpenDraftVersion();
+    res.json({ draft });
+  } catch (err) {
+    console.error("[BrainLab] draft lỗi:", String(err).slice(0, 200));
+    res.status(500).json({ error: "Không tải được bản nháp đang mở" });
+  }
+});
+
 // ─── TAB 5: Version History ───────────────────────────────────────────────────
 
 router.get("/lulu-brain/versions", async (req, res) => {
@@ -99,14 +113,21 @@ router.get("/lulu-brain/versions/:id/results", async (req, res) => {
 
 // ─── Tạo bản nháp ─────────────────────────────────────────────────────────────
 
-// "Tạo bản nháp từ version này" (TAB 1 / TAB 5) — clone nội dung version nguồn thành nháp mới.
+// "Tạo bản nháp từ version này" (TAB 1 / Version History) — clone nội dung version nguồn thành nháp mới.
+// MỘT BẢN NHÁP DUY NHẤT: nếu đã có nháp đang mở → trả về nháp đó (không đẻ thêm version rác).
 router.post("/lulu-brain/versions/:id/draft-from", async (req, res) => {
   const caller = await requireStaff(req, res);
   if (!caller) return;
   const src = await getVersion(Number(req.params.id));
   if (!src) return res.status(404).json({ error: "Không tìm thấy version nguồn" });
-  const { title } = (req.body ?? {}) as { title?: string };
+  const { title, force } = (req.body ?? {}) as { title?: string; force?: boolean };
   try {
+    // force=true: CỐ Ý tạo bản nháp MỚI từ bản đang chạy (hủy nháp cũ → rejected, giữ lịch sử).
+    // không force: tái dùng nháp đang mở (gom 1 bản nháp, không đẻ version rác).
+    if (!force) {
+      const existing = await getOpenDraftVersion();
+      if (existing) return res.json({ draft: existing, reusedExisting: true });
+    }
     const draft = await createDraftVersion({
       title: (title && title.trim()) || `Nháp dựa trên Version ${src.versionNumber}`,
       description: `Tạo từ Version ${src.versionNumber}: ${src.title}`,
@@ -117,6 +138,7 @@ router.post("/lulu-brain/versions/:id/draft-from", async (req, res) => {
       createdBy: caller.id,
       createdByName: caller.name,
     });
+    await rejectOtherDrafts(draft.id).catch(() => {});
     res.json({ draft });
   } catch (err) {
     console.error("[BrainLab] draft-from lỗi:", String(err).slice(0, 200));
@@ -214,6 +236,23 @@ function parseDraftOutput(text: string): { title: string; changeSummary: string;
   };
 }
 
+/**
+ * Gom tóm tắt thay đổi khi nhiều lần sửa dồn vào CÙNG một bản nháp:
+ *  - Cảnh báo marker (nếu có) đưa lên đầu; bỏ cảnh báo marker CŨ (chỉ giữ trạng thái mới nhất).
+ *  - Sửa mới đứng trước, sửa cũ phía sau; cắt an toàn (cột change_summary giới hạn 4000).
+ */
+function mergeChangeSummary(newSummary: string, oldSummary: string | null, markerWarning: string): string {
+  const prev = (oldSummary ?? "")
+    .split("\n")
+    .filter((ln) => { const t = ln.trim(); return !t.startsWith("⚠") && !t.startsWith("🔧"); })
+    .join("\n")
+    .trim();
+  const parts = [markerWarning, `• ${newSummary}`.trim(), prev].filter((s) => s && s.trim());
+  let combined = parts.join("\n\n");
+  if (combined.length > 3500) combined = `${combined.slice(0, 3500)}\n…(đã rút gọn các sửa đổi cũ)`;
+  return combined;
+}
+
 router.post("/lulu-brain/ai-draft", async (req, res) => {
   const caller = await requireStaff(req, res);
   if (!caller) return;
@@ -223,9 +262,14 @@ router.post("/lulu-brain/ai-draft", async (req, res) => {
 
   try {
     await ensureBrainLabTables();
-    // Lấy bộ luật nền: version chỉ định → version active → mặc định.
-    let base = await getActiveVersion();
-    if (b.basedOnVersionId) {
+    const active = await getActiveVersion();
+    const openDraft = await getOpenDraftVersion();
+    // Bộ luật NỀN để AI viết lại:
+    //  - Đang có bản nháp mở → viết tiếp TRÊN nội dung nháp đó (gom mọi lỗi vào cùng version, không đẻ V7/V8).
+    //  - Chưa có nháp + chỉ định basedOnVersionId → dùng version đó.
+    //  - Còn lại → version đang chạy (active) → mặc định.
+    let base: BrainVersion | null = openDraft ?? active;
+    if (!openDraft && b.basedOnVersionId) {
       const chosen = await getVersion(b.basedOnVersionId);
       if (chosen) base = chosen;
     }
@@ -256,22 +300,38 @@ router.post("/lulu-brain/ai-draft", async (req, res) => {
       return res.status(502).json({ error: "AI không trả về nội dung bộ luật" });
     }
 
-    // Lưới an toàn: marker nào có trong bản nền mà BẢN MỚI thiếu → cảnh báo cho admin xem khi duyệt.
-    // (Cùng bộ marker dùng để CHẶN áp dụng ở route apply — xem missingMarkers trong sale-brain-lab.)
-    const lost = missingMarkers(parsed.promptContent, baseContent);
-    const markerWarning = lost.length
-      ? `⚠ AI có thể đã bỏ mất dấu hiệu kỹ thuật: ${lost.join(", ")}. Hãy kiểm tra/chỉnh tay trước khi áp dụng.`
+    // TỰ VÁ MARKER (chữa gốc "báo đỏ"): marker nào CÓ trong bản chạy thật (active) mà bản mới thiếu
+    // → CHÈN LẠI nguyên khối hướng dẫn gốc (không còn chỉ cảnh báo/khoá). So với active để khớp lưới
+    // chặn ở route apply → sau bước này bản nháp luôn đủ marker, nút Áp dụng không bị khoá oan.
+    const referenceContent = active?.promptContent?.trim() || DEFAULT_BRAIN_RULES;
+    const recovery = recoverMissingMarkers(parsed.promptContent, referenceContent);
+    const finalContent = recovery.content;
+    const recoveryNote = recovery.recovered.length
+      ? `🔧 Tự khôi phục dấu hiệu kỹ thuật: ${recovery.recovered.join(", ")} (AI lỡ bỏ khi viết lại — hệ thống chèn lại khối gốc để không mất chức năng).`
       : "";
+    const newSummary = (parsed.changeSummary && parsed.changeSummary.trim()) || "AI đã chỉnh bộ luật theo góp ý.";
 
-    const draft = await createDraftVersion({
-      title: (parsed.title && parsed.title.trim()) || "Bản nháp do AI đề xuất",
-      description: `AI tạo theo góp ý: "${instruction.slice(0, 300)}"`,
-      promptContent: parsed.promptContent,
-      basedOnVersionId: base?.id ?? null,
-      changeSummary: [(parsed.changeSummary && parsed.changeSummary.trim()) || "AI đã chỉnh bộ luật theo góp ý.", markerWarning].filter(Boolean).join("\n\n"),
-      createdBy: caller.id,
-      createdByName: caller.name ? `${caller.name} (qua AI)` : "AI",
-    });
+    let draft: BrainVersion;
+    if (openDraft) {
+      // GOM vào bản nháp đang mở: cập nhật tại chỗ, GIỮ NGUYÊN số version (không đẻ version mới).
+      const updated = await updateDraftVersion(openDraft.id, {
+        promptContent: finalContent,
+        changeSummary: mergeChangeSummary(newSummary, openDraft.changeSummary, recoveryNote),
+      });
+      draft = updated ?? openDraft;
+    } else {
+      // Chưa có nháp → tạo bản nháp mới từ nền, rồi dọn các nháp rác cũ về 'rejected' (giữ lịch sử).
+      draft = await createDraftVersion({
+        title: (parsed.title && parsed.title.trim()) || "Bản nháp do AI đề xuất",
+        description: `AI tạo theo góp ý: "${instruction.slice(0, 300)}"`,
+        promptContent: finalContent,
+        basedOnVersionId: base?.id ?? null,
+        changeSummary: [recoveryNote, `• ${newSummary}`].filter((s) => s && s.trim()).join("\n\n"),
+        createdBy: caller.id,
+        createdByName: caller.name ? `${caller.name} (qua AI)` : "AI",
+      });
+      await rejectOtherDrafts(draft.id).catch(() => {});
+    }
 
     // Nếu xuất phát từ 1 báo lỗi/góp ý → đánh dấu đã có bản nháp.
     if (b.changeRequestId) {

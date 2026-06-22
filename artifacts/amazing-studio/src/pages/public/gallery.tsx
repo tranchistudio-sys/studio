@@ -484,7 +484,7 @@ function GalleryEmptyState() {
         Bộ sưu tập đang được cập nhật
       </h2>
       <p className="text-neutral-600 text-sm leading-relaxed mb-8">
-        Chưa có album concept hiển thị công khai. Trong CMS Concept ảnh, đặt album ở trạng thái{" "}
+        Chưa có album concept hiển thị công khai. Trong CMS Ảnh sản phẩm thật, đặt album ở trạng thái{" "}
         <strong>Hiển thị</strong> và gán danh mục Bộ ảnh.
       </p>
       <Link
@@ -504,8 +504,8 @@ function GalleryCategoryEmpty({ hasAlbums }: { hasAlbums: boolean }) {
       <p className="font-serif text-xl text-neutral-800 mb-2">Chưa có album trong mục này</p>
       <p className="text-sm text-neutral-500 max-w-md mx-auto">
         {hasAlbums
-          ? "Album có thể chưa gán danh mục — chọn tab Tất cả hoặc gán danh mục trong CMS Concept ảnh."
-          : "Thêm album trong CMS Concept ảnh và đặt trạng thái Hiển thị."}
+          ? "Album có thể chưa gán danh mục — chọn tab Tất cả hoặc gán danh mục trong CMS Ảnh sản phẩm thật."
+          : "Thêm album trong CMS Ảnh sản phẩm thật và đặt trạng thái Hiển thị."}
       </p>
       {hasAlbums && (
         <Link

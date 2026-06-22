@@ -1,5 +1,8 @@
 import { pool } from "@workspace/db";
-import { DEFAULT_BRAIN_RULES } from "./claude-sale";
+import {
+  DEFAULT_BRAIN_RULES,
+  SAMPLE_IMAGE_INSTRUCTION, PRICE_IMAGE_INSTRUCTION, SPECIAL_CONCEPT_ESCALATION_RULE,
+} from "./claude-sale";
 
 /**
  * Lulu Brain Lab — quản lý / sửa / test / lưu version cho "não Sale AI Lulu".
@@ -35,6 +38,28 @@ export function missingMarkers(candidate: string, reference: string): string[] {
   const c = candidate ?? "";
   const ref = reference ?? "";
   return BRAIN_MARKERS.filter(({ re }) => re.test(ref) && !re.test(c)).map(({ label }) => label);
+}
+
+// Khối hướng dẫn GỐC của từng marker — để TỰ CHÈN LẠI khi AI viết lại lỡ bỏ mất (chữa gốc "báo đỏ").
+const MARKER_RECOVERY: Array<{ re: RegExp; label: string; block: string }> = [
+  { re: /<<\s*SAMPLE/i, label: "<<SAMPLE>>", block: SAMPLE_IMAGE_INSTRUCTION },
+  { re: /<<\s*PRICE_IMAGE/i, label: "<<PRICE_IMAGE>>", block: PRICE_IMAGE_INSTRUCTION },
+  { re: /<<\s*NEEDS_HUMAN/i, label: "<<NEEDS_HUMAN>>", block: SPECIAL_CONCEPT_ESCALATION_RULE },
+];
+
+/**
+ * Tự khôi phục marker bị thiếu: marker nào CÓ trong `reference` mà THIẾU trong `candidate`
+ * → chèn lại NGUYÊN khối hướng dẫn gốc vào cuối candidate. Đảm bảo bản nháp không bao giờ mất
+ * chức năng gửi ảnh mẫu / ảnh bảng giá / chuyển người thật dù AI lỡ bỏ khi viết lại.
+ */
+export function recoverMissingMarkers(candidate: string, reference: string): { content: string; recovered: string[] } {
+  const ref = reference ?? "";
+  let out = candidate ?? "";
+  const recovered: string[] = [];
+  for (const { re, label, block } of MARKER_RECOVERY) {
+    if (re.test(ref) && !re.test(out)) { out = `${out.trimEnd()}\n\n${block}`; recovered.push(label); }
+  }
+  return { content: out, recovered };
 }
 
 // ─── Kiểu dữ liệu ─────────────────────────────────────────────────────────────
@@ -467,6 +492,36 @@ export async function getActiveVersion(): Promise<BrainVersion | null> {
   await ensureBrainLabTables();
   const res = await pool.query(`SELECT * FROM lulu_brain_versions WHERE status = 'active' LIMIT 1`);
   return res.rows.length ? mapVersion(res.rows[0] as Record<string, unknown>) : null;
+}
+
+/**
+ * BẢN NHÁP ĐANG MỞ = bản nháp (status='draft') MỚI NHẤT. null nếu không có.
+ * Đây là "một bản nháp duy nhất" mà mọi lần sửa/báo lỗi sẽ gom vào (không đẻ version rác).
+ * Có thể tồn tại nhiều dòng 'draft' cũ trong DB (lịch sử) → luôn lấy version_number lớn nhất.
+ */
+export async function getOpenDraftVersion(): Promise<BrainVersion | null> {
+  await ensureBrainLabTables();
+  const res = await pool.query(
+    `SELECT * FROM lulu_brain_versions WHERE status = 'draft' ORDER BY version_number DESC LIMIT 1`,
+  );
+  return res.rows.length ? mapVersion(res.rows[0] as Record<string, unknown>) : null;
+}
+
+/**
+ * Gom về đúng MỘT bản nháp đang mở: đánh dấu các nháp khác thành 'rejected' (KHÔNG xoá — giữ lịch sử).
+ * Gọi khi vừa tạo một nháp mới, để dọn các nháp rác cũ một cách an toàn. Chỉ đụng status='draft'.
+ */
+export async function rejectOtherDrafts(keepId: number): Promise<number> {
+  await ensureBrainLabTables();
+  const r = await pool.query(
+    `UPDATE lulu_brain_versions
+        SET status = 'rejected',
+            rollback_note = COALESCE(rollback_note, 'Tự dọn: gom về 1 bản nháp đang mở'),
+            updated_at = NOW()
+      WHERE status = 'draft' AND id <> $1`,
+    [keepId],
+  );
+  return r.rowCount ?? 0;
 }
 
 async function nextVersionNumber(): Promise<number> {

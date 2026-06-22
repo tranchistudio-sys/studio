@@ -1,6 +1,11 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
-import { contractsTable, customersTable, bookingsTable, notificationsTable } from "@workspace/db/schema";
+import {
+  contractsTable,
+  customersTable,
+  bookingsTable,
+  notificationsTable,
+} from "@workspace/db/schema";
 import { eq, desc } from "drizzle-orm";
 import crypto from "node:crypto";
 import { getPublicBaseUrl } from "../lib/publicUrl";
@@ -8,8 +13,12 @@ import { getPublicBaseUrl } from "../lib/publicUrl";
 const router: IRouter = Router();
 
 router.get("/contracts", async (req, res) => {
-  const customerId = req.query.customerId ? parseInt(req.query.customerId as string) : undefined;
-  const bookingId = req.query.bookingId ? parseInt(req.query.bookingId as string) : undefined;
+  const customerId = req.query.customerId
+    ? parseInt(req.query.customerId as string)
+    : undefined;
+  const bookingId = req.query.bookingId
+    ? parseInt(req.query.bookingId as string)
+    : undefined;
   const rows = await db
     .select({
       id: contractsTable.id,
@@ -34,21 +43,52 @@ router.get("/contracts", async (req, res) => {
     .orderBy(desc(contractsTable.createdAt));
 
   let filtered = rows;
-  if (customerId) filtered = filtered.filter(c => c.customerId === customerId);
-  if (bookingId) filtered = filtered.filter(c => c.bookingId === bookingId);
+  if (customerId)
+    filtered = filtered.filter((c) => c.customerId === customerId);
+  if (bookingId) filtered = filtered.filter((c) => c.bookingId === bookingId);
   res.json(filtered);
 });
 
 router.post("/contracts", async (req, res) => {
-  const { bookingId, customerId, title, content, status, signedAt, expiresAt, totalValue, notes } = req.body ?? {};
+  const {
+    bookingId,
+    customerId,
+    title,
+    content,
+    status,
+    signedAt,
+    expiresAt,
+    totalValue,
+    notes,
+  } = req.body ?? {};
   const count = await db.select().from(contractsTable);
   const contractCode = `HD${String(count.length + 1).padStart(4, "0")}`;
   const [contract] = await db
     .insert(contractsTable)
-    .values({ contractCode, bookingId: bookingId || null, customerId, title, content: content || "", status: status || "draft", signedAt: signedAt || null, expiresAt: expiresAt || null, totalValue: totalValue ? String(totalValue) : "0", notes })
+    .values({
+      contractCode,
+      bookingId: bookingId || null,
+      customerId,
+      title,
+      content: content || "",
+      status: status || "draft",
+      signedAt: signedAt || null,
+      expiresAt: expiresAt || null,
+      totalValue: totalValue ? String(totalValue) : "0",
+      notes,
+    })
     .returning();
-  const [customer] = await db.select().from(customersTable).where(eq(customersTable.id, customerId));
-  res.status(201).json({ ...contract, customerName: customer.name, customerPhone: customer.phone });
+  const [customer] = await db
+    .select()
+    .from(customersTable)
+    .where(eq(customersTable.id, customerId));
+  res
+    .status(201)
+    .json({
+      ...contract,
+      customerName: customer.name,
+      customerPhone: customer.phone,
+    });
 });
 
 router.post("/contracts/:id/sign-link", async (req, res): Promise<void> => {
@@ -111,7 +151,9 @@ router.get("/contracts/:id/sign", async (req, res): Promise<void> => {
   }
 
   const alreadySigned = row.status === "signed";
-  const signedTimeStr = row.signedAt ? new Date(row.signedAt).toLocaleString("vi-VN") : "";
+  const signedTimeStr = row.signedAt
+    ? new Date(row.signedAt).toLocaleString("vi-VN")
+    : "";
   const sigImgUrl = row.signatureImageUrl ?? "";
   const sigName = row.signerName ?? row.customerName;
   const sigPhone = row.signerPhone ?? row.customerPhone ?? "";
@@ -300,7 +342,7 @@ router.get("/contracts/:id/sign", async (req, res): Promise<void> => {
         try {
           var now = new Date();
           var sigData = c.toDataURL('image/png');
-          var resp = await fetch(window.location.href.replace('/sign', '') + '/mark-signed', {
+          var resp = await fetch("/api/contracts/${id}/mark-signed", {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ signedAt: now.toISOString(), signatureData: sigData, customerName: name, customerPhone: phone })
@@ -376,7 +418,10 @@ router.get("/contracts/:id/sync", async (req, res): Promise<void> => {
   }
 
   const [booking] = contract.bookingId
-    ? await db.select().from(bookingsTable).where(eq(bookingsTable.id, contract.bookingId))
+    ? await db
+        .select()
+        .from(bookingsTable)
+        .where(eq(bookingsTable.id, contract.bookingId))
     : [];
 
   res.json({
@@ -415,87 +460,131 @@ router.get("/contracts/:id/public", async (req, res): Promise<void> => {
 
 router.post("/contracts/:id/mark-signed", async (req, res): Promise<void> => {
   const id = parseInt(req.params.id);
-  const { customerName, customerPhone, signedAt, signatureData } = req.body ?? {};
-  const [existing] = await db.select().from(contractsTable).where(eq(contractsTable.id, id));
+  const { customerName, customerPhone, signedAt, signatureData } =
+    req.body ?? {};
+  const [existing] = await db
+    .select()
+    .from(contractsTable)
+    .where(eq(contractsTable.id, id));
   if (!existing) {
     res.status(404).json({ error: "Không tìm thấy hợp đồng" });
     return;
   }
 
-  await db.update(contractsTable).set({
-    status: "signed",
-    signedAt: signedAt ?? new Date().toISOString(),
-    ...(signatureData ? { signatureImageUrl: signatureData } : {}),
-    ...(customerName ? { signerName: customerName } : {}),
-    ...(customerPhone ? { signerPhone: customerPhone } : {}),
-  }).where(eq(contractsTable.id, id));
+  await db
+    .update(contractsTable)
+    .set({
+      status: "signed",
+      signedAt: signedAt ?? new Date().toISOString(),
+      ...(signatureData ? { signatureImageUrl: signatureData } : {}),
+      ...(customerName ? { signerName: customerName } : {}),
+      ...(customerPhone ? { signerPhone: customerPhone } : {}),
+    })
+    .where(eq(contractsTable.id, id));
 
-  if (existing.customerId && (customerName !== undefined || customerPhone !== undefined)) {
+  if (
+    existing.customerId &&
+    (customerName !== undefined || customerPhone !== undefined)
+  ) {
     const customerUpdate: Record<string, unknown> = {};
     if (customerName !== undefined) customerUpdate.name = customerName;
     if (customerPhone !== undefined) customerUpdate.phone = customerPhone;
     if (Object.keys(customerUpdate).length) {
-      await db.update(customersTable).set(customerUpdate).where(eq(customersTable.id, existing.customerId));
+      await db
+        .update(customersTable)
+        .set(customerUpdate)
+        .where(eq(customersTable.id, existing.customerId));
     }
   }
 
   if (existing.bookingId) {
-    await db.update(bookingsTable).set({
-      status: "completed",
-    }).where(eq(bookingsTable.id, existing.bookingId));
+    await db
+      .update(bookingsTable)
+      .set({
+        status: "completed",
+      })
+      .where(eq(bookingsTable.id, existing.bookingId));
   }
 
   // Tạo thông báo nội bộ
   const [customer] = existing.customerId
-    ? await db.select({ name: customersTable.name }).from(customersTable).where(eq(customersTable.id, existing.customerId))
+    ? await db
+        .select({ name: customersTable.name })
+        .from(customersTable)
+        .where(eq(customersTable.id, existing.customerId))
     : [null];
-  await db.insert(notificationsTable).values({
-    type: "contract_signed",
-    title: "Khách ký hợp đồng online",
-    body: `${customer?.name ?? "Khách hàng"} vừa ký hợp đồng ${existing.contractCode} online thành công.`,
-    isRead: false,
-  } as Record<string, unknown>).catch(() => null);
+  await db
+    .insert(notificationsTable)
+    .values({
+      type: "contract_signed",
+      title: "Khách ký hợp đồng online",
+      body: `${customer?.name ?? "Khách hàng"} vừa ký hợp đồng ${existing.contractCode} online thành công.`,
+      isRead: false,
+    } as Record<string, unknown>)
+    .catch(() => null);
 
   res.json({ ok: true });
 });
 
-router.get("/customers/:customerId/contracts", async (req, res): Promise<void> => {
-  const customerId = parseInt(req.params.customerId);
-  const [customer] = await db.select().from(customersTable).where(eq(customersTable.id, customerId));
-  if (!customer) {
-    res.status(404).json({ error: "Không tìm thấy khách hàng" });
-    return;
-  }
+router.get(
+  "/customers/:customerId/contracts",
+  async (req, res): Promise<void> => {
+    const customerId = parseInt(req.params.customerId);
+    const [customer] = await db
+      .select()
+      .from(customersTable)
+      .where(eq(customersTable.id, customerId));
+    if (!customer) {
+      res.status(404).json({ error: "Không tìm thấy khách hàng" });
+      return;
+    }
 
-  const rows = await db
-    .select({
-      id: contractsTable.id,
-      contractCode: contractsTable.contractCode,
-      bookingId: contractsTable.bookingId,
-      customerId: contractsTable.customerId,
-      customerName: customersTable.name,
-      customerPhone: customersTable.phone,
-      title: contractsTable.title,
-      totalValue: contractsTable.totalValue,
-      status: contractsTable.status,
-      signedAt: contractsTable.signedAt,
-      expiresAt: contractsTable.expiresAt,
-      notes: contractsTable.notes,
-      createdAt: contractsTable.createdAt,
-    })
-    .from(contractsTable)
-    .innerJoin(customersTable, eq(contractsTable.customerId, customersTable.id))
-    .where(eq(contractsTable.customerId, customerId))
-    .orderBy(desc(contractsTable.createdAt));
+    const rows = await db
+      .select({
+        id: contractsTable.id,
+        contractCode: contractsTable.contractCode,
+        bookingId: contractsTable.bookingId,
+        customerId: contractsTable.customerId,
+        customerName: customersTable.name,
+        customerPhone: customersTable.phone,
+        title: contractsTable.title,
+        totalValue: contractsTable.totalValue,
+        status: contractsTable.status,
+        signedAt: contractsTable.signedAt,
+        expiresAt: contractsTable.expiresAt,
+        notes: contractsTable.notes,
+        createdAt: contractsTable.createdAt,
+      })
+      .from(contractsTable)
+      .innerJoin(
+        customersTable,
+        eq(contractsTable.customerId, customersTable.id),
+      )
+      .where(eq(contractsTable.customerId, customerId))
+      .orderBy(desc(contractsTable.createdAt));
 
-  res.json(rows);
-});
+    res.json(rows);
+  },
+);
 
 router.put("/contracts/:id/sync", async (req, res): Promise<void> => {
   const id = parseInt(req.params.id);
-  const { customerName, customerPhone, title, totalValue, status, signedAt, expiresAt, notes, content } = req.body ?? {};
+  const {
+    customerName,
+    customerPhone,
+    title,
+    totalValue,
+    status,
+    signedAt,
+    expiresAt,
+    notes,
+    content,
+  } = req.body ?? {};
 
-  const [existing] = await db.select().from(contractsTable).where(eq(contractsTable.id, id));
+  const [existing] = await db
+    .select()
+    .from(contractsTable)
+    .where(eq(contractsTable.id, id));
   if (!existing) {
     res.status(404).json({ error: "Không tìm thấy hợp đồng" });
     return;
@@ -512,21 +601,31 @@ router.put("/contracts/:id/sync", async (req, res): Promise<void> => {
 
   await db.update(contractsTable).set(update).where(eq(contractsTable.id, id));
 
-  if (existing.customerId && (customerName !== undefined || customerPhone !== undefined)) {
+  if (
+    existing.customerId &&
+    (customerName !== undefined || customerPhone !== undefined)
+  ) {
     const customerUpdate: Record<string, unknown> = {};
     if (customerName !== undefined) customerUpdate.name = customerName;
     if (customerPhone !== undefined) customerUpdate.phone = customerPhone;
     if (Object.keys(customerUpdate).length) {
-      await db.update(customersTable).set(customerUpdate).where(eq(customersTable.id, existing.customerId));
+      await db
+        .update(customersTable)
+        .set(customerUpdate)
+        .where(eq(customersTable.id, existing.customerId));
     }
   }
 
   if (existing.bookingId && (title !== undefined || totalValue !== undefined)) {
     const bookingUpdate: Record<string, unknown> = {};
     if (title !== undefined) bookingUpdate.package_type = title;
-    if (totalValue !== undefined) bookingUpdate.total_amount = String(totalValue);
+    if (totalValue !== undefined)
+      bookingUpdate.total_amount = String(totalValue);
     if (Object.keys(bookingUpdate).length) {
-      await db.update(bookingsTable).set(bookingUpdate).where(eq(bookingsTable.id, existing.bookingId));
+      await db
+        .update(bookingsTable)
+        .set(bookingUpdate)
+        .where(eq(bookingsTable.id, existing.bookingId));
     }
   }
 
@@ -571,7 +670,8 @@ router.get("/contracts/:id", async (req, res): Promise<void> => {
 
 router.put("/contracts/:id", async (req, res): Promise<void> => {
   const id = parseInt(req.params.id);
-  const { title, content, status, signedAt, expiresAt, totalValue, notes } = req.body;
+  const { title, content, status, signedAt, expiresAt, totalValue, notes } =
+    req.body;
   const update: Record<string, unknown> = {};
   if (title !== undefined) update.title = title;
   if (content !== undefined) update.content = content;
@@ -580,7 +680,11 @@ router.put("/contracts/:id", async (req, res): Promise<void> => {
   if (expiresAt !== undefined) update.expiresAt = expiresAt;
   if (totalValue !== undefined) update.totalValue = String(totalValue);
   if (notes !== undefined) update.notes = notes;
-  const [contract] = await db.update(contractsTable).set(update).where(eq(contractsTable.id, id)).returning();
+  const [contract] = await db
+    .update(contractsTable)
+    .set(update)
+    .where(eq(contractsTable.id, id))
+    .returning();
   if (!contract) {
     res.status(404).json({ error: "Không tìm thấy hợp đồng" });
     return;

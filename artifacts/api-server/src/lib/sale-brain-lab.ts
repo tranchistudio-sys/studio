@@ -3,6 +3,9 @@ import {
   DEFAULT_BRAIN_RULES,
   SAMPLE_IMAGE_INSTRUCTION, PRICE_IMAGE_INSTRUCTION, SPECIAL_CONCEPT_ESCALATION_RULE,
 } from "./claude-sale";
+import {
+  type ImageOverride, parseImageOverrides, withImageOverrides,
+} from "./sale-image-overrides";
 
 /**
  * Lulu Brain Lab — quản lý / sửa / test / lưu version cho "não Sale AI Lulu".
@@ -241,7 +244,7 @@ async function seedInitialVersion(): Promise<void> {
       "Khởi tạo Version 1 từ prompt/luật gốc.",
     ],
   );
-  clearActiveRulesCache();
+  clearActiveRulesCache(); clearActiveOverridesCache();
 }
 
 // 10 test case mặc định (PHẦN 6). Chỉ seed khi bảng đang rỗng.
@@ -371,6 +374,61 @@ export async function getActiveBrainRules(): Promise<string | null> {
     console.error("[BrainLab] getActiveBrainRules — dùng mặc định:", String(err).slice(0, 200));
     return null;
   }
+}
+
+// ─── Override ẢNH "admin dạy Lulu" (rulesJson.imageOverrides) ─────────────────
+//
+// Lưu trong rulesJson của version → đi theo version: nháp test riêng, áp dụng thì active dùng.
+// getActiveImageOverrides() nằm trên luồng SỐNG (Messenger) → KHÔNG bao giờ throw (lỗi → []).
+
+let activeOverridesCache: { value: ImageOverride[]; at: number } | null = null;
+
+export function clearActiveOverridesCache(): void {
+  activeOverridesCache = null;
+}
+
+/** Override ảnh của version ĐANG ÁP DỤNG (active). [] nếu chưa có / lỗi DB. */
+export async function getActiveImageOverrides(): Promise<ImageOverride[]> {
+  if (activeOverridesCache && Date.now() - activeOverridesCache.at < TTL_MS) return activeOverridesCache.value;
+  try {
+    await ensureBrainLabTables();
+    const r = await pool.query(`SELECT rules_json FROM lulu_brain_versions WHERE status = 'active' LIMIT 1`);
+    const value = r.rows.length > 0 ? parseImageOverrides(r.rows[0].rules_json) : [];
+    activeOverridesCache = { value, at: Date.now() };
+    return value;
+  } catch (err) {
+    console.error("[BrainLab] getActiveImageOverrides — bỏ qua override:", String(err).slice(0, 200));
+    return [];
+  }
+}
+
+/** Đọc override ảnh của 1 version bất kỳ (dùng cho test bản nháp). [] nếu lỗi. */
+export async function getImageOverridesForVersion(versionId: number): Promise<ImageOverride[]> {
+  try {
+    const v = await getVersion(versionId);
+    return v ? parseImageOverrides(v.rulesJson) : [];
+  } catch { return []; }
+}
+
+/**
+ * Thêm 1 override ảnh vào BẢN NHÁP (rulesJson.imageOverrides). Chỉ sửa được version draft.
+ * Giữ các field rulesJson khác. Trả version sau cập nhật (null nếu không phải nháp / không tìm thấy).
+ */
+export async function appendImageOverrideToDraft(
+  draftId: number, override: ImageOverride,
+): Promise<{ version: BrainVersion | null; total: number }> {
+  await ensureBrainLabTables();
+  const cur = await getVersion(draftId);
+  if (!cur || cur.status !== "draft") return { version: null, total: 0 };
+  const existing = parseImageOverrides(cur.rulesJson);
+  // Cùng intent+tone (đã chuẩn hóa) coi như cùng tình huống → THAY (mới nhất thắng), không nhân bản.
+  const sameSit = (a: ImageOverride, b: ImageOverride) =>
+    (a.intent ?? "").trim().toLowerCase() === (b.intent ?? "").trim().toLowerCase() &&
+    (a.tone ?? "").trim().toLowerCase() === (b.tone ?? "").trim().toLowerCase();
+  const kept = existing.filter((o) => !sameSit(o, override));
+  const next = [...kept, override];
+  const updated = await updateDraftVersion(draftId, { rulesJson: withImageOverrides(cur.rulesJson, next) });
+  return { version: updated, total: next.length };
 }
 
 // ─── Map row ──────────────────────────────────────────────────────────────────
@@ -648,7 +706,7 @@ export async function applyDraftVersion(
       [id, appliedBy, appliedByName],
     );
     await client.query("COMMIT");
-    clearActiveRulesCache();
+    clearActiveRulesCache(); clearActiveOverridesCache();
     return { ok: true, version: mapVersion(res.rows[0] as Record<string, unknown>) };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
@@ -697,7 +755,7 @@ export async function rollbackToVersion(
        appliedBy, appliedByName],
     );
     await client.query("COMMIT");
-    clearActiveRulesCache();
+    clearActiveRulesCache(); clearActiveOverridesCache();
     return { ok: true, version: mapVersion(res.rows[0] as Record<string, unknown>) };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});

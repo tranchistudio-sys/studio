@@ -4,6 +4,7 @@ import {
 } from "./sale-context";
 import { classifyCustomerImageFromData, buildImageRoutingBlock } from "./sale-vision";
 import { selectSampleImages, extractRecentSampleUrls, SAMPLES_EXHAUSTED_NOTE } from "./sale-samples";
+import { applyImageOverrides, type ImageOverride } from "./sale-image-overrides";
 import { getActivePlaybook } from "./sale-playbook";
 import { getClaudeSaleSettings, computeReplyDelayMs } from "./sale-settings";
 import { getScheduleContext } from "./sale-calendar";
@@ -30,6 +31,8 @@ export type SimulateInput = {
   imageMediaType?: string;
   /** Bộ luật não để chạy lượt này. null/undefined → version active / mặc định. */
   brainRules?: string | null;
+  /** Override ảnh "admin dạy" của version đang test (rulesJson.imageOverrides). Rỗng → không thay ảnh. */
+  imageOverrides?: ImageOverride[] | null;
 };
 
 export type SimulateResult = {
@@ -50,6 +53,8 @@ export type SimulateResult = {
   sampleLinks: Awaited<ReturnType<typeof selectSampleImages>>["links"];
   sampleNote: string | null;
   imageIntent: Awaited<ReturnType<typeof classifyCustomerImageFromData>> | null;
+  /** true nếu ảnh mẫu lượt này được THAY bằng ảnh admin đã dạy (override khớp). */
+  overrideApplied: boolean;
 };
 
 export async function simulateReply(input: SimulateInput): Promise<SimulateResult> {
@@ -119,10 +124,12 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
   let sampleImages: SimulateResult["sampleImages"] = [];
   let sampleLinks: SimulateResult["sampleLinks"] = [];
   let sampleNote: string | null = null;
+  let overrideApplied = false;
   try {
     const contextText = prior.filter((h) => !h.message.startsWith("[image:")).slice(-4)
       .map((h) => h.message).join("\n");
     const lastBotText = [...prior].reverse().find((h) => h.direction === "outgoing")?.message ?? null;
+    const excludeUrls = extractRecentSampleUrls(prior);
     const sel = await selectSampleImages({
       sampleRequested: reply.sampleRequested,
       sampleIntents: reply.sampleIntents,
@@ -131,12 +138,26 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
       lastBotText,
       visionIntent: imageIntent,
       settings,
-      excludeUrls: extractRecentSampleUrls(prior),
+      excludeUrls,
       maxTotal: 2,
     });
-    sampleImages = sel.images;
-    sampleLinks = sel.links;
-    if (sel.exhausted) sampleNote = SAMPLES_EXHAUSTED_NOTE;
+    // ÁP OVERRIDE "ADMIN DẠY": nếu khớp (intent + tone/gu) → thay ảnh mẫu bằng ảnh admin chọn.
+    const overrides = input.imageOverrides ?? [];
+    const detectedIntentForOverride =
+      (reply.sampleIntents && reply.sampleIntents.length ? reply.sampleIntents[0] : null)
+      || (imageIntent?.service_intent ?? null);
+    const applied = applyImageOverrides(sel, overrides, {
+      detectedIntent: detectedIntentForOverride,
+      messageText: incomingText,
+      contextText,
+      excludeUrls,
+      maxTotal: 4,
+    });
+    sampleImages = applied.images;
+    sampleLinks = applied.links;
+    overrideApplied = applied.overrideApplied;
+    if (applied.exhausted) sampleNote = SAMPLES_EXHAUSTED_NOTE;
+    if (applied.overrideApplied) console.log(`[BrainRunner] dùng ẢNH ADMIN DẠY (override ${applied.overrideId})`);
   } catch (e) { console.error("[BrainRunner] sampleImages lỗi:", String(e).slice(0, 160)); }
 
   const escalationReason =
@@ -168,5 +189,6 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
     sampleLinks,
     sampleNote,
     imageIntent,
+    overrideApplied,
   };
 }

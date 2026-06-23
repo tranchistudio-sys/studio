@@ -10,9 +10,14 @@ import {
   createChangeRequest, listChangeRequests, setChangeRequestStatus,
   listTestCases, getTestCase, createTestCase, deleteTestCase,
   saveTestResult, listTestResults, missingMarkers, recoverMissingMarkers,
+  getActiveImageOverrides, appendImageOverrideToDraft,
   type BrainVersion,
   type ChangeRequestStatus,
 } from "../lib/sale-brain-lab";
+import {
+  parseImageOverrides, type ImageOverride, type OverrideImage,
+} from "../lib/sale-image-overrides";
+import { browseImageStore } from "../lib/sale-image-store";
 
 /**
  * Lulu Brain Lab — quản lý / sửa / test / lưu version cho "não Sale AI Lulu".
@@ -516,21 +521,25 @@ router.post("/lulu-brain/test", async (req, res) => {
           .map((m) => ({ direction: m.direction === "outgoing" ? "outgoing" as const : "incoming" as const, message: String(m.text).trim() }))
       : [];
 
-    // Bộ luật bản nháp cần test.
+    // Bộ luật + override ẢNH của bản nháp cần test (override lấy từ rulesJson của chính nháp đó).
     let draftRules: string | null = null;
     let draftVersionId: number | null = null;
+    let draftOverrides: ImageOverride[] = [];
     if (b.draftVersionId) {
       const d = await getVersion(b.draftVersionId);
       if (!d) return res.status(404).json({ error: "Không tìm thấy bản nháp để test" });
       draftRules = d.promptContent;
       draftVersionId = d.id;
+      draftOverrides = parseImageOverrides(d.rulesJson);
     }
+    // Override của bản ĐANG CHẠY THẬT (để cột so sánh "Đang chạy" cũng đúng với thực tế).
+    const activeOverrides = b.compareWithActive !== false ? await getActiveImageOverrides() : [];
 
     const common = { message, prior, imageBase64: b.imageBase64, imageMediaType: b.imageMediaType };
     // Chạy song song: bản nháp (nếu có) + bản đang chạy thật (để so sánh — TAB 4).
     const [draft, active] = await Promise.all([
-      draftRules != null ? simulateReply({ ...common, brainRules: draftRules }) : Promise.resolve(null),
-      b.compareWithActive !== false ? simulateReply({ ...common, brainRules: null }) : Promise.resolve(null),
+      draftRules != null ? simulateReply({ ...common, brainRules: draftRules, imageOverrides: draftOverrides }) : Promise.resolve(null),
+      b.compareWithActive !== false ? simulateReply({ ...common, brainRules: null, imageOverrides: activeOverrides }) : Promise.resolve(null),
     ]);
     res.json({ draft, active, draftVersionId });
   } catch (err) {
@@ -685,6 +694,105 @@ router.delete("/lulu-brain/test-cases/:id", async (req, res) => {
   if (!requireAdmin(caller, res)) return;
   const ok = await deleteTestCase(Number(req.params.id));
   res.json({ success: ok });
+});
+
+// ─── KHO ẢNH + "Admin dạy Lulu chọn ảnh" ─────────────────────────────────────
+
+/** GET /lulu-brain/image-store — duyệt/tìm/lọc kho ảnh (album/đồ thuê/ý tưởng/bảng giá) để admin chọn ảnh đúng. */
+router.get("/lulu-brain/image-store", async (req, res) => {
+  if (!(await requireStaff(req, res))) return;
+  try {
+    const q = req.query as Record<string, string | undefined>;
+    const validKinds = ["album", "rental", "idea", "price"] as const;
+    const kinds = q.kinds
+      ? (q.kinds.split(",").map((s) => s.trim()).filter((s): s is (typeof validKinds)[number] => (validKinds as readonly string[]).includes(s)))
+      : undefined;
+    const result = await browseImageStore({
+      intent: q.intent ?? null,
+      tone: q.tone ?? null,
+      album: q.album ?? null,
+      tag: q.tag ?? null,
+      q: q.q ?? null,
+      albumId: q.albumId ? Number(q.albumId) : null,
+      kinds: kinds && kinds.length ? kinds : undefined,
+      limit: q.limit ? Number(q.limit) : 120,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error("[BrainLab] image-store lỗi:", String(err).slice(0, 200));
+    res.status(500).json({
+      error: "Không tải được kho ảnh",
+      debug: { reason: "api_error", message: `API lỗi: ${String(err).slice(0, 160)}` },
+    });
+  }
+});
+
+const MAX_CORRECT_IMAGES = 4;
+
+/**
+ * POST /lulu-brain/image-feedback — admin lưu "ảnh đúng" cho 1 tình huống vào BẢN NHÁP.
+ * Chưa có nháp → tự tạo từ bản đang chạy (gom 1 bản nháp, giống ai-draft). KHÔNG đụng bản chạy thật.
+ */
+router.post("/lulu-brain/image-feedback", async (req, res) => {
+  const caller = await requireStaff(req, res);
+  if (!caller) return;
+  const b = (req.body ?? {}) as {
+    customerQuestion?: string; intent?: string | null; tone?: string | null;
+    wrongImages?: string[]; correctImages?: OverrideImage[]; editedText?: string | null;
+  };
+  const correctImages = (Array.isArray(b.correctImages) ? b.correctImages : [])
+    .filter((im) => im && typeof im.imageUrl === "string" && im.imageUrl.trim())
+    .slice(0, MAX_CORRECT_IMAGES)
+    .map((im) => ({
+      imageUrl: String(im.imageUrl).trim(),
+      title: String(im.title ?? "").trim() || "Ảnh mẫu",
+      detailUrl: im.detailUrl ? String(im.detailUrl).trim() : undefined,
+      sourceType: String(im.sourceType ?? "gallery"),
+      serviceIntent: im.serviceIntent ? String(im.serviceIntent) : undefined,
+    }));
+  if (correctImages.length === 0) {
+    return res.status(400).json({ error: "Chọn ít nhất 1 ảnh đúng để dạy Lulu (tối đa 4)." });
+  }
+
+  try {
+    await ensureBrainLabTables();
+    // Bảo đảm có bản nháp đang mở (gom mọi feedback vào 1 nháp).
+    let draft = await getOpenDraftVersion();
+    if (!draft) {
+      const active = await getActiveVersion();
+      if (!active) return res.status(400).json({ error: "Chưa có bản đang chạy để tạo bản nháp." });
+      draft = await createDraftVersion({
+        title: `Nháp dạy ảnh (từ Version ${active.versionNumber})`,
+        description: "Tự tạo khi admin lưu feedback ảnh đầu tiên.",
+        promptContent: active.promptContent,
+        rulesJson: active.rulesJson,
+        basedOnVersionId: active.id,
+        changeSummary: "Bản nháp khởi tạo để dạy Lulu chọn ảnh đúng.",
+        createdBy: caller.id,
+        createdByName: caller.name,
+      });
+      await rejectOtherDrafts(draft.id).catch(() => {});
+    }
+
+    const override: ImageOverride = {
+      id: `ov_${Date.now()}_${Math.floor(Math.random() * 1e6)}`,
+      customerQuestion: String(b.customerQuestion ?? "").slice(0, 1000),
+      intent: b.intent != null && String(b.intent).trim() ? String(b.intent).trim() : null,
+      tone: b.tone != null && String(b.tone).trim() ? String(b.tone).trim() : null,
+      wrongImages: Array.isArray(b.wrongImages) ? b.wrongImages.map((u) => String(u)).filter(Boolean).slice(0, 8) : [],
+      correctImages,
+      editedText: b.editedText != null && String(b.editedText).trim() ? String(b.editedText).trim() : null,
+      createdAt: new Date().toISOString(),
+      createdByName: caller.name,
+    };
+
+    const r = await appendImageOverrideToDraft(draft.id, override);
+    if (!r.version) return res.status(400).json({ error: "Không lưu được vào bản nháp (chỉ lưu được vào bản nháp draft)." });
+    res.json({ draft: r.version, totalOverrides: r.total, override });
+  } catch (err) {
+    console.error("[BrainLab] image-feedback lỗi:", String(err).slice(0, 300));
+    res.status(500).json({ error: `Lưu feedback ảnh lỗi: ${String(err).slice(0, 200)}` });
+  }
 });
 
 export default router;

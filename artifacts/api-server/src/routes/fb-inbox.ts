@@ -22,7 +22,8 @@ import { getSaleContext, resolvePriceImagesByCodes, wantsNewConcept, getPhotoIde
 import { classifyCustomerImageIntent, buildImageRoutingBlock, type CustomerImageIntent } from "../lib/sale-vision";
 import { selectSampleImages, extractRecentSampleUrls, toPublicImageUrl, SAMPLES_EXHAUSTED_NOTE, type SampleImage } from "../lib/sale-samples";
 import { getActivePlaybook } from "../lib/sale-playbook";
-import { getActiveBrainRules } from "../lib/sale-brain-lab";
+import { getActiveBrainRules, getActiveImageOverrides } from "../lib/sale-brain-lab";
+import { applyImageOverrides } from "../lib/sale-image-overrides";
 import { getClaudeSaleSettings, computeReplyDelayMs } from "../lib/sale-settings";
 import { getScheduleContext } from "../lib/sale-calendar";
 import { getMasterEnabled } from "../lib/sale-master";
@@ -898,6 +899,7 @@ async function handleClaudeSaleReply(
       .join("\n");
     // Tin nhắn gần nhất của bot (để xét khách "đồng ý" sau khi bot mời gửi mẫu).
     const lastBotText = [...history].reverse().find((h) => h.direction === "outgoing")?.message ?? null;
+    const excludeUrls = extractRecentSampleUrls(history);
     const sel = await selectSampleImages({
       sampleRequested: reply.sampleRequested,
       sampleIntents: reply.sampleIntents,
@@ -906,14 +908,29 @@ async function handleClaudeSaleReply(
       lastBotText,
       visionIntent,
       settings,
-      excludeUrls: extractRecentSampleUrls(history),
+      excludeUrls,
       maxTotal: 2,
     });
-    if (sel.images.length > 0) {
-      const nSent = await sendSampleImagesSequentially(psid, cfg.pageAccessToken, sel.images);
-      console.log(`[Claude] psid=${psid} gửi ${nSent}/${sel.images.length} ảnh mẫu (nhóm: ${sel.resolvedIntents.join(",")})`);
+    // ÁP OVERRIDE "ADMIN DẠY" của version đang chạy thật (rỗng nếu admin chưa áp dụng gì → hành vi cũ y hệt).
+    const activeOverrides = await getActiveImageOverrides();
+    const detectedIntentForOverride =
+      (reply.sampleIntents && reply.sampleIntents.length ? reply.sampleIntents[0] : null)
+      || (visionIntent?.service_intent ?? null);
+    const finalSel = applyImageOverrides(sel, activeOverrides, {
+      detectedIntent: detectedIntentForOverride,
+      messageText: text,
+      contextText,
+      excludeUrls,
+      maxTotal: 4,
+    });
+    if (finalSel.overrideApplied) {
+      console.log(`[Claude] psid=${psid} dùng ẢNH ADMIN DẠY (override ${finalSel.overrideId})`);
     }
-    samplesExhausted = sel.exhausted;
+    if (finalSel.images.length > 0) {
+      const nSent = await sendSampleImagesSequentially(psid, cfg.pageAccessToken, finalSel.images);
+      console.log(`[Claude] psid=${psid} gửi ${nSent}/${finalSel.images.length} ảnh mẫu (nhóm: ${finalSel.resolvedIntents.join(",")})`);
+    }
+    samplesExhausted = finalSel.exhausted;
   } catch (e) {
     console.error(`[Claude] psid=${psid} gửi ảnh mẫu lỗi:`, String(e).slice(0, 160));
   }

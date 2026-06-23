@@ -4,7 +4,7 @@ import {
 } from "./sale-context";
 import { classifyCustomerImageFromData, buildImageRoutingBlock } from "./sale-vision";
 import { selectSampleImages, extractRecentSampleUrls, SAMPLES_EXHAUSTED_NOTE } from "./sale-samples";
-import { applyImageOverrides, type ImageOverride } from "./sale-image-overrides";
+import { applyImageOverrides, matchResponseOverride, type ImageOverride } from "./sale-image-overrides";
 import { getActivePlaybook } from "./sale-playbook";
 import { getClaudeSaleSettings, computeReplyDelayMs } from "./sale-settings";
 import { getScheduleContext } from "./sale-calendar";
@@ -67,6 +67,13 @@ export type SimulateResult = {
   imageIntent: Awaited<ReturnType<typeof classifyCustomerImageFromData>> | null;
   /** true nếu ảnh mẫu lượt này được THAY bằng ảnh admin đã dạy (override khớp). */
   overrideApplied: boolean;
+  /**
+   * Cách lượt này dùng câu sửa tay của admin (nếu khớp override có ghim text):
+   *  - "exact_reply": câu trả lời LÀ y chang câu admin (không qua AI viết lại).
+   *  - "learn_from_this": AI viết lại nhưng bám câu mẫu admin.
+   *  - null: không áp text admin (AI tự trả lời như thường).
+   */
+  responseMode: "exact_reply" | "learn_from_this" | null;
 };
 
 export async function simulateReply(input: SimulateInput): Promise<SimulateResult> {
@@ -111,6 +118,17 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
   let scheduleContext = "";
   if (settings.calendarEnabled) {
     try { scheduleContext = await getScheduleContext(settings.calWindowDays); } catch { /* bỏ qua */ }
+  }
+
+  // ── ĐIỀU KHIỂN TEXT (responseMode) — khớp override TRƯỚC khi gọi AI ──
+  // learn_from_this: chèn câu mẫu admin vào prompt để AI bám theo (giữ đúng ý chính).
+  // exact_reply: xử lý SAU khi có reply (thay text bằng câu admin), để ảnh vẫn dùng marker của AI.
+  const priorContextText = prior.filter((h) => !h.message.startsWith("[image:")).slice(-4)
+    .map((h) => h.message).join("\n");
+  const respOverride = matchResponseOverride(incomingText, priorContextText, input.imageOverrides ?? []);
+  if (respOverride?.responseMode === "learn_from_this" && respOverride.editedText) {
+    context += `\n\nGỢI Ý CÂU TRẢ LỜI (admin đã duyệt cho tình huống tương tự — BÁM SÁT ý chính & giọng của câu mẫu, được viết lại cho tự nhiên hơn nhưng KHÔNG đổi ý chính):\n"""\n${respOverride.editedText.trim()}\n"""`;
+    console.log("[SaleBrain] responseMode=learn_from_this (chèn câu mẫu admin vào prompt)");
   }
 
   const reply = await askClaudeForReply({
@@ -185,23 +203,34 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
     || imageEscalationReason(imageIntent, settings.lowConfidenceThreshold);
   const wouldEscalate = !!escalationReason && settings.humanReviewEnabled;
 
+  // EXACT REPLY: admin yêu cầu Lulu nói Y CHANG câu đã ghim cho tình huống này → dùng đúng câu đó,
+  // KHÔNG dùng text AI, KHÔNG escalate (admin đã cho câu chốt). Ảnh vẫn theo luồng ảnh ở trên.
+  const aiReply = reply.messages.length > 0 ? reply.messages : reply.raw ? [reply.raw] : ["(Lulu không trả về nội dung)"];
+  const exactPinned = respOverride?.responseMode === "exact_reply" && (respOverride.editedText ?? "").trim()
+    ? (respOverride.editedText as string).trim() : null;
+  const exactParts = exactPinned ? exactPinned.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean) : [];
+  const finalReply = exactPinned ? (exactParts.length ? exactParts : [exactPinned]) : aiReply;
+  const finalEscalated = exactPinned ? false : wouldEscalate;
+  const responseMode: SimulateResult["responseMode"] = respOverride?.responseMode ?? null;
+  if (exactPinned) console.log(`[SaleBrain] responseMode=exact_reply (nói y chang câu admin, ${finalReply.length} bubble)`);
+
   const detectedIntent =
     imageIntent?.service_intent
     || (reply.sampleIntents && reply.sampleIntents.length ? reply.sampleIntents[0] : null)
     || (sampleImages[0]?.serviceIntent ?? null);
 
   return {
-    reply: reply.messages.length > 0 ? reply.messages : reply.raw ? [reply.raw] : ["(Lulu không trả về nội dung)"],
+    reply: finalReply,
     raw: reply.raw,
     model,
     responseTimeMs,
     replyDelayMs: computeReplyDelayMs(incomingText, settings),
-    escalation: reply.escalation,
+    escalation: exactPinned ? null : reply.escalation,
     learnedName: reply.learnedName,
-    escalated: wouldEscalate,
-    escalationReason,
-    holdMessage: wouldEscalate ? HOLD_MESSAGE : null,
-    botPaused: wouldEscalate && settings.autoPauseThreadWhenEscalated,
+    escalated: finalEscalated,
+    escalationReason: exactPinned ? null : escalationReason,
+    holdMessage: finalEscalated ? HOLD_MESSAGE : null,
+    botPaused: finalEscalated && settings.autoPauseThreadWhenEscalated,
     detectedIntent,
     priceImages,
     sampleImages,
@@ -209,5 +238,6 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
     sampleNote,
     imageIntent,
     overrideApplied,
+    responseMode,
   };
 }

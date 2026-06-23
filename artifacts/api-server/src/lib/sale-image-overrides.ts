@@ -40,8 +40,15 @@ export type ImageOverride = {
   wrongImages: string[];
   /** Ảnh admin chọn ĐÚNG (1–4). */
   correctImages: OverrideImage[];
-  /** Text admin sửa lại (tùy chọn) — gợi ý cho nhánh AI viết lại bộ luật. */
+  /** Text admin sửa lại (tùy chọn). Vai trò tùy responseMode: câu nói y chang HOẶC câu mẫu. */
   editedText: string | null;
+  /**
+   * Cách Lulu dùng editedText cho tình huống này:
+   *  - "exact_reply": Lulu nói Y CHANG editedText (KHÔNG cho AI viết lại text).
+   *  - "learn_from_this": AI được viết lại cho tự nhiên nhưng phải BÁM editedText, giữ đúng ý chính.
+   *  - null: không ép text (chỉ dùng ảnh đúng như cũ).
+   */
+  responseMode: "exact_reply" | "learn_from_this" | null;
   createdAt: string;
   createdByName: string | null;
 };
@@ -113,7 +120,12 @@ export function parseImageOverrides(rulesJson: unknown): ImageOverride[] {
     const correct = Array.isArray(o.correctImages)
       ? (o.correctImages as unknown[]).map(mapOverrideImage).filter((x): x is OverrideImage => !!x)
       : [];
-    if (correct.length === 0) continue; // override không có ảnh đúng → vô nghĩa, bỏ
+    const editedText = o.editedText != null ? String(o.editedText) : null;
+    const rmRaw = o.responseMode != null ? String(o.responseMode) : null;
+    const responseMode: ImageOverride["responseMode"] =
+      (rmRaw === "exact_reply" || rmRaw === "learn_from_this") && editedText && editedText.trim() ? rmRaw : null;
+    // Bỏ override vô nghĩa: KHÔNG ảnh ĐÚNG và cũng KHÔNG ghim text → không có gì để áp.
+    if (correct.length === 0 && !responseMode) continue;
     out.push({
       id: String(o.id ?? `${out.length}`),
       customerQuestion: String(o.customerQuestion ?? "").slice(0, 1000),
@@ -121,7 +133,8 @@ export function parseImageOverrides(rulesJson: unknown): ImageOverride[] {
       tone: o.tone != null ? String(o.tone) : null,
       wrongImages: Array.isArray(o.wrongImages) ? (o.wrongImages as unknown[]).map((u) => String(u)).filter(Boolean) : [],
       correctImages: correct.slice(0, 4),
-      editedText: o.editedText != null ? String(o.editedText) : null,
+      editedText,
+      responseMode,
       createdAt: String(o.createdAt ?? ""),
       createdByName: o.createdByName != null ? String(o.createdByName) : null,
     });
@@ -190,6 +203,43 @@ function resolveIntent(ctx: OverrideMatchCtx): ServiceIntent | null {
   if (fromMsg !== "unknown") return fromMsg;
   const fromCtx = detectServiceIntentFromText(ctx.contextText ?? "");
   return fromCtx !== "unknown" ? fromCtx : null;
+}
+
+/**
+ * Khớp override ĐIỀU KHIỂN TEXT (responseMode) cho 1 lượt — chạy TRƯỚC khi gọi AI:
+ *  - exact_reply       → caller trả đúng editedText, KHÔNG gọi AI viết text.
+ *  - learn_from_this   → caller chèn editedText làm câu mẫu vào prompt cho AI bám theo.
+ * Khớp theo: TRÙNG câu hỏi gốc (customerQuestion) HOẶC cùng HỌ dịch vụ (intent suy từ tin khách / ngữ cảnh).
+ * Chỉ xét override có responseMode + editedText. Trả null nếu không khớp.
+ */
+export function matchResponseOverride(
+  message: string | null | undefined,
+  contextText: string | null | undefined,
+  overrides: ImageOverride[],
+): ImageOverride | null {
+  const cands = (overrides ?? []).filter((o) => o.responseMode && (o.editedText ?? "").trim());
+  if (cands.length === 0) return null;
+
+  // 1) Trùng câu hỏi gốc admin đã dạy (mạnh nhất, bất kể intent/tone).
+  const msgNorm = norm(message);
+  if (msgNorm) {
+    for (const o of cands) {
+      const q = norm(o.customerQuestion);
+      if (!q) continue;
+      if (q === msgNorm || (q.length >= 8 && msgNorm.length >= 8 && (q.includes(msgNorm) || msgNorm.includes(q)))) return o;
+    }
+  }
+  // 2) Cùng họ dịch vụ (intent suy từ tin khách, rồi tới ngữ cảnh).
+  let intent = detectServiceIntentFromText(message ?? "");
+  if (intent === "unknown") intent = detectServiceIntentFromText(contextText ?? "");
+  if (intent !== "unknown") {
+    for (const o of cands) {
+      if (!o.intent) return o;
+      const oi = normalizeIntent(o.intent);
+      if (oi && intentFamily(oi) === intentFamily(intent)) return o;
+    }
+  }
+  return null;
 }
 
 /**

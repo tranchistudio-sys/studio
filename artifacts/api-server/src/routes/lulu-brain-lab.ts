@@ -532,6 +532,7 @@ router.post("/lulu-brain/test", async (req, res) => {
       draftVersionId = d.id;
       draftOverrides = parseImageOverrides(d.rulesJson);
     }
+    console.log(`[BrainLab] testVersion versionId=${draftVersionId ?? "active"} isDraft=${draftRules != null} compareWithActive=${b.compareWithActive !== false}`);
     // Override của bản ĐANG CHẠY THẬT (để cột so sánh "Đang chạy" cũng đúng với thực tế).
     const activeOverrides = b.compareWithActive !== false ? await getActiveImageOverrides() : [];
 

@@ -12,6 +12,18 @@ import { detectEscalation } from "./sale-lead-flags";
 import { HOLD_MESSAGE, imageEscalationReason } from "./sale-human-review";
 
 /**
+ * URL ảnh có hợp lệ để gửi/hiển thị không? Chặn trường hợp lỡ dùng TIÊU ĐỀ (title tiếng Việt có dấu /
+ * khoảng trắng) làm đường dẫn ảnh — sẽ render thành ảnh bể ở Chat test. URL thật luôn là http(s)://
+ * hoặc đường dẫn nội bộ (/objects, /uploads, /public-objects…), KHÔNG chứa khoảng trắng.
+ */
+function isPlausibleImageUrl(u: string | null | undefined): boolean {
+  const s = (u ?? "").trim();
+  if (!s) return false;
+  if (/\s/.test(s)) return false; // URL không có khoảng trắng; title tiếng Việt thì có → loại
+  return /^https?:\/\//i.test(s) || s.startsWith("/") || /^[\w.\-]+\/\S+$/.test(s);
+}
+
+/**
  * sale-brain-runner — mô phỏng 1 lượt trả lời của Lulu với MỘT bộ luật não cụ thể (brainRules).
  *
  * Dùng ĐÚNG các lib như sân test/Messenger (getSaleContext, AI Vision, selectSampleImages,
@@ -153,11 +165,18 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
       excludeUrls,
       maxTotal: 4,
     });
-    sampleImages = applied.images;
+    // VALIDATE URL ảnh trước khi trả về FE: loại ảnh có URL không hợp lệ (tránh render ảnh bể / lỡ
+    // dùng tiêu đề làm URL). Log rõ từng ảnh để debug.
+    sampleImages = applied.images.filter((im) => {
+      const ok = isPlausibleImageUrl(im.imageUrl);
+      if (ok) console.log(`[SaleBrain] image render url valid=true source=${im.sourceType ?? "?"}`);
+      else console.warn(`[SaleBrain] image render url invalid reason=bad_url value="${String(im.imageUrl).slice(0, 80)}" title="${String(im.title).slice(0, 40)}"`);
+      return ok;
+    });
     sampleLinks = applied.links;
-    overrideApplied = applied.overrideApplied;
+    overrideApplied = applied.overrideApplied && sampleImages.length > 0;
     if (applied.exhausted) sampleNote = SAMPLES_EXHAUSTED_NOTE;
-    if (applied.overrideApplied) console.log(`[BrainRunner] dùng ẢNH ADMIN DẠY (override ${applied.overrideId})`);
+    if (overrideApplied) console.log(`[SaleBrain] image override applied id=${applied.overrideId} count=${sampleImages.length}`);
   } catch (e) { console.error("[BrainRunner] sampleImages lỗi:", String(e).slice(0, 160)); }
 
   const escalationReason =

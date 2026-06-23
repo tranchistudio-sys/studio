@@ -10,6 +10,21 @@ import {
   Search, Images, Repeat,
 } from "lucide-react";
 
+// Ảnh hỏng (URL 404 / không tải được) → thay bằng nền xám "ảnh lỗi" thay cho icon vỡ + log để debug.
+// (Backend đã lọc URL rác trước khi trả về; đây là lưới an toàn cho ảnh URL hợp lệ nhưng tải fail.)
+const BROKEN_IMG_PLACEHOLDER =
+  "data:image/svg+xml;utf8," +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120"><rect width="120" height="120" fill="#f1f1f4"/><text x="60" y="62" font-family="sans-serif" font-size="11" fill="#9ca3af" text-anchor="middle">ảnh lỗi</text></svg>',
+  );
+function onBrokenSampleImg(e: React.SyntheticEvent<HTMLImageElement>) {
+  const img = e.currentTarget;
+  if (img.dataset.fallback === "1") return; // tránh vòng lặp nếu placeholder cũng lỗi
+  img.dataset.fallback = "1";
+  console.warn("[SaleBrain] image render url invalid reason=load_error src=" + String(img.src).slice(0, 100));
+  img.src = BROKEN_IMG_PLACEHOLDER;
+}
+
 /**
  * Lulu Brain Lab — quản lý / sửa / test / lưu version cho "não Sale AI Lulu".
  * Nhân viên: báo lỗi, góp ý, nhờ AI sửa, sửa tay, test bản nháp.
@@ -214,7 +229,7 @@ function ReplyColumn({ title, accent, result }: { title: string; accent: string;
               <div className="flex flex-wrap gap-2">
                 {result.sampleImages.map((s, i) => (
                   <div key={i} className="w-24">
-                    <img src={getImageSrc(s.imageUrl) ?? undefined} alt={s.title} className="w-24 h-24 object-cover rounded-lg border" />
+                    <img src={getImageSrc(s.imageUrl) ?? undefined} alt={s.title} onError={onBrokenSampleImg} className="w-24 h-24 object-cover rounded-lg border" />
                     <p className="text-[10px] text-gray-500 truncate mt-0.5">{s.title}</p>
                   </div>
                 ))}
@@ -494,7 +509,7 @@ function FixResponsePanel({ turn, onDraftChange, markFixed, onClose, showOk, sho
               const kept = keptFlags[s.imageUrl];
               return (
                 <div key={i} className={`w-28 border rounded-lg overflow-hidden bg-white ${!stillIn ? "opacity-40" : kept ? "ring-2 ring-emerald-400" : ""}`}>
-                  <img src={getImageSrc(s.imageUrl) ?? undefined} alt={s.title} className="w-full h-20 object-cover" />
+                  <img src={getImageSrc(s.imageUrl) ?? undefined} alt={s.title} onError={onBrokenSampleImg} className="w-full h-20 object-cover" />
                   <p className="text-[10px] text-gray-500 truncate px-1 pt-0.5">{s.title}</p>
                   <div className="flex text-[10px] border-t divide-x">
                     <button onClick={() => { setKeptFlags((p) => ({ ...p, [s.imageUrl]: true })); if (!stillIn) setCorrect((p) => [...p, { imageUrl: s.imageUrl, title: s.title, detailUrl: s.detailUrl, sourceType: s.sourceType, serviceIntent: s.serviceIntent }].slice(0, 4)); }}
@@ -523,7 +538,7 @@ function FixResponsePanel({ turn, onDraftChange, markFixed, onClose, showOk, sho
           <div className="flex flex-wrap gap-2">
             {correct.map((c, i) => (
               <div key={`${c.imageUrl}-${i}`} className="w-24 relative border-2 border-emerald-300 rounded-lg overflow-hidden bg-white">
-                <img src={getImageSrc(c.imageUrl) ?? undefined} alt={c.title} className="w-full h-20 object-cover" />
+                <img src={getImageSrc(c.imageUrl) ?? undefined} alt={c.title} onError={onBrokenSampleImg} className="w-full h-20 object-cover" />
                 <button onClick={() => removeAt(i)} className="absolute top-0.5 right-0.5 bg-rose-500 text-white rounded-full w-4 h-4 flex items-center justify-center"><X className="w-2.5 h-2.5" /></button>
                 <button onClick={() => openReplace(i)} className="absolute bottom-0.5 right-0.5 bg-white/90 border rounded p-0.5" title="Đổi ảnh khác"><Repeat className="w-3 h-3 text-violet-600" /></button>
                 <p className="text-[9px] text-gray-500 truncate px-1">{c.title}</p>
@@ -736,7 +751,7 @@ export default function LuluBrainLabPage() {
     setBusy(true);
     try {
       await apiSend("POST", `/lulu-brain/versions/${sourceId}/rollback`, { note: "Quay lại nhanh sau khi áp dụng" });
-      showOk(`Đã quay lại Version ${sourceVer}.`); setLastApplied(null); loadActive(); loadVersions();
+      showOk(`Đã quay lại Version ${sourceVer}.`); setLastApplied(null); loadActive(); loadVersions(); resetTestChat(null);
     } catch (e) { showErr(String((e as Error).message)); } finally { setBusy(false); }
   };
 
@@ -872,7 +887,7 @@ export default function LuluBrainLabPage() {
         <FixTestTab draft={draft} active={active} testCases={testCases} effectiveIsAdmin={effectiveIsAdmin}
           busy={busy} setBusy={setBusy} showOk={showOk} showErr={showErr}
           onDraftChange={onDraftChange}
-          onApplied={() => { loadActive(); loadVersions(); }}
+          onApplied={() => { loadActive(); loadVersions(); resetTestChat(null); }}
           changeRequests={changeRequests} reloadCR={loadChangeRequests}
           createDraftFromActive={() => createNewDraft(false)}
           prefill={testPrefill} onConsumePrefill={() => setTestPrefill("")}
@@ -884,7 +899,7 @@ export default function LuluBrainLabPage() {
       {tab === "history" && (
         <HistoryTab versions={versions} effectiveIsAdmin={effectiveIsAdmin} busy={busy} setBusy={setBusy}
           showOk={showOk} showErr={showErr} currentDraftId={draft?.id ?? null}
-          reload={() => { loadVersions(); loadActive(); }}
+          reload={() => { loadVersions(); loadActive(); resetTestChat(null); }}
           onCloneDraft={draftFromVersion} />
       )}
     </div>
@@ -1734,7 +1749,7 @@ function FixTestTab({
                   <div className="flex flex-wrap gap-2">
                     {t.result.sampleImages.map((s, i) => (
                       <div key={i} className="w-24">
-                        <img src={getImageSrc(s.imageUrl) ?? undefined} alt={s.title} className="w-24 h-24 object-cover rounded-lg border" />
+                        <img src={getImageSrc(s.imageUrl) ?? undefined} alt={s.title} onError={onBrokenSampleImg} className="w-24 h-24 object-cover rounded-lg border" />
                         <p className="text-[10px] text-gray-500 truncate mt-0.5">{s.title}</p>
                       </div>
                     ))}
@@ -1742,7 +1757,7 @@ function FixTestTab({
                 )}
                 {/* Ảnh bảng giá */}
                 {t.result.priceImages.map((p, i) => (
-                  <img key={`p${i}`} src={getImageSrc(p) ?? undefined} alt="bảng giá" className="max-w-[200px] rounded-lg border" />
+                  <img key={`p${i}`} src={getImageSrc(p) ?? undefined} alt="bảng giá" onError={onBrokenSampleImg} className="max-w-[200px] rounded-lg border" />
                 ))}
                 {/* Câu trả lời */}
                 {(t.result.reply.length ? t.result.reply : [t.result.raw || "(Lulu không trả lời)"]).map((m, i) => (

@@ -365,9 +365,18 @@ export async function getActiveBrainRules(): Promise<string | null> {
   try {
     await ensureBrainLabTables();
     const r = await pool.query(
-      `SELECT prompt_content FROM lulu_brain_versions WHERE status = 'active' LIMIT 1`,
+      `SELECT id, version_number, prompt_content, rules_json FROM lulu_brain_versions WHERE status = 'active' LIMIT 1`,
     );
-    const value = r.rows.length > 0 ? String(r.rows[0].prompt_content ?? "").trim() || null : null;
+    const row = r.rows[0] as { id?: number; version_number?: number; prompt_content?: string; rules_json?: unknown } | undefined;
+    const value = row ? String(row.prompt_content ?? "").trim() || null : null;
+    // Log version não đang dùng cho luồng SỐNG (Messenger/Lulu Sale) — chỉ in khi đọc lại DB (cache miss),
+    // nên ngay SAU apply/rollback (cache đã clear) sẽ thấy version mới. rulesHash = độ dài rules (đủ để
+    // nhận biết version đã đổi). Giúp xác minh "Facebook/Lulu Sale thật dùng version nào".
+    if (row) {
+      console.log(`[SaleBrain] loadedBrainVersion activeVersionId=${row.id} versionNumber=${row.version_number} rulesHash=len:${(value ?? "").length} imageOverridesCount=${parseImageOverrides(row.rules_json).length}`);
+    } else {
+      console.log(`[SaleBrain] loadedBrainVersion activeVersionId=none (dùng DEFAULT_BRAIN_RULES)`);
+    }
     activeRulesCache = { value, at: Date.now() };
     return value;
   } catch (err) {
@@ -615,7 +624,9 @@ export async function createDraftVersion(input: CreateDraftInput): Promise<Brain
      input.basedOnVersionId ?? null, (input.changeSummary ?? "").slice(0, 4000) || null,
      input.createdBy ?? null, input.createdByName ?? null],
   );
-  return mapVersion(res.rows[0] as Record<string, unknown>);
+  const created = mapVersion(res.rows[0] as Record<string, unknown>);
+  console.log(`[BrainLab] createDraft fromVersionId=${input.basedOnVersionId ?? "none"} newDraftId=${created.id} versionNumber=${created.versionNumber}`);
+  return created;
 }
 
 export type UpdateDraftInput = {
@@ -646,7 +657,9 @@ export async function updateDraftVersion(id: number, patch: UpdateDraftInput): P
     `UPDATE lulu_brain_versions SET ${sets.join(", ")}, updated_at = NOW() WHERE id = $${params.length} RETURNING *`,
     params,
   );
-  return res.rows.length ? mapVersion(res.rows[0] as Record<string, unknown>) : null;
+  const saved = res.rows.length ? mapVersion(res.rows[0] as Record<string, unknown>) : null;
+  if (saved) console.log(`[BrainLab] saveDraft versionId=${saved.id} fields=${sets.length}`);
+  return saved;
 }
 
 /** Hủy bản nháp → status='rejected' (giữ lịch sử, KHÔNG xoá). */
@@ -693,6 +706,7 @@ export async function applyDraftVersion(
     };
   }
 
+  console.log(`[BrainLab] applyVersion requestedVersionId=${id} previousActiveId=${activeRef?.id ?? "none"}`);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -707,9 +721,11 @@ export async function applyDraftVersion(
     );
     await client.query("COMMIT");
     clearActiveRulesCache(); clearActiveOverridesCache();
+    console.log(`[BrainLab] applyVersion success activeVersionId=${id} previousActiveId=${activeRef?.id ?? "none"}`);
     return { ok: true, version: mapVersion(res.rows[0] as Record<string, unknown>) };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
+    console.error(`[BrainLab] applyVersion failed requestedVersionId=${id} rollbackTo=${activeRef?.id ?? "none"} err=${String(err).slice(0, 150)}`);
     return { ok: false, error: String(err).slice(0, 200) };
   } finally {
     client.release();
@@ -729,6 +745,7 @@ export async function rollbackToVersion(
   const src = await getVersion(sourceId);
   if (!src) return { ok: false, error: "Không tìm thấy version nguồn" };
 
+  console.log(`[BrainLab] applyVersion(rollback) requestedVersionId=${sourceId} fromVersion=${src.versionNumber}`);
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -756,9 +773,12 @@ export async function rollbackToVersion(
     );
     await client.query("COMMIT");
     clearActiveRulesCache(); clearActiveOverridesCache();
-    return { ok: true, version: mapVersion(res.rows[0] as Record<string, unknown>) };
+    const created = mapVersion(res.rows[0] as Record<string, unknown>);
+    console.log(`[BrainLab] applyVersion(rollback) success newActiveVersionId=${created.id} versionNumber=${created.versionNumber} fromVersion=${src.versionNumber}`);
+    return { ok: true, version: created };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
+    console.error(`[BrainLab] applyVersion(rollback) failed sourceId=${sourceId} err=${String(err).slice(0, 150)}`);
     return { ok: false, error: String(err).slice(0, 200) };
   } finally {
     client.release();

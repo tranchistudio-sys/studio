@@ -62,6 +62,8 @@ type SimResult = {
   holdMessage: string | null; detectedIntent: string | null; priceImages: string[];
   sampleImages: SampleImage[]; sampleNote: string | null; responseTimeMs: number;
   overrideApplied?: boolean;
+  /** Cách lượt này dùng câu sửa tay admin: "exact_reply" = nói y chang; "learn_from_this" = AI học theo. */
+  responseMode?: "exact_reply" | "learn_from_this" | null;
 };
 // Ảnh trong kho (khớp ImageStoreItem ở backend).
 type StoreItem = { imageUrl: string; title: string; detailUrl?: string; sourceType: string; kind?: string; serviceIntent: string; albumName?: string; tags?: string; albumId?: number; publicForCustomer?: boolean };
@@ -421,9 +423,12 @@ function ImageStoreModal({ open, onClose, onPick, maxSelect = 4, initialIntent, 
 }
 
 // ─── Panel "Báo lỗi / Sửa phản hồi này": sửa cả TEXT lẫn ẢNH cho 1 câu Lulu ───
-function FixResponsePanel({ turn, onDraftChange, markFixed, onClose, showOk, showErr }: {
+function FixResponsePanel({ turn, onDraftChange, onPreview, markFixed, onClose, showOk, showErr }: {
   turn: Extract<TestTurn, { role: "lulu" }>;
-  onDraftChange: (v: BrainVersion) => void; markFixed: () => void; onClose: () => void;
+  onDraftChange: (v: BrainVersion) => void;
+  /** Sau khi lưu → chèn 1 lượt "Xem trước": gửi lại đúng câu khách (vào bản nháp draftId) để hiện ảnh + lời THẬT. */
+  onPreview: (question: string, draftId: number) => void;
+  markFixed: () => void; onClose: () => void;
   showOk: (m: string) => void; showErr: (m: string) => void;
 }) {
   const sent = turn.result.sampleImages;
@@ -435,6 +440,11 @@ function FixResponsePanel({ turn, onDraftChange, markFixed, onClose, showOk, sho
   const [intent, setIntent] = useState(turn.result.detectedIntent ?? "");
   const [tone, setTone] = useState("");
   const [editedText, setEditedText] = useState(replyText);
+  // Cách Lulu dùng câu sửa tay: exact_reply (nói y chang) | learn_from_this (AI học theo). Mặc định
+  // "exact_reply" — khi admin có sửa text thì ưu tiên nói đúng câu admin gõ.
+  const [responseMode, setResponseMode] = useState<"exact_reply" | "learn_from_this">("exact_reply");
+  // admin đã bấm chọn 1 chế độ chưa (để ghim cả khi không sửa text — vd muốn ghim đúng câu Lulu đang nói).
+  const [modeTouched, setModeTouched] = useState(false);
   const [aiInstruction, setAiInstruction] = useState("");
   const [savingImg, setSavingImg] = useState(false);
   const [savingAi, setSavingAi] = useState(false);
@@ -459,7 +469,11 @@ function FixResponsePanel({ turn, onDraftChange, markFixed, onClose, showOk, sho
   };
 
   const saveImages = async () => {
-    if (correct.length === 0) { showErr("Chọn ít nhất 1 ảnh đúng (dùng 'Đổi ảnh khác' hoặc 'Thêm ảnh đúng')."); return; }
+    // GHIM TEXT khi: có text + (đã sửa khác câu gốc HOẶC admin đã bấm chọn 1 chế độ để ghim câu hiện tại).
+    const txt = editedText.trim();
+    const wantPin = !!txt && (txt !== replyText || modeTouched);
+    const pinnedText = wantPin ? txt : null;
+    if (correct.length === 0 && !pinnedText) { showErr("Chọn ít nhất 1 ảnh đúng, hoặc sửa lời Lulu bằng tay rồi chọn cách Lulu dùng câu đó."); return; }
     setSavingImg(true);
     try {
       const d = await apiSend<{ draft: BrainVersion; totalOverrides: number }>("POST", "/lulu-brain/image-feedback", {
@@ -468,10 +482,14 @@ function FixResponsePanel({ turn, onDraftChange, markFixed, onClose, showOk, sho
         tone: tone.trim() || null,
         wrongImages: sent.map((s) => s.imageUrl),
         correctImages: correct,
-        editedText: editedText.trim() && editedText.trim() !== replyText ? editedText.trim() : null,
+        editedText: pinnedText,
+        responseMode: pinnedText ? responseMode : null,
       });
       onDraftChange(d.draft); markFixed();
-      showOk(`Đã dạy Lulu ${correct.length} ảnh đúng (Version ${d.draft.versionNumber} — nháp). Gửi lại câu khách để test.`);
+      const modeLabel = pinnedText ? (responseMode === "exact_reply" ? " · Lulu sẽ nói y chang câu này" : " · AI sẽ học theo câu này") : "";
+      showOk(`Đã dạy vào Version ${d.draft.versionNumber} — nháp${modeLabel}.`);
+      onClose();
+      onPreview(turn.forText, d.draft.id); // tự gửi lại đúng câu khách (vào nháp vừa lưu) để XEM TRƯỚC kết quả THẬT
     } catch (e) { showErr(String((e as Error).message)); } finally { setSavingImg(false); }
   };
 
@@ -566,17 +584,32 @@ function FixResponsePanel({ turn, onDraftChange, markFixed, onClose, showOk, sho
         </div>
       </div>
 
-      {/* Sửa text (tùy chọn) */}
-      <div>
-        <label className="text-[11px] text-gray-500">Sửa lời Lulu (tùy chọn — để tham khảo cho bản nháp)</label>
+      {/* Sửa lời Lulu bằng tay + CÁCH LULU DÙNG CÂU NÀY */}
+      <div className="space-y-1.5">
+        <label className="text-[11px] text-gray-500">✍️ Sửa lời Lulu bằng tay (tùy chọn) — gõ đúng câu bạn muốn Lulu nói cho tình huống này.</label>
         <textarea value={editedText} onChange={(e) => setEditedText(e.target.value)} rows={2} className="w-full border rounded-lg px-2 py-1.5 text-sm" />
+        {/* CÁCH LULU DÙNG CÂU NÀY — luôn hiện để admin chọn (không ẩn theo điều kiện). */}
+        <div className="bg-white border rounded-lg p-2">
+          <p className="text-[11px] font-semibold text-gray-600 mb-1">Cách Lulu dùng câu này</p>
+          <div className="flex flex-col sm:flex-row gap-1.5">
+            <button type="button" onClick={() => { setResponseMode("exact_reply"); setModeTouched(true); }}
+              className={`flex-1 text-left text-[11px] px-2 py-1.5 rounded-lg border ${responseMode === "exact_reply" ? "bg-emerald-50 border-emerald-300 text-emerald-700 ring-1 ring-emerald-300" : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"}`}>
+              <span className="font-semibold">🔒 Tao muốn mày nói y chang câu này</span><br />Lulu nói ĐÚNG nguyên văn câu trên, không cho AI viết lại.
+            </button>
+            <button type="button" onClick={() => { setResponseMode("learn_from_this"); setModeTouched(true); }}
+              className={`flex-1 text-left text-[11px] px-2 py-1.5 rounded-lg border ${responseMode === "learn_from_this" ? "bg-sky-50 border-sky-300 text-sky-700 ring-1 ring-sky-300" : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"}`}>
+              <span className="font-semibold">✨ Tao muốn mày học theo</span><br />AI viết lại tự nhiên nhưng giữ đúng ý chính câu trên.
+            </button>
+          </div>
+          <p className="text-[10px] text-gray-400 mt-1">Áp dụng khi bạn có sửa lời Lulu ở trên — hoặc bấm chọn 1 chế độ để ghim đúng câu Lulu đang nói.</p>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2">
         <button disabled={savingImg} onClick={saveImages} className="flex items-center gap-1.5 bg-emerald-600 text-white text-sm px-3 py-1.5 rounded-lg hover:bg-emerald-700 disabled:opacity-50">
-          {savingImg ? <Loader2 className="w-4 h-4 animate-spin" /> : <Images className="w-4 h-4" />} Lưu ảnh đúng vào bản nháp
+          {savingImg ? <Loader2 className="w-4 h-4 animate-spin" /> : <Images className="w-4 h-4" />} Lưu &amp; xem trước
         </button>
-        <span className="text-[11px] text-gray-400 self-center">Lưu xong → gửi lại câu khách để test ngay trong bản nháp.</span>
+        <span className="text-[11px] text-gray-400 self-center">Lưu xong → tự gửi lại câu khách, hiện “Xem trước” ảnh + lời Lulu ngay dưới.</span>
       </div>
 
       {/* Sửa LUẬT bằng lời (đường AI cũ) */}
@@ -1500,7 +1533,7 @@ function AiFixTab({ active, draft, showOk, showErr, onDraftChange, goTest, queue
 // ĐÚNG bản nháp hiện tại (tạo mới từ bản đang chạy nếu chưa có). KHÔNG gửi Messenger thật.
 type TestTurn =
   | { id: string; role: "customer"; text: string; imageUrl?: string }
-  | { id: string; role: "lulu"; result: SimResult; forText: string; fixed?: boolean };
+  | { id: string; role: "lulu"; result: SimResult; forText: string; fixed?: boolean; preview?: boolean };
 
 function FixTestTab({
   draft, active, testCases = [], effectiveIsAdmin, busy, setBusy, showOk, showErr,
@@ -1589,6 +1622,19 @@ function FixTestTab({
   };
 
   const clearChat = () => { setTurns([]); setConvo([]); setFixingId(null); };
+
+  // Sau khi admin "Lưu & xem trước": tự gửi lại ĐÚNG câu khách qua bản nháp để hiện kết quả THẬT
+  // (ảnh + lời Lulu sẽ dùng + badge cách dùng câu). Đây là 1 lượt test thật, KHÔNG phải preview giả.
+  const previewTaught = async (question: string, draftId: number) => {
+    if (sending) return;
+    setSending(true);
+    try {
+      const d = await apiSend<{ draft: SimResult | null }>("POST", "/lulu-brain/test", {
+        message: question, draftVersionId: draftId, compareWithActive: false,
+      });
+      if (d.draft) setTurns((p) => [...p, { id: newId(), role: "lulu", result: d.draft as SimResult, forText: question, preview: true }]);
+    } catch (e) { showErr(String((e as Error).message)); } finally { setSending(false); }
+  };
 
   // ── Hành động bản nháp ──
   const saveEdit = async () => {
@@ -1744,6 +1790,11 @@ function FixTestTab({
             <div key={t.id} className="flex gap-2 items-start">
               <div className="w-7 h-7 rounded-full bg-violet-100 flex items-center justify-center text-violet-600 shrink-0"><Bot className="w-4 h-4" /></div>
               <div className="max-w-[88%] w-full space-y-1.5">
+                {t.preview && (
+                  <div className="flex items-start gap-1.5 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1">
+                    <Eye className="w-3.5 h-3.5 mt-0.5 shrink-0" /> <span>Xem trước sau khi dạy — đây là ảnh &amp; lời Lulu sẽ dùng cho câu “{t.forText}”.</span>
+                  </div>
+                )}
                 {/* Ảnh mẫu */}
                 {t.result.sampleImages.length > 0 && (
                   <div className="flex flex-wrap gap-2">
@@ -1768,20 +1819,22 @@ function FixTestTab({
                   {t.result.detectedIntent && <span>intent: <b className="text-violet-600">{t.result.detectedIntent}</b></span>}
                   <span>{t.result.responseTimeMs}ms</span>
                   {t.result.overrideApplied && <span className="text-emerald-600 font-medium">✓ Ảnh do admin dạy</span>}
+                  {t.result.responseMode === "exact_reply" && <span className="text-emerald-600 font-medium">✓ Nói y chang câu admin</span>}
+                  {t.result.responseMode === "learn_from_this" && <span className="text-sky-600 font-medium">✓ AI học theo câu admin</span>}
                   {t.result.escalated && <span className="text-rose-600 font-medium">⚠ Sẽ chuyển người thật ({t.result.escalationReason})</span>}
                 </div>
-                {/* Báo lỗi / sửa phản hồi này (text & ảnh) */}
-                {t.fixed ? (
-                  <div className="text-emerald-700 text-xs font-medium flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Đã gửi sửa vào bản nháp — gửi lại câu khách để test lại.</div>
+                {/* Báo lỗi / sửa phản hồi này (text & ảnh). Lượt XEM TRƯỚC thì không hiện (chỉ để xem). */}
+                {!t.preview && (t.fixed ? (
+                  <div className="text-emerald-700 text-xs font-medium flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Đã dạy vào bản nháp — xem ô “Xem trước” ngay dưới để kiểm tra.</div>
                 ) : fixingId === t.id ? (
-                  <FixResponsePanel turn={t} onDraftChange={onDraftChange}
+                  <FixResponsePanel turn={t} onDraftChange={onDraftChange} onPreview={previewTaught}
                     markFixed={() => setTurns((p) => p.map((x) => (x.id === t.id ? { ...x, fixed: true } : x)))}
                     onClose={() => setFixingId(null)} showOk={showOk} showErr={showErr} />
                 ) : (
                   <button onClick={() => setFixingId(t.id)} className="flex items-center gap-1.5 text-[12px] text-rose-600 border border-rose-200 px-2 py-1 rounded-lg hover:bg-rose-50">
                     <AlertTriangle className="w-3.5 h-3.5" /> Báo lỗi / Sửa phản hồi này
                   </button>
-                )}
+                ))}
               </div>
             </div>
           ))}

@@ -740,6 +740,7 @@ router.post("/lulu-brain/image-feedback", async (req, res) => {
   const b = (req.body ?? {}) as {
     customerQuestion?: string; intent?: string | null; tone?: string | null;
     wrongImages?: string[]; correctImages?: OverrideImage[]; editedText?: string | null;
+    responseMode?: string | null;
   };
   const correctImages = (Array.isArray(b.correctImages) ? b.correctImages : [])
     .filter((im) => im && typeof im.imageUrl === "string" && im.imageUrl.trim())
@@ -751,8 +752,13 @@ router.post("/lulu-brain/image-feedback", async (req, res) => {
       sourceType: String(im.sourceType ?? "gallery"),
       serviceIntent: im.serviceIntent ? String(im.serviceIntent) : undefined,
     }));
-  if (correctImages.length === 0) {
-    return res.status(400).json({ error: "Chọn ít nhất 1 ảnh đúng để dạy Lulu (tối đa 4)." });
+  const fbEditedText = b.editedText != null && String(b.editedText).trim() ? String(b.editedText).trim() : null;
+  const rmIn = b.responseMode != null ? String(b.responseMode) : null;
+  const fbResponseMode: ImageOverride["responseMode"] =
+    (rmIn === "exact_reply" || rmIn === "learn_from_this") && fbEditedText ? rmIn : null;
+  // Cho lưu nếu CÓ ảnh đúng HOẶC có ghim text (câu sửa tay + chế độ dùng câu). Không có gì để dạy → 400.
+  if (correctImages.length === 0 && !fbResponseMode) {
+    return res.status(400).json({ error: "Hãy chọn ít nhất 1 ảnh đúng, hoặc sửa lời Lulu bằng tay rồi chọn cách Lulu dùng câu đó." });
   }
 
   try {
@@ -782,7 +788,8 @@ router.post("/lulu-brain/image-feedback", async (req, res) => {
       tone: b.tone != null && String(b.tone).trim() ? String(b.tone).trim() : null,
       wrongImages: Array.isArray(b.wrongImages) ? b.wrongImages.map((u) => String(u)).filter(Boolean).slice(0, 8) : [],
       correctImages,
-      editedText: b.editedText != null && String(b.editedText).trim() ? String(b.editedText).trim() : null,
+      editedText: fbEditedText,
+      responseMode: fbResponseMode,
       createdAt: new Date().toISOString(),
       createdByName: caller.name,
     };

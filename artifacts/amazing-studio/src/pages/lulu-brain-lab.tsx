@@ -422,6 +422,59 @@ function ImageStoreModal({ open, onClose, onPick, maxSelect = 4, initialIntent, 
   );
 }
 
+// ─── Âm thanh khi admin đổi chế độ "Cách Lulu dùng câu này" (CHỈ trong Brain Lab admin) ───
+// Thêm âm thanh mới: bỏ file .mp3 vào artifacts/amazing-studio/public/sounds/lulu/ rồi thêm 1 dòng vào mảng dưới.
+// (Frontend thuần không quét được thư mục public lúc runtime, nên dùng danh sách tĩnh — UI vẫn là dropdown để admin chọn.)
+const LULU_SOUND_FILES = [
+  { label: "Simple whoosh", file: "/sounds/lulu/dragon-studio-simple-whoosh-382724.mp3" },
+  { label: "TikTok slide ping", file: "/sounds/lulu/miraclei-tiktok_slide_ping1_sample_kofi_by_miraclei-360035.mp3" },
+  { label: "Whoosh effect", file: "/sounds/lulu/dragon-studio-whoosh-effect-382717.mp3" },
+  { label: "Tiếng chuông tỉnh táo", file: "/sounds/lulu/tieng-chuong-tinh-tao.mp3" },
+] as const;
+
+const LULU_SOUND_ENABLED_KEY = "lulu_switch_sound_enabled";
+const LULU_SOUND_FILE_KEY = "lulu_switch_sound_file";
+
+// Tái dùng 1 Audio cho mỗi file (tránh tải lại mỗi lần đổi mode).
+const luluAudioPool = new Map<string, HTMLAudioElement>();
+
+/** Phát 1 file âm thanh (đường dẫn dạng "/sounds/..."). Im lặng nếu thiếu/lỗi — không bao giờ crash UI. */
+function playLuluSound(file: string) {
+  if (!file) return;
+  try {
+    const src = encodeURI(`${import.meta.env.BASE_URL.replace(/\/$/, "")}${file}`);
+    let audio = luluAudioPool.get(src);
+    if (!audio) {
+      audio = new Audio(src);
+      audio.preload = "auto";
+      luluAudioPool.set(src, audio);
+    }
+    audio.volume = 0.3;
+    audio.currentTime = 0;
+    audio.play()?.catch(() => { /* trình duyệt chặn / file lỗi → im lặng */ });
+  } catch {
+    /* im lặng */
+  }
+}
+
+/** File đang chọn: ưu tiên localStorage (nếu vẫn còn trong danh sách), không thì file đầu tiên. */
+function initLuluSoundFile(): string {
+  try {
+    const saved = localStorage.getItem(LULU_SOUND_FILE_KEY);
+    if (saved && LULU_SOUND_FILES.some((s) => s.file === saved)) return saved;
+  } catch { /* ignore */ }
+  return LULU_SOUND_FILES[0]?.file ?? "";
+}
+
+/** Công tắc âm thanh: mặc định BẬT (chỉ tắt khi localStorage = "0"). */
+function initLuluSoundEnabled(): boolean {
+  try {
+    return localStorage.getItem(LULU_SOUND_ENABLED_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
 // ─── Panel "Báo lỗi / Sửa phản hồi này": sửa cả TEXT lẫn ẢNH cho 1 câu Lulu ───
 function FixResponsePanel({ turn, onDraftChange, onPreview, markFixed, onClose, showOk, showErr }: {
   turn: Extract<TestTurn, { role: "lulu" }>;
@@ -450,6 +503,20 @@ function FixResponsePanel({ turn, onDraftChange, onPreview, markFixed, onClose, 
   const [savingAi, setSavingAi] = useState(false);
   const [storeOpen, setStoreOpen] = useState(false);
   const [replaceIdx, setReplaceIdx] = useState<number | null>(null);
+  // Âm thanh khi đổi chế độ "Cách Lulu dùng câu này" — tùy chọn, lưu localStorage, chỉ trong Brain Lab.
+  const [switchSoundOn, setSwitchSoundOn] = useState<boolean>(initLuluSoundEnabled);
+  const [switchSoundFile, setSwitchSoundFile] = useState<string>(initLuluSoundFile);
+  const toggleSwitchSound = () => setSwitchSoundOn((on) => {
+    const next = !on;
+    try { localStorage.setItem(LULU_SOUND_ENABLED_KEY, next ? "1" : "0"); } catch { /* ignore */ }
+    return next;
+  });
+  const pickSwitchSound = (file: string) => {
+    setSwitchSoundFile(file);
+    try { localStorage.setItem(LULU_SOUND_FILE_KEY, file); } catch { /* ignore */ }
+  };
+  // Đổi mode → phát (tôn trọng công tắc). "Nghe thử" → phát luôn (force) để admin nghe được kể cả khi đang tắt.
+  const playSwitchSound = (force = false) => { if (force || switchSoundOn) playLuluSound(switchSoundFile); };
 
   const removeAt = (i: number) => setCorrect((p) => p.filter((_, j) => j !== i));
   const openReplace = (i: number) => { setReplaceIdx(i); setStoreOpen(true); };
@@ -590,13 +657,30 @@ function FixResponsePanel({ turn, onDraftChange, onPreview, markFixed, onClose, 
         <textarea value={editedText} onChange={(e) => setEditedText(e.target.value)} rows={2} className="w-full border rounded-lg px-2 py-1.5 text-sm" />
         {/* CÁCH LULU DÙNG CÂU NÀY — luôn hiện để admin chọn (không ẩn theo điều kiện). */}
         <div className="bg-white border rounded-lg p-2">
-          <p className="text-[11px] font-semibold text-gray-600 mb-1">Cách Lulu dùng câu này</p>
+          <div className="flex flex-wrap items-center justify-between gap-1.5 mb-1">
+            <p className="text-[11px] font-semibold text-gray-600">Cách Lulu dùng câu này</p>
+            {/* Âm thanh báo khi đổi chế độ — bật/tắt + chọn file + nghe thử (chỉ trong Brain Lab admin) */}
+            <div className="flex items-center gap-1">
+              <button type="button" onClick={toggleSwitchSound} title="Bật/tắt âm thanh khi đổi chế độ"
+                className={`text-[10px] px-1.5 py-0.5 rounded-full border whitespace-nowrap ${switchSoundOn ? "bg-amber-50 border-amber-300 text-amber-700" : "bg-white border-gray-200 text-gray-400"}`}>
+                {switchSoundOn ? "🔊" : "🔇"} Âm thanh
+              </button>
+              <select value={switchSoundFile} onChange={(e) => pickSwitchSound(e.target.value)} title="Chọn âm thanh"
+                className="text-[10px] border border-gray-200 rounded-lg px-1.5 py-0.5 bg-white text-gray-600 max-w-[150px]">
+                {LULU_SOUND_FILES.map((s) => <option key={s.file} value={s.file}>{s.label}</option>)}
+              </select>
+              <button type="button" onClick={() => playSwitchSound(true)} title="Nghe thử âm thanh đang chọn"
+                className="text-[10px] px-1.5 py-0.5 rounded-full border bg-white border-gray-200 text-gray-600 hover:bg-gray-50 whitespace-nowrap">
+                Nghe thử
+              </button>
+            </div>
+          </div>
           <div className="flex flex-col sm:flex-row gap-1.5">
-            <button type="button" onClick={() => { setResponseMode("exact_reply"); setModeTouched(true); }}
+            <button type="button" onClick={() => { if (responseMode !== "exact_reply") playSwitchSound(); setResponseMode("exact_reply"); setModeTouched(true); }}
               className={`flex-1 text-left text-[11px] px-2 py-1.5 rounded-lg border ${responseMode === "exact_reply" ? "bg-emerald-50 border-emerald-300 text-emerald-700 ring-1 ring-emerald-300" : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"}`}>
               <span className="font-semibold">🔒 Tao muốn mày nói y chang câu này</span><br />Lulu nói ĐÚNG nguyên văn câu trên, không cho AI viết lại.
             </button>
-            <button type="button" onClick={() => { setResponseMode("learn_from_this"); setModeTouched(true); }}
+            <button type="button" onClick={() => { if (responseMode !== "learn_from_this") playSwitchSound(); setResponseMode("learn_from_this"); setModeTouched(true); }}
               className={`flex-1 text-left text-[11px] px-2 py-1.5 rounded-lg border ${responseMode === "learn_from_this" ? "bg-sky-50 border-sky-300 text-sky-700 ring-1 ring-sky-300" : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"}`}>
               <span className="font-semibold">✨ Tao muốn mày học theo</span><br />AI viết lại tự nhiên nhưng giữ đúng ý chính câu trên.
             </button>

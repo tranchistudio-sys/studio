@@ -6,7 +6,8 @@ import { getSaleContext, getSaleContextInfo, resolvePriceImagesByCodes, wantsNew
 import { classifyCustomerImageFromData, buildImageRoutingBlock } from "../lib/sale-vision";
 import { selectSampleImages, extractRecentSampleUrls, SAMPLES_EXHAUSTED_NOTE } from "../lib/sale-samples";
 import { getActivePlaybook } from "../lib/sale-playbook";
-import { getActiveBrainRules } from "../lib/sale-brain-lab";
+import { getActiveBrainRules, getActiveImageOverrides } from "../lib/sale-brain-lab";
+import { applyImageOverrides } from "../lib/sale-image-overrides";
 import { getClaudeSaleSettings, computeReplyDelayMs } from "../lib/sale-settings";
 import { getScheduleContext } from "../lib/sale-calendar";
 import { getMasterEnabled } from "../lib/sale-master";
@@ -165,6 +166,7 @@ router.post("/claude-sale-test/chat", async (req, res) => {
         .join("\n");
       // Tin nhắn gần nhất của bot (để xét khách "đồng ý" sau khi bot mời gửi mẫu).
       const lastBotText = [...prior].reverse().find((h) => h.direction === "outgoing")?.message ?? null;
+      const excludeUrls = extractRecentSampleUrls(prior);
       const sel = await selectSampleImages({
         sampleRequested: reply.sampleRequested,
         sampleIntents: reply.sampleIntents,
@@ -173,12 +175,24 @@ router.post("/claude-sale-test/chat", async (req, res) => {
         lastBotText,
         visionIntent: imageIntent,
         settings,
-        excludeUrls: extractRecentSampleUrls(prior),
+        excludeUrls,
         maxTotal: 2,
       });
-      sampleImages = sel.images;
-      sampleLinks = sel.links;
-      if (sel.exhausted) sampleNote = SAMPLES_EXHAUSTED_NOTE;
+      // ÁP OVERRIDE "ADMIN DẠY" của version đang chạy thật (rỗng → hành vi cũ).
+      const activeOverrides = await getActiveImageOverrides();
+      const detectedIntentForOverride =
+        (reply.sampleIntents && reply.sampleIntents.length ? reply.sampleIntents[0] : null)
+        || (imageIntent?.service_intent ?? null);
+      const finalSel = applyImageOverrides(sel, activeOverrides, {
+        detectedIntent: detectedIntentForOverride,
+        messageText: incomingText,
+        contextText,
+        excludeUrls,
+        maxTotal: 4,
+      });
+      sampleImages = finalSel.images;
+      sampleLinks = finalSel.links;
+      if (finalSel.exhausted) sampleNote = SAMPLES_EXHAUSTED_NOTE;
     } catch (e) { console.error("[ClaudeSaleTest] sampleImages lỗi:", String(e).slice(0, 160)); }
 
     // ── DEV MODE: mô phỏng Human Review (KHÔNG ghi DB, KHÔNG pause thread thật) ──

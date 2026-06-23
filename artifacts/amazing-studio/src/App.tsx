@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Switch, Route, Router as WouterRouter, Redirect, useLocation } from "wouter";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { setAuthTokenGetter, setBaseUrl } from "@workspace/api-client-react";
@@ -31,12 +32,12 @@ import CrmLeadsPage from "@/pages/crm-leads";
 import FacebookInboxAiPage from "@/pages/facebook-inbox-ai";
 import AiSaleScriptsPage from "@/pages/ai-sale-scripts";
 import AiTestRoomPage from "@/pages/ai-test-room";
-import ClaudeSaleTestPage from "@/pages/claude-sale-test";
 import ClaudeSaleSettingsPage from "@/pages/claude-sale-settings";
 import ClaudeSaleMonitorPage from "@/pages/claude-sale-monitor";
 import ClaudeSaleReengagePage from "@/pages/claude-sale-reengage";
 import SaleLearningPage from "@/pages/sale-learning";
 import LuluHumanReviewPage from "@/pages/lulu-human-review";
+import LuluBrainLabPage from "@/pages/lulu-brain-lab";
 import AutoPostFacebookPage from "@/pages/auto-post-facebook";
 import NotificationsPage from "@/pages/notifications";
 import NotFound from "@/pages/not-found";
@@ -99,7 +100,7 @@ const INTERNAL_PREFIXES = [
   "/pricing", "/services", "/staff", "/accounting", "/ai-assistant", "/settings",
   "/bookings", "/payments", "/expenses", "/revenue", "/contracts", "/reports",
   "/my-profile", "/photoshop-jobs", "/attendance",
-  "/crm-leads", "/facebook-inbox-ai", "/ai-sale-scripts", "/ai-test", "/claude-sale-test", "/claude-sale-settings", "/claude-sale-monitor", "/claude-sale-reengage", "/sale-learning", "/lulu-human-review", "/auto-post-facebook", "/notifications",
+  "/crm-leads", "/facebook-inbox-ai", "/ai-sale-scripts", "/ai-test", "/claude-sale-test", "/claude-sale-settings", "/claude-sale-monitor", "/claude-sale-reengage", "/sale-learning", "/lulu-human-review", "/lulu-brain-lab", "/auto-post-facebook", "/notifications",
   "/cms",
 ];
 
@@ -110,6 +111,21 @@ function isPublicPath(path: string): boolean {
 function isInternalPath(path: string): boolean {
   return INTERNAL_PREFIXES.some((p) => path === p || path.startsWith(p + "/"));
 }
+
+// Khách mở website lần đầu (TẢI TRANG mới ngay tại root / domain chính) → ưu tiên trang Cho thuê đồ.
+// Chỉ căn cứ URL lúc tải trang: điều hướng nội bộ của wouter KHÔNG nạp lại module này, nên khi khách
+// tự bấm menu "Trang chủ" sẽ không bị đẩy đi, và mở thẳng /san-pham/:slug hay deep-link khác cũng
+// không dính (lúc tải trang không ở root).
+const INITIAL_LOAD_AT_ROOT = (() => {
+  if (typeof window === "undefined") return false;
+  const base = import.meta.env.BASE_URL.replace(/\/$/, "");
+  let path = window.location.pathname;
+  if (base && path.startsWith(base)) path = path.slice(base.length);
+  return path === "" || path === "/" || path === "/trang-chu";
+})();
+
+// Chỉ ưu tiên Cho thuê đồ đúng 1 lần cho mỗi lần tải trang; sau đó để khách điều hướng tự do.
+let rootLandingConsumed = !INITIAL_LOAD_AT_ROOT;
 
 const RETURN_TO_KEY = "amazingStudioReturnTo_v1";
 
@@ -251,12 +267,14 @@ function InternalRouter() {
         <Route path="/facebook-inbox-ai" component={FacebookInboxAiPage} />
         <Route path="/ai-sale-scripts" component={AiSaleScriptsPage} />
         <Route path="/ai-test" component={AiTestRoomPage} />
-        <Route path="/claude-sale-test" component={() => <AdminRoute component={ClaudeSaleTestPage} />} />
+        {/* "Lulu Sale Test" gộp vào Lulu Brain Lab → tab "Sửa & Test Lulu". Giữ route để link/bookmark cũ tự chuyển hướng. */}
+        <Route path="/claude-sale-test" component={() => <Redirect to="/lulu-brain-lab?tab=fixtest" />} />
         <Route path="/claude-sale-settings" component={() => <AdminRoute component={ClaudeSaleSettingsPage} />} />
         <Route path="/claude-sale-monitor" component={() => <AdminRoute component={ClaudeSaleMonitorPage} />} />
         <Route path="/claude-sale-reengage" component={() => <AdminRoute component={ClaudeSaleReengagePage} />} />
         <Route path="/sale-learning" component={() => <AdminRoute component={SaleLearningPage} />} />
         <Route path="/lulu-human-review" component={() => <AdminRoute component={LuluHumanReviewPage} />} />
+        <Route path="/lulu-brain-lab" component={LuluBrainLabPage} />
         <Route path="/auto-post-facebook" component={() => <AdminRoute component={AutoPostFacebookPage} />} />
         <Route path="/notifications" component={NotificationsPage} />
         <Route path="/cms/home-settings" component={CmsHomeSettingsPage} />
@@ -307,6 +325,14 @@ function RedirectToLogin({ from }: { from: string }) {
   return <Redirect to="/login" />;
 }
 
+/** Mở website từ root → đưa khách sang /cho-thue-do. Dùng `replace` để không kẹt nút Back. */
+function RootLandingRedirect() {
+  useEffect(() => {
+    rootLandingConsumed = true;
+  }, []);
+  return <Redirect to="/cho-thue-do" replace />;
+}
+
 function RouterRoot() {
   const { viewer, authChecked } = useStaffAuth();
   const [location] = useLocation();
@@ -341,6 +367,10 @@ function RouterRoot() {
 
   // Public routes — khách lạ / link ẩn (chưa đăng nhập).
   if (isPublicPath(location)) {
+    // Lần đầu mở website từ root → ưu tiên trang Cho thuê đồ (studio đang đẩy mạnh cho thuê đồ).
+    if (!rootLandingConsumed && (location === "/" || location === "/trang-chu")) {
+      return <RootLandingRedirect />;
+    }
     return <PublicRouter />;
   }
 

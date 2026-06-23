@@ -22,6 +22,7 @@ import { getSaleContext, resolvePriceImagesByCodes, wantsNewConcept, getPhotoIde
 import { classifyCustomerImageIntent, buildImageRoutingBlock, type CustomerImageIntent } from "../lib/sale-vision";
 import { selectSampleImages, extractRecentSampleUrls, toPublicImageUrl, SAMPLES_EXHAUSTED_NOTE, type SampleImage } from "../lib/sale-samples";
 import { getActivePlaybook } from "../lib/sale-playbook";
+import { getActiveBrainRules } from "../lib/sale-brain-lab";
 import { getClaudeSaleSettings, computeReplyDelayMs } from "../lib/sale-settings";
 import { getScheduleContext } from "../lib/sale-calendar";
 import { getMasterEnabled } from "../lib/sale-master";
@@ -814,6 +815,7 @@ async function handleClaudeSaleReply(
       console.log(`[Vision] psid=${psid} ảnh → intent=${intent.service_intent} (conf=${intent.confidence})`);
     }
     const styleGuide = await getActivePlaybook();
+    const brainRules = await getActiveBrainRules();
     reply = await askClaudeForReply({
       apiKey,
       model: process.env.ANTHROPIC_MODEL?.trim() || undefined,
@@ -824,6 +826,7 @@ async function handleClaudeSaleReply(
       styleGuide,
       settings,
       scheduleContext,
+      brainRules,
     });
   } catch (err) {
     console.error(`[Claude] psid=${psid} lỗi gọi Claude:`, err);

@@ -6,6 +6,7 @@ import { getSaleContext, getSaleContextInfo, resolvePriceImagesByCodes, wantsNew
 import { classifyCustomerImageFromData, buildImageRoutingBlock } from "../lib/sale-vision";
 import { selectSampleImages, extractRecentSampleUrls, SAMPLES_EXHAUSTED_NOTE } from "../lib/sale-samples";
 import { getActivePlaybook } from "../lib/sale-playbook";
+import { getActiveBrainRules } from "../lib/sale-brain-lab";
 import { getClaudeSaleSettings, computeReplyDelayMs } from "../lib/sale-settings";
 import { getScheduleContext } from "../lib/sale-calendar";
 import { getMasterEnabled } from "../lib/sale-master";
@@ -124,6 +125,7 @@ router.post("/claude-sale-test/chat", async (req, res) => {
       }
     }
     const styleGuide = await getActivePlaybook();
+    const brainRules = await getActiveBrainRules();
     const settings = await getClaudeSaleSettings();
     let scheduleContext = "";
     if (settings.calendarEnabled) {
@@ -139,6 +141,7 @@ router.post("/claude-sale-test/chat", async (req, res) => {
       styleGuide,
       settings,
       scheduleContext,
+      brainRules,
     });
     const responseTimeMs = Date.now() - startedAt;
     // Ảnh bảng giá nhóm (theo marker <<PRICE_IMAGE: MÃ>> của Claude) → trả objectPath

@@ -350,6 +350,7 @@ router.post("/payments", async (req, res) => {
       .where(and(
         eq(paymentsTable.bookingId, bookingId),
         ne(paymentsTable.paymentType, "ad_hoc"),
+        ne(paymentsTable.paymentType, "refund"), // A4: refund không cộng như tiền thu
         sql`COALESCE(${paymentsTable.status}, 'active') != 'voided'`,
       ));
     const totalPaid = allPaid.reduce((s, p) => s + parseFloat(p.amount), 0);
@@ -490,7 +491,7 @@ router.post("/payments/sync-deposits", async (_req, res) => {
   const uniqueIds = [...new Set(affectedBookingIds)];
   for (const bkId of uniqueIds) {
     const paidResult = await pool.query(
-      `SELECT COALESCE(SUM(amount::numeric), 0) AS total_paid FROM payments WHERE booking_id = $1 AND COALESCE(status, 'active') != 'voided'`,
+      `SELECT COALESCE(SUM(amount::numeric), 0) AS total_paid FROM payments WHERE booking_id = $1 AND payment_type != 'refund' AND COALESCE(status, 'active') != 'voided'`,
       [bkId]
     );
     const totalPaid = parseFloat(paidResult.rows[0]?.total_paid || 0);
@@ -552,6 +553,7 @@ router.delete("/payments/:id", async (req, res) => {
       .where(and(
         eq(paymentsTable.bookingId, payment.bookingId),
         ne(paymentsTable.paymentType, "ad_hoc"),
+        ne(paymentsTable.paymentType, "refund"), // A4: refund không cộng như tiền thu
         sql`COALESCE(${paymentsTable.status}, 'active') != 'voided'`,
       ));
     const totalPaid = remainingPmts.reduce((s, p) => s + parseFloat(p.amount), 0);

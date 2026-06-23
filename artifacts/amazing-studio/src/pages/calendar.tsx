@@ -39,6 +39,7 @@ import { SurchargeEditor, type SurchargeItem } from "@/components/surcharge-edit
 import { DeductionEditor, type DeductionItem } from "@/components/deduction-editor";
 import { StaffAssignmentEditor, type StaffAssignment, newStaffAssignment } from "@/components/staff-assignment-editor";
 import { castAmountFromResult, lookupCastByPkg, resolveCastAmount } from "@/lib/resolve-cast";
+import { reflowDescriptionLines, firstDescriptionLine } from "@/lib/package-description";
 import OutfitBookingSection, { type OutfitDraft } from "@/components/outfit-booking-section";
 import AdditionalServicesSection, { validateAdditionalServicesForm, type AdditionalServiceLine, newAdditionalServiceLine } from "@/components/additional-services-section";
 
@@ -708,7 +709,7 @@ function lookupRate(staffId: number | null, role: string, taskKey: string, rates
   return 0;
 }
 
-function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRates, allCastRates, allStaff, onChange, onRemove, isAdmin, bookingId, serviceBookingId }: {
+function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRates, allCastRates, allStaff, onChange, onRemove, isAdmin, bookingId, serviceBookingId, onUploadStart, onUploadEnd }: {
   line: OrderLine;
   photographers: Staff[];
   makeupArtists: Staff[];
@@ -721,13 +722,64 @@ function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRa
   isAdmin: boolean;
   bookingId?: number | null;
   serviceBookingId?: number | null;
+  /** Báo cho form cha biết dòng này đang tải ảnh (để khoá nút Lưu, tránh mất ảnh). */
+  onUploadStart?: () => void;
+  onUploadEnd?: () => void;
 }) {
   const [useCustom, setUseCustom] = useState(!line.serviceId && !line.serviceKey && !!line.serviceName);
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
   const uploadingConcept = uploadProgress !== null;
   const [uploadConceptError, setUploadConceptError] = useState<string | null>(null);
+  const [failedConceptFiles, setFailedConceptFiles] = useState<File[]>([]);
   const [descExpanded, setDescExpanded] = useState(false);
   const conceptImgRef = useRef<HTMLInputElement>(null);
+  // Giữ tham chiếu "line" mới nhất + cờ đang-tải để: (1) gắn ảnh theo bản mới nhất (không clobber
+  // ghi chú), (2) giảm bộ đếm upload của form nếu dòng bị gỡ giữa chừng.
+  const lineRef = useRef(line); lineRef.current = line;
+  const conceptUploadingRef = useRef(false);
+  const onUploadEndRef = useRef(onUploadEnd); onUploadEndRef.current = onUploadEnd;
+  useEffect(() => () => { if (conceptUploadingRef.current) onUploadEndRef.current?.(); }, []);
+
+  // Upload TỪNG ảnh concept; gắn objectPath vào state NGAY sau mỗi ảnh xong (không mất ảnh).
+  // Báo form cha begin/end để khoá nút Lưu trong lúc tải. Ảnh lỗi → giữ lại để bấm Thử lại.
+  const runConceptUpload = async (files: File[]) => {
+    if (!files.length) return;
+    conceptUploadingRef.current = true;
+    onUploadStart?.();
+    setUploadProgress({ current: 0, total: files.length });
+    const baseImages = lineRef.current.conceptImages ?? [];
+    const uploaded: string[] = [];
+    const failed: File[] = [];
+    try {
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        setUploadProgress({ current: i + 1, total: files.length });
+        try {
+          const res = await authFetch(`${BASE}/api/storage/uploads/request-url`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ name: file.name, size: file.size, contentType: file.type }),
+          });
+          const { uploadURL, objectPath } = await res.json();
+          if (!uploadURL || !objectPath) throw new Error("Invalid response from storage service");
+          const putRes = await fetch(uploadURL, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
+          if (!putRes.ok) throw new Error(`Upload failed: ${putRes.status}`);
+          uploaded.push(objectPath);
+          // Gắn ngay vào state — giữ các field khác theo bản mới nhất (lineRef) để không đè ghi chú.
+          onChange({ ...lineRef.current, conceptImages: [...baseImages, ...uploaded] });
+        } catch (err) {
+          console.error("Concept image upload failed:", err);
+          failed.push(file);
+        }
+      }
+      setFailedConceptFiles(failed);
+      setUploadConceptError(failed.length ? `${failed.length} ảnh tải lỗi — bấm "Thử lại" để tải lại (ảnh đã tải vẫn được giữ).` : null);
+    } finally {
+      setUploadProgress(null);
+      conceptUploadingRef.current = false;
+      onUploadEnd?.();
+    }
+  };
 
   const selectedSvc = line.serviceKey ? services.find(s => s.key === line.serviceKey) : null;
   const isPkg = !!selectedSvc?.key?.startsWith("pkg-");
@@ -930,13 +982,13 @@ function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRa
           </button>
           {!descExpanded && (
             <p className="text-[10px] text-amber-600/80 mt-1 line-clamp-1 italic">
-              {selectedSvc.description.split("\n").filter(Boolean)[0] || "Bấm mũi tên để xem chi tiết"}
+              {firstDescriptionLine(selectedSvc.description) || "Bấm mũi tên để xem chi tiết"}
             </p>
           )}
           {descExpanded && (
             <>
               <div className="space-y-1 mt-1.5">
-                {selectedSvc.description.split("\n").filter(Boolean).map((descLine, i) => (
+                {reflowDescriptionLines(selectedSvc.description).map((descLine, i) => (
                   <p key={i} className="text-[10px] text-amber-700 leading-relaxed">{descLine}</p>
                 ))}
               </div>
@@ -1055,8 +1107,9 @@ function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRa
                     <ConceptImage src={src} alt={`concept ${i + 1}`} className="w-full h-full object-cover rounded-lg" />
                     <button
                       type="button"
+                      disabled={uploadingConcept}
                       onClick={() => onChange({ ...line, conceptImages: (line.conceptImages ?? []).filter((_, j) => j !== i) })}
-                      className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/60 rounded-full flex items-center justify-center text-white hover:bg-destructive transition-colors"
+                      className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/60 rounded-full flex items-center justify-center text-white hover:bg-destructive transition-colors disabled:opacity-40"
                     >
                       <X className="w-2.5 h-2.5" />
                     </button>
@@ -1076,7 +1129,18 @@ function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRa
               : <><Plus className="w-3 h-3" /> Thêm ảnh concept</>}
           </button>
           {uploadConceptError && (
-            <p className="text-xs text-red-500 mt-1">{uploadConceptError}</p>
+            <div className="mt-1 flex items-center gap-2 flex-wrap">
+              <p className="text-xs text-red-500">{uploadConceptError}</p>
+              {failedConceptFiles.length > 0 && !uploadingConcept && (
+                <button
+                  type="button"
+                  onClick={() => { const retry = failedConceptFiles; setFailedConceptFiles([]); void runConceptUpload(retry); }}
+                  className="text-xs text-primary underline"
+                >
+                  Thử lại {failedConceptFiles.length} ảnh lỗi
+                </button>
+              )}
+            </div>
           )}
           <input
             ref={conceptImgRef}
@@ -1084,48 +1148,15 @@ function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRa
             accept="image/*"
             multiple
             className="hidden"
-            onChange={async (e) => {
+            onChange={(e) => {
               const MAX = 20;
               const rawFiles = Array.from(e.target.files ?? []);
+              e.target.value = "";
               if (!rawFiles.length) return;
               const files = rawFiles.slice(0, MAX);
-              if (rawFiles.length > MAX) {
-                setUploadConceptError(`Chỉ upload tối đa ${MAX} ảnh mỗi lần (đã chọn ${rawFiles.length}).`);
-              } else {
-                setUploadConceptError(null);
-              }
-              const inputEl = e.target;
-              setUploadProgress({ current: 0, total: files.length });
-              const paths: string[] = [];
-              let firstErr: string | null = null;
-              try {
-                for (let i = 0; i < files.length; i++) {
-                  const file = files[i];
-                  setUploadProgress({ current: i + 1, total: files.length });
-                  try {
-                    const res = await authFetch(`${BASE}/api/storage/uploads/request-url`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ name: file.name, size: file.size, contentType: file.type }),
-                    });
-                    const { uploadURL, objectPath } = await res.json();
-                    if (!uploadURL || !objectPath) throw new Error("Invalid response from storage service");
-                    const putRes = await fetch(uploadURL, { method: "PUT", headers: { "Content-Type": file.type }, body: file });
-                    if (!putRes.ok) throw new Error(`Upload failed: ${putRes.status}`);
-                    paths.push(objectPath);
-                  } catch (err) {
-                    console.error(`Concept image ${i + 1} upload failed:`, err);
-                    if (!firstErr) firstErr = `Ảnh ${i + 1} tải thất bại — các ảnh còn lại vẫn được lưu.`;
-                  }
-                }
-                if (paths.length > 0) {
-                  onChange({ ...line, conceptImages: [...(line.conceptImages ?? []), ...paths] });
-                }
-                if (firstErr) setUploadConceptError(firstErr);
-              } finally {
-                setUploadProgress(null);
-                inputEl.value = "";
-              }
+              setUploadConceptError(rawFiles.length > MAX ? `Chỉ upload tối đa ${MAX} ảnh mỗi lần (đã chọn ${rawFiles.length}).` : null);
+              setFailedConceptFiles([]);
+              void runConceptUpload(files);
             }}
           />
         </div>
@@ -1338,6 +1369,20 @@ function ShowFormPanel({
   const [error, setError] = useState("");
   const [proofWarning, setProofWarning] = useState("");
   const [saving, setSaving] = useState(false);
+  // ── Lưới an toàn upload ảnh ──────────────────────────────────────────────────
+  // Đếm số ảnh đang tải ở các dòng dịch vụ (ảnh concept). Khi > 0 thì KHOÁ nút Lưu
+  // để tránh bấm "Cập nhật/Lưu show" lúc ảnh chưa upload xong → mất ảnh (bug đã gặp).
+  const [activeUploads, setActiveUploads] = useState(0);
+  const isUploadingImages = activeUploads > 0;
+  const beginUpload = useCallback(() => setActiveUploads(n => n + 1), []);
+  const endUpload = useCallback(() => setActiveUploads(n => Math.max(0, n - 1)), []);
+  // Cảnh báo khi rời trang / reload lúc ảnh đang tải (tránh mất ảnh).
+  useEffect(() => {
+    if (!isUploadingImages) return;
+    const handler = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [isUploadingImages]);
   const [outfitDrafts, setOutfitDrafts] = useState<OutfitDraft[]>([]);
   const hasSiblingEdit = siblingBookings.length > 0;
 
@@ -1578,7 +1623,14 @@ function ShowFormPanel({
   const depositNum = parseFloat(deposit) || 0;
   const discountNum = parseFloat(discount) || 0;
   const afterDiscount = Math.max(0, totalAmount - discountNum);
-  const remaining = Math.max(0, afterDiscount - depositNum);
+  // ── Đồng bộ tiền ───────────────────────────────────────────────────────────
+  // Khi SỬA đơn đã có thu tiền: dùng TỔNG ĐÃ THU thực tế (booking.paidAmount = tổng lịch sử
+  // thanh toán, do API tính), KHÔNG dùng cọc ban đầu → tránh "Còn lại" hiển thị sai.
+  // Tạo mới (hoặc sửa đơn chưa thu) thì vẫn dùng ô "Đặt cọc" như cũ.
+  const actualPaid = Number(booking?.paidAmount ?? 0) || 0;
+  const showActualPaid = isEdit && actualPaid > 0;
+  const effectivePaid = showActualPaid ? actualPaid : depositNum;
+  const remaining = Math.max(0, afterDiscount - effectivePaid);
 
   const handleSelectCustomer = (c: Customer) => {
     matchedNameRef.current = c.name ?? "";
@@ -1681,6 +1733,7 @@ function ShowFormPanel({
     setProofWarning("");
     if (!customerName.trim()) { setError("Vui lòng nhập tên khách hàng"); return; }
     if (!shootDate) { setError("Vui lòng chọn ngày hợp đồng"); return; }
+    if (isUploadingImages) { setError("Ảnh đang tải, vui lòng chờ tải xong để tránh mất ảnh."); return; }
     const extrasValidation = validateAdditionalServicesForm(
       subDrafts.flatMap(s => s.additionalServices || []).filter(l => (l.title || "").trim()),
     );
@@ -1696,7 +1749,10 @@ function ShowFormPanel({
         return true;
       });
     };
-    if (isEdit && isMulti && hasSiblingEdit) {
+    // Reconcile hợp đồng gộp phải chạy MIỄN LÀ đang sửa hợp đồng đã load siblings,
+    // kể cả khi xoá xuống còn 1 dịch vụ (isMulti=false) — nếu không, remove-child bị
+    // bỏ qua và dịch vụ đã gỡ vẫn sống sót trong DB + vẫn bị tính tiền.
+    if (isEdit && hasSiblingEdit) {
       setSaving(true);
       try {
         // Update customer info (avatar/name/phone/facebook/zalo) for multi-service edit
@@ -1754,6 +1810,36 @@ function ShowFormPanel({
               }),
             });
             if (!res.ok) throw new Error("Lỗi thêm dịch vụ mới");
+          }
+        }
+        // ── BUG FIX (tiền bạc): xoá các dịch vụ con đã bị gỡ khỏi form ──
+        // Trước đây vòng lặp trên CHỈ PUT sibling cũ + POST dịch vụ mới, KHÔNG xoá
+        // sibling user đã xoá khỏi form → child booking vẫn còn trong DB. Vì tổng
+        // của hợp đồng cha = Σ children (recalcParentTotalFromChildren ở backend),
+        // dịch vụ đã xoá vẫn bị tính tiền (đội tổng + còn lại lên). Phải gọi
+        // remove-child để xoá đúng. Chạy SAU vòng add/PUT để luôn còn ≥1 dịch vụ con
+        // (backend chặn xoá dịch vụ con cuối cùng).
+        if (booking?.id) {
+          const keptSiblingIds = new Set(
+            subDrafts
+              .map(s => s.siblingId)
+              .filter((v): v is number => typeof v === "number"),
+          );
+          const removedSiblingIds = siblingBookings
+            .map(s => s.id)
+            .filter(sid => !keptSiblingIds.has(sid));
+          for (const childId of removedSiblingIds) {
+            const delRes = await authFetch(`${BASE}/api/bookings/${booking.id}/remove-child/${childId}`, {
+              method: "DELETE",
+            });
+            // 404 = dịch vụ con đã KHÔNG còn là con hợp lệ của hợp đồng này (đã bị xoá
+            // trước đó / parentId lệch) → coi như đã gỡ xong, KHÔNG abort cả lượt lưu.
+            // Lỗi khác (400/500) vẫn ném ra để không che giấu sự cố thật.
+            if (!delRes.ok && delRes.status !== 404) {
+              const errBody = await delRes.json().catch(() => null);
+              throw new Error(errBody?.error || "Lỗi xoá dịch vụ đã gỡ khỏi hợp đồng");
+            }
+            qc.invalidateQueries({ queryKey: ["booking-full", childId] });
           }
         }
         // Sync booking-dresses for multi-service edit
@@ -2341,6 +2427,8 @@ function ShowFormPanel({
                             serviceBookingId={sub.siblingId ?? null}
                             onChange={updated => updateSubDraft(sub.id, { items: sub.items.map(l => l.tempId === line.tempId ? updated : l) })}
                             onRemove={sub.items.length > 1 ? () => updateSubDraft(sub.id, { items: sub.items.filter(l => l.tempId !== line.tempId) }) : undefined}
+                            onUploadStart={beginUpload}
+                            onUploadEnd={endUpload}
                           />
                         ))}
                         <button
@@ -2483,11 +2571,21 @@ function ShowFormPanel({
                   <span className="font-semibold text-emerald-600">{formatVND(afterDiscount)}</span>
                 </div>
               )}
-              <div className="flex justify-between items-center gap-3">
-                <span className="text-sm text-muted-foreground flex-shrink-0">Đặt cọc:</span>
-                <CurrencyInput className="h-8 text-sm text-right w-40" value={deposit} placeholder="0" onChange={setDeposit} />
-              </div>
-              {parseFloat(deposit) > 0 && (
+              {showActualPaid ? (
+                <>
+                  <div className="flex justify-between items-center gap-3">
+                    <span className="text-sm text-muted-foreground flex-shrink-0">Đã cọc / Đã thu:</span>
+                    <span className="font-semibold text-emerald-600">{formatVND(actualPaid)}</span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground -mt-1">Tổng đã thu theo lịch sử thanh toán. Muốn thu thêm / chỉnh, dùng nút <b>Thu tiền</b> ở chi tiết show (không sửa ở đây để tránh lệch tiền).</p>
+                </>
+              ) : (
+                <div className="flex justify-between items-center gap-3">
+                  <span className="text-sm text-muted-foreground flex-shrink-0">Đặt cọc:</span>
+                  <CurrencyInput className="h-8 text-sm text-right w-40" value={deposit} placeholder="0" onChange={setDeposit} />
+                </div>
+              )}
+              {!showActualPaid && parseFloat(deposit) > 0 && (
                 <div className="flex items-center gap-1.5">
                   <span className="text-xs text-muted-foreground flex-shrink-0">H.thức cọc:</span>
                   <div className="flex gap-1 ml-auto">
@@ -2504,7 +2602,7 @@ function ShowFormPanel({
                   </div>
                 </div>
               )}
-              {parseFloat(deposit) > 0 && (
+              {!showActualPaid && parseFloat(deposit) > 0 && (
                 <div className="space-y-1.5">
                   <div className="flex items-center gap-2">
                     <span className="text-xs text-muted-foreground whitespace-nowrap">Ngày cọc:</span>
@@ -2563,10 +2661,12 @@ function ShowFormPanel({
 
       {/* Footer */}
       <div className="px-4 py-3 border-t flex-shrink-0 bg-background/80 max-w-2xl mx-auto w-full">
-        <Button onClick={save} disabled={saving || !extrasFormValidation.ok} className="w-full gap-2 h-11">
+        <Button onClick={save} disabled={saving || isUploadingImages || !extrasFormValidation.ok} className="w-full gap-2 h-11">
           {saving
             ? <><span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang lưu...</>
-            : <><Save className="w-4 h-4" /> {isEdit ? "Cập nhật show" : "Lưu & tạo show"}</>
+            : isUploadingImages
+              ? <><span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang tải ảnh… (chờ tải xong để khỏi mất ảnh)</>
+              : <><Save className="w-4 h-4" /> {isEdit ? "Cập nhật show" : "Lưu & tạo show"}</>
           }
         </Button>
       </div>
@@ -3947,7 +4047,7 @@ function ShowDetailPanel({
                             {isCurrent && svcPkgDetail.description && (
                               <div className="px-3 py-1.5 border-b border-border/30 bg-gray-50/50 dark:bg-muted/10">
                                 <p className="text-[10px] font-bold text-foreground mb-1">Nội dung gói:</p>
-                                {svcPkgDetail.description.split("\n").filter(Boolean).map((line, i) => (
+                                {reflowDescriptionLines(svcPkgDetail.description).map((line, i) => (
                                   <p key={i} className="text-[11px] text-foreground leading-relaxed">{line}</p>
                                 ))}
                               </div>

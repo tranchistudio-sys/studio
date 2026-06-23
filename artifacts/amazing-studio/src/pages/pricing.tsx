@@ -9,6 +9,7 @@ import {
   Film, Heart, Printer, Zap, Pencil, Save, ChevronUp, ArrowUp, ArrowDown
 } from "lucide-react";
 import { formatVND } from "@/lib/utils";
+import { reflowDescriptionLines } from "@/lib/package-description";
 import { Button, Input, Badge } from "@/components/ui";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { MultiImageUploader } from "@/components/cms-shared";
@@ -642,7 +643,7 @@ export default function PricingPage() {
                               <div className="mt-2 bg-amber-50 rounded-lg px-2 py-1.5">
                                 <p className="text-[10px] font-semibold text-amber-800 mb-0.5">📋 Mô tả</p>
                                 <div className="space-y-0.5">
-                                  {pkg.description.split("\n").filter(Boolean).map((line, i) => (
+                                  {reflowDescriptionLines(pkg.description).map((line, i) => (
                                     <p key={i} className="text-[10px] text-amber-700 leading-relaxed">{line}</p>
                                   ))}
                                 </div>

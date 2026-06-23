@@ -87,7 +87,7 @@ export default function CmsHomeSettingsPage() {
           <div>
             <h1 className="text-lg font-semibold text-foreground">Cài đặt Trang chủ</h1>
             <p className="text-xs text-muted-foreground">
-              Nội dung hero, giới thiệu, ảnh nổi bật — không lấy từ Concept ảnh
+              Nội dung hero, giới thiệu, ảnh nổi bật — không lấy từ Ảnh sản phẩm thật
             </p>
           </div>
         </div>
@@ -215,7 +215,7 @@ export default function CmsHomeSettingsPage() {
           <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Ảnh nổi bật</h2>
           <CmsImageField
             label="Ảnh concept nổi bật (trang chủ)"
-            hint="Không đồng bộ từ CMS Concept ảnh"
+            hint="Không đồng bộ từ CMS Ảnh sản phẩm thật"
             value={form.featuredConceptImageUrl}
             onChange={(v) => set("featuredConceptImageUrl", v)}
             aspect="video"

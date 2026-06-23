@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { reflowDescriptionLines } from "@/lib/package-description";
 
 export type ServiceSurcharge = { name?: string; label?: string; amount: number };
 export type ServiceDeduction = { label: string; amount: number };
@@ -168,7 +169,7 @@ export function renderServiceBreakdownCardHTML({
   hidePrice = false,
   ...priceProps
 }: ServiceBreakdownCardHTMLProps): string {
-  const descLines = description ? description.split("\n").filter(Boolean) : [];
+  const descLines = reflowDescriptionLines(description);
   const descHTML = descLines.length > 0
     ? `<div style="padding:8px 16px;border-bottom:1px solid #eee;font-size:11px;color:#222;">
           <div style="font-weight:700;font-size:10px;color:#111;margin-bottom:4px;">Nội dung gói:</div>
@@ -204,7 +205,7 @@ export function ServiceBreakdownCard({
   className = "",
 }: ServiceBreakdownCardProps) {
   const styles = VARIANTS[variant];
-  const descLines = description ? description.split("\n").filter(Boolean) : [];
+  const descLines = reflowDescriptionLines(description);
   return (
     <div className={`rounded-lg border ${styles.border} overflow-hidden mb-2 last:mb-0 ${className}`}>
       <div className={`px-3 py-2 ${styles.headerBg}`}>

@@ -285,7 +285,7 @@ function PendingCard({ post, notify }: { post: Post; notify: Notify }) {
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-semibold truncate">{post.poolTitle ?? `Bài #${post.id}`}</span>
             <Badge variant="secondary">{ctLabel(post.contentType)}</Badge>
-            {post.images?.length > 1 && <Badge variant="outline">{post.images.length} ảnh</Badge>}
+            {(post.images?.length ?? 0) >= 1 && <Badge variant="outline">{post.images!.length} ảnh</Badge>}
           </div>
           <p className="text-xs text-muted-foreground mt-1">Chọn 1 trong {options.length} caption, sửa nếu cần rồi đặt giờ đăng.</p>
           {warn && (
@@ -566,7 +566,7 @@ function makeSlots(times: string[]): Slot[] {
   return times.map((t, i) => ({
     postTime: t,
     contentType: ROTATION[i % ROTATION.length],
-    imageCount: 1,
+    imageCount: 10, // giữ nhiều ảnh/bài (2–10); trước đây = 1 nên bài rớt còn ảnh bìa
     sourcePriority: "app_web",
     enabled: true,
     sortOrder: i,
@@ -637,7 +637,7 @@ function ScheduleDialog({ schedule, onClose, notify }: { schedule: Schedule | nu
   const updateSlot = (i: number, patch: Partial<Slot>) =>
     setSlots((arr) => arr.map((s, idx) => (idx === i ? { ...s, ...patch } : s)));
   const removeSlot = (i: number) => setSlots((arr) => arr.filter((_, idx) => idx !== i));
-  const addSlot = () => setSlots((arr) => [...arr, { postTime: "12:00", contentType: "vay_cuoi", imageCount: 1, sourcePriority: "app_web", enabled: true, sortOrder: arr.length }]);
+  const addSlot = () => setSlots((arr) => [...arr, { postTime: "12:00", contentType: "vay_cuoi", imageCount: 10, sourcePriority: "app_web", enabled: true, sortOrder: arr.length }]);
 
   const onSave = async () => {
     try {
@@ -678,7 +678,7 @@ function ScheduleDialog({ schedule, onClose, notify }: { schedule: Schedule | nu
                   <SelectTrigger className="flex-1"><SelectValue /></SelectTrigger>
                   <SelectContent>{CONTENT_TYPES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}</SelectContent>
                 </Select>
-                <Input type="number" min={1} max={50} value={s.imageCount} onChange={(e) => updateSlot(i, { imageCount: Number(e.target.value) || 1 })} className="w-[64px]" title="Số ảnh" />
+                <Input type="number" min={2} max={10} value={s.imageCount} onChange={(e) => updateSlot(i, { imageCount: Number(e.target.value) || 10 })} className="w-[64px]" title="Số ảnh mỗi bài (2–10)" />
                 <Switch checked={s.enabled} onCheckedChange={(v) => updateSlot(i, { enabled: v })} />
                 <Button size="sm" variant="ghost" className="text-destructive" onClick={() => removeSlot(i)}><X className="w-3.5 h-3.5" /></Button>
               </div>
@@ -745,6 +745,7 @@ function ScheduledTab({ notify }: { notify: Notify }) {
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <Badge variant="secondary">{ctLabel(p.contentType)}</Badge>
+              {(p.images?.length ?? 0) >= 1 && <Badge variant="outline">{p.images!.length} ảnh</Badge>}
               <span className="text-xs text-muted-foreground flex items-center gap-1"><Clock className="w-3 h-3" /> {fmtDateTime(p.scheduledAt)}</span>
             </div>
             <p className="text-sm mt-1 line-clamp-2 whitespace-pre-wrap">{p.captionFinal}</p>

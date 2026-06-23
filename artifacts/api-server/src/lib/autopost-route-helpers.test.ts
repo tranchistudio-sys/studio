@@ -4,6 +4,8 @@ import {
   sha1,
   poolRowToCaptionItem,
   clampImages,
+  DEFAULT_POST_IMAGES,
+  resolveSlotImageCount,
 } from "./autopost-route-helpers";
 
 describe("isValidStatus", () => {
@@ -110,5 +112,37 @@ describe("clampImages", () => {
   });
   it("treats count<1 as 1", () => {
     expect(clampImages(["a", "b"], 0)).toEqual(["a"]);
+  });
+
+  it("keeps all 7 images of an album when using the default cap", () => {
+    const seven = Array.from({ length: 7 }, (_, i) => `img${i}.jpg`);
+    expect(clampImages(seven, DEFAULT_POST_IMAGES)).toEqual(seven); // 7 <= 10 → giữ đủ
+  });
+
+  it("caps a large album at the default (10) image budget", () => {
+    const many = Array.from({ length: 31 }, (_, i) => `img${i}.jpg`);
+    expect(clampImages(many, DEFAULT_POST_IMAGES)).toHaveLength(10);
+  });
+});
+
+describe("DEFAULT_POST_IMAGES", () => {
+  it("is 10 (2–10 ảnh/bài, không spam 50)", () => {
+    expect(DEFAULT_POST_IMAGES).toBe(10);
+  });
+});
+
+describe("resolveSlotImageCount", () => {
+  it("respects an explicit cap >= 2", () => {
+    expect(resolveSlotImageCount(3)).toBe(3);
+    expect(resolveSlotImageCount(10)).toBe(10);
+  });
+  it("treats the buggy old default (1), 0, null/undefined as DEFAULT_POST_IMAGES", () => {
+    expect(resolveSlotImageCount(1)).toBe(DEFAULT_POST_IMAGES);
+    expect(resolveSlotImageCount(0)).toBe(DEFAULT_POST_IMAGES);
+    expect(resolveSlotImageCount(null)).toBe(DEFAULT_POST_IMAGES);
+    expect(resolveSlotImageCount(undefined)).toBe(DEFAULT_POST_IMAGES);
+  });
+  it("handles non-numeric input as DEFAULT_POST_IMAGES (never NaN)", () => {
+    expect(resolveSlotImageCount("abc")).toBe(DEFAULT_POST_IMAGES);
   });
 });

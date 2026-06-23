@@ -22,6 +22,7 @@ import {
   sha1,
   poolRowToCaptionItem,
   clampImages,
+  DEFAULT_POST_IMAGES,
 } from "../lib/autopost-route-helpers";
 import { describeDryRun, patchAutopostConfig, getAutopostConfig } from "../lib/autopost-config";
 import { pickRelevantSamples, getSamplesByIds, buildStyleBlock, ocrImageToText, topicForContentType, styleTopicLabel, isValidStyleTopic } from "../lib/autopost-style";
@@ -396,9 +397,11 @@ router.post("/autopost/posts/generate", async (req: Request, res: Response) => {
       return;
     }
 
-    // (5) Ảnh + page id. MẶC ĐỊNH lấy TẤT CẢ ảnh của item (tối đa MAX_PHOTOS) để
-    // 1 bài có nhiều ảnh; chỉ giới hạn khi client truyền imageCount cụ thể.
-    const images = clampImages(item.images, Number(imageCount) || MAX_PHOTOS);
+    // (5) Ảnh + page id. MẶC ĐỊNH giữ NHIỀU ảnh của item (tối đa DEFAULT_POST_IMAGES
+    // = 10 ảnh/bài) để 1 bài có nhiều ảnh thay vì chỉ ảnh bìa; chỉ giới hạn khác khi
+    // client truyền imageCount cụ thể. Mọi trường hợp vẫn bị trần MAX_PHOTOS (50) chặn.
+    const images = clampImages(item.images, Math.min(Number(imageCount) || DEFAULT_POST_IMAGES, MAX_PHOTOS));
+    console.log(`[AutoPost] create draft sourceImages=${item.images.length} savedImages=${images.length}`);
     let pageId: string | null = (cfg.defaultPageId as string | undefined) ?? null;
     if (scheduleId) {
       const schR = await pool.query(`SELECT page_id FROM autopost_schedules WHERE id = $1`, [

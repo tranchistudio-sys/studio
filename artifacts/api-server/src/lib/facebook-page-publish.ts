@@ -125,10 +125,14 @@ export async function publishToPage(p: {
   // Log URL ảnh CUỐI CÙNG gửi cho Facebook — giúp chẩn đoán lỗi "(#100) url ...".
   for (const u of urls) console.log("[AutoPost] FINAL IMAGE URL:", u);
 
+  // 0/1 ảnh → đăng đơn (single); >=2 ảnh → đăng đa ảnh trong 1 bài (multi-photo).
+  const mode = urls.length >= 2 ? "multi-photo" : "single";
+  console.log(`[AutoPost] publish facebook images=${urls.length} mode=${mode}`);
+
   // Dry-run: ENV THẮNG → DB (autopost_settings.config.dryRun) → mặc định BẬT.
   if (await resolveDryRun()) {
     console.log(
-      "[AutoPost][DRY_RUN] page=" + pageId + " imgs=" + urls.length + " caption=" + p.message.slice(0, 60),
+      `[AutoPost][DRY_RUN] sẽ đăng images=${urls.length} mode=${mode} page=${pageId} caption=${p.message.slice(0, 60)}`,
     );
     return { postId: "dryrun_" + Date.now(), permalink: null, dryRun: true };
   }

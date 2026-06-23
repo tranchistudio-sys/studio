@@ -80,6 +80,33 @@ describe("publishToPage", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("DRY-RUN with 7 images: logs multi-photo + 'sẽ đăng 7 ảnh', posts nothing", async () => {
+    delete process.env.AUTOPOST_DRY_RUN;
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const imageUrls = Array.from({ length: 7 }, (_, i) => `img${i}.jpg`);
+    const result = await publishToPage({ message: "hi", imageUrls });
+
+    expect(result.dryRun).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled(); // DRY_RUN: không gọi Graph API
+    const logs = logSpy.mock.calls.map((c) => c.join(" "));
+    expect(logs.some((l) => l.includes("publish facebook images=7 mode=multi-photo"))).toBe(true);
+    expect(logs.some((l) => l.includes("[AutoPost][DRY_RUN] sẽ đăng images=7 mode=multi-photo"))).toBe(true);
+  });
+
+  it("logs mode=single for a 1-image post", async () => {
+    delete process.env.AUTOPOST_DRY_RUN;
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.stubGlobal("fetch", vi.fn());
+
+    await publishToPage({ message: "hi", imageUrls: ["only.jpg"] });
+
+    const logs = logSpy.mock.calls.map((c) => c.join(" "));
+    expect(logs.some((l) => l.includes("publish facebook images=1 mode=single"))).toBe(true);
+  });
+
   it("single image: HEAD-checks then posts to /<pageId>/photos once", async () => {
     process.env.AUTOPOST_DRY_RUN = "false";
     const fetchMock = headOkThenPost(() =>

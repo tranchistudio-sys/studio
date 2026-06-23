@@ -25,7 +25,7 @@ import { pool } from "@workspace/db";
 import { publishToPage, isDryRun } from "./lib/facebook-page-publish";
 import { generateCaptions } from "./lib/autopost-caption";
 import { emitNotification } from "./routes/notifications";
-import { poolRowToCaptionItem, clampImages, sha1 } from "./lib/autopost-route-helpers";
+import { poolRowToCaptionItem, clampImages, sha1, resolveSlotImageCount } from "./lib/autopost-route-helpers";
 import { getBrandFooter, appendFooter } from "./lib/autopost-brand";
 import { getDefaultSignatureContent, appendSignature } from "./lib/autopost-signature";
 import { stripContacts } from "./lib/autopost-sanitize";
@@ -418,7 +418,10 @@ export async function generatePendingPosts(nowMs: number = Date.now()): Promise<
           continue;
         }
 
-        const images = clampImages(item.images, Number(slot.image_count) || 1);
+        // Số ảnh/bài: TÔN TRỌNG khi slot đặt rõ >=2; còn 0/1/null (giá trị mặc định
+        // cũ vốn gây rớt còn 1 ảnh) → giữ NHIỀU ảnh theo DEFAULT_POST_IMAGES.
+        const images = clampImages(item.images, resolveSlotImageCount(slot.image_count));
+        console.log(`[AutoPost] create draft (auto) sourceImages=${item.images.length} savedImages=${images.length} slot=#${slot.id}`);
         const captionOptions = result.captions.map((c) => ({ text: c.text, flags: c.flags }));
         const pageId = sch.page_id ?? defaultPageId;
         try {

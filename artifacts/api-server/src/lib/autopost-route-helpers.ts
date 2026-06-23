@@ -98,3 +98,20 @@ export function clampImages(images: string[], count: number): string[] {
   );
   return valid.slice(0, max);
 }
+
+/**
+ * Số ảnh MẶC ĐỊNH cho 1 bài đăng khi không có giới hạn cụ thể (admin tạo bài thủ
+ * công, hoặc slot lịch chưa đặt số ảnh). Trước đây mặc định = 1 → bài rớt còn ảnh
+ * bìa dù item có nhiều ảnh. Đặt = 10 theo yêu cầu "2–10 ảnh/bài" — đủ cho 1 album
+ * thường mà không spam 50 ảnh. Trần tuyệt đối vẫn là MAX_PHOTOS (50) ở publisher.
+ */
+export const DEFAULT_POST_IMAGES = 10;
+
+/**
+ * Số ảnh hiệu lực cho 1 slot lịch tự sinh. TÔN TRỌNG khi admin đặt rõ >=2;
+ * còn 0/1/null (vốn là giá trị mặc định CŨ gây rớt còn 1 ảnh) → DEFAULT_POST_IMAGES.
+ */
+export function resolveSlotImageCount(slotImageCount: unknown): number {
+  const n = Number(slotImageCount);
+  return Number.isFinite(n) && n >= 2 ? n : DEFAULT_POST_IMAGES;
+}

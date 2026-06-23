@@ -4,7 +4,7 @@ import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { Card, CardContent, Input, Button, Textarea } from "@/components/ui";
 import { CurrencyInput } from "@/components/ui/currency-input";
 import { Save, Store, Mail, Phone, MapPin, Building, Clock, Navigation, Loader2, LocateFixed, CheckCircle2, AlertCircle, Bot, MessageSquare, Wrench, Volume2, Play, Vibrate, VolumeX, Wifi } from "lucide-react";
-import { SUCCESS_RINGTONES, NOTIF_RINGTONES, getSoundSettings, setSoundSettings, previewRingtone, type RingtonePreset } from "@/lib/feedback";
+import { RINGTONE_LIBRARY, SOUND_EVENTS, getEventSoundId, setEventSoundId, getSoundSettings, setSoundSettings, previewRingtone, type RingtonePreset, type SoundEvent } from "@/lib/feedback";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -159,6 +159,9 @@ function StudioMap({ lat, lng, radius }: { lat: number; lng: number; radius: num
 function SoundSettingsCard() {
   const [settings, setLocal] = useState(getSoundSettings);
   const [playingId, setPlayingId] = useState<string | null>(null);
+  const [eventSel, setEventSel] = useState<Record<string, string>>(() =>
+    Object.fromEntries(SOUND_EVENTS.map((e) => [e.key, getEventSoundId(e.key)])),
+  );
   const isIOS = typeof navigator !== "undefined" && /iPad|iPhone|iPod/.test(navigator.userAgent);
   const supportsVibration = typeof navigator !== "undefined" && !!navigator.vibrate && !isIOS;
 
@@ -171,6 +174,12 @@ function SoundSettingsCard() {
     setPlayingId(preset.id);
     previewRingtone(preset, settings.volume);
     setTimeout(() => setPlayingId(null), 600);
+  };
+
+  const pickForEvent = (ev: SoundEvent, preset: RingtonePreset) => {
+    setEventSoundId(ev.key, preset.id);
+    setEventSel((m) => ({ ...m, [ev.key]: preset.id }));
+    if (preset.id !== "none") preview(preset);
   };
 
   return (
@@ -226,43 +235,38 @@ function SoundSettingsCard() {
           )}
         </div>
 
-        <div className="space-y-3">
-          <label className="text-sm font-medium">Tiếng khi tạo/cập nhật show, thu tiền</label>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {SUCCESS_RINGTONES.map(r => (
-              <button
-                key={r.id}
-                onClick={() => { update({ successRingtone: r.id }); if (r.id !== "none") preview(r); }}
-                className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 text-sm transition-all ${settings.successRingtone === r.id ? "border-primary bg-primary/10 text-primary font-medium ring-1 ring-primary/30" : "border-border hover:border-primary/40 hover:bg-muted/50"}`}
-              >
-                {r.id !== "none" && (
-                  <Play className={`w-3.5 h-3.5 shrink-0 ${playingId === r.id ? "text-primary animate-pulse" : "text-muted-foreground"}`} />
-                )}
-                {r.id === "none" && <VolumeX className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />}
-                <span className="truncate">{r.label}</span>
-              </button>
-            ))}
-          </div>
+        <div className="space-y-1">
+          <p className="text-sm font-semibold">Âm thanh cho từng sự kiện</p>
+          <p className="text-xs text-muted-foreground">Mỗi sự kiện chọn 1 tiếng riêng — nghe là biết ngay. Bấm vào tiếng để nghe thử &amp; chọn luôn.</p>
         </div>
 
-        <div className="space-y-3">
-          <label className="text-sm font-medium">Tiếng thông báo mới (chuông)</label>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            {NOTIF_RINGTONES.map(r => (
-              <button
-                key={r.id}
-                onClick={() => { update({ notifRingtone: r.id }); if (r.id !== "none") preview(r); }}
-                className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 text-sm transition-all ${settings.notifRingtone === r.id ? "border-primary bg-primary/10 text-primary font-medium ring-1 ring-primary/30" : "border-border hover:border-primary/40 hover:bg-muted/50"}`}
-              >
-                {r.id !== "none" && (
-                  <Play className={`w-3.5 h-3.5 shrink-0 ${playingId === r.id ? "text-primary animate-pulse" : "text-muted-foreground"}`} />
-                )}
-                {r.id === "none" && <VolumeX className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />}
-                <span className="truncate">{r.label}</span>
-              </button>
-            ))}
+        {SOUND_EVENTS.map((ev) => (
+          <div key={ev.key} className="space-y-2 border-t pt-4">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <label className="text-sm font-medium">{ev.label}</label>
+              {!ev.wired && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-500 border border-amber-200 dark:border-amber-800">chưa bật</span>
+              )}
+            </div>
+            {ev.hint && <p className="text-xs text-muted-foreground -mt-1">{ev.hint}</p>}
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-64 overflow-auto pr-1">
+              {RINGTONE_LIBRARY.map((r) => (
+                <button
+                  key={r.id}
+                  onClick={() => pickForEvent(ev, r)}
+                  className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 text-sm transition-all ${eventSel[ev.key] === r.id ? "border-primary bg-primary/10 text-primary font-medium ring-1 ring-primary/30" : "border-border hover:border-primary/40 hover:bg-muted/50"}`}
+                >
+                  {r.id !== "none" ? (
+                    <Play className={`w-3.5 h-3.5 shrink-0 ${playingId === r.id ? "text-primary animate-pulse" : "text-muted-foreground"}`} />
+                  ) : (
+                    <VolumeX className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className="truncate">{r.label}</span>
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
+        ))}
       </CardContent>
     </Card>
   );

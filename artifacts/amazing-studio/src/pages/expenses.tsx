@@ -244,7 +244,7 @@ export default function ExpensesPage() {
       qc.invalidateQueries({ queryKey: ["expense-stats"] });
       const bid = variables.bookingId as number | null | undefined;
       if (bid) qc.invalidateQueries({ queryKey: ["booking-full", bid] });
-      paymentFeedback();
+      paymentFeedback("out");
       resetForm();
     },
   });
@@ -302,7 +302,7 @@ export default function ExpensesPage() {
       qc.invalidateQueries({ queryKey: ["expense-stats"] });
       setViewDetail(prev => prev ? { ...prev, status: data.status } : null);
       setPayDialog(null);
-      paymentFeedback();
+      paymentFeedback("out");
     },
   });
 

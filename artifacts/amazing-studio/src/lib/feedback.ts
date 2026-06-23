@@ -87,173 +87,151 @@ export interface RingtonePreset {
   play: (vol: number) => void;
 }
 
-export const SUCCESS_RINGTONES: RingtonePreset[] = [
-  {
-    id: "tri-tone",
-    label: "Tinh tinh (iPhone)",
-    play: (vol) => {
-      playTone(1318, 0.18, vol * 0.55, "sine", 0);
-      playTone(1056, 0.18, vol * 0.5, "sine", 0.13);
-      playTone(1568, 0.28, vol * 0.55, "sine", 0.26);
-    },
-  },
-  {
-    id: "ting-classic",
-    label: "Ting cổ điển",
-    play: (vol) => {
-      playTone(880, 0.12, vol * 0.6, "sine", 0);
-      playTone(1100, 0.12, vol * 0.5, "sine", 0.1);
-      playTone(1320, 0.18, vol * 0.6, "sine", 0.2);
-    },
-  },
-  {
-    id: "coin",
-    label: "Đồng xu",
-    play: (vol) => {
-      playTone(988, 0.08, vol * 0.5, "square", 0);
-      playTone(1319, 0.15, vol * 0.4, "square", 0.08);
-    },
-  },
-  {
-    id: "chime",
-    label: "Chuông gió",
-    play: (vol) => {
-      playTone(1047, 0.2, vol * 0.35, "sine", 0);
-      playTone(1319, 0.2, vol * 0.3, "sine", 0.15);
-      playTone(1568, 0.3, vol * 0.35, "sine", 0.3);
-    },
-  },
-  {
-    id: "pop",
-    label: "Pop",
-    play: (vol) => {
-      playTone(600, 0.06, vol * 0.5, "sine", 0);
-      playTone(900, 0.1, vol * 0.4, "sine", 0.06);
-    },
-  },
-  {
-    id: "marimba",
-    label: "Marimba",
-    play: (vol) => {
-      playTone(523, 0.12, vol * 0.5, "triangle", 0);
-      playTone(659, 0.12, vol * 0.45, "triangle", 0.12);
-      playTone(784, 0.18, vol * 0.5, "triangle", 0.24);
-    },
-  },
-  {
-    id: "bell",
-    label: "Chuông nhà thờ",
-    play: (vol) => {
-      playTone(440, 0.4, vol * 0.5, "sine", 0);
-      playTone(554, 0.35, vol * 0.3, "sine", 0.05);
-      playTone(660, 0.3, vol * 0.2, "sine", 0.1);
-    },
-  },
-  {
-    id: "none",
-    label: "Tắt tiếng",
-    play: () => {},
-  },
+// ── Âm thanh mp3 tùy chỉnh của studio (đặt trong public/sounds/custom/) ──
+// Thêm âm thanh mới: bỏ file .mp3 vào folder đó rồi thêm 1 dòng {id,label,file} vào mảng dưới.
+// Tất cả quản lý 1 nơi: Cài đặt → Âm thanh & Rung (dùng được cho mọi sự kiện).
+const CUSTOM_SOUND_DIR = `${APP_BASE}/sounds/custom`;
+const CUSTOM_SOUNDS: { id: string; label: string; file: string }[] = [
+  { id: "custom-an-ui", label: "AN UI", file: "an-ui.mp3" },
+  { id: "custom-cai-gi-co", label: "CAI GI CO", file: "cai-gi-co.mp3" },
+  { id: "custom-chan-1", label: "chan 1", file: "chan-1.mp3" },
+  { id: "custom-cho-1ti", label: "CHO 1TI", file: "cho-1ti.mp3" },
+  { id: "custom-chong-mat-nhuc-au-xoay-tron-chuyen-canh", label: "chong măt nhuc đầu xoay tròn chuyển cảnh", file: "chong-mat-nhuc-au-xoay-tron-chuyen-canh.mp3" },
+  { id: "custom-chu-y-2", label: "CHU Y 2", file: "chu-y-2.mp3" },
+  { id: "custom-chu-ye", label: "CHU YE", file: "chu-ye.mp3" },
+  { id: "custom-cuoi-sac-sua", label: "CUOI SAC SUA", file: "cuoi-sac-sua.mp3" },
+  { id: "custom-cai-gi-co-2", label: "CÁI GI CO", file: "cai-gi-co-2.mp3" },
+  { id: "custom-dam-vo-mat", label: "DAM VO MAT", file: "dam-vo-mat.mp3" },
+  { id: "custom-dragon-studio-simple-whoosh-382724", label: "dragon studio simple whoosh 382724", file: "dragon-studio-simple-whoosh-382724.mp3" },
+  { id: "custom-dragon-studio-whoosh-cinematic-376875", label: "dragon studio whoosh cinematic 376875", file: "dragon-studio-whoosh-cinematic-376875.mp3" },
+  { id: "custom-dragon-studio-whoosh-cinematic-sound-effect-376889", label: "dragon studio whoosh cinematic sound effect 376889", file: "dragon-studio-whoosh-cinematic-sound-effect-376889.mp3" },
+  { id: "custom-dragon-studio-whoosh-effect-382717", label: "dragon studio whoosh effect 382717", file: "dragon-studio-whoosh-effect-382717.mp3" },
+  { id: "custom-dry-fart", label: "dry fart", file: "dry-fart.mp3" },
+  { id: "custom-goi-goi-toi-cong-chuyen-1", label: "goi goi toi cong chuyen (1)", file: "goi-goi-toi-cong-chuyen-1.mp3" },
+  { id: "custom-kha-banh-ao-that-day", label: "kha banh ao that day", file: "kha-banh-ao-that-day.mp3" },
+  { id: "custom-kho-hieu", label: "KHO HIEU", file: "kho-hieu.mp3" },
+  { id: "custom-lang-man", label: "LANG MAN", file: "lang-man.mp3" },
+  { id: "custom-linda-jz-ma", label: "linda jz ma", file: "linda-jz-ma.mp3" },
+  { id: "custom-linda-oi-j-z-troi", label: "linda oi j z troi", file: "linda-oi-j-z-troi.mp3" },
+  { id: "custom-linda-xin-chao-tro-lai", label: "linda xin chao tro lai", file: "linda-xin-chao-tro-lai.mp3" },
+  { id: "custom-ma-thuat", label: "MA THUAT", file: "ma-thuat.mp3" },
+  { id: "custom-may-anh", label: "MAY ANH", file: "may-anh.mp3" },
+  { id: "custom-miraclei-tiktok-slide-ping1-sample-kofi-by-miraclei-360035", label: "miraclei tiktok slide ping1 sample kofi by miraclei 360035", file: "miraclei-tiktok-slide-ping1-sample-kofi-by-miraclei-360035.mp3" },
+  { id: "custom-oi-gioi-oi", label: "OI GIOI OI", file: "oi-gioi-oi.mp3" },
+  { id: "custom-sad-meow-song", label: "sad meow song", file: "sad-meow-song.mp3" },
+  { id: "custom-tieng-chuong-tinh-tao", label: "TIENG CHUONG TINH TAO", file: "tieng-chuong-tinh-tao.mp3" },
+  { id: "custom-tra-tien", label: "TRA TIEN", file: "tra-tien.mp3" },
+  { id: "custom-tre-reop-ho", label: "TRE REOP HO", file: "tre-reop-ho.mp3" },
+  { id: "custom-troi-oi-cuu-tui-troi-oi", label: "troi oi cuu tui troi oi", file: "troi-oi-cuu-tui-troi-oi.mp3" },
+  { id: "custom-troi-troi-no-lam-gi-kho-coi-troi", label: "troi troi no lam gi kho coi troi", file: "troi-troi-no-lam-gi-kho-coi-troi.mp3" },
+  { id: "custom-wao-dep", label: "WAO DEP", file: "wao-dep.mp3" },
+  { id: "custom-oi", label: "ÓI", file: "oi.mp3" },
 ];
 
-export const NOTIF_RINGTONES: RingtonePreset[] = [
-  {
-    id: "iphone-note",
-    label: "Tinh tinh (iPhone)",
-    play: (vol) => {
-      playTone(1318, 0.18, vol * 0.95, "sine", 0);
-      playTone(1568, 0.3, vol * 0.95, "sine", 0.1);
-    },
-  },
-  {
-    id: "iphone-tri",
-    label: "Tri-tone iPhone",
-    play: (vol) => {
-      playTone(1318, 0.18, vol * 0.95, "sine", 0);
-      playTone(1056, 0.18, vol * 0.9, "sine", 0.12);
-      playTone(1568, 0.28, vol * 0.95, "sine", 0.24);
-    },
-  },
-  {
-    id: "soft-bell",
-    label: "Chuông nhẹ",
-    play: (vol) => {
-      playTone(660, 0.18, vol * 0.95, "sine", 0);
-      playTone(880, 0.24, vol * 0.85, "sine", 0.15);
-    },
-  },
-  {
-    id: "drop",
-    label: "Giọt nước",
-    play: (vol) => {
-      playTone(1200, 0.1, vol * 0.85, "sine", 0);
-      playTone(800, 0.18, vol * 0.8, "sine", 0.08);
-    },
-  },
-  {
-    id: "bubble",
-    label: "Bong bóng",
-    play: (vol) => {
-      playTone(400, 0.12, vol * 0.85, "sine", 0);
-      playTone(600, 0.1, vol * 0.8, "sine", 0.08);
-      playTone(500, 0.14, vol * 0.75, "sine", 0.14);
-    },
-  },
-  {
-    id: "ding",
-    label: "Ding đơn",
-    play: (vol) => {
-      playTone(880, 0.3, vol * 0.95, "sine", 0);
-    },
-  },
-  {
-    id: "alert",
-    label: "Cảnh báo",
-    play: (vol) => {
-      playTone(740, 0.12, vol * 0.9, "triangle", 0);
-      playTone(740, 0.12, vol * 0.9, "triangle", 0.15);
-      playTone(988, 0.18, vol * 0.95, "triangle", 0.3);
-    },
-  },
-  {
-    id: "bird",
-    label: "Chim hót",
-    play: (vol) => {
-      playTone(1400, 0.1, vol * 0.8, "sine", 0);
-      playTone(1600, 0.08, vol * 0.75, "sine", 0.1);
-      playTone(1500, 0.12, vol * 0.8, "sine", 0.18);
-    },
-  },
-  {
-    id: "none",
-    label: "Tắt tiếng",
-    play: () => {},
-  },
+/** Tạo preset từ 1 file mp3 (volume theo settings, cắt tối đa maxMs để không phát quá dài). */
+function mp3Preset(id: string, label: string, src: string, maxMs = 6000): RingtonePreset {
+  return { id, label, play: (vol) => playMp3(src, { volume: vol, maxMs }) };
+}
+
+// Tiếng mp3 có sẵn của Lulu (giữ làm mặc định + cho chọn trong settings).
+const LINDA_PRESETS: RingtonePreset[] = [
+  mp3Preset("linda-order", "Lulu: chốt đơn (Chú ý)", LINDA_SOUNDS.orderSuccess, 3500),
+  mp3Preset("linda-pay", "Lulu: thu tiền (Trả tiền)", LINDA_SOUNDS.payment, 4500),
+  mp3Preset("linda-error", "Lulu: lỗi (Bò kêu)", LINDA_SOUNDS.error, 1100),
 ];
 
-const STORAGE_KEYS = {
-  successRingtone: "feedbackSuccessRingtone",
-  notifRingtone: "feedbackNotifRingtone",
-  volume: "feedbackVolume",
-  vibration: "feedbackVibration",
-};
+// Các mp3 custom → preset (im lặng nếu thiếu/lỗi file, không crash).
+const CUSTOM_PRESETS: RingtonePreset[] = CUSTOM_SOUNDS.map((s) =>
+  mp3Preset(s.id, s.label, `${CUSTOM_SOUND_DIR}/${encodeURIComponent(s.file)}`),
+);
+
+// ── Tiếng tổng hợp (synth) — palette gốc ──
+const SYNTH_RINGTONES: RingtonePreset[] = [
+  { id: "tri-tone", label: "Tinh tinh (iPhone)", play: (vol) => { playTone(1318, 0.18, vol * 0.55, "sine", 0); playTone(1056, 0.18, vol * 0.5, "sine", 0.13); playTone(1568, 0.28, vol * 0.55, "sine", 0.26); } },
+  { id: "ting-classic", label: "Ting cổ điển", play: (vol) => { playTone(880, 0.12, vol * 0.6, "sine", 0); playTone(1100, 0.12, vol * 0.5, "sine", 0.1); playTone(1320, 0.18, vol * 0.6, "sine", 0.2); } },
+  { id: "coin", label: "Đồng xu", play: (vol) => { playTone(988, 0.08, vol * 0.5, "square", 0); playTone(1319, 0.15, vol * 0.4, "square", 0.08); } },
+  { id: "chime", label: "Chuông gió", play: (vol) => { playTone(1047, 0.2, vol * 0.35, "sine", 0); playTone(1319, 0.2, vol * 0.3, "sine", 0.15); playTone(1568, 0.3, vol * 0.35, "sine", 0.3); } },
+  { id: "pop", label: "Pop", play: (vol) => { playTone(600, 0.06, vol * 0.5, "sine", 0); playTone(900, 0.1, vol * 0.4, "sine", 0.06); } },
+  { id: "marimba", label: "Marimba", play: (vol) => { playTone(523, 0.12, vol * 0.5, "triangle", 0); playTone(659, 0.12, vol * 0.45, "triangle", 0.12); playTone(784, 0.18, vol * 0.5, "triangle", 0.24); } },
+  { id: "bell", label: "Chuông nhà thờ", play: (vol) => { playTone(440, 0.4, vol * 0.5, "sine", 0); playTone(554, 0.35, vol * 0.3, "sine", 0.05); playTone(660, 0.3, vol * 0.2, "sine", 0.1); } },
+  { id: "iphone-note", label: "Tinh tinh 2", play: (vol) => { playTone(1318, 0.18, vol * 0.95, "sine", 0); playTone(1568, 0.3, vol * 0.95, "sine", 0.1); } },
+  { id: "iphone-tri", label: "Tri-tone", play: (vol) => { playTone(1318, 0.18, vol * 0.95, "sine", 0); playTone(1056, 0.18, vol * 0.9, "sine", 0.12); playTone(1568, 0.28, vol * 0.95, "sine", 0.24); } },
+  { id: "soft-bell", label: "Chuông nhẹ", play: (vol) => { playTone(660, 0.18, vol * 0.95, "sine", 0); playTone(880, 0.24, vol * 0.85, "sine", 0.15); } },
+  { id: "drop", label: "Giọt nước", play: (vol) => { playTone(1200, 0.1, vol * 0.85, "sine", 0); playTone(800, 0.18, vol * 0.8, "sine", 0.08); } },
+  { id: "bubble", label: "Bong bóng", play: (vol) => { playTone(400, 0.12, vol * 0.85, "sine", 0); playTone(600, 0.1, vol * 0.8, "sine", 0.08); playTone(500, 0.14, vol * 0.75, "sine", 0.14); } },
+  { id: "ding", label: "Ding đơn", play: (vol) => { playTone(880, 0.3, vol * 0.95, "sine", 0); } },
+  { id: "alert", label: "Cảnh báo", play: (vol) => { playTone(740, 0.12, vol * 0.9, "triangle", 0); playTone(740, 0.12, vol * 0.9, "triangle", 0.15); playTone(988, 0.18, vol * 0.95, "triangle", 0.3); } },
+  { id: "bird", label: "Chim hót", play: (vol) => { playTone(1400, 0.1, vol * 0.8, "sine", 0); playTone(1600, 0.08, vol * 0.75, "sine", 0.1); playTone(1500, 0.12, vol * 0.8, "sine", 0.18); } },
+];
+
+const NONE_RINGTONE: RingtonePreset = { id: "none", label: "Tắt tiếng", play: () => {} };
+
+// Thư viện đầy đủ dùng chung cho MỌI sự kiện (synth + Lulu + custom + tắt tiếng).
+export const RINGTONE_LIBRARY: RingtonePreset[] = [
+  ...SYNTH_RINGTONES,
+  ...LINDA_PRESETS,
+  ...CUSTOM_PRESETS,
+  NONE_RINGTONE,
+];
+
+// ── Danh mục sự kiện có âm thanh riêng. Mỗi sự kiện chọn 1 tiếng trong RINGTONE_LIBRARY. ──
+export interface SoundEvent {
+  key: string;
+  label: string;
+  /** Ghi chú ngắn (vd: chưa nối sự kiện). */
+  hint?: string;
+  defaultId: string;
+  /** Đã nối vào sự kiện thật trong app chưa. */
+  wired: boolean;
+}
+
+const PENDING_HINT = "Chưa nối sự kiện — chọn trước, bật sau";
+
+export const SOUND_EVENTS: SoundEvent[] = [
+  { key: "order_created", label: "Chốt đơn / tạo show", defaultId: "linda-order", wired: true },
+  { key: "payment_in", label: "Thu tiền", defaultId: "linda-pay", wired: true },
+  { key: "payment_out", label: "Chi tiền", defaultId: "coin", wired: true },
+  { key: "notification", label: "Thông báo mới", defaultId: "soft-bell", wired: true },
+  { key: "error", label: "Lỗi", defaultId: "alert", wired: true },
+  { key: "module_switch", label: "Chuyển màn hình / module", hint: PENDING_HINT, defaultId: "custom-dragon-studio-simple-whoosh-382724", wired: false },
+  { key: "apply_success", label: "Áp dụng thành công", hint: PENDING_HINT, defaultId: "ting-classic", wired: false },
+  { key: "needs_attention", label: "Người cần xử lý", hint: PENDING_HINT, defaultId: "custom-oi-gioi-oi", wired: false },
+  { key: "postproduction_late", label: "Trễ tiến độ hậu kỳ", hint: PENDING_HINT, defaultId: "custom-tre-reop-ho", wired: false },
+];
+
+const EVENT_SOUND_PREFIX = "feedbackEventSound:";
+
+function eventDefault(key: string): string {
+  return SOUND_EVENTS.find((e) => e.key === key)?.defaultId ?? "none";
+}
+
+export function getEventSoundId(key: string): string {
+  try {
+    return localStorage.getItem(EVENT_SOUND_PREFIX + key) || eventDefault(key);
+  } catch {
+    return eventDefault(key);
+  }
+}
+
+export function setEventSoundId(key: string, id: string) {
+  try { localStorage.setItem(EVENT_SOUND_PREFIX + key, id); } catch { /* ignore */ }
+}
+
+const VOLUME_KEY = "feedbackVolume";
+const VIBRATION_KEY = "feedbackVibration";
 
 export function getSoundSettings() {
-  const rawVol = parseFloat(localStorage.getItem(STORAGE_KEYS.volume) || "1");
+  const rawVol = parseFloat(localStorage.getItem(VOLUME_KEY) || "1");
   const volume = Number.isFinite(rawVol) ? Math.max(0, Math.min(1, rawVol)) : 1;
   return {
-    successRingtone: localStorage.getItem(STORAGE_KEYS.successRingtone) || "ting-classic",
-    notifRingtone: localStorage.getItem(STORAGE_KEYS.notifRingtone) || "soft-bell",
     volume,
-    vibration: localStorage.getItem(STORAGE_KEYS.vibration) !== "off",
+    vibration: localStorage.getItem(VIBRATION_KEY) !== "off",
   };
 }
 
 export function setSoundSettings(settings: Partial<ReturnType<typeof getSoundSettings>>) {
-  if (settings.successRingtone !== undefined) localStorage.setItem(STORAGE_KEYS.successRingtone, settings.successRingtone);
-  if (settings.notifRingtone !== undefined) localStorage.setItem(STORAGE_KEYS.notifRingtone, settings.notifRingtone);
-  if (settings.volume !== undefined) localStorage.setItem(STORAGE_KEYS.volume, String(settings.volume));
-  if (settings.vibration !== undefined) localStorage.setItem(STORAGE_KEYS.vibration, settings.vibration ? "on" : "off");
+  if (settings.volume !== undefined) localStorage.setItem(VOLUME_KEY, String(settings.volume));
+  if (settings.vibration !== undefined) localStorage.setItem(VIBRATION_KEY, settings.vibration ? "on" : "off");
 }
 
 export function previewRingtone(preset: RingtonePreset, volume?: number) {
@@ -261,20 +239,14 @@ export function previewRingtone(preset: RingtonePreset, volume?: number) {
   preset.play(vol);
 }
 
-export function playSuccessSound() {
+/** Phát tiếng đã chọn cho 1 sự kiện. Im lặng nếu tắt/thiếu — không crash. */
+export function playEventSound(key: string) {
   try {
-    const { successRingtone, volume } = getSoundSettings();
-    const preset = SUCCESS_RINGTONES.find(r => r.id === successRingtone) || SUCCESS_RINGTONES[0];
-    preset.play(volume);
-  } catch {}
-}
-
-export function playNotificationSound() {
-  try {
-    const { notifRingtone, volume } = getSoundSettings();
-    const preset = NOTIF_RINGTONES.find(r => r.id === notifRingtone) || NOTIF_RINGTONES[0];
-    preset.play(volume);
-  } catch {}
+    const id = getEventSoundId(key);
+    if (id === "none") return;
+    const preset = RINGTONE_LIBRARY.find((r) => r.id === id);
+    preset?.play(getSoundSettings().volume);
+  } catch { /* ignore */ }
 }
 
 export function triggerVibration(pattern: number | number[] = [80, 50, 80]) {
@@ -287,21 +259,21 @@ export function triggerVibration(pattern: number | number[] = [80, 50, 80]) {
   } catch {}
 }
 
-/** Tạo đơn / lưu show thành công — CHÚ Ý */
+/** Tạo đơn / lưu show thành công */
 export function orderCreatedFeedback() {
-  playMp3(LINDA_SOUNDS.orderSuccess, { maxMs: 3500 });
+  playEventSound("order_created");
   triggerVibration([80, 50, 80]);
 }
 
-/** Thu tiền / chi tiền */
-export function paymentFeedback() {
-  playMp3(LINDA_SOUNDS.payment, { maxMs: 4500 });
-  triggerVibration([60, 40, 60, 40, 100]);
+/** Giao dịch tiền: thu (in, mặc định) hoặc chi (out) */
+export function paymentFeedback(direction: "in" | "out" = "in") {
+  playEventSound(direction === "out" ? "payment_out" : "payment_in");
+  triggerVibration(direction === "out" ? [60, 40, 60] : [60, 40, 60, 40, 100]);
 }
 
-/** Báo lỗi — tiếng bò ngắn */
+/** Báo lỗi */
 export function errorFeedback() {
-  playMp3(LINDA_SOUNDS.error, { maxMs: 1100, startAt: 0 });
+  playEventSound("error");
   triggerVibration([120, 80, 120]);
 }
 
@@ -310,6 +282,23 @@ export function successFeedback() {
 }
 
 export function notificationFeedback() {
-  playNotificationSound();
+  playEventSound("notification");
   triggerVibration(100);
+}
+
+// ── Helper cho các sự kiện CHƯA nối (đã có ô chọn trong settings; gọi khi muốn bật) ──
+export function moduleSwitchFeedback() {
+  playEventSound("module_switch");
+}
+export function applySuccessFeedback() {
+  playEventSound("apply_success");
+  triggerVibration(80);
+}
+export function needsAttentionFeedback() {
+  playEventSound("needs_attention");
+  triggerVibration([100, 60, 100]);
+}
+export function postProductionLateFeedback() {
+  playEventSound("postproduction_late");
+  triggerVibration([150, 80, 150]);
 }

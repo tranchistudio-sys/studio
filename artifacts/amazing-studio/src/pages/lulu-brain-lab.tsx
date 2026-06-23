@@ -443,6 +443,8 @@ function FixResponsePanel({ turn, onDraftChange, onPreview, markFixed, onClose, 
   // Cách Lulu dùng câu sửa tay: exact_reply (nói y chang) | learn_from_this (AI học theo). Mặc định
   // "exact_reply" — khi admin có sửa text thì ưu tiên nói đúng câu admin gõ.
   const [responseMode, setResponseMode] = useState<"exact_reply" | "learn_from_this">("exact_reply");
+  // admin đã bấm chọn 1 chế độ chưa (để ghim cả khi không sửa text — vd muốn ghim đúng câu Lulu đang nói).
+  const [modeTouched, setModeTouched] = useState(false);
   const [aiInstruction, setAiInstruction] = useState("");
   const [savingImg, setSavingImg] = useState(false);
   const [savingAi, setSavingAi] = useState(false);
@@ -467,8 +469,11 @@ function FixResponsePanel({ turn, onDraftChange, onPreview, markFixed, onClose, 
   };
 
   const saveImages = async () => {
-    const edited = editedText.trim() && editedText.trim() !== replyText ? editedText.trim() : null;
-    if (correct.length === 0 && !edited) { showErr("Chọn ít nhất 1 ảnh đúng, hoặc sửa lời Lulu bằng tay rồi chọn cách Lulu dùng câu đó."); return; }
+    // GHIM TEXT khi: có text + (đã sửa khác câu gốc HOẶC admin đã bấm chọn 1 chế độ để ghim câu hiện tại).
+    const txt = editedText.trim();
+    const wantPin = !!txt && (txt !== replyText || modeTouched);
+    const pinnedText = wantPin ? txt : null;
+    if (correct.length === 0 && !pinnedText) { showErr("Chọn ít nhất 1 ảnh đúng, hoặc sửa lời Lulu bằng tay rồi chọn cách Lulu dùng câu đó."); return; }
     setSavingImg(true);
     try {
       const d = await apiSend<{ draft: BrainVersion; totalOverrides: number }>("POST", "/lulu-brain/image-feedback", {
@@ -477,11 +482,11 @@ function FixResponsePanel({ turn, onDraftChange, onPreview, markFixed, onClose, 
         tone: tone.trim() || null,
         wrongImages: sent.map((s) => s.imageUrl),
         correctImages: correct,
-        editedText: edited,
-        responseMode: edited ? responseMode : null,
+        editedText: pinnedText,
+        responseMode: pinnedText ? responseMode : null,
       });
       onDraftChange(d.draft); markFixed();
-      const modeLabel = edited ? (responseMode === "exact_reply" ? " · Lulu sẽ nói y chang câu này" : " · AI sẽ học theo câu này") : "";
+      const modeLabel = pinnedText ? (responseMode === "exact_reply" ? " · Lulu sẽ nói y chang câu này" : " · AI sẽ học theo câu này") : "";
       showOk(`Đã dạy vào Version ${d.draft.versionNumber} — nháp${modeLabel}.`);
       onClose();
       onPreview(turn.forText, d.draft.id); // tự gửi lại đúng câu khách (vào nháp vừa lưu) để XEM TRƯỚC kết quả THẬT
@@ -583,21 +588,21 @@ function FixResponsePanel({ turn, onDraftChange, onPreview, markFixed, onClose, 
       <div className="space-y-1.5">
         <label className="text-[11px] text-gray-500">✍️ Sửa lời Lulu bằng tay (tùy chọn) — gõ đúng câu bạn muốn Lulu nói cho tình huống này.</label>
         <textarea value={editedText} onChange={(e) => setEditedText(e.target.value)} rows={2} className="w-full border rounded-lg px-2 py-1.5 text-sm" />
-        {editedText.trim() && editedText.trim() !== replyText && (
-          <div className="bg-white border rounded-lg p-2">
-            <p className="text-[11px] font-semibold text-gray-600 mb-1">Cách Lulu dùng câu này</p>
-            <div className="flex flex-col sm:flex-row gap-1.5">
-              <button type="button" onClick={() => setResponseMode("exact_reply")}
-                className={`flex-1 text-left text-[11px] px-2 py-1.5 rounded-lg border ${responseMode === "exact_reply" ? "bg-emerald-50 border-emerald-300 text-emerald-700 ring-1 ring-emerald-300" : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"}`}>
-                <span className="font-semibold">🔒 Nói y chang câu này</span><br />Lulu nói ĐÚNG nguyên văn, không cho AI viết lại.
-              </button>
-              <button type="button" onClick={() => setResponseMode("learn_from_this")}
-                className={`flex-1 text-left text-[11px] px-2 py-1.5 rounded-lg border ${responseMode === "learn_from_this" ? "bg-sky-50 border-sky-300 text-sky-700 ring-1 ring-sky-300" : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"}`}>
-                <span className="font-semibold">✨ Cho AI học theo</span><br />AI viết lại tự nhiên nhưng giữ đúng ý chính câu này.
-              </button>
-            </div>
+        {/* CÁCH LULU DÙNG CÂU NÀY — luôn hiện để admin chọn (không ẩn theo điều kiện). */}
+        <div className="bg-white border rounded-lg p-2">
+          <p className="text-[11px] font-semibold text-gray-600 mb-1">Cách Lulu dùng câu này</p>
+          <div className="flex flex-col sm:flex-row gap-1.5">
+            <button type="button" onClick={() => { setResponseMode("exact_reply"); setModeTouched(true); }}
+              className={`flex-1 text-left text-[11px] px-2 py-1.5 rounded-lg border ${responseMode === "exact_reply" ? "bg-emerald-50 border-emerald-300 text-emerald-700 ring-1 ring-emerald-300" : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"}`}>
+              <span className="font-semibold">🔒 Tao muốn mày nói y chang câu này</span><br />Lulu nói ĐÚNG nguyên văn câu trên, không cho AI viết lại.
+            </button>
+            <button type="button" onClick={() => { setResponseMode("learn_from_this"); setModeTouched(true); }}
+              className={`flex-1 text-left text-[11px] px-2 py-1.5 rounded-lg border ${responseMode === "learn_from_this" ? "bg-sky-50 border-sky-300 text-sky-700 ring-1 ring-sky-300" : "bg-white border-gray-200 text-gray-600 hover:bg-gray-50"}`}>
+              <span className="font-semibold">✨ Tao muốn mày học theo</span><br />AI viết lại tự nhiên nhưng giữ đúng ý chính câu trên.
+            </button>
           </div>
-        )}
+          <p className="text-[10px] text-gray-400 mt-1">Áp dụng khi bạn có sửa lời Lulu ở trên — hoặc bấm chọn 1 chế độ để ghim đúng câu Lulu đang nói.</p>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2">

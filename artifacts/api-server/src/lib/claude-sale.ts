@@ -9,6 +9,7 @@ import {
 } from "./sale-settings";
 import { callChat, type ChatMessage } from "./ai-orchestrator";
 import { ALL_FAILED_CUSTOMER_MESSAGE, type AiProviderName } from "./ai-provider";
+import { formatLuluHumanChatMessages, type LuluChatChunk } from "./sale-human-chat";
 
 /**
  * Bộ não sale Claude cho Facebook Messenger (Giai đoạn 1 — chỉ tư vấn).
@@ -50,6 +51,8 @@ export type AskClaudeInput = {
  */
 export type ClaudeReply = {
   messages: string[];
+  /** Cùng nội dung `messages` nhưng kèm delayMs từng bubble (human chat pacing). messages = messageChunks.map(c=>c.text). */
+  messageChunks: LuluChatChunk[];
   raw: string;
   escalation: string | null;
   learnedName: string | null;
@@ -180,7 +183,9 @@ function buildSystemPrompt(
 - KHÔNG tự giảm giá ngoài dữ liệu (khách xin giảm → nói để em hỏi quản lý giúp).
 - CHỈ ĐỌC/ĐỀ XUẤT lịch — KHÔNG tự đặt/giữ/khóa booking, KHÔNG sửa dữ liệu, KHÔNG hứa chắc còn lịch ngày cụ thể.
 - Việc phức tạp / khiếu nại / chốt cọc / chuyển khoản: mời để lại số điện thoại & báo nhân viên thật xử lý.
-- Không bao giờ tự nhận là AI/bot.`;
+- Không bao giờ tự nhận là AI/bot.
+- VĂN PHONG NGƯỜI THẬT (sale thật chat từng ý): trả lời NGẮN, mỗi tin nhắn CHỈ 1 ý. Tách lời chào / giới thiệu / câu hỏi thành NHIỀU tin ngắn, cách nhau bằng MỘT DÒNG TRỐNG — TUYỆT ĐỐI không gộp chào + giới thiệu + hỏi nhu cầu vào một đoạn dài. Ít emoji (tối đa 1 mỗi lượt, không phải tin nào cũng có; KHÔNG emoji ở câu báo giá / cọc / chốt lịch / số tiền / ngày). Không lạm dụng dấu chấm than. KHÔNG dùng văn AI: "rất vui được hỗ trợ", "tuyệt vời", "bạn thân mến", "mình hiểu nhu cầu của bạn"…
+- Nếu khách hỏi mình có phải bot / người thật không ("em là bot hả?", "có phải người thật không?"…): KHÔNG nói dối kiểu cứng, trả lời mềm: "Dạ em là trợ lý tư vấn của Amazing Studio, có gì cần em hỗ trợ anh trước nha. Khi cần chốt lịch hoặc xử lý riêng thì bên em sẽ có người kiểm tra lại ạ."`;
 
   // ── Nhánh CÓ cấu hình (Cài đặt Claude Sale) — dùng chung cho Test & Messenger ──
   if (settings) {
@@ -308,6 +313,7 @@ export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeRe
           : "AI tạm thời không phản hồi — cần nhân viên hỗ trợ";
     return {
       messages: [ALL_FAILED_CUSTOMER_MESSAGE],
+      messageChunks: [{ text: ALL_FAILED_CUSTOMER_MESSAGE, delayMs: 900 }],
       raw: ALL_FAILED_CUSTOMER_MESSAGE,
       escalation,
       learnedName: null,
@@ -364,13 +370,13 @@ export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeRe
     .replace(/\s*—\s*/g, ", ")
     .trim();
 
-  const parts = raw
-    .split(/\n{2,}/)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  // HUMAN CHAT PACING: tách câu trả lời thành nhiều bong bóng ngắn + delay (thay cho split dòng trống
+  // thuần) để Lulu chat từng ý như sale thật. Marker <<...>> đã được strip khỏi `raw` ở trên.
+  const chunks = formatLuluHumanChatMessages(raw);
 
   return {
-    messages: parts.length > 0 ? parts : raw ? [raw] : [],
+    messages: chunks.length > 0 ? chunks.map((c) => c.text) : raw ? [raw] : [],
+    messageChunks: chunks.length > 0 ? chunks : raw ? [{ text: raw, delayMs: 900 }] : [],
     raw,
     escalation,
     learnedName,

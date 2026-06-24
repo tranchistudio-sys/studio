@@ -61,6 +61,8 @@ type SimResult = {
   reply: string[]; raw: string; escalation: string | null; escalated: boolean; escalationReason: string | null;
   holdMessage: string | null; detectedIntent: string | null; priceImages: string[];
   sampleImages: SampleImage[]; sampleNote: string | null; responseTimeMs: number;
+  /** Bong bóng có nhịp (human chat pacing): text + delayMs từng bubble. reply = chunks.map(c=>c.text). */
+  chunks?: { text: string; delayMs: number }[];
   overrideApplied?: boolean;
   /** Cách lượt này dùng câu sửa tay admin: "exact_reply" = nói y chang; "learn_from_this" = AI học theo. */
   responseMode?: "exact_reply" | "learn_from_this" | null;
@@ -1566,6 +1568,22 @@ function FixTestTab({
   // ── Báo lỗi / sửa phản hồi (panel sửa text & ảnh nằm ở FixResponsePanel) ──
   const [fixingId, setFixingId] = useState<string | null>(null);
 
+  // ── Human chat pacing: hé lộ bong bóng từng tin theo delayMs (transient, KHÔNG lưu localStorage —
+  //    reload giữa chừng thì hiện đủ luôn). Lượt "Xem trước" không dùng → hiện ngay. ──
+  const [revealCounts, setRevealCounts] = useState<Record<string, number>>({});
+  const revealTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  useEffect(() => () => { revealTimers.current.forEach(clearTimeout); }, []);
+  const revealChunks = (turnId: string, chunks?: { text: string; delayMs: number }[]) => {
+    if (!chunks || chunks.length <= 1) return; // 0–1 bubble → hiện ngay, không cần hé lộ
+    setRevealCounts((m) => ({ ...m, [turnId]: 1 }));
+    let acc = 0;
+    for (let i = 1; i < chunks.length; i++) {
+      acc += Math.max(300, Math.min(3000, chunks[i].delayMs || 1500));
+      const n = i + 1;
+      revealTimers.current.push(setTimeout(() => setRevealCounts((m) => ({ ...m, [turnId]: n })), acc));
+    }
+  };
+
   // ── Sửa tay nâng cao (ẩn mặc định) ──
   const [advOpen, setAdvOpen] = useState(false);
   const [content, setContent] = useState(draft?.promptContent ?? "");
@@ -1608,7 +1626,9 @@ function FixTestTab({
       });
       const res = draft ? d.draft : d.active;
       if (!res) { showErr("Lulu chưa trả lời được — thử gửi lại nha."); return; }
-      setTurns((p) => [...p, { id: newId(), role: "lulu", result: res, forText: text || "[ảnh]" }]);
+      const luluId = newId();
+      setTurns((p) => [...p, { id: luluId, role: "lulu", result: res, forText: text || "[ảnh]" }]);
+      revealChunks(luluId, res.chunks); // hé lộ từng bong bóng theo nhịp (nếu có nhiều tin)
       const next: ConvoMsg[] = [...convo, { direction: "incoming", text: text || "[ảnh]" }];
       // Ghi lại ảnh mẫu ĐÃ GỬI vào lịch sử dạng [image:<url>] để lượt sau KHÔNG gửi trùng
       // (backend dedupe qua extractRecentSampleUrls — giống Messenger thật). Các dòng [image:] này
@@ -1810,10 +1830,27 @@ function FixTestTab({
                 {t.result.priceImages.map((p, i) => (
                   <img key={`p${i}`} src={getImageSrc(p) ?? undefined} alt="bảng giá" onError={onBrokenSampleImg} className="max-w-[200px] rounded-lg border" />
                 ))}
-                {/* Câu trả lời */}
-                {(t.result.reply.length ? t.result.reply : [t.result.raw || "(Lulu không trả lời)"]).map((m, i) => (
-                  <div key={i} className="bg-gray-50 border rounded-2xl rounded-bl-sm px-3 py-2 text-sm whitespace-pre-wrap break-words">{m}</div>
-                ))}
+                {/* Câu trả lời — hé lộ từng bong bóng theo nhịp (human chat pacing) */}
+                {(() => {
+                  const all = t.result.reply.length ? t.result.reply : [t.result.raw || "(Lulu không trả lời)"];
+                  const rc = revealCounts[t.id];
+                  const shown = rc != null ? all.slice(0, rc) : all;
+                  const more = rc != null && rc < all.length;
+                  return (
+                    <>
+                      {shown.map((m, i) => (
+                        <div key={i} className="bg-gray-50 border rounded-2xl rounded-bl-sm px-3 py-2 text-sm whitespace-pre-wrap break-words">{m}</div>
+                      ))}
+                      {more && (
+                        <div className="bg-gray-50 border rounded-2xl rounded-bl-sm px-3 py-2 w-fit text-gray-400 flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: "0ms" }} />
+                          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: "150ms" }} />
+                          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: "300ms" }} />
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
                 {t.result.sampleNote && <p className="text-[11px] text-amber-600 italic">{t.result.sampleNote}</p>}
                 <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-400">
                   {t.result.detectedIntent && <span>intent: <b className="text-violet-600">{t.result.detectedIntent}</b></span>}

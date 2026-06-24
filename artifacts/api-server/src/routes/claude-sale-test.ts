@@ -204,6 +204,8 @@ router.post("/claude-sale-test/chat", async (req, res) => {
 
     return res.json({
       reply: reply.messages.length > 0 ? reply.messages : reply.raw ? [reply.raw] : ["(Claude không trả về nội dung)"],
+      // Bong bóng có nhịp (human chat pacing) — FE render tuần tự theo delayMs.
+      chunks: reply.messageChunks.length > 0 ? reply.messageChunks : (reply.raw ? [{ text: reply.raw, delayMs: 900 }] : []),
       raw: reply.raw,
       replyText: reply.raw,
       model,

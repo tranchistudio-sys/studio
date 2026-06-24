@@ -115,7 +115,7 @@ export function SmartSearch() {
               </div>
               <div className="max-h-72 overflow-y-auto">
                 {results.map(r => (
-                  <Link key={r.id} href="/calendar" onClick={() => { clear(); }}>
+                  <Link key={r.id} href={`/calendar?bookingId=${r.id}`} onClick={() => { clear(); }}>
                     <div className="flex items-center gap-3 px-3 py-2.5 hover:bg-muted/50 transition-colors cursor-pointer border-b border-border/30 last:border-0">
                       <div className={`w-2 h-2 rounded-full flex-shrink-0 ${STATUS_DOT[r.status] ?? "bg-gray-400"}`} />
                       <div className="flex-1 min-w-0">

@@ -30,7 +30,7 @@ import {
   Dialog as UIDialog, DialogContent as UIDialogContent, DialogHeader as UIDialogHeader,
   DialogTitle as UIDialogTitle, DialogFooter as UIDialogFooter, DialogDescription as UIDialogDescription,
 } from "@/components/ui/dialog";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { Button, Input } from "@/components/ui";
 import { CurrencyInput } from "@/components/ui/currency-input";
 import { DateInput } from "@/components/ui/date-input";
@@ -6296,25 +6296,28 @@ function CalendarPageInner() {
     staleTime: 0,
   });
 
-  // Deep-link từ thông báo: ?bookingId=N → tự mở detail panel của booking đó
-  const [pendingBookingIdFromUrl, setPendingBookingIdFromUrl] = useState<number | null>(() => {
-    if (typeof window === "undefined") return null;
-    const p = new URLSearchParams(window.location.search);
-    const v = p.get("bookingId");
-    if (!v) return null;
-    const n = Number(v);
-    return Number.isInteger(n) && n > 0 ? n : null;
-  });
-  // Dọn URL ngay khi mount nếu có ?bookingId (kể cả invalid) — tránh stale param
+  // Deep-link ?bookingId=N → tự mở detail panel của booking đó. Dùng cho: thông báo, VÀ ô Tìm kiếm
+  // thông minh (SmartSearch) — bấm 1 kết quả mở thẳng chi tiết SHOW (không phải trang Đơn hàng).
+  // Reactive theo query string (useSearch) nên hoạt động KỂ CẢ khi đang ở sẵn /calendar (component
+  // không remount → useState-initializer-1-lần sẽ bỏ sót). Bookings query load TẤT CẢ đơn nên tìm
+  // được show ở bất kỳ tháng nào; effect dưới tự canh currentDate về đúng tháng của show.
+  const calUrlSearch = useSearch();
+  const [pendingBookingIdFromUrl, setPendingBookingIdFromUrl] = useState<number | null>(null);
   useEffect(() => {
+    let n: number | null = null;
     try {
+      const p = new URLSearchParams(calUrlSearch || window.location.search);
+      const v = p.get("bookingId");
+      if (v) { const x = Number(v); if (Number.isInteger(x) && x > 0) n = x; }
+      // Dọn ?bookingId khỏi URL (kể cả invalid) — tránh mở lại khi reload / cho phép bấm lại cùng show.
       const url = new URL(window.location.href);
       if (url.searchParams.has("bookingId")) {
         url.searchParams.delete("bookingId");
         window.history.replaceState({}, "", url.toString());
       }
     } catch { /* ignore */ }
-  }, []);
+    if (n != null) setPendingBookingIdFromUrl(n);
+  }, [calUrlSearch]);
   useEffect(() => {
     if (pendingBookingIdFromUrl == null) return;
     if (!bookings || bookings.length === 0) return;

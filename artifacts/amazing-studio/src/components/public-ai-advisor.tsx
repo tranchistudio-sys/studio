@@ -3,6 +3,7 @@ import { Link, useLocation } from "wouter";
 import { Sparkles, X, Send, Loader2, Lock, Wrench, Globe, SearchCheck, SlidersHorizontal, Eraser } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getImageSrc } from "@/lib/imageUtils";
+import { playPublicSound } from "@/lib/feedback";
 
 /**
  * Widget AI tư vấn hình ảnh — nút nổi góc phải, hiện trên mọi trang public.
@@ -237,6 +238,7 @@ export function PublicAiAdvisor() {
         // Tìm theo module mà không ra gì → mời tìm lại trong toàn studio
         retryAllQuery: !scopeAll && !d.items?.length && !d.ideasLocked ? q : undefined,
       }]);
+      if ((d.items?.length ?? 0) > 0) playPublicSound("public_smart_search_success");
     } catch {
       setMessages(m => [...m, { role: "assistant", text: "Không kết nối được máy chủ. Bạn thử lại sau nhé." }]);
     } finally {
@@ -378,7 +380,7 @@ export function PublicAiAdvisor() {
       {!open && (
         <button
           type="button"
-          onClick={() => setOpen(true)}
+          onClick={() => { playPublicSound("public_smart_search_opened"); setOpen(true); }}
           className="ai-adv-label-wrap fixed bottom-7 right-20 z-50 cursor-pointer"
           aria-hidden="true"
           tabIndex={-1}
@@ -394,7 +396,7 @@ export function PublicAiAdvisor() {
       {/* Nút nổi */}
       <button
         type="button"
-        onClick={() => setOpen(v => !v)}
+        onClick={() => setOpen(v => { if (!v) playPublicSound("public_smart_search_opened"); return !v; })}
         aria-label={open ? "Đóng tư vấn AI" : "Mở tư vấn AI"}
         className={cn(
           "fixed bottom-5 right-5 z-50 p-3.5 rounded-full transition-all",

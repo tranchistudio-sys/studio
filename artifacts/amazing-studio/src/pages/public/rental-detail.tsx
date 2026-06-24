@@ -23,6 +23,7 @@ import {
 import PublicGalleryLightbox from "@/components/public/PublicGalleryLightbox";
 import { CMS_BASE } from "@/components/cms-shared";
 import { getImageSrc } from "@/lib/imageUtils";
+import { playPublicSound } from "@/lib/feedback";
 import { formatVND } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { OutfitTagBadge } from "@/lib/outfit-tags";
@@ -218,6 +219,7 @@ function useSmartConsult(dress: PublicDressDetail) {
   const [popupText, setPopupText] = useState<string | null>(null);
 
   async function smartChat(target: ChatTarget) {
+    playPublicSound("public_contact_clicked");
     const msg = buildConsultMessage(dress);
     const ok = await copyToClipboard(msg);
     if (ok) {
@@ -248,6 +250,7 @@ function ConsultantSection({ dress }: { dress: PublicDressDetail }) {
   const { smartChat, popup } = useSmartConsult(dress);
 
   async function handleCopyPhone(phone: string) {
+    playPublicSound("public_contact_clicked");
     const ok = await copyToClipboard(phone);
     if (ok) {
       toast({ title: "Đã copy số", description: phone });

@@ -183,20 +183,59 @@ export interface SoundEvent {
   defaultId: string;
   /** Đã nối vào sự kiện thật trong app chưa. */
   wired: boolean;
+  /** Nhóm hiển thị trong trang Cài đặt (mặc định "Chung"). */
+  group?: string;
 }
 
 const PENDING_HINT = "Chưa nối sự kiện — chọn trước, bật sau";
+const CONFIRM_HINT = "Chưa có trạng thái khách xác nhận trong hệ thống — chọn trước, bật sau";
+const PUBLIC_HINT = "Trang công khai — mặc định tắt, chọn 1 tiếng nhẹ/sang để bật. Khách có nút tắt riêng.";
+
+// Thứ tự hiển thị nhóm trong Cài đặt → Âm thanh. Nhóm chưa liệt kê sẽ xếp cuối.
+export const SOUND_GROUPS = ["Chung", "Tiến độ hậu kỳ", "Chấm công", "Website công khai"] as const;
 
 export const SOUND_EVENTS: SoundEvent[] = [
-  { key: "order_created", label: "Chốt đơn / tạo show", defaultId: "linda-order", wired: true },
-  { key: "payment_in", label: "Thu tiền", defaultId: "linda-pay", wired: true },
-  { key: "payment_out", label: "Chi tiền", defaultId: "coin", wired: true },
-  { key: "notification", label: "Thông báo mới", defaultId: "soft-bell", wired: true },
-  { key: "error", label: "Lỗi", defaultId: "alert", wired: true },
-  { key: "module_switch", label: "Chuyển màn hình / module", hint: PENDING_HINT, defaultId: "custom-dragon-studio-simple-whoosh-382724", wired: false },
-  { key: "apply_success", label: "Áp dụng thành công", hint: PENDING_HINT, defaultId: "ting-classic", wired: false },
-  { key: "needs_attention", label: "Người cần xử lý", hint: PENDING_HINT, defaultId: "custom-oi-gioi-oi", wired: false },
-  { key: "postproduction_late", label: "Trễ tiến độ hậu kỳ", hint: PENDING_HINT, defaultId: "custom-tre-reop-ho", wired: false },
+  { key: "order_created", label: "Chốt đơn / tạo show", defaultId: "linda-order", wired: true, group: "Chung" },
+  { key: "payment_in", label: "Thu tiền", defaultId: "linda-pay", wired: true, group: "Chung" },
+  { key: "payment_out", label: "Chi tiền", defaultId: "coin", wired: true, group: "Chung" },
+  { key: "notification", label: "Thông báo mới", defaultId: "soft-bell", wired: true, group: "Chung" },
+  { key: "error", label: "Lỗi", defaultId: "alert", wired: true, group: "Chung" },
+  { key: "module_switch", label: "Chuyển màn hình / module", hint: PENDING_HINT, defaultId: "custom-dragon-studio-simple-whoosh-382724", wired: false, group: "Chung" },
+  { key: "apply_success", label: "Áp dụng thành công", hint: PENDING_HINT, defaultId: "ting-classic", wired: false, group: "Chung" },
+  { key: "needs_attention", label: "Người cần xử lý", hint: PENDING_HINT, defaultId: "custom-oi-gioi-oi", wired: false, group: "Chung" },
+
+  // ── Nhóm "Tiến độ hậu kỳ" (/photoshop-jobs) ──
+  { key: "postprod_job_claimed", label: "Nhận việc (Tôi nhận việc này)", defaultId: "ting-classic", wired: true, group: "Tiến độ hậu kỳ" },
+  { key: "postprod_progress_saved", label: "Lưu tiến độ", defaultId: "pop", wired: true, group: "Tiến độ hậu kỳ" },
+  { key: "postprod_job_paused", label: "Tạm hoãn", defaultId: "bubble", wired: true, group: "Tiến độ hậu kỳ" },
+  { key: "postprod_show_completed", label: "Xong show", defaultId: "linda-order", wired: true, group: "Tiến độ hậu kỳ" },
+  { key: "postprod_print_link_saved", label: "Lưu link in / hoàn thành", defaultId: "coin", wired: true, group: "Tiến độ hậu kỳ" },
+  { key: "postprod_deadline_overdue", label: "Trễ deadline", defaultId: "custom-tre-reop-ho", wired: true, group: "Tiến độ hậu kỳ" },
+  { key: "postprod_job_needs_handler", label: "Đơn cần người nhận", defaultId: "custom-oi-gioi-oi", wired: true, group: "Tiến độ hậu kỳ" },
+  { key: "postprod_customer_confirmed", label: "Khách xác nhận xong show", hint: CONFIRM_HINT, defaultId: "none", wired: false, group: "Tiến độ hậu kỳ" },
+
+  // ── Nhóm "Chấm công" ──
+  { key: "attendance_checkin_success", label: "Check-in thành công", defaultId: "ting-classic", wired: true, group: "Chấm công" },
+  { key: "attendance_checkin_early", label: "Check-in sớm / rất đẹp", defaultId: "custom-wao-dep", wired: true, group: "Chấm công" },
+  { key: "attendance_checkin_late", label: "Check-in trễ (cảnh báo nhẹ)", defaultId: "alert", wired: true, group: "Chấm công" },
+  { key: "attendance_checkout_success", label: "Check-out thành công", defaultId: "pop", wired: true, group: "Chấm công" },
+  { key: "attendance_month_closed", label: "Chốt công tháng", defaultId: "linda-pay", wired: true, group: "Chấm công" },
+  { key: "attendance_overtime_saved", label: "Lưu / duyệt tăng ca", defaultId: "coin", wired: true, group: "Chấm công" },
+  { key: "attendance_leave_approved", label: "Duyệt nghỉ phép", defaultId: "soft-bell", wired: true, group: "Chấm công" },
+  { key: "attendance_leave_rejected", label: "Từ chối nghỉ phép", defaultId: "bubble", wired: true, group: "Chấm công" },
+  { key: "attendance_staff_absent_detected", label: "Phát hiện nhân viên vắng / chưa vào", hint: "Mặc định tắt để tránh ồn — chọn 1 tiếng để bật.", defaultId: "none", wired: true, group: "Chấm công" },
+  { key: "attendance_staff_detail_opened", label: "Mở chi tiết nhân viên", hint: "Tiếng nhẹ khi bấm xem chi tiết — mặc định tắt.", defaultId: "none", wired: true, group: "Chấm công" },
+
+  // ── Nhóm "Website công khai" (mặc định TẮT — chọn tiếng nhẹ để bật; có nút tắt cho khách) ──
+  { key: "public_nav_clicked", label: "Bấm menu chính", hint: PUBLIC_HINT, defaultId: "none", wired: true, group: "Website công khai" },
+  { key: "public_category_selected", label: "Chọn danh mục", hint: PUBLIC_HINT, defaultId: "none", wired: true, group: "Website công khai" },
+  { key: "public_product_card_opened", label: "Mở chi tiết sản phẩm / trang phục", hint: PUBLIC_HINT, defaultId: "none", wired: true, group: "Website công khai" },
+  { key: "public_gallery_album_opened", label: "Mở album concept", hint: PUBLIC_HINT, defaultId: "none", wired: true, group: "Website công khai" },
+  { key: "public_gallery_image_opened", label: "Mở ảnh trong gallery / lightbox", hint: PUBLIC_HINT, defaultId: "none", wired: true, group: "Website công khai" },
+  { key: "public_smart_search_opened", label: "Mở Tìm kiếm thông minh", hint: PUBLIC_HINT, defaultId: "none", wired: true, group: "Website công khai" },
+  { key: "public_smart_search_success", label: "Tìm kiếm có kết quả", hint: PUBLIC_HINT, defaultId: "none", wired: true, group: "Website công khai" },
+  { key: "public_contact_clicked", label: "Bấm gọi / liên hệ / đặt lịch", hint: PUBLIC_HINT, defaultId: "none", wired: true, group: "Website công khai" },
+  { key: "public_image_hover_soft", label: "Hover ảnh (rất nhẹ)", hint: "Chỉ dùng rất nhẹ — mặc định tắt để không gây khó chịu.", defaultId: "none", wired: true, group: "Website công khai" },
 ];
 
 const EVENT_SOUND_PREFIX = "feedbackEventSound:";
@@ -240,12 +279,76 @@ export function previewRingtone(preset: RingtonePreset, volume?: number) {
 }
 
 /** Phát tiếng đã chọn cho 1 sự kiện. Im lặng nếu tắt/thiếu — không crash. */
-export function playEventSound(key: string) {
+export function playEventSound(key: string, opts?: { volumeScale?: number }) {
   try {
     const id = getEventSoundId(key);
     if (id === "none") return;
     const preset = RINGTONE_LIBRARY.find((r) => r.id === id);
-    preset?.play(getSoundSettings().volume);
+    const vol = getSoundSettings().volume * (opts?.volumeScale ?? 1);
+    preset?.play(vol);
+  } catch { /* ignore */ }
+}
+
+// ── Helper dùng chung có chống spam (cooldown theo eventKey) ──
+// Không phát nếu: tiếng = "none", volume = 0 (đã chặn trong playEventSound/playMp3),
+// hoặc sự kiện vừa phát trong khoảng cooldownMs trước đó.
+const _lastPlayed: Record<string, number> = {};
+
+export function playAppSound(
+  key: string,
+  opts?: { cooldownMs?: number; vibrate?: number | number[]; volumeScale?: number },
+) {
+  try {
+    const cd = opts?.cooldownMs ?? 0;
+    if (cd > 0) {
+      const now = Date.now();
+      if (now - (_lastPlayed[key] ?? 0) < cd) return;
+      _lastPlayed[key] = now;
+    }
+    playEventSound(key, opts?.volumeScale ? { volumeScale: opts.volumeScale } : undefined);
+    if (opts?.vibrate) triggerVibration(opts.vibrate);
+  } catch { /* ignore */ }
+}
+
+// ── Âm thanh cho TRANG CÔNG KHAI (khách) ──
+// Dùng chung kho/player/setting trung tâm; chỉ thêm: nút tắt riêng cho khách (localStorage)
+// + cổng autoplay (chỉ phát sau tương tác đầu tiên) + tiếng nhẹ (volumeScale) + cooldown.
+const PUBLIC_MUTE_KEY = "publicSoundMuted";
+
+export function isPublicSoundMuted(): boolean {
+  try { return localStorage.getItem(PUBLIC_MUTE_KEY) === "1"; } catch { return false; }
+}
+
+export function setPublicSoundMuted(muted: boolean) {
+  try { localStorage.setItem(PUBLIC_MUTE_KEY, muted ? "1" : "0"); } catch { /* ignore */ }
+}
+
+let _userInteracted = false;
+let _publicAudioArmed = false;
+
+/** Gắn 1 lần listener để biết khách đã tương tác (tôn trọng autoplay của trình duyệt). */
+export function ensurePublicAudioArmed() {
+  if (_publicAudioArmed) return;
+  _publicAudioArmed = true;
+  try {
+    const mark = () => { _userInteracted = true; };
+    window.addEventListener("pointerdown", mark, { once: true, passive: true });
+    window.addEventListener("keydown", mark, { once: true });
+    window.addEventListener("touchstart", mark, { once: true, passive: true });
+  } catch { /* ignore */ }
+}
+
+/** Phát tiếng cho trang công khai. Im lặng (không crash) nếu: khách tắt tiếng,
+ *  chưa tương tác lần nào, tiếng = "none", volume 0, hoặc vừa phát (cooldown). */
+export function playPublicSound(
+  key: string,
+  opts?: { cooldownMs?: number; volumeScale?: number },
+) {
+  try {
+    ensurePublicAudioArmed();
+    if (isPublicSoundMuted()) return;
+    if (!_userInteracted) return;
+    playAppSound(key, { cooldownMs: opts?.cooldownMs ?? 400, volumeScale: opts?.volumeScale ?? 0.4 });
   } catch { /* ignore */ }
 }
 
@@ -298,7 +401,20 @@ export function needsAttentionFeedback() {
   playEventSound("needs_attention");
   triggerVibration([100, 60, 100]);
 }
-export function postProductionLateFeedback() {
-  playEventSound("postproduction_late");
-  triggerVibration([150, 80, 150]);
+
+/** Phát tiếng chấm công theo messageKey trả về từ API (sớm/đúng giờ/trễ/check-out). */
+export function attendancePunchSound(messageKey: string | undefined, type: "check_in" | "check_out") {
+  let key: string;
+  switch (messageKey) {
+    case "very_early": key = "attendance_checkin_early"; break;
+    case "on_time": key = "attendance_checkin_success"; break;
+    case "late_light":
+    case "late_heavy": key = "attendance_checkin_late"; break;
+    case "checkout_on_time":
+    case "checkout_late": key = "attendance_checkout_success"; break;
+    case "overtime_start":
+    case "overtime_end": key = "attendance_overtime_saved"; break;
+    default: key = type === "check_in" ? "attendance_checkin_success" : "attendance_checkout_success";
+  }
+  playAppSound(key, { vibrate: key === "attendance_checkin_late" ? [120, 80, 120] : [80, 50, 80] });
 }

@@ -1,5 +1,6 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { playAppSound } from "@/lib/feedback";
 import {
   Search, CheckCircle2, AlertTriangle, UserCheck, Camera,
   Clock, User, X, ChevronRight, Loader2, ImageIcon, BarChart3,
@@ -644,6 +645,8 @@ function DetailModal({ row, onClose, staffList, isAdmin, viewerId, viewerName }:
   const [deadlineEditOpen, setDeadlineEditOpen] = useState(false);
   const [extraPhotosEditOpen, setExtraPhotosEditOpen] = useState(false);
   const [heroFlash, setHeroFlash] = useState("");
+  // Trạng thái đã lưu gần nhất trong phiên modal — để chỉ phát tiếng khi trạng thái thật sự đổi.
+  const lastSavedStatusRef = useRef<string>(row.status ?? "");
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["photoshop-booking-view"] });
@@ -724,12 +727,13 @@ function DetailModal({ row, onClose, staffList, isAdmin, viewerId, viewerName }:
         });
         if (!r.ok) throw new Error("Lỗi nhận việc");
       }
+      playAppSound("postprod_job_claimed", { vibrate: [80, 50, 80] });
       invalidate(); onClose();
     } catch (e) { setErr(String(e instanceof Error ? e.message : e)); }
     finally { setSaving(false); }
   };
 
-  const save = async (extraFields?: Record<string, unknown>, opts: { keepOpen?: boolean; closeDelay?: number } = {}): Promise<boolean> => {
+  const save = async (extraFields?: Record<string, unknown>, opts: { keepOpen?: boolean; closeDelay?: number; soundEvent?: string } = {}): Promise<boolean> => {
     setSaving(true); setErr("");
     try {
       const done = Number(form.donePhotos) || 0;
@@ -820,6 +824,16 @@ function DetailModal({ row, onClose, staffList, isAdmin, viewerId, viewerName }:
         if (!r.ok) throw new Error("Lỗi tạo job");
       }
       invalidate();
+      // Phát tiếng SAU khi lưu thành công. Ưu tiên đổi trạng thái (xong show / tạm hoãn),
+      // còn lại dùng soundEvent do nơi gọi truyền (vd lưu link), mặc định = lưu tiến độ.
+      const prevStatus = lastSavedStatusRef.current;
+      const nextStatus = (extraFields?.status as string | undefined) ?? form.status;
+      let soundKey: string;
+      if (nextStatus === "xong_show" && prevStatus !== "xong_show") soundKey = "postprod_show_completed";
+      else if (nextStatus === "tam_hoan" && prevStatus !== "tam_hoan") soundKey = "postprod_job_paused";
+      else soundKey = opts.soundEvent ?? "postprod_progress_saved";
+      lastSavedStatusRef.current = nextStatus;
+      playAppSound(soundKey, { vibrate: [60, 40, 60] });
       if (!opts.keepOpen) {
         const delay = opts.closeDelay ?? 0;
         if (delay > 0) {
@@ -847,8 +861,8 @@ function DetailModal({ row, onClose, staffList, isAdmin, viewerId, viewerName }:
     setExtraPhotosEditOpen(false);
   };
 
-  const saveHeroWork = async () => {
-    const ok = await save(undefined, { keepOpen: true });
+  const saveHeroWork = async (soundEvent: string = "postprod_progress_saved") => {
+    const ok = await save(undefined, { keepOpen: true, soundEvent });
     if (!ok) return;
     flashHero("Đã lưu");
     setDeadlineEditOpen(false);
@@ -947,7 +961,7 @@ function DetailModal({ row, onClose, staffList, isAdmin, viewerId, viewerName }:
                     Hệ thống (từ ngày chụp): {previewDeadlineSystem ? formatDate(previewDeadlineSystem) : "—"}
                     {previewDeadlineSystem ? ` · ${daysLeft(previewDeadlineSystem)}` : ""}
                   </p>
-                  <button type="button" onClick={saveHeroWork} disabled={saving}
+                  <button type="button" onClick={() => saveHeroWork("postprod_progress_saved")} disabled={saving}
                     className="w-full py-2 rounded-lg bg-primary text-primary-foreground text-xs font-semibold disabled:opacity-50">
                     Lưu deadline
                   </button>
@@ -989,11 +1003,11 @@ function DetailModal({ row, onClose, staffList, isAdmin, viewerId, viewerName }:
                     type="number" min="0" step="1"
                     className="flex-1 rounded-lg border border-amber-300 dark:border-amber-700 bg-background px-3 py-2 text-sm"
                     value={form.extraPhotosRequested}
-                    onChange={e => { setForm(f => ({ ...f, extraPhotosRequested: e.target.value })); setHeroSaveOk(""); }}
+                    onChange={e => { setForm(f => ({ ...f, extraPhotosRequested: e.target.value })); setHeroFlash(""); }}
                     placeholder="Số ảnh khách cần làm thêm..."
                   />
                   {extraPhotosNum > 0 && (
-                    <button type="button" onClick={() => { setForm(f => ({ ...f, extraPhotosRequested: "" })); setHeroSaveOk(""); }}
+                    <button type="button" onClick={() => { setForm(f => ({ ...f, extraPhotosRequested: "" })); setHeroFlash(""); }}
                       className="w-9 h-9 rounded-lg border border-border flex items-center justify-center hover:bg-muted"
                       title="Xóa ảnh làm thêm">
                       <Minus size={14} />
@@ -1019,7 +1033,7 @@ function DetailModal({ row, onClose, staffList, isAdmin, viewerId, viewerName }:
                 {totalNeeded > 0 && (
                   <span className="text-xs text-muted-foreground flex-1">/ {totalNeeded} ảnh cần làm</span>
                 )}
-                <button type="button" onClick={saveHeroWork} disabled={saving}
+                <button type="button" onClick={() => saveHeroWork("postprod_progress_saved")} disabled={saving}
                   className="shrink-0 px-3 py-2 rounded-lg border border-border bg-background hover:bg-muted text-xs font-semibold disabled:opacity-50">
                   Lưu
                 </button>
@@ -1051,7 +1065,7 @@ function DetailModal({ row, onClose, staffList, isAdmin, viewerId, viewerName }:
                 onChange={e => { setForm(f => ({ ...f, driveLink: e.target.value })); setHeroFlash(""); }}
                 placeholder="https://drive.google.com/... (link ảnh đã PTS)" />
             </div>
-            <button type="button" onClick={saveHeroWork} disabled={saving}
+            <button type="button" onClick={() => saveHeroWork("postprod_print_link_saved")} disabled={saving}
               className="w-full py-2 rounded-lg border border-border bg-background hover:bg-muted text-xs font-semibold disabled:opacity-50">
               Lưu link & tiến độ
             </button>
@@ -1603,6 +1617,44 @@ export default function PhotoshopJobsPage() {
   });
   const rows = bookingView?.rows ?? [];
   const stats = bookingView?.summary;
+
+  // ── Âm thanh cảnh báo: chỉ phát khi có đơn VỪA trễ deadline / VỪA cần người nhận ──
+  // Seed lần đầu (và khi đổi tháng/đơn) → KHÔNG phát; chỉ phát cái MỚI so với lần kiểm tra trước.
+  // Hai lớp chống spam: so sánh theo Set (chỉ id mới) + cooldown trong playAppSound.
+  const prevOverdueRef = useRef<Set<number> | null>(null);
+  const prevNeedsHandlerRef = useRef<Set<number> | null>(null);
+  const soundCtxRef = useRef<string>("");
+  useEffect(() => {
+    if (isLoading) return;
+    const ctx = `${shootMonth}|${pendingBookingId ?? ""}`;
+    const isNewCtx = soundCtxRef.current !== ctx;
+    soundCtxRef.current = ctx;
+
+    const overdue = new Set<number>();
+    const needsHandler = new Set<number>();
+    for (const r of rows) {
+      if (r.deadlineCode === "fire") overdue.add(r.booking_id);
+      if (isUnassigned(r)) needsHandler.add(r.booking_id);
+    }
+
+    const prevOverdue = prevOverdueRef.current;
+    const prevNeeds = prevNeedsHandlerRef.current;
+    if (isNewCtx || prevOverdue === null) {
+      prevOverdueRef.current = overdue;
+      prevNeedsHandlerRef.current = needsHandler;
+      return;
+    }
+
+    if ([...overdue].some(id => !prevOverdue.has(id))) {
+      playAppSound("postprod_deadline_overdue", { cooldownMs: 20000, vibrate: [150, 80, 150] });
+    }
+    const prevNeedsSet = prevNeeds ?? new Set<number>();
+    if ([...needsHandler].some(id => !prevNeedsSet.has(id))) {
+      playAppSound("postprod_job_needs_handler", { cooldownMs: 15000, vibrate: [100, 60, 100] });
+    }
+    prevOverdueRef.current = overdue;
+    prevNeedsHandlerRef.current = needsHandler;
+  }, [rows, isLoading, shootMonth, pendingBookingId]);
   const pendingBookingRows = useMemo(() => {
     if (pendingBookingId == null) return [];
     const direct = rows.filter(r => r.booking_id === pendingBookingId || r.parent_id === pendingBookingId);

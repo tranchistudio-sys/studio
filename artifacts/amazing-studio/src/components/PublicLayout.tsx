@@ -1,9 +1,10 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation } from "wouter";
-import { Menu, X, LogIn, LayoutDashboard } from "lucide-react";
+import { Menu, X, LogIn, LayoutDashboard, Volume2, VolumeX } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { PublicAiAdvisor } from "@/components/public-ai-advisor";
+import { playPublicSound, ensurePublicAudioArmed, isPublicSoundMuted, setPublicSoundMuted } from "@/lib/feedback";
 import {
   STUDIO_ADDRESS,
   STUDIO_EMAIL,
@@ -25,6 +26,18 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const [soundMuted, setSoundMuted] = useState(isPublicSoundMuted);
+
+  // Mở "khoá" autoplay sau tương tác đầu tiên (tôn trọng giới hạn trình duyệt).
+  useEffect(() => { ensurePublicAudioArmed(); }, []);
+
+  const navSound = () => playPublicSound("public_nav_clicked");
+  const toggleSound = () => {
+    const next = !soundMuted;
+    setSoundMuted(next);
+    setPublicSoundMuted(next);
+    if (!next) playPublicSound("public_nav_clicked"); // phát thử 1 tiếng khi vừa bật lại
+  };
 
   const isHomePage = location === "/" || location === "/trang-chu";
   const isGallerySection =
@@ -133,6 +146,7 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
                 <Link
                   key={item.href}
                   href={item.href}
+                  onClick={navSound}
                   className={cn(
                     "px-2 py-1 text-[12px] tracking-wide",
                     overlayHeader
@@ -175,7 +189,7 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
 
             <nav className="flex items-center gap-1 flex-1 justify-center">
               {PUBLIC_NAV.map((item) => (
-                <Link key={item.href} href={item.href} className={linkClass(isActive(item.href), item.href)}>
+                <Link key={item.href} href={item.href} onClick={navSound} className={linkClass(isActive(item.href), item.href)}>
                   {item.label}
                   {isActive(item.href) && !overlayHeader && (
                     <span className="sr-only"> (active)</span>
@@ -214,7 +228,7 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
                 <Link
                   key={item.href}
                   href={item.href}
-                  onClick={() => setMobileOpen(false)}
+                  onClick={() => { setMobileOpen(false); navSound(); }}
                   className={cn(
                     "flex items-center px-3 py-2.5 text-sm tracking-wide",
                     overlayHeader
@@ -247,6 +261,17 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
       </header>
 
       <main className="flex-1">{children}</main>
+
+      {/* Nút tắt/bật âm thanh cho khách — lưu localStorage, mặc định theo cài đặt. */}
+      <button
+        type="button"
+        onClick={toggleSound}
+        aria-label={soundMuted ? "Bật âm thanh" : "Tắt âm thanh"}
+        title={soundMuted ? "Bật âm thanh" : "Tắt âm thanh"}
+        className="fixed bottom-4 left-4 z-40 inline-flex items-center justify-center w-10 h-10 rounded-full bg-white/90 backdrop-blur border border-neutral-200 text-neutral-500 shadow-sm hover:text-neutral-900 hover:border-neutral-400 transition-colors"
+      >
+        {soundMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+      </button>
 
       <PublicAiAdvisor />
 

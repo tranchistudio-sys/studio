@@ -51,6 +51,21 @@ function authFetch(url: string, opts: RequestInit = {}): Promise<Response> {
   return fetch(url, { ...opts, headers });
 }
 
+// ─── SĐT: chỉ chữ số + nhận diện placeholder ("0", "chưa có"...) ────────────────
+function digitsOnly(raw: string | null | undefined): string {
+  return String(raw ?? "").replace(/\D/g, "");
+}
+/** SĐT placeholder/thiếu → coi như KHÔNG có số (không dùng để tra/merge khách). */
+function isMissingPhone(raw: string | null | undefined): boolean {
+  const s = String(raw ?? "").trim().toLowerCase();
+  if (!s) return true;
+  if (["chưa có", "chua co", "không", "khong", "n/a", "na", "-", "/"].includes(s)) return true;
+  const d = s.replace(/\D/g, "");
+  if (!d) return true;            // không có chữ số
+  if (/^0+$/.test(d)) return true; // toàn số 0: "0", "00", "000"...
+  return false;
+}
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 type TaskAssignee = {
   role: string | null;
@@ -1739,6 +1754,63 @@ function ShowFormPanel({
     );
     if (!extrasValidation.ok) { setError(extrasValidation.errors[0]); return; }
     const isMulti = subDrafts.length >= 2;
+
+    // ── Giải quyết khách hàng cho show (dùng chung cho cả luồng đơn & hợp đồng gộp) ──
+    // Quy tắc chống bug "khách bị quay về khách cũ":
+    //  • KHÔNG dùng SĐT placeholder ("0", rỗng...) để tra/merge khách.
+    //  • Còn liên kết khách (customerId) → cập nhật đúng khách đó.
+    //  • Đã gỡ liên kết / gõ tên mới → tạo/tìm khách mới theo SĐT hợp lệ, không có thì tạo khách mới.
+    const resolveCustomerForSave = async (): Promise<number | null> => {
+      let cid = customerId;
+      if (isEdit && cid) {
+        const normalizedNew = digitsOnly(phone);
+        const normalizedOld = digitsOnly(matchedPhoneRef.current);
+        let reassigned = false;
+        if (!isMissingPhone(phone) && normalizedNew !== normalizedOld) {
+          // SĐT hợp lệ & đổi khác → tra trước để tránh trùng
+          const byPhoneRes = await authFetch(`${BASE}/api/customers/by-phone?phone=${encodeURIComponent(normalizedNew)}`).catch(() => null);
+          if (byPhoneRes && byPhoneRes.ok) {
+            const found = await byPhoneRes.json() as Customer;
+            cid = found.id; reassigned = true;
+          } else {
+            await authFetch(`${BASE}/api/customers/${cid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ phone }) });
+          }
+        }
+        if (!reassigned) {
+          const patch: Record<string, unknown> = {};
+          if (customerName.trim() && customerName.trim() !== matchedNameRef.current.trim()) patch.name = customerName.trim();
+          if (avatar) patch.avatar = avatar;
+          if (facebook) patch.facebook = facebook;
+          if (zalo) patch.zalo = zalo;
+          if (Object.keys(patch).length > 0) {
+            await authFetch(`${BASE}/api/customers/${cid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+          }
+        }
+        return cid;
+      }
+      if (!cid) {
+        if (!isMissingPhone(phone)) {
+          const foundRaw = await authFetch(`${BASE}/api/customers?search=${encodeURIComponent(phone)}`, { headers: { "Content-Type": "application/json" } }).then(r => r.ok ? r.json() : []).catch(() => []);
+          const found: Customer[] = Array.isArray(foundRaw) ? foundRaw : [];
+          const existing = found.find(c => digitsOnly(c.phone) === digitsOnly(phone));
+          if (existing) {
+            cid = existing.id;
+            if (avatar && !existing.avatar) {
+              await authFetch(`${BASE}/api/customers/${cid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ avatar }) });
+            }
+          } else {
+            const nc = await authFetch(`${BASE}/api/customers`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: customerName, phone, facebook: facebook || undefined, zalo: zalo || undefined, avatar: avatar || undefined, source: "walk-in" }) }).then(r => r.json()) as Customer;
+            cid = nc.id;
+          }
+        } else {
+          // Không có SĐT hợp lệ → tạo khách mới theo tên nhập tay (phone = null).
+          const nc = await authFetch(`${BASE}/api/customers`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: customerName, facebook: facebook || undefined, zalo: zalo || undefined, avatar: avatar || undefined, source: "walk-in" }) }).then(r => r.json()) as Customer;
+          cid = nc.id;
+        }
+      }
+      return cid;
+    };
+
     const normalizeItems = (items: typeof subDrafts[number]["items"]) => {
       const seen = new Set<string>();
       return items.filter(item => {
@@ -1755,24 +1827,10 @@ function ShowFormPanel({
     if (isEdit && hasSiblingEdit) {
       setSaving(true);
       try {
-        // Update customer info (avatar/name/phone/facebook/zalo) for multi-service edit
-        if (customerId) {
-          const customerPatch: Record<string, unknown> = {};
-          if (avatar) customerPatch.avatar = avatar;
-          if (customerName.trim() && customerName.trim() !== matchedNameRef.current.trim()) customerPatch.name = customerName.trim();
-          const normalizedNew = String(phone ?? "").replace(/\D/g, "");
-          const normalizedOld = String(matchedPhoneRef.current ?? "").replace(/\D/g, "");
-          if (phone.trim() && normalizedNew !== normalizedOld) customerPatch.phone = phone;
-          if (facebook) customerPatch.facebook = facebook;
-          if (zalo) customerPatch.zalo = zalo;
-          if (Object.keys(customerPatch).length > 0) {
-            await authFetch(`${BASE}/api/customers/${customerId}`, {
-              method: "PUT", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(customerPatch),
-            }).catch(() => {});
-            qc.invalidateQueries({ queryKey: ["customers"] });
-          }
-        }
+        // Giải quyết khách cho hợp đồng gộp (cập nhật khách cũ / tạo khách mới) — placeholder-safe.
+        // cidResolved sẽ được gán cho cha + tất cả dịch vụ con để show hiển thị đúng tên.
+        const cidResolved = await resolveCustomerForSave();
+        qc.invalidateQueries({ queryKey: ["customers"] });
         for (const sub of subDrafts) {
           const validItems = normalizeItems(sub.items);
           const subPackageTotal = calcSubPackageTotal(sub.items);
@@ -1785,6 +1843,7 @@ function ShowFormPanel({
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
+                customerId: cidResolved,
                 serviceLabel: sub.serviceLabel || "",
                 shootDate: sub.shootDate || shootDate,
                 shootTime: sub.shootTime || "08:00",
@@ -1800,6 +1859,7 @@ function ShowFormPanel({
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
+                customerId: cidResolved,
                 serviceLabel: sub.serviceLabel || "",
                 shootDate: sub.shootDate || shootDate,
                 shootTime: sub.shootTime || "08:00",
@@ -1860,6 +1920,7 @@ function ShowFormPanel({
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
+              customerId: cidResolved,
               totalAmount: totalAmount,
               depositAmount: depositNum,
               discountAmount: discountNum,
@@ -1885,72 +1946,8 @@ function ShowFormPanel({
     }
     setSaving(true);
     try {
-      // ── 1. Tạo / tìm khách hàng ──
-      let cid = customerId;
-
-      // Edit mode: update customer phone/name if changed
-      if (isEdit && cid) {
-        const normalizedNew = String(phone ?? "").replace(/\D/g, "");
-        const normalizedOld = String(matchedPhoneRef.current ?? "").replace(/\D/g, "");
-        let cidReassigned = false;
-        if (phone.trim() && normalizedNew !== normalizedOld) {
-          // Phone changed — look up new phone first to avoid duplicates
-          const byPhoneRes = await authFetch(`${BASE}/api/customers/by-phone?phone=${encodeURIComponent(normalizedNew)}`).catch(() => null);
-          if (byPhoneRes && byPhoneRes.ok) {
-            const found = await byPhoneRes.json() as Customer;
-            cid = found.id;
-            cidReassigned = true; // Different customer — do not update their name
-          } else {
-            // No existing customer with new phone → update current customer's phone
-            await authFetch(`${BASE}/api/customers/${cid}`, {
-              method: "PUT", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ phone }),
-            });
-          }
-        }
-        // Update name only when cid wasn't reassigned to an unrelated customer
-        if (!cidReassigned && customerName.trim() && customerName.trim() !== matchedNameRef.current.trim()) {
-          await authFetch(`${BASE}/api/customers/${cid}`, {
-            method: "PUT", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: customerName }),
-          });
-        }
-        if (!cidReassigned && avatar) {
-          await authFetch(`${BASE}/api/customers/${cid}`, {
-            method: "PUT", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ avatar }),
-          });
-        }
-      }
-
-      if (!cid) {
-        if (phone.trim()) {
-          const foundRaw = await authFetch(`${BASE}/api/customers?search=${encodeURIComponent(phone)}`, { headers: { "Content-Type": "application/json" } }).then(r => r.ok ? r.json() : []).catch(() => []);
-          const found: Customer[] = Array.isArray(foundRaw) ? foundRaw : [];
-          const existing = found.find(c => String(c.phone ?? "").replace(/\D/g, "") === String(phone ?? "").replace(/\D/g, ""));
-          if (existing) {
-            cid = existing.id;
-            if (avatar && !existing.avatar) {
-              await authFetch(`${BASE}/api/customers/${cid}`, {
-                method: "PUT", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ avatar }),
-              });
-            }
-          } else {
-            const nc = await authFetch(`${BASE}/api/customers`, {
-              method: "POST", headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ name: customerName, phone, facebook: facebook || undefined, zalo: zalo || undefined, avatar: avatar || undefined, source: "walk-in" }),
-            }).then(r => r.json()) as Customer;
-            cid = nc.id;
-          }
-        } else {
-          const nc = await authFetch(`${BASE}/api/customers`, {
-            method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ name: customerName, facebook: facebook || undefined, zalo: zalo || undefined, avatar: avatar || undefined, source: "walk-in" }),
-          }).then(r => r.json()) as Customer;
-          cid = nc.id;
-        }
-      }
+      // ── 1. Tạo / tìm / cập nhật khách hàng (placeholder-safe, chống bug quay về khách cũ) ──
+      const cid = await resolveCustomerForSave();
 
       let saved: Booking;
 
@@ -2256,11 +2253,30 @@ function ShowFormPanel({
               setPhone(v);
               if (customerId != null && v.trim() !== matchedPhoneRef.current.trim()) { setCustomerId(null); setSelectedCustomerRank(null); setRecentBookings([]); recentBookingsForIdRef.current = null; }
             }} onSelect={handleSelectCustomer} />
+            {/* Cảnh báo nhập số 0 làm SĐT (placeholder) */}
+            {phone.trim() !== "" && isMissingPhone(phone) && (
+              <div className="flex items-start gap-1.5 text-[11px] text-amber-700 dark:text-amber-400 px-1">
+                <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                <span>Không dùng số 0. Để trống nếu khách chưa có số điện thoại.</span>
+              </div>
+            )}
             {customerId && (
               <div className="space-y-1.5">
                 <div className="flex items-center gap-1.5 text-xs text-emerald-700 dark:text-emerald-400 px-1 flex-wrap">
-                  <Check className="w-3.5 h-3.5" /> Khách cũ đã tìm thấy (ID #{customerId})
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Đang liên kết khách: <strong>{matchedNameRef.current || customerName || `#${customerId}`}</strong></span>
                   <RankBadge rank={selectedCustomerRank} size="xs" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomerId(null); setSelectedCustomerRank(null);
+                      setRecentBookings([]); recentBookingsForIdRef.current = null;
+                      matchedNameRef.current = ""; matchedPhoneRef.current = "";
+                    }}
+                    className="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-destructive underline underline-offset-2"
+                  >
+                    <X className="w-3 h-3" /> Xoá liên kết
+                  </button>
                 </div>
                 {isPriorityRank(selectedCustomerRank) && (
                   <div className="inline-flex items-center gap-1 w-fit text-[11px] font-semibold text-amber-700 dark:text-amber-400 px-2 py-0.5 rounded-full border border-amber-300 dark:border-amber-700">

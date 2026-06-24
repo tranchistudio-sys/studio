@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Phone, MessageCircle, Loader2 } from "lucide-react";
 import { CMS_BASE } from "@/components/cms-shared";
 import { formatVND } from "@/lib/utils";
+import { discountBadgeText, type DiscountResult } from "@/lib/discount";
 import { CONSULTANTS, STUDIO_PHONE, STUDIO_PHONE_DISPLAY } from "@/lib/public-site-config";
 import { openZalo } from "@/lib/public-zalo";
 
@@ -15,6 +16,7 @@ interface PublicPackage {
   description: string | null;
   products: string[];
   groupName: string | null;
+  discount?: DiscountResult; // backend tính sẵn (chỉ ưu đãi đang hiệu lực)
 }
 
 function usePublicPackages() {
@@ -150,10 +152,22 @@ export default function PublicPricingPage() {
                         </span>
                       )}
                       <h3 className="font-serif text-lg sm:text-xl leading-tight">{p.name}</h3>
+                      {p.discount?.discountApplied && (
+                        <span className="inline-block mt-1.5 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200">
+                          🏷️ {discountBadgeText(p.discount)}{p.discount.discountName ? ` · ${p.discount.discountName}` : ""}
+                        </span>
+                      )}
                     </div>
-                    <span className="text-lg sm:text-xl font-bold text-rose-600 whitespace-nowrap">
-                      {formatVND(p.price)}
-                    </span>
+                    {p.discount?.discountApplied ? (
+                      <div className="text-right whitespace-nowrap">
+                        <span className="block text-lg sm:text-xl font-bold text-rose-600">{formatVND(p.discount.finalPrice)}</span>
+                        <span className="text-xs line-through text-neutral-400">{formatVND(p.price)}</span>
+                      </div>
+                    ) : (
+                      <span className="text-lg sm:text-xl font-bold text-rose-600 whitespace-nowrap">
+                        {formatVND(p.price)}
+                      </span>
+                    )}
                   </div>
 
                   {p.shortDescription && (

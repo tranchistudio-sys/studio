@@ -9,6 +9,10 @@ import {
   Film, Heart, Printer, Zap, Pencil, Save, ChevronUp, ArrowUp, ArrowDown
 } from "lucide-react";
 import { formatVND } from "@/lib/utils";
+import {
+  previewFinalPrice, discountWindowStatus, statusLabel, discountBadgeText, discountSourceLabel,
+  type DiscountResult, type DiscountWindowStatus,
+} from "@/lib/discount";
 import { reflowDescriptionLines } from "@/lib/package-description";
 import { Button, Input, Badge } from "@/components/ui";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
@@ -73,8 +77,28 @@ type ServicePackage = {
   defaultEditingDays?: number | null;
   requiresPostProduction?: boolean;
   requiresPrinting?: boolean;
+  // Chương trình giảm giá riêng gói (field thô để sửa) + kết quả backend tính sẵn.
+  discountEnabled?: boolean;
+  discountType?: "percent" | "fixed" | null;
+  discountValue?: number | null;
+  discountStartDate?: string | null;
+  discountEndDate?: string | null;
+  discountName?: string | null;
+  discountDescription?: string | null;
+  discount?: DiscountResult; // backend tính sẵn (ưu tiên gói > nhóm) — card chỉ hiển thị
+  pkgDiscountStatus?: DiscountWindowStatus;
+  groupDiscountStatus?: DiscountWindowStatus;
 };
-type ServiceGroup = { id: number; name: string; description: string; isActive: boolean; sortOrder: number; aiImageUrl?: string | null; publicForCustomer?: boolean };
+type DiscountFields = {
+  discountEnabled?: boolean; discountType?: "percent" | "fixed" | null; discountValue?: number | null;
+  discountStartDate?: string | null; discountEndDate?: string | null;
+  discountName?: string | null; discountDescription?: string | null;
+};
+type ServiceGroup = {
+  id: number; name: string; description: string; isActive: boolean; sortOrder: number;
+  aiImageUrl?: string | null; publicForCustomer?: boolean;
+  discountStatus?: DiscountWindowStatus;
+} & DiscountFields;
 type Surcharge = { id: number; name: string; category: string; price: number; unit: string; description: string; isActive: boolean; sortOrder: number };
 
 const UNIT_OPTIONS = ["lần", "buổi", "bàn", "tấm", "km", "người", "bộ", "cuốn", "trang", "ảnh", "clip", "ngày"];
@@ -131,6 +155,7 @@ export default function PricingPage() {
   const [editingSurcharge, setEditingSurcharge] = useState<Surcharge | null>(null);
   const [showGroupModal, setShowGroupModal] = useState(false);
   const [editingGroup, setEditingGroup] = useState<ServiceGroup | null>(null);
+  const [deletingGroup, setDeletingGroup] = useState<ServiceGroup | null>(null);
   const [showAllFilterGroups, setShowAllFilterGroups] = useState(false);
 
   // ── Inline edit state ──────────────────────────────────────────────────────
@@ -355,11 +380,6 @@ export default function PricingPage() {
     }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["surcharges"] }),
   });
-  const deleteGroup = useMutation({
-    mutationFn: (id: number) => fetch(`${BASE}/api/service-groups/${id}`, { method: "DELETE", headers: authHeaders }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["service-groups"] }),
-  });
-
   const surchargesByCategory = useMemo(() => {
     const map = new Map<string, Surcharge[]>();
     surcharges.forEach(s => {
@@ -587,6 +607,27 @@ export default function PricingPage() {
                               groupHasPrinting ? "translate-x-6" : "translate-x-1"
                             }`} />
                           </button>
+                          {/* Ưu đãi nhóm (mở GroupModal — có section giảm giá nhóm) */}
+                          <button
+                            type="button"
+                            title="Chương trình giảm giá cho cả nhóm"
+                            aria-label={`Chương trình giảm giá nhóm ${group.name}`}
+                            onClick={(e) => { e.stopPropagation(); e.preventDefault(); setEditingGroup(group); setShowGroupModal(true); }}
+                            className={`flex items-center gap-1 rounded-lg px-1.5 py-1 hover:bg-muted transition-colors ${group.discountStatus === "active" ? "text-rose-600" : "text-muted-foreground"}`}
+                          >
+                            <Tag className="w-4 h-4" />
+                            {group.discountStatus === "active" && <span className="hidden lg:inline text-[10px] font-medium">Đang giảm</span>}
+                          </button>
+                          {/* Xoá / ẩn nhóm (an toàn — không xoá thẳng nhóm còn gói) */}
+                          <button
+                            type="button"
+                            title="Xoá / ẩn nhóm"
+                            aria-label={`Xoá hoặc ẩn nhóm ${group.name}`}
+                            onClick={(e) => { e.stopPropagation(); e.preventDefault(); setDeletingGroup(group); }}
+                            className="flex items-center rounded-lg px-1.5 py-1 hover:bg-destructive/10 text-destructive/70 hover:text-destructive transition-colors"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
                       )}
                     </div>
@@ -629,7 +670,29 @@ export default function PricingPage() {
                               </div>
                               {!pkg.isActive && <span className="text-[10px] px-1.5 py-0.5 bg-muted rounded text-muted-foreground">Ẩn</span>}
                             </div>
-                            <p className="text-xl font-bold text-primary mb-1">{formatVND(pkg.price)}</p>
+                            {pkg.discount?.discountApplied ? (
+                              <div className="mb-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <p className="text-xl font-bold text-rose-600">{formatVND(pkg.discount.finalPrice)}</p>
+                                  <p className="text-sm line-through text-muted-foreground">{formatVND(pkg.price)}</p>
+                                </div>
+                                <span className="inline-flex items-center gap-1 mt-0.5 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-rose-100 text-rose-700 border border-rose-200">
+                                  🏷️ {discountBadgeText(pkg.discount)} · {discountSourceLabel(pkg.discount)}
+                                </span>
+                                {pkg.discount.discountName && (
+                                  <p className="text-[10px] text-rose-600 mt-0.5">
+                                    {pkg.discount.discountName}{pkg.discount.discountEndDate ? ` · đến ${new Date(pkg.discount.discountEndDate).toLocaleDateString("vi-VN")}` : ""}
+                                  </p>
+                                )}
+                              </div>
+                            ) : (
+                              <p className="text-xl font-bold text-primary mb-1">{formatVND(pkg.price)}</p>
+                            )}
+                            {!pkg.discount?.discountApplied && (pkg.pkgDiscountStatus === "scheduled" || pkg.pkgDiscountStatus === "expired") && (
+                              <span className={`inline-block mb-1 text-[10px] font-medium px-2 py-0.5 rounded-full ${pkg.pkgDiscountStatus === "scheduled" ? "bg-amber-100 text-amber-700" : "bg-neutral-200 text-neutral-600"}`}>
+                                {pkg.pkgDiscountStatus === "scheduled" ? "🏷️ Ưu đãi sắp áp dụng" : "🏷️ Ưu đãi đã hết hạn"}
+                              </span>
+                            )}
                             {/* Chi phí sản xuất */}
                             {(pkg.printCost > 0 || pkg.operatingCost > 0 || pkg.salePercent > 0) && (
                               <div className="mt-1.5 space-y-0.5 text-[11px] text-muted-foreground">
@@ -752,6 +815,9 @@ export default function PricingPage() {
                       <div className="flex items-center gap-2">
                         <p className="font-semibold">{g.name}</p>
                         {!g.isActive && <Badge variant="outline" className="text-[10px] px-1.5 py-0">Ẩn</Badge>}
+                        {g.discountStatus === "active" && <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-rose-600 border-rose-300">🏷️ Đang giảm</Badge>}
+                        {g.discountStatus === "scheduled" && <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-amber-600 border-amber-300">🏷️ Sắp áp dụng</Badge>}
+                        {g.discountStatus === "expired" && <Badge variant="outline" className="text-[10px] px-1.5 py-0 text-neutral-500">🏷️ Hết hạn</Badge>}
                         {g.aiImageUrl && (
                           <Badge variant="outline" className={`text-[10px] px-1.5 py-0 gap-1 ${g.publicForCustomer === false ? "text-muted-foreground" : "text-emerald-600 border-emerald-300"}`}>
                             🖼️ {g.publicForCustomer === false ? "Ảnh (tắt gửi)" : "Ảnh AI"}
@@ -770,7 +836,8 @@ export default function PricingPage() {
                           <Edit2 className="w-4 h-4" />
                         </button>
                         <button
-                          onClick={() => { if (confirm("Xoá nhóm này? Các gói trong nhóm sẽ không bị xoá.")) deleteGroup.mutate(g.id); }}
+                          onClick={() => setDeletingGroup(g)}
+                          title="Xoá / ẩn nhóm"
                           className="p-2 rounded-lg hover:bg-destructive/10 transition-colors text-destructive/70 hover:text-destructive"
                         >
                           <Trash2 className="w-4 h-4" />
@@ -1152,9 +1219,236 @@ export default function PricingPage() {
         <GroupModal
           group={editingGroup}
           onClose={() => setShowGroupModal(false)}
-          onSaved={() => { qc.invalidateQueries({ queryKey: ["service-groups"] }); setShowGroupModal(false); }}
+          onSaved={() => {
+            // Giảm giá nhóm ảnh hưởng giá hiển thị của các gói trong nhóm → refetch cả 2.
+            qc.invalidateQueries({ queryKey: ["service-groups"] });
+            qc.invalidateQueries({ queryKey: ["service-packages"] });
+            setShowGroupModal(false);
+          }}
         />
       )}
+
+      {deletingGroup && (
+        <GroupDeleteDialog
+          group={deletingGroup}
+          packageCount={packages.filter(p => p.groupId === deletingGroup.id).length}
+          groups={groups}
+          onClose={() => setDeletingGroup(null)}
+          onDone={() => {
+            qc.invalidateQueries({ queryKey: ["service-groups"] });
+            qc.invalidateQueries({ queryKey: ["service-packages"] });
+            setDeletingGroup(null);
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Chương trình giảm giá (dùng chung cho PackageModal + GroupModal) ─────────
+type DiscountForm = {
+  discountEnabled: boolean; discountName: string; discountType: "percent" | "fixed";
+  discountValue: string; discountStartDate: string; discountEndDate: string; discountDescription: string;
+};
+
+/** ISO → giá trị cho <input type="datetime-local">. */
+function toLocalInput(iso?: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function initDiscountForm(o?: DiscountFields | null): DiscountForm {
+  return {
+    discountEnabled: o?.discountEnabled ?? false,
+    discountName: o?.discountName ?? "",
+    discountType: o?.discountType === "fixed" ? "fixed" : "percent",
+    discountValue: o?.discountValue != null ? String(o.discountValue) : "",
+    discountStartDate: toLocalInput(o?.discountStartDate ?? null),
+    discountEndDate: toLocalInput(o?.discountEndDate ?? null),
+    discountDescription: o?.discountDescription ?? "",
+  };
+}
+
+function discountFormToPayload(d: DiscountForm) {
+  return {
+    discountEnabled: d.discountEnabled,
+    discountName: d.discountName.trim() || null,
+    discountType: d.discountType,
+    discountValue: d.discountValue.trim() === "" ? null : parseFloat(d.discountValue),
+    discountStartDate: d.discountStartDate ? new Date(d.discountStartDate).toISOString() : null,
+    discountEndDate: d.discountEndDate ? new Date(d.discountEndDate).toISOString() : null,
+    discountDescription: d.discountDescription.trim() || null,
+  };
+}
+
+function DiscountSection({ value, onChange, basePrice, scope }: {
+  value: DiscountForm;
+  onChange: (patch: Partial<DiscountForm>) => void;
+  basePrice?: number;
+  scope: "package" | "group";
+}) {
+  const cfg = {
+    enabled: value.discountEnabled, type: value.discountType, value: value.discountValue,
+    startDate: value.discountStartDate ? new Date(value.discountStartDate) : null,
+    endDate: value.discountEndDate ? new Date(value.discountEndDate) : null,
+  };
+  const status = discountWindowStatus(cfg);
+  const base = basePrice ?? 0;
+  const finalPrice = previewFinalPrice(base, cfg);
+  const statusCls = status === "active" ? "bg-emerald-100 text-emerald-700"
+    : status === "scheduled" ? "bg-amber-100 text-amber-700"
+    : status === "expired" ? "bg-neutral-200 text-neutral-600" : "bg-muted text-muted-foreground";
+  return (
+    <div className="p-3 rounded-xl border border-rose-200 bg-rose-50/40 space-y-3">
+      <label className="flex items-center justify-between cursor-pointer">
+        <span className="text-xs font-semibold text-rose-700 uppercase tracking-wide">
+          🏷️ Chương trình giảm giá {scope === "group" ? "(cấp nhóm)" : "(riêng gói)"}
+        </span>
+        <input type="checkbox" checked={value.discountEnabled} onChange={e => onChange({ discountEnabled: e.target.checked })} className="w-4 h-4 rounded" />
+      </label>
+      {value.discountEnabled && (
+        <div className="space-y-3">
+          <div>
+            <label className="block text-[11px] text-muted-foreground mb-1">Tên chương trình</label>
+            <Input value={value.discountName} onChange={e => onChange({ discountName: e.target.value })} placeholder="VD: Ưu đãi mùa cưới" className="h-8 text-sm" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] text-muted-foreground mb-1">Loại giảm</label>
+              <div className="flex gap-1">
+                <button type="button" onClick={() => onChange({ discountType: "percent" })}
+                  className={`flex-1 h-8 rounded-lg text-xs border ${value.discountType === "percent" ? "bg-rose-500 text-white border-rose-500" : "border-input"}`}>Giảm %</button>
+                <button type="button" onClick={() => onChange({ discountType: "fixed" })}
+                  className={`flex-1 h-8 rounded-lg text-xs border ${value.discountType === "fixed" ? "bg-rose-500 text-white border-rose-500" : "border-input"}`}>Giảm tiền</button>
+              </div>
+            </div>
+            <div>
+              <label className="block text-[11px] text-muted-foreground mb-1">{value.discountType === "percent" ? "Giá trị (%)" : "Giá trị (đ)"}</label>
+              <Input type="number" value={value.discountValue} onChange={e => onChange({ discountValue: e.target.value })}
+                placeholder={value.discountType === "percent" ? "VD: 10" : "VD: 100000"} className="h-8 text-sm" />
+            </div>
+          </div>
+          <div className="flex gap-1.5 flex-wrap">
+            {(value.discountType === "percent" ? [10, 20, 30, 50] : [100000, 200000, 300000, 500000]).map(v => (
+              <button key={v} type="button" onClick={() => onChange({ discountValue: String(v) })}
+                className="px-2 py-0.5 rounded-md text-[11px] border border-input hover:bg-rose-100">
+                {value.discountType === "percent" ? `${v}%` : formatVNDShort(v)}
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] text-muted-foreground mb-1">Ngày bắt đầu</label>
+              <input type="datetime-local" value={value.discountStartDate} onChange={e => onChange({ discountStartDate: e.target.value })}
+                className="w-full h-8 border border-input rounded-lg px-2 text-xs bg-background" />
+            </div>
+            <div>
+              <label className="block text-[11px] text-muted-foreground mb-1">Ngày kết thúc</label>
+              <input type="datetime-local" value={value.discountEndDate} onChange={e => onChange({ discountEndDate: e.target.value })}
+                className="w-full h-8 border border-input rounded-lg px-2 text-xs bg-background" />
+            </div>
+          </div>
+          <p className="text-[10px] text-muted-foreground">Để trống ngày = áp dụng đến khi admin tắt. Quá hạn tự ngừng giảm.</p>
+          <div>
+            <label className="block text-[11px] text-muted-foreground mb-1">Lời tư vấn cho Lulu (tuỳ chọn)</label>
+            <textarea value={value.discountDescription} onChange={e => onChange({ discountDescription: e.target.value })} rows={2}
+              placeholder={'VD: "Dạ bên em đang có ưu đãi mùa cưới, chốt hôm nay giảm 10% gói này ạ."'}
+              className="w-full border border-input rounded-lg px-2 py-1.5 text-xs bg-background" />
+          </div>
+          <div className="text-xs bg-background rounded-lg px-3 py-2 border border-border flex items-center justify-between gap-2 flex-wrap">
+            <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${statusCls}`}>{statusLabel(status)}</span>
+            {scope === "package" && base > 0 ? (
+              status === "active"
+                ? <span>Giá sau giảm: <b className="text-rose-600">{formatVND(finalPrice)}</b> <span className="line-through text-muted-foreground ml-1">{formatVND(base)}</span></span>
+                : <span className="text-muted-foreground">Giá gốc {formatVND(base)}</span>
+            ) : (
+              <span className="text-muted-foreground text-[11px]">Áp cho mọi gói active trong nhóm chưa có giảm riêng</span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Dialog xử lý xoá/ẩn/chuyển nhóm an toàn (không hard-delete nhóm còn gói).
+function GroupDeleteDialog({ group, packageCount, groups, onClose, onDone }: {
+  group: ServiceGroup; packageCount: number; groups: ServiceGroup[];
+  onClose: () => void; onDone: (msg: string) => void;
+}) {
+  const [targetId, setTargetId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const others = groups.filter(g => g.id !== group.id);
+  const hdrs = () => {
+    const t = localStorage.getItem("amazingStudioToken_v2");
+    return { "Content-Type": "application/json", ...(t ? { Authorization: `Bearer ${t}` } : {}) } as Record<string, string>;
+  };
+  const run = async (fn: () => Promise<void>) => { setBusy(true); setError(""); try { await fn(); } catch (e) { setError(e instanceof Error ? e.message : "Có lỗi xảy ra"); } finally { setBusy(false); } };
+
+  const hardDelete = () => run(async () => {
+    const r = await fetch(`${BASE}/api/service-groups/${group.id}`, { method: "DELETE", headers: hdrs() });
+    if (r.status === 409) { const b = await r.json().catch(() => ({})); throw new Error(`Nhóm còn ${b.packageCount ?? "?"} gói — hãy chuyển gói hoặc ẩn nhóm.`); }
+    if (!r.ok && r.status !== 204) throw new Error("Xoá nhóm thất bại");
+    onDone("Đã xoá nhóm");
+  });
+  const hideGroup = () => run(async () => {
+    const r = await fetch(`${BASE}/api/service-groups/${group.id}`, { method: "PUT", headers: hdrs(), body: JSON.stringify({ isActive: false }) });
+    if (!r.ok) throw new Error("Ẩn nhóm thất bại");
+    onDone("Đã ẩn nhóm — Lulu & website sẽ không dùng nhóm này nữa");
+  });
+  const moveAndDelete = () => run(async () => {
+    if (!targetId) { setError("Vui lòng chọn nhóm đích"); return; }
+    const m = await fetch(`${BASE}/api/service-groups/${group.id}/move-packages`, { method: "POST", headers: hdrs(), body: JSON.stringify({ targetGroupId: parseInt(targetId) }) });
+    if (!m.ok) { const b = await m.json().catch(() => ({})); throw new Error(b.error ?? "Chuyển gói thất bại"); }
+    const r = await fetch(`${BASE}/api/service-groups/${group.id}`, { method: "DELETE", headers: hdrs() });
+    if (!r.ok && r.status !== 204) throw new Error("Đã chuyển gói nhưng xoá nhóm thất bại");
+    onDone("Đã chuyển gói sang nhóm khác và xoá nhóm cũ");
+  });
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-background rounded-2xl shadow-2xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <h2 className="text-base font-bold">Xử lý nhóm “{group.name}”</h2>
+          <button onClick={onClose} className="p-2 rounded-lg hover:bg-muted"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="px-6 py-4 space-y-4">
+          {error && <div className="flex items-center gap-2 p-3 bg-destructive/10 rounded-lg text-destructive text-sm"><AlertCircle className="w-4 h-4 flex-shrink-0" />{error}</div>}
+          {packageCount === 0 ? (
+            <>
+              <p className="text-sm text-muted-foreground">Nhóm này chưa có gói dịch vụ nào. Bạn có chắc muốn xoá nhóm? Hành động này không thể hoàn tác.</p>
+              <div className="flex gap-3 pt-1">
+                <Button variant="outline" onClick={onClose} className="flex-1">Huỷ</Button>
+                <Button onClick={hardDelete} disabled={busy} className="flex-1 bg-destructive hover:bg-destructive/90">{busy ? "Đang xoá..." : "Xoá nhóm"}</Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="text-sm">Nhóm này đang có <b>{packageCount} gói dịch vụ</b>. Không thể xoá thẳng — chọn cách xử lý:</p>
+              <div className="space-y-3">
+                <div className="p-3 rounded-xl border border-border space-y-2">
+                  <p className="text-sm font-medium">1. Chuyển toàn bộ gói sang nhóm khác rồi xoá nhóm này</p>
+                  <select value={targetId} onChange={e => setTargetId(e.target.value)} className="w-full h-9 border border-input rounded-lg px-3 text-sm bg-background">
+                    <option value="">-- Chọn nhóm đích --</option>
+                    {others.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+                  </select>
+                  <Button onClick={moveAndDelete} disabled={busy || !targetId} className="w-full">{busy ? "Đang xử lý..." : "Chuyển gói & xoá nhóm"}</Button>
+                </div>
+                <div className="p-3 rounded-xl border border-border space-y-2">
+                  <p className="text-sm font-medium">2. Ẩn nhóm (giữ nguyên gói + dữ liệu)</p>
+                  <p className="text-[11px] text-muted-foreground">Nhóm ẩn sẽ không hiện trên website và Lulu không tư vấn nhóm này. Có thể bật lại sau.</p>
+                  <Button variant="outline" onClick={hideGroup} disabled={busy} className="w-full">{busy ? "Đang ẩn..." : "Ẩn nhóm"}</Button>
+                </div>
+              </div>
+              <Button variant="outline" onClick={onClose} className="w-full">Huỷ</Button>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
@@ -1187,6 +1481,7 @@ function PackageModal({
   const [items, setItems] = useState<PackageItem[]>(
     pkg?.items.length ? pkg.items : []
   );
+  const [discount, setDiscount] = useState<DiscountForm>(() => initDiscountForm(pkg));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -1220,6 +1515,7 @@ function PackageModal({
             : null),
         requiresPostProduction: form.requiresPostProduction,
         requiresPrinting: form.requiresPrinting,
+        ...discountFormToPayload(discount),
         items: items.filter(it => it.name.trim()).map((it, i) => ({ ...it, sortOrder: i })),
       };
       const url = pkg ? `/api/service-packages/${pkg.id}` : `/api/service-packages`;
@@ -1345,6 +1641,14 @@ function PackageModal({
               );
             })()}
           </div>
+
+          {/* Chương trình giảm giá riêng cho gói */}
+          <DiscountSection
+            scope="package"
+            value={discount}
+            basePrice={parseFloat(form.price) || 0}
+            onChange={patch => setDiscount(d => ({ ...d, ...patch }))}
+          />
 
           <div>
             <label className="block text-xs font-semibold text-muted-foreground mb-1.5">📸 Số ảnh hậu kỳ bao gồm trong gói</label>
@@ -1608,6 +1912,7 @@ function GroupModal({ group, onClose, onSaved }: {
     aiImageUrl: group?.aiImageUrl ?? "",
     publicForCustomer: group?.publicForCustomer ?? true,
   });
+  const [discount, setDiscount] = useState<DiscountForm>(() => initDiscountForm(group));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -1622,7 +1927,7 @@ function GroupModal({ group, onClose, onSaved }: {
       const resp = await fetch(`${BASE}${url}`, {
         method: group ? "PUT" : "POST",
         headers,
-        body: JSON.stringify({ ...form, sortOrder: parseInt(form.sortOrder) || 0 }),
+        body: JSON.stringify({ ...form, sortOrder: parseInt(form.sortOrder) || 0, ...discountFormToPayload(discount) }),
       });
       if (resp.status === 409) {
         const body = await resp.json();
@@ -1661,6 +1966,13 @@ function GroupModal({ group, onClose, onSaved }: {
             <input type="checkbox" checked={form.isActive} onChange={e => setForm(f => ({ ...f, isActive: e.target.checked }))} className="w-4 h-4 rounded" />
             <span className="text-sm">Đang hoạt động</span>
           </label>
+
+          {/* Chương trình giảm giá cấp nhóm */}
+          <DiscountSection
+            scope="group"
+            value={discount}
+            onChange={patch => setDiscount(d => ({ ...d, ...patch }))}
+          />
 
           {/* ─── Ảnh bảng giá cho Sale AI ─────────────────────────────── */}
           <div className="pt-3 border-t border-border">

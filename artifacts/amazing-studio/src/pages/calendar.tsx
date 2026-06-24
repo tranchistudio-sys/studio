@@ -6239,11 +6239,13 @@ class CalendarErrorBoundary extends Component<{ children: ReactNode; onReset?: (
 }
 
 // ─── Zoom UI cho lịch tháng (không dùng pinch zoom) ────────────────────────
-const ZOOM_KEY = "calendar-zoom-v1";
+// v2: đổi mặc định 60% → 50% (ở 60% lịch bị tràn/cắt trên mobile). Bump key để reset zoom đã lưu
+// về mặc định mới 1 lần (zoom cũ lưu ở "calendar-zoom-v1" sẽ bị bỏ qua); chỉnh tay sau vẫn được lưu.
+const ZOOM_KEY = "calendar-zoom-v2";
 const ZOOM_MIN = 0.4;
 const ZOOM_MAX = 1.4;
 const ZOOM_STEP = 0.1;
-const ZOOM_DEFAULT = 0.6;
+const ZOOM_DEFAULT = 0.5;
 function getStoredZoom(): number {
   try {
     const raw = localStorage.getItem(ZOOM_KEY);
@@ -6888,52 +6890,37 @@ function CalendarPageInner() {
         style={{ maxHeight: "calc(100svh - 160px)" }}
       >
         {/* Month nav */}
-        <div className="flex items-center justify-between px-4 py-3 border-b bg-gradient-to-r from-card to-muted/10 flex-shrink-0">
-          <div>
+        <div className="flex flex-col gap-3 px-4 py-3 border-b bg-gradient-to-r from-card to-muted/10 flex-shrink-0 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+          {/* Tiêu đề tháng (hero) + âm lịch (phụ đề) */}
+          <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <Sun className="w-4 h-4 text-orange-400" />
-              <span className="text-lg font-bold capitalize">{format(currentDate, "MMMM yyyy", { locale: vi })}</span>
+              <Sun className="w-4 h-4 text-orange-400 flex-shrink-0" />
+              <span className="text-lg font-bold capitalize truncate">{format(currentDate, "MMMM yyyy", { locale: vi })}</span>
             </div>
             {showLunar && (
               <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
-                <Moon className="w-3 h-3 text-indigo-400" />
-                {getLunarMonthName(monthLunar.month, monthLunar.leap)} {getCanChi(monthLunar.year)} ({monthLunar.year})
+                <Moon className="w-3 h-3 text-indigo-400 flex-shrink-0" />
+                <span className="truncate">{getLunarMonthName(monthLunar.month, monthLunar.leap)} {getCanChi(monthLunar.year)} ({monthLunar.year})</span>
               </p>
             )}
           </div>
-          <div className="flex items-center gap-1 flex-wrap">
-            {/* Zoom controls — phóng to/thu nhỏ toàn bộ lưới tháng */}
-            <div className="flex items-center gap-0.5 mr-1 rounded-lg border bg-background p-0.5" title={`Zoom ${Math.round(zoomLevel * 100)}%`}>
+          {/* Hàng điều khiển: cụm chuyển tháng (chính, trái) + cụm zoom (phụ, phải) — dạng segmented pill */}
+          <div className="flex items-center justify-between gap-2 flex-shrink-0 sm:justify-end">
+            {/* Chuyển tháng: ◀ | Hôm nay | ▶ */}
+            <div className="inline-flex items-center rounded-lg border bg-background overflow-hidden">
+              <button onClick={prevMonth} className="w-8 h-8 hover:bg-muted flex items-center justify-center transition-colors text-muted-foreground hover:text-foreground" aria-label="Tháng trước"><ChevronLeft className="w-4 h-4" /></button>
               <button
-                onClick={zoomOut}
-                disabled={zoomLevel <= ZOOM_MIN + 0.001}
-                className="w-7 h-7 rounded hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent flex items-center justify-center transition-colors"
-                aria-label="Thu nhỏ lịch"
-              >
-                <ZoomOut className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={zoomReset}
-                className="px-1.5 h-7 text-[11px] font-semibold tabular-nums hover:bg-muted rounded transition-colors min-w-[40px]"
-                aria-label="Reset zoom về 100%"
-              >
-                {Math.round(zoomLevel * 100)}%
-              </button>
-              <button
-                onClick={zoomIn}
-                disabled={zoomLevel >= ZOOM_MAX - 0.001}
-                className="w-7 h-7 rounded hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent flex items-center justify-center transition-colors"
-                aria-label="Phóng to lịch"
-              >
-                <ZoomIn className="w-3.5 h-3.5" />
-              </button>
+                onClick={() => { const t = new Date(); setCurrentDate(t); setSelectedDate(t); }}
+                className="px-3 h-8 text-sm font-medium hover:bg-muted transition-colors border-l border-r border-border"
+              >Hôm nay</button>
+              <button onClick={nextMonth} className="w-8 h-8 hover:bg-muted flex items-center justify-center transition-colors text-muted-foreground hover:text-foreground" aria-label="Tháng sau"><ChevronRight className="w-4 h-4" /></button>
             </div>
-            <button onClick={prevMonth} className="w-8 h-8 rounded-lg border bg-background hover:bg-muted flex items-center justify-center transition-colors"><ChevronLeft className="w-4 h-4" /></button>
-            <button
-              onClick={() => { const t = new Date(); setCurrentDate(t); setSelectedDate(t); }}
-              className="px-3 h-8 rounded-lg border bg-background hover:bg-muted text-sm font-medium transition-colors"
-            >Hôm nay</button>
-            <button onClick={nextMonth} className="w-8 h-8 rounded-lg border bg-background hover:bg-muted flex items-center justify-center transition-colors"><ChevronRight className="w-4 h-4" /></button>
+            {/* Zoom: − | NN% | + */}
+            <div className="inline-flex items-center rounded-lg border bg-background overflow-hidden" title={`Zoom ${Math.round(zoomLevel * 100)}%`}>
+              <button onClick={zoomOut} disabled={zoomLevel <= ZOOM_MIN + 0.001} className="w-8 h-8 hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent flex items-center justify-center transition-colors" aria-label="Thu nhỏ lịch"><ZoomOut className="w-3.5 h-3.5" /></button>
+              <button onClick={zoomReset} className="px-2 h-8 text-[11px] font-semibold tabular-nums text-muted-foreground hover:bg-muted hover:text-foreground transition-colors min-w-[44px] border-l border-r border-border" aria-label="Reset zoom">{Math.round(zoomLevel * 100)}%</button>
+              <button onClick={zoomIn} disabled={zoomLevel >= ZOOM_MAX - 0.001} className="w-8 h-8 hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent flex items-center justify-center transition-colors" aria-label="Phóng to lịch"><ZoomIn className="w-3.5 h-3.5" /></button>
+            </div>
           </div>
         </div>
 

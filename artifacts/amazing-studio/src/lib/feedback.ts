@@ -189,7 +189,7 @@ export interface SoundEvent {
 
 const PENDING_HINT = "Chưa nối sự kiện — chọn trước, bật sau";
 const CONFIRM_HINT = "Chưa có trạng thái khách xác nhận trong hệ thống — chọn trước, bật sau";
-const PUBLIC_HINT = "Trang công khai — mặc định tắt, chọn 1 tiếng nhẹ/sang để bật. Khách có nút tắt riêng.";
+const PUBLIC_HINT = "Trang công khai — tiếng nhẹ/sang, BẬT mặc định. Khách có nút tắt riêng (góc dưới-trái).";
 
 // Thứ tự hiển thị nhóm trong Cài đặt → Âm thanh. Nhóm chưa liệt kê sẽ xếp cuối.
 export const SOUND_GROUPS = ["Chung", "Tiến độ hậu kỳ", "Chấm công", "Website công khai"] as const;
@@ -223,19 +223,19 @@ export const SOUND_EVENTS: SoundEvent[] = [
   { key: "attendance_overtime_saved", label: "Lưu / duyệt tăng ca", defaultId: "coin", wired: true, group: "Chấm công" },
   { key: "attendance_leave_approved", label: "Duyệt nghỉ phép", defaultId: "soft-bell", wired: true, group: "Chấm công" },
   { key: "attendance_leave_rejected", label: "Từ chối nghỉ phép", defaultId: "bubble", wired: true, group: "Chấm công" },
-  { key: "attendance_staff_absent_detected", label: "Phát hiện nhân viên vắng / chưa vào", hint: "Mặc định tắt để tránh ồn — chọn 1 tiếng để bật.", defaultId: "none", wired: true, group: "Chấm công" },
-  { key: "attendance_staff_detail_opened", label: "Mở chi tiết nhân viên", hint: "Tiếng nhẹ khi bấm xem chi tiết — mặc định tắt.", defaultId: "none", wired: true, group: "Chấm công" },
+  { key: "attendance_staff_absent_detected", label: "Phát hiện nhân viên vắng / chưa vào", hint: "Có cooldown chống spam khi bảng tháng tự cập nhật.", defaultId: "alert", wired: true, group: "Chấm công" },
+  { key: "attendance_staff_detail_opened", label: "Mở chi tiết nhân viên", hint: "Tiếng nhẹ khi bấm xem chi tiết nhân viên.", defaultId: "pop", wired: true, group: "Chấm công" },
 
-  // ── Nhóm "Website công khai" (mặc định TẮT — chọn tiếng nhẹ để bật; có nút tắt cho khách) ──
-  { key: "public_nav_clicked", label: "Bấm menu chính", hint: PUBLIC_HINT, defaultId: "none", wired: true, group: "Website công khai" },
-  { key: "public_category_selected", label: "Chọn danh mục", hint: PUBLIC_HINT, defaultId: "none", wired: true, group: "Website công khai" },
-  { key: "public_product_card_opened", label: "Mở chi tiết sản phẩm / trang phục", hint: PUBLIC_HINT, defaultId: "none", wired: true, group: "Website công khai" },
-  { key: "public_gallery_album_opened", label: "Mở album concept", hint: PUBLIC_HINT, defaultId: "none", wired: true, group: "Website công khai" },
-  { key: "public_gallery_image_opened", label: "Mở ảnh trong gallery / lightbox", hint: PUBLIC_HINT, defaultId: "none", wired: true, group: "Website công khai" },
-  { key: "public_smart_search_opened", label: "Mở Tìm kiếm thông minh", hint: PUBLIC_HINT, defaultId: "none", wired: true, group: "Website công khai" },
-  { key: "public_smart_search_success", label: "Tìm kiếm có kết quả", hint: PUBLIC_HINT, defaultId: "none", wired: true, group: "Website công khai" },
-  { key: "public_contact_clicked", label: "Bấm gọi / liên hệ / đặt lịch", hint: PUBLIC_HINT, defaultId: "none", wired: true, group: "Website công khai" },
-  { key: "public_image_hover_soft", label: "Hover ảnh (rất nhẹ)", hint: "Chỉ dùng rất nhẹ — mặc định tắt để không gây khó chịu.", defaultId: "none", wired: true, group: "Website công khai" },
+  // ── Nhóm "Website công khai" (BẬT mặc định, tiếng nhẹ/sang; khách có nút tắt riêng góc dưới-trái) ──
+  { key: "public_nav_clicked", label: "Bấm menu chính", hint: PUBLIC_HINT, defaultId: "pop", wired: true, group: "Website công khai" },
+  { key: "public_category_selected", label: "Chọn danh mục", hint: PUBLIC_HINT, defaultId: "ting-classic", wired: true, group: "Website công khai" },
+  { key: "public_product_card_opened", label: "Mở chi tiết sản phẩm / trang phục", hint: PUBLIC_HINT, defaultId: "drop", wired: true, group: "Website công khai" },
+  { key: "public_gallery_album_opened", label: "Mở album concept", hint: PUBLIC_HINT, defaultId: "soft-bell", wired: true, group: "Website công khai" },
+  { key: "public_gallery_image_opened", label: "Mở ảnh trong gallery / lightbox", hint: PUBLIC_HINT, defaultId: "drop", wired: true, group: "Website công khai" },
+  { key: "public_smart_search_opened", label: "Mở Tìm kiếm thông minh", hint: PUBLIC_HINT, defaultId: "chime", wired: true, group: "Website công khai" },
+  { key: "public_smart_search_success", label: "Tìm kiếm có kết quả", hint: PUBLIC_HINT, defaultId: "ting-classic", wired: true, group: "Website công khai" },
+  { key: "public_contact_clicked", label: "Bấm gọi / liên hệ / đặt lịch", hint: PUBLIC_HINT, defaultId: "soft-bell", wired: true, group: "Website công khai" },
+  { key: "public_image_hover_soft", label: "Hover ảnh (rất nhẹ)", hint: "Hover phát liên tục dễ gây khó chịu nên để TẮT mặc định — chọn 1 tiếng nếu muốn bật.", defaultId: "none", wired: true, group: "Website công khai" },
 ];
 
 const EVENT_SOUND_PREFIX = "feedbackEventSound:";

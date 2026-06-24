@@ -128,7 +128,7 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
   // exact_reply: xử lý SAU khi có reply (thay text bằng câu admin), để ảnh vẫn dùng marker của AI.
   const priorContextText = prior.filter((h) => !h.message.startsWith("[image:")).slice(-4)
     .map((h) => h.message).join("\n");
-  const respOverride = matchResponseOverride(incomingText, priorContextText, input.imageOverrides ?? []);
+  const respOverride = matchResponseOverride(incomingText, priorContextText, input.imageOverrides ?? [], { hasImage });
   if (respOverride?.responseMode === "learn_from_this" && respOverride.editedText) {
     context += `\n\nGỢI Ý CÂU TRẢ LỜI (admin đã duyệt cho tình huống tương tự — BÁM SÁT ý chính & giọng của câu mẫu, được viết lại cho tự nhiên hơn nhưng KHÔNG đổi ý chính):\n"""\n${respOverride.editedText.trim()}\n"""`;
     console.log("[SaleBrain] responseMode=learn_from_this (chèn câu mẫu admin vào prompt)");

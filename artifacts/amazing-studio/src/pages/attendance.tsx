@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { Link } from "wouter";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
+import { playAppSound, attendancePunchSound } from "@/lib/feedback";
 import { Button } from "@/components/ui";
 import { CurrencyInput } from "@/components/ui/currency-input";
 import { DateInput } from "@/components/ui/date-input";
@@ -2011,6 +2012,26 @@ export default function AttendancePage() {
   const [moneyEditCtx, setMoneyEditCtx] = useState<MoneyEditContext | null>(null);
   const [dayDetail, setDayDetail] = useState<null | { staffId: number; staffName: string; date: string }>(null);
 
+  // Âm thanh khi mở chi tiết nhân viên/ngày (mặc định tắt — admin chọn tiếng để bật).
+  useEffect(() => {
+    if (dayDetail) playAppSound("attendance_staff_detail_opened", { cooldownMs: 300 });
+  }, [dayDetail]);
+
+  // Âm thanh "phát hiện vắng / chưa vào": chỉ phát khi có NV MỚI vào danh sách chưa-chấm so với
+  // lần kiểm tra trước (seed lần đầu, không phát) + cooldown. Mặc định tắt để tránh ồn.
+  const prevNotCheckedInRef = useRef<Set<number> | null>(null);
+  useEffect(() => {
+    const list: { id: number }[] = todaySummary?.notCheckedIn ?? [];
+    if (list.length === 0) return;
+    const cur = new Set<number>(list.map((s) => s.id));
+    const prev = prevNotCheckedInRef.current;
+    if (prev === null) { prevNotCheckedInRef.current = cur; return; }
+    if ([...cur].some((id) => !prev.has(id))) {
+      playAppSound("attendance_staff_absent_detected", { cooldownMs: 30000, vibrate: [100, 60, 100] });
+    }
+    prevNotCheckedInRef.current = cur;
+  }, [todaySummary]);
+
   // Task #508: admin chọn 1 NV để xem visual calendar riêng
   const [adminCalStaffId, setAdminCalStaffId] = useState<string>("");
   const { data: adminStaffSummary } = useQuery<StaffSummaryResp>({
@@ -2078,6 +2099,7 @@ export default function AttendancePage() {
       qc.invalidateQueries({ queryKey: ["attendance-month-close-status"] });
       qc.invalidateQueries({ queryKey: ["attendance-month-closures"] });
       qc.invalidateQueries({ queryKey: ["attendance-month-closures-all"] });
+      playAppSound("attendance_month_closed", { vibrate: [80, 50, 80, 40, 120] });
     },
     onError: (e: Error) => alert(e.message),
   });
@@ -2361,6 +2383,7 @@ export default function AttendancePage() {
       qc.invalidateQueries({ queryKey: ["attendance-admin"] });
       qc.invalidateQueries({ queryKey: ["attendance-team-extras"] });
       showEncouragement(data);
+      attendancePunchSound(data.feedback?.messageKey, "check_in");
     },
     onError: (e: Error) => {
       setCheckMsg({ ok: false, text: e.message });
@@ -2376,6 +2399,7 @@ export default function AttendancePage() {
       qc.invalidateQueries({ queryKey: ["attendance-admin"] });
       qc.invalidateQueries({ queryKey: ["attendance-team-extras"] });
       showEncouragement(data);
+      attendancePunchSound(data.feedback?.messageKey, "check_out");
     },
     onError: (e: Error) => {
       setCheckMsg({ ok: false, text: e.message });
@@ -2397,6 +2421,7 @@ export default function AttendancePage() {
     onSuccess: (data: { feedback?: PunchFeedback }) => {
       invalidateAfterOvertimePunch();
       showEncouragement(data);
+      attendancePunchSound(data.feedback?.messageKey, "check_in");
     },
     onError: (e: Error) => {
       setCheckMsg({ ok: false, text: e.message });
@@ -2410,6 +2435,7 @@ export default function AttendancePage() {
     onSuccess: (data: { feedback?: PunchFeedback }) => {
       invalidateAfterOvertimePunch();
       showEncouragement(data);
+      attendancePunchSound(data.feedback?.messageKey, "check_out");
     },
     onError: (e: Error) => {
       setCheckMsg({ ok: false, text: e.message });

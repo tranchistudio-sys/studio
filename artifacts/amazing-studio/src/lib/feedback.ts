@@ -212,7 +212,7 @@ export const SOUND_EVENTS: SoundEvent[] = [
   { key: "postprod_print_link_saved", label: "Lưu link in / hoàn thành", defaultId: "coin", wired: true, group: "Tiến độ hậu kỳ" },
   { key: "postprod_deadline_overdue", label: "Trễ deadline", defaultId: "custom-tre-reop-ho", wired: true, group: "Tiến độ hậu kỳ" },
   { key: "postprod_job_needs_handler", label: "Đơn cần người nhận", defaultId: "custom-oi-gioi-oi", wired: true, group: "Tiến độ hậu kỳ" },
-  { key: "postprod_customer_confirmed", label: "Khách xác nhận xong show", hint: CONFIRM_HINT, defaultId: "none", wired: false, group: "Tiến độ hậu kỳ" },
+  { key: "postprod_customer_confirmed", label: "Khách xác nhận xong show", hint: "Đã set tiếng; chỉ kêu khi có tính năng khách tự xác nhận (DB hiện chưa có trạng thái này).", defaultId: "soft-bell", wired: true, group: "Tiến độ hậu kỳ" },
 
   // ── Nhóm "Chấm công" ──
   { key: "attendance_checkin_success", label: "Check-in thành công", defaultId: "ting-classic", wired: true, group: "Chấm công" },
@@ -235,7 +235,7 @@ export const SOUND_EVENTS: SoundEvent[] = [
   { key: "public_smart_search_opened", label: "Mở Tìm kiếm thông minh", hint: PUBLIC_HINT, defaultId: "chime", wired: true, group: "Website công khai" },
   { key: "public_smart_search_success", label: "Tìm kiếm có kết quả", hint: PUBLIC_HINT, defaultId: "ting-classic", wired: true, group: "Website công khai" },
   { key: "public_contact_clicked", label: "Bấm gọi / liên hệ / đặt lịch", hint: PUBLIC_HINT, defaultId: "soft-bell", wired: true, group: "Website công khai" },
-  { key: "public_image_hover_soft", label: "Hover ảnh (rất nhẹ)", hint: "Hover phát liên tục dễ gây khó chịu nên để TẮT mặc định — chọn 1 tiếng nếu muốn bật.", defaultId: "none", wired: true, group: "Website công khai" },
+  { key: "public_image_hover_soft", label: "Hover ảnh (rất nhẹ)", hint: "Phát rất nhẹ khi rê chuột lên ảnh — có giãn cách chống dồn, chỉ kêu sau khi khách bấm lần đầu.", defaultId: "drop", wired: true, group: "Website công khai" },
 ];
 
 const EVENT_SOUND_PREFIX = "feedbackEventSound:";

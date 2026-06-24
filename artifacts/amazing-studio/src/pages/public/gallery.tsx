@@ -385,7 +385,7 @@ function GalleryAlbumCard({
   const tags = parseCSV(album.tagsText);
 
   return (
-    <article className="group">
+    <article className="group" onMouseEnter={() => playPublicSound("public_image_hover_soft", { cooldownMs: 1500 })}>
       <a href={href} className="sr-only" tabIndex={-1}>
         {album.name}
       </a>

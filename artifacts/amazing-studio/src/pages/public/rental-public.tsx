@@ -961,6 +961,7 @@ function RentalDressCard({
       role={d.slug ? "link" : undefined}
       tabIndex={d.slug ? 0 : undefined}
       onClick={d.slug ? onNavigate : undefined}
+      onMouseEnter={() => playPublicSound("public_image_hover_soft", { cooldownMs: 1500 })}
       onKeyDown={(e) => {
         if (!d.slug) return;
         if (e.key === "Enter" || e.key === " ") {

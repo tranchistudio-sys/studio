@@ -440,6 +440,24 @@ export async function appendImageOverrideToDraft(
   return { version: updated, total: next.length };
 }
 
+/**
+ * Xoá 1 "câu Lulu đã được dạy" (image override) khỏi BẢN NHÁP theo id.
+ * Chỉ sửa được version đang ở trạng thái draft (KHÔNG đụng bản chạy thật / lịch sử).
+ * `removed=false` nghĩa là không tìm thấy id (có thể đã xoá rồi) → version giữ nguyên.
+ */
+export async function removeImageOverrideFromDraft(
+  draftId: number, overrideId: string,
+): Promise<{ version: BrainVersion | null; total: number; removed: boolean }> {
+  await ensureBrainLabTables();
+  const cur = await getVersion(draftId);
+  if (!cur || cur.status !== "draft") return { version: null, total: 0, removed: false };
+  const existing = parseImageOverrides(cur.rulesJson);
+  const next = existing.filter((o) => o.id !== overrideId);
+  if (next.length === existing.length) return { version: cur, total: existing.length, removed: false };
+  const updated = await updateDraftVersion(draftId, { rulesJson: withImageOverrides(cur.rulesJson, next) });
+  return { version: updated, total: next.length, removed: true };
+}
+
 // ─── Map row ──────────────────────────────────────────────────────────────────
 
 const iso = (v: unknown): string | null => (v ? new Date(v as string).toISOString() : null);

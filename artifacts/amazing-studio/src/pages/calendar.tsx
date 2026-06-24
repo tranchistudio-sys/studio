@@ -168,12 +168,14 @@ function collectConceptImageUrls(...sources: Array<unknown>): string[] {
 
 function resolveItemStaffAll(
   item: OrderLine | null | undefined,
-): { photoNames: string[]; makeupNames: string[] } {
-  if (!item) return { photoNames: [], makeupNames: [] };
+): { photoNames: string[]; makeupNames: string[]; videoNames: string[] } {
+  if (!item) return { photoNames: [], makeupNames: [], videoNames: [] };
   const photoNames: string[] = [];
   const makeupNames: string[] = [];
+  const videoNames: string[] = [];
   const seenP = new Set<string>();
   const seenM = new Set<string>();
+  const seenV = new Set<string>();
   const pushP = (full: string) => {
     const name = full.trim();
     const key = name.toLowerCase();
@@ -184,17 +186,23 @@ function resolveItemStaffAll(
     const key = name.toLowerCase();
     if (name && !seenM.has(key)) { seenM.add(key); makeupNames.push(name); }
   };
+  const pushV = (full: string) => {
+    const name = full.trim();
+    const key = name.toLowerCase();
+    if (name && !seenV.has(key)) { seenV.add(key); videoNames.push(name); }
+  };
   if (Array.isArray(item.assignedStaff)) {
     for (const sa of item.assignedStaff as StaffAssignment[]) {
       if (!sa?.staffName) continue;
       const cr = canonicalRole(sa.role);
       if (cr === "photographer") pushP(sa.staffName);
       else if (cr === "makeup") pushM(sa.staffName);
+      else if (cr === "videographer") pushV(sa.staffName);
     }
   }
   if (item.photoName) pushP(item.photoName);
   if (item.makeupName) pushM(item.makeupName);
-  return { photoNames, makeupNames };
+  return { photoNames, makeupNames, videoNames };
 }
 
 // ─── Helper: chuẩn hóa role key về canonical form ──────────────────────────
@@ -204,7 +212,7 @@ const ROLE_CANONICAL: Record<string, string> = {
   makeup: "makeup", make_up: "makeup",
   assistant: "assistant", tro_ly: "assistant", tro_li: "assistant",
   support: "support", ho_tro: "support",
-  video: "videographer", videographer: "videographer",
+  video: "videographer", videographer: "videographer", quay_phim: "videographer", "quay phim": "videographer",
   photoshop: "photoshop", pts: "photoshop",
   assistant_photo: "assistant_photo",
   marketing: "marketing", sales: "sales",
@@ -2821,12 +2829,14 @@ function generateContractHTML(
       // Additional roles from assignedStaff (assistant, support, video…)
       if (Array.isArray(line.assignedStaff)) {
         const _extraRoleLabel: Record<string, string> = {
-          assistant: "🤝 Trợ lý", tro_ly: "🤝 Trợ lý",
-          support: "🙋 Hỗ trợ", ho_tro: "🙋 Hỗ trợ",
-          video: "🎥 Quay phim",
+          assistant: "🤝 Trợ lý",
+          support: "🙋 Hỗ trợ",
+          videographer: "🎥 Quay phim",
+          assistant_photo: "🔧 Thợ phụ",
         };
         for (const _sa of line.assignedStaff as StaffAssignment[]) {
-          const _label = _extraRoleLabel[_sa.role ?? ""];
+          // canonicalRole gom các biến thể (video/videographer, tro_ly/assistant…) → khớp đúng nhãn.
+          const _label = _extraRoleLabel[canonicalRole(_sa.role)];
           if (_label && _sa.staffName) _staffLines.push(`${_label}: <strong>${_sa.staffName}</strong>`);
         }
       }
@@ -4879,12 +4889,13 @@ function getServiceDetailLine(
 function getStaffLine(
   booking: { assignedStaff?: unknown; taskAssignees?: TaskAssignee[] },
   item?: OrderLine | null,
-): { p: string; m: string; sale: string; extras: string[]; unassigned: boolean } {
-  // Lấy đủ tất cả P/M của item, không chỉ người đầu tiên (yêu cầu hiển thị
+): { p: string; m: string; sale: string; v: string; extras: string[]; unassigned: boolean } {
+  // Lấy đủ tất cả P/M/Quay phim của item, không chỉ người đầu tiên (yêu cầu hiển thị
   // "P: TRUNG, QUAN" khi 1 dịch vụ có nhiều photographer).
-  const { photoNames, makeupNames } = resolveItemStaffAll(item);
+  const { photoNames, makeupNames, videoNames } = resolveItemStaffAll(item);
   let p = photoNames.join(", ");
   let m = makeupNames.join(", ");
+  let v = videoNames.join(", ");
   let sale = "";
 
   // Sale từ assignedStaff (booking-level hoặc item-level) — dùng tên đầy đủ
@@ -4900,10 +4911,10 @@ function getStaffLine(
   if (item) sale = pickSale(item.assignedStaff);
   if (!sale) sale = pickSale(booking.assignedStaff);
 
-  // Vai trò phụ: PTS / Video / Hỗ trợ / Trợ lý — chỉ lấy badge ngắn, không tên
+  // Vai trò phụ: PTS / Hỗ trợ / Trợ lý — chỉ lấy badge ngắn, không tên.
+  // (Quay phim/videographer giờ hiển thị theo TÊN qua biến v, không còn badge "V".)
   const EXTRA_LABELS: Record<string, string> = {
     photoshop: "PTS",
-    videographer: "V",
     support: "HT",
     assistant: "TL",
     assistant_photo: "TL",
@@ -4930,15 +4941,17 @@ function getStaffLine(
     const fullName = ta.assigneeName.trim();
     if (canon === "photographer" && !p && photoNames.length === 0) p = fullName;
     else if (canon === "makeup" && !m && makeupNames.length === 0) m = fullName;
+    else if (canon === "videographer" && !v && videoNames.length === 0) v = fullName;
     else if (canon === "sales" && !sale) sale = fullName;
     else if (EXTRA_LABELS[canon]) extraSet.add(EXTRA_LABELS[canon]);
   }
 
-  // Thứ tự ổn định: PTS → V → HT → TL
-  const order = ["PTS", "V", "HT", "TL"];
+  // Thứ tự ổn định: PTS → HT → TL
+  const order = ["PTS", "HT", "TL"];
   const extras = order.filter(x => extraSet.has(x));
 
-  return { p, m, sale, extras, unassigned: !p && !m && !sale };
+  // unassigned (badge "Chưa giao việc") tính cả Quay phim — show chỉ có quay phim KHÔNG còn báo chưa giao.
+  return { p, m, sale, v, extras, unassigned: !p && !m && !sale && !v };
 }
 
 // ─── (legacy) Mobile agenda — không còn dùng, giữ làm tham chiếu cho mode "Danh sách" tương lai ───
@@ -5016,7 +5029,7 @@ function _MonthAgendaMobile_DEPRECATED({
                   ? b.shootTime.endsWith(":00") ? b.shootTime.slice(0, 2) + "h" : b.shootTime.slice(0, 5)
                   : "";
                 const svcName = getServiceDisplay(b, item);
-                const { p: pName, m: mName, sale: saleName, unassigned: hasNoStaff } = getStaffLine(b, item);
+                const { p: pName, m: mName, sale: saleName, v: vName, unassigned: hasNoStaff } = getStaffLine(b, item);
                 const { card: cardBg, bar: barColor } = getStaffColors(b, allStaff);
                 const customerName = b.customerName?.trim() || "(Chưa có tên)";
                 return (
@@ -5044,7 +5057,7 @@ function _MonthAgendaMobile_DEPRECATED({
                       {/* Service — luôn hiện, không bao giờ ẩn */}
                       <div className="text-sm text-foreground/80 mt-0.5 break-words">{svcName}</div>
                       {/* Staff line */}
-                      {(pName || mName || saleName) && (
+                      {(pName || mName || vName || saleName) && (
                         <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground flex-wrap">
                           {pName && (
                             <span className="flex items-center gap-1">
@@ -5056,6 +5069,11 @@ function _MonthAgendaMobile_DEPRECATED({
                             <span className="flex items-center gap-1">
                               <Sparkles className="w-3 h-3 text-pink-500" />
                               <span className="font-medium text-foreground/90">Makeup: {mName}</span>
+                            </span>
+                          )}
+                          {vName && (
+                            <span className="flex items-center gap-1">
+                              <span className="font-medium text-foreground/90">🎬 Quay phim: {vName}</span>
                             </span>
                           )}
                           {saleName && (
@@ -5237,10 +5255,11 @@ function MonthDayCell({
               : "";
             const serviceName = getServiceDisplay(b, item);
             const gName = b.servicePackageId ? pkgGroupMap?.get(b.servicePackageId) : undefined;
-            const { p: photoLast, m: makeupLast, sale: saleLast, extras: extraRoles, unassigned: hasNoStaff } = getStaffLine(b, item);
+            const { p: photoLast, m: makeupLast, sale: saleLast, v: videoLast, extras: extraRoles, unassigned: hasNoStaff } = getStaffLine(b, item);
             const staffParts: string[] = [];
             if (photoLast) staffParts.push(`P: ${photoLast}`);
             if (makeupLast) staffParts.push(`M: ${makeupLast}`);
+            if (videoLast) staffParts.push(`Quay: ${videoLast}`);
             if (saleLast) staffParts.push(`Sale: ${saleLast}`);
             const staffLine = staffParts.join(" | ");
             const extrasSuffix = extraRoles.length > 0 ? ` +${extraRoles.join(", ")}` : "";
@@ -5768,11 +5787,13 @@ function DayView({
                         {hourBookings.map(b => {
                           const { dot: staffDot } = getStaffColors(b, allStaff);
                           const item = b.items?.[0];
-                          const { p: photoDisplay, m: makeupDisplay, sale: saleDisplay, extras: timelineExtras, unassigned } = getStaffLine(b, item);
+                          const { p: photoDisplay, m: makeupDisplay, sale: saleDisplay, v: videoDisplay, extras: timelineExtras, unassigned } = getStaffLine(b, item);
                           const hasPhoto = !!photoDisplay;
                           const hasMakeup = !!makeupDisplay;
                           const hasSale = !!saleDisplay;
-                          const isFullyAssigned = hasPhoto && hasMakeup;
+                          const hasVideo = !!videoDisplay;
+                          // Đủ nhân sự khi: có cả nhiếp ảnh + makeup, HOẶC có quay phim (gói quay phim không cần makeup).
+                          const isFullyAssigned = (hasPhoto && hasMakeup) || hasVideo;
                           const isAssigned = !unassigned;
                           const serviceName = getServiceDetailLine(b, item);
                           const groupName = b.servicePackageId ? pkgGroupMap?.get(b.servicePackageId) : undefined;
@@ -5878,6 +5899,11 @@ function DayView({
                                             <Sparkles className="w-2.5 h-2.5 text-pink-500" />Makeup: {makeupDisplay}
                                           </span>
                                         )}
+                                        {hasVideo && (
+                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-amber-300 text-foreground font-medium">
+                                            🎬 Quay phim: {videoDisplay}
+                                          </span>
+                                        )}
                                         {hasSale && (
                                           <span className="px-1.5 py-0.5 rounded border border-violet-300 text-foreground font-medium">
                                             Sale: {saleDisplay}
@@ -5981,10 +6007,11 @@ function WeekBookingCard({ booking: b, onEventClick, allStaff, pkgGroupMap }: { 
   const isComfort = density === "comfortable";
 
   const item = b.items?.[0];
-  const { p: photoDisplay, m: makeupDisplay, sale: saleDisplay, unassigned } = getStaffLine(b, item);
+  const { p: photoDisplay, m: makeupDisplay, sale: saleDisplay, v: videoDisplay, unassigned } = getStaffLine(b, item);
   const hasPhoto = !!photoDisplay;
   const hasMakeup = !!makeupDisplay;
   const hasSale = !!saleDisplay;
+  const hasVideo = !!videoDisplay;
   const isAssigned = !unassigned;
   const svcName = getServiceDisplay(b, item);
   const gName = b.servicePackageId ? pkgGroupMap?.get(b.servicePackageId) : undefined;
@@ -6028,6 +6055,9 @@ function WeekBookingCard({ booking: b, onEventClick, allStaff, pkgGroupMap }: { 
             <span className="flex items-center gap-0.5 text-emerald-700 dark:text-emerald-400">
               <Sparkles className={isComfort ? "w-3 h-3" : "w-2 h-2"} />M:{makeupDisplay}
             </span>
+          )}
+          {hasVideo && (
+            <span className="flex items-center gap-0.5 text-amber-700 dark:text-amber-400">🎬{videoDisplay}</span>
           )}
           {hasSale && (
             <span className="text-foreground/80 font-medium">Sale:{saleDisplay}</span>

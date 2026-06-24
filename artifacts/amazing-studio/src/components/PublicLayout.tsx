@@ -12,11 +12,11 @@ import {
 
 const PUBLIC_NAV = [
   { href: "/", label: "Trang chủ" },
-  { href: "/bo-anh", label: "Dịch vụ" },
+  { href: "/bo-anh", label: "Ảnh sản phẩm thật" },
   { href: "/cho-thue-do", label: "Cho thuê đồ" },
   { href: "/y-tuong-chup-anh", label: "Ý tưởng chụp ảnh" },
   { href: "/thiep-cuoi-online", label: "Thiệp cưới" },
-  { href: "/bang-gia", label: "Bảng giá" },
+  // { href: "/bang-gia", label: "Bảng giá" }, // tạm ẩn — chưa cần dùng, mở lại khi cần
   { href: "/lien-he", label: "Liên hệ" },
 ];
 

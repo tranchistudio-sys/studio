@@ -7,6 +7,7 @@ import { Sparkles, Shirt, X, Check } from "lucide-react";
 import { OUTFIT_TAGS, OutfitTagBadge, type OutfitTagKey } from "@/lib/outfit-tags";
 import { RENTAL_PAGE } from "@/lib/public-site-config";
 import { PublicReveal, PublicRevealItem } from "@/components/public/PublicReveal";
+import { playPublicSound } from "@/lib/feedback";
 import { getGalleryDescendantIds } from "@/hooks/use-public-cms";
 import { GoldenHourBadge, ghDiscounted } from "@/lib/golden-hour";
 
@@ -233,17 +234,20 @@ export default function PublicRentalPage() {
     setTier3Id(null);
     setVisibleCount(PAGE_SIZE);
     resetFilters();
+    playPublicSound("public_category_selected");
   }
   function pickTier2(id: number | null) {
     setTier2Id(id);
     setTier3Id(null);
     setVisibleCount(PAGE_SIZE);
     resetFilters();
+    if (id != null) playPublicSound("public_category_selected");
   }
   function pickTier3(id: number | null) {
     setTier3Id(id);
     setVisibleCount(PAGE_SIZE);
     resetFilters();
+    if (id != null) playPublicSound("public_category_selected");
   }
 
   const selectedNodeId = tier3Id ?? tier2Id ?? tier1Id;
@@ -440,7 +444,10 @@ export default function PublicRentalPage() {
   }
 
   function toggleSmartFilter() {
-    setSmartFilterOpen((open) => !open);
+    setSmartFilterOpen((open) => {
+      if (!open) playPublicSound("public_smart_search_opened");
+      return !open;
+    });
   }
 
   const breadcrumbLabel = useMemo(() => {
@@ -712,7 +719,7 @@ export default function PublicRentalPage() {
                       <RentalDressCard
                         dress={d}
                         onNavigate={() => {
-                          if (d.slug) setLocation(`/san-pham/${d.slug}`);
+                          if (d.slug) { playPublicSound("public_product_card_opened"); setLocation(`/san-pham/${d.slug}`); }
                         }}
                       />
                     </PublicRevealItem>
@@ -954,6 +961,7 @@ function RentalDressCard({
       role={d.slug ? "link" : undefined}
       tabIndex={d.slug ? 0 : undefined}
       onClick={d.slug ? onNavigate : undefined}
+      onMouseEnter={() => playPublicSound("public_image_hover_soft", { cooldownMs: 1500 })}
       onKeyDown={(e) => {
         if (!d.slug) return;
         if (e.key === "Enter" || e.key === " ") {

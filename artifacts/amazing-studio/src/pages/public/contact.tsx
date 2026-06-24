@@ -1,4 +1,5 @@
 import { Phone, MapPin, Clock, Mail, User, MessageCircle } from "lucide-react";
+import { playPublicSound } from "@/lib/feedback";
 
 const CONSULTANTS: { name: string; phone: string }[] = [
   { name: "Nhân viên tư vấn 1", phone: "0364902228" },
@@ -20,6 +21,7 @@ function toZaloNumber(phone: string): string {
 }
 
 function openZalo(phone: string) {
+  playPublicSound("public_contact_clicked");
   const zaloNum = toZaloNumber(phone);
   const webUrl = `https://zalo.me/${zaloNum}`;
   try {
@@ -85,6 +87,7 @@ export default function PublicContactPage() {
               </h3>
               <a
                 href="tel:0392817079"
+                onClick={() => playPublicSound("public_contact_clicked")}
                 className="text-lg text-neutral-900 hover:text-neutral-600 transition-colors"
               >
                 0392 817 079
@@ -142,7 +145,7 @@ export default function PublicContactPage() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-semibold truncate">{c.name}</p>
-                      <a href={`tel:${c.phone}`} className="text-xs text-neutral-500 tabular-nums hover:text-neutral-900">
+                      <a href={`tel:${c.phone}`} onClick={() => playPublicSound("public_contact_clicked")} className="text-xs text-neutral-500 tabular-nums hover:text-neutral-900">
                         {c.phone}
                       </a>
                     </div>

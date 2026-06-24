@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { useParams, useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { playAppSound } from "@/lib/feedback";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DateInput } from "@/components/ui/date-input";
@@ -312,9 +313,11 @@ export default function StaffProfilePage() {
         method: "PUT", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status, approvedByName }),
       }),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       qc.invalidateQueries({ queryKey: ["staff-profile", staffId] });
       setApproveDialog(null);
+      if (variables.status === "approved") playAppSound("attendance_leave_approved", { vibrate: [80, 50, 80] });
+      else if (variables.status === "rejected") playAppSound("attendance_leave_rejected", { vibrate: [120, 80, 120] });
     },
   });
 

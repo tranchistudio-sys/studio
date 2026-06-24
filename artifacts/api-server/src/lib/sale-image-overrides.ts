@@ -49,6 +49,12 @@ export type ImageOverride = {
    *  - null: không ép text (chỉ dùng ảnh đúng như cũ).
    */
   responseMode: "exact_reply" | "learn_from_this" | null;
+  /**
+   * true = override này được DẠY TỪ một lượt CÓ ẢNH (câu trả lời thường mang tính phân tích ảnh/mood/
+   * concept) → CHỈ được match khi lượt hiện tại cũng có ảnh. false = dạy từ text thường. undefined =
+   * dữ liệu cũ chưa có metadata → suy từ nội dung (isImageDerivedOverride). Xem matchResponseOverride.
+   */
+  hasImageInput?: boolean;
   createdAt: string;
   createdByName: string | null;
 };
@@ -135,6 +141,7 @@ export function parseImageOverrides(rulesJson: unknown): ImageOverride[] {
       correctImages: correct.slice(0, 4),
       editedText,
       responseMode,
+      hasImageInput: typeof o.hasImageInput === "boolean" ? o.hasImageInput : undefined,
       createdAt: String(o.createdAt ?? ""),
       createdByName: o.createdByName != null ? String(o.createdByName) : null,
     });
@@ -205,25 +212,52 @@ function resolveIntent(ctx: OverrideMatchCtx): ServiceIntent | null {
   return fromCtx !== "unknown" ? fromCtx : null;
 }
 
+// Câu trả lời mang tính PHÂN TÍCH ẢNH/mood/concept — chỉ hợp lý khi khách VỪA gửi ảnh.
+// Dùng để chặn override "dạy từ ảnh" bị áp nhầm vào tin TEXT (vd khách gõ "chụp cưới" không ảnh).
+const IMAGE_ANALYSIS_RE = /(ảnh đẹp|đẹp quá|nhìn vào|\bmood\b|bộ này|bộ ảnh này|concept này|tấm này|tấm hình này|ảnh này|hình này|hướng tương tự|gần mood|theo mood|giống mood|tone của ảnh|tone ảnh)/i;
+
+/**
+ * Override này có phải "dạy từ ảnh" (chỉ dùng khi lượt có ảnh)?
+ *  - hasImageInput === true  → đúng (metadata mới).
+ *  - hasImageInput === false → không (đã đánh dấu rõ là text).
+ *  - undefined (dữ liệu cũ)  → SUY từ nội dung: câu trả lời kiểu phân tích ảnh, hoặc câu hỏi gốc là
+ *    "[ảnh]"/"[hình]"/"[image..." → coi là image-only.
+ */
+export function isImageDerivedOverride(o: ImageOverride): boolean {
+  if (o.hasImageInput === true) return true;
+  if (o.hasImageInput === false) return false;
+  if (IMAGE_ANALYSIS_RE.test(o.editedText ?? "")) return true;
+  return /\[\s*(ảnh|anh|hình|hinh|image|img|photo)/i.test(o.customerQuestion ?? "");
+}
+
 /**
  * Khớp override ĐIỀU KHIỂN TEXT (responseMode) cho 1 lượt — chạy TRƯỚC khi gọi AI:
  *  - exact_reply       → caller trả đúng editedText, KHÔNG gọi AI viết text.
  *  - learn_from_this   → caller chèn editedText làm câu mẫu vào prompt cho AI bám theo.
  * Khớp theo: TRÙNG câu hỏi gốc (customerQuestion) HOẶC cùng HỌ dịch vụ (intent suy từ tin khách / ngữ cảnh).
  * Chỉ xét override có responseMode + editedText. Trả null nếu không khớp.
+ *
+ * AN TOÀN NGỮ CẢNH ẢNH: override "dạy từ ảnh" (isImageDerivedOverride) CHỈ được match khi lượt hiện
+ * tại CÓ ẢNH (ctx.hasImage === true). Tránh áp câu phân tích ảnh ("Ảnh đẹp quá…", "mood…") vào tin
+ * TEXT thuần như "chụp cưới". Mặc định hasImage=false (an toàn: không có ảnh thì bỏ qua override ảnh).
  */
 export function matchResponseOverride(
   message: string | null | undefined,
   contextText: string | null | undefined,
   overrides: ImageOverride[],
+  ctx?: { hasImage?: boolean },
 ): ImageOverride | null {
+  const hasImage = ctx?.hasImage === true;
   const cands = (overrides ?? []).filter((o) => o.responseMode && (o.editedText ?? "").trim());
   if (cands.length === 0) return null;
+  // Bỏ qua override "dạy từ ảnh" nếu lượt này KHÔNG có ảnh → tránh match sai ngữ cảnh.
+  const usable = cands.filter((o) => hasImage || !isImageDerivedOverride(o));
+  if (usable.length === 0) return null;
 
   // 1) Trùng câu hỏi gốc admin đã dạy (mạnh nhất, bất kể intent/tone).
   const msgNorm = norm(message);
   if (msgNorm) {
-    for (const o of cands) {
+    for (const o of usable) {
       const q = norm(o.customerQuestion);
       if (!q) continue;
       if (q === msgNorm || (q.length >= 8 && msgNorm.length >= 8 && (q.includes(msgNorm) || msgNorm.includes(q)))) return o;
@@ -233,7 +267,7 @@ export function matchResponseOverride(
   let intent = detectServiceIntentFromText(message ?? "");
   if (intent === "unknown") intent = detectServiceIntentFromText(contextText ?? "");
   if (intent !== "unknown") {
-    for (const o of cands) {
+    for (const o of usable) {
       if (!o.intent) return o;
       const oi = normalizeIntent(o.intent);
       if (oi && intentFamily(oi) === intentFamily(intent)) return o;

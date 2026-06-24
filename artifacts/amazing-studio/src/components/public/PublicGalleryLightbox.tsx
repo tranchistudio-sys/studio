@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { X, ChevronLeft, ChevronRight } from "lucide-react";
 import { getImageSrc } from "@/lib/imageUtils";
+import { playPublicSound } from "@/lib/feedback";
 
 /**
  * Lightbox dùng chung cho website public (Ý tưởng chụp ảnh, Concept ảnh, Cho thuê đồ).
@@ -42,6 +43,9 @@ export default function PublicGalleryLightbox({ items, startIndex = 0, onClose }
 
   const prev = useCallback(() => setIndex(i => (i - 1 + count) % count), [count]);
   const next = useCallback(() => setIndex(i => (i + 1) % count), [count]);
+
+  // Phát 1 lần khi MỞ lightbox (không phát khi chuyển ảnh prev/next).
+  useEffect(() => { playPublicSound("public_gallery_image_opened"); }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

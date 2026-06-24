@@ -5,6 +5,7 @@ import { AttendanceEncouragementModal } from "@/components/AttendanceEncourageme
 import { OffsiteCheckInDialog } from "@/components/OffsiteCheckInDialog";
 import { uploadFileViaPresign } from "@/components/cms-shared";
 import type { PunchFeedback } from "@/lib/attendance-messages";
+import { attendancePunchSound } from "@/lib/feedback";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -161,6 +162,8 @@ export default function AttendanceCheckinPage() {
         const timeText = `Thời gian: ${json.time ?? new Date().toLocaleTimeString("vi-VN")}`;
         setDetail(json.method === "wifi" ? `Đã xác nhận có mặt tại studio qua WiFi. ${timeText}` : timeText);
       }
+      // Chỉ phát SAU khi API thành công (đã return ở nhánh !res.ok phía trên).
+      attendancePunchSound(json.feedback?.messageKey, type);
       if (type === "check_in") {
         setCheckedIn(true);
       } else {

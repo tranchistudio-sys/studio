@@ -4,7 +4,7 @@ import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { Card, CardContent, Input, Button, Textarea } from "@/components/ui";
 import { CurrencyInput } from "@/components/ui/currency-input";
 import { Save, Store, Mail, Phone, MapPin, Building, Clock, Navigation, Loader2, LocateFixed, CheckCircle2, AlertCircle, Bot, MessageSquare, Wrench, Volume2, Play, Vibrate, VolumeX, Wifi, ChevronDown } from "lucide-react";
-import { RINGTONE_LIBRARY, SOUND_EVENTS, getEventSoundId, setEventSoundId, getSoundSettings, setSoundSettings, previewRingtone, type RingtonePreset, type SoundEvent } from "@/lib/feedback";
+import { RINGTONE_LIBRARY, SOUND_EVENTS, SOUND_GROUPS, getEventSoundId, setEventSoundId, getSoundSettings, setSoundSettings, previewRingtone, type RingtonePreset, type SoundEvent } from "@/lib/feedback";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -183,6 +183,37 @@ function SoundSettingsCard() {
     if (preset.id !== "none") preview(preset);
   };
 
+  const resetEvent = (ev: SoundEvent) => {
+    setEventSoundId(ev.key, ev.defaultId);
+    setEventSel((m) => ({ ...m, [ev.key]: ev.defaultId }));
+  };
+
+  // Dùng 1 tiếng cho TẤT CẢ sự kiện.
+  const [applyAllId, setApplyAllId] = useState<string>(() => getEventSoundId(SOUND_EVENTS[0].key));
+  const applyToAll = (id: string) => {
+    const next: Record<string, string> = {};
+    for (const ev of SOUND_EVENTS) {
+      setEventSoundId(ev.key, id);
+      next[ev.key] = id;
+    }
+    setEventSel((m) => ({ ...m, ...next }));
+    const preset = RINGTONE_LIBRARY.find((r) => r.id === id);
+    if (preset && id !== "none") preview(preset);
+  };
+
+  // Gom sự kiện theo nhóm, theo thứ tự SOUND_GROUPS (nhóm lạ xếp cuối).
+  const groupedEvents = (() => {
+    const byGroup = new Map<string, SoundEvent[]>();
+    for (const ev of SOUND_EVENTS) {
+      const g = ev.group ?? "Chung";
+      if (!byGroup.has(g)) byGroup.set(g, []);
+      byGroup.get(g)!.push(ev);
+    }
+    const ordered: string[] = [...SOUND_GROUPS];
+    for (const g of byGroup.keys()) if (!ordered.includes(g)) ordered.push(g);
+    return ordered.filter((g) => byGroup.has(g)).map((g) => ({ group: g, events: byGroup.get(g)! }));
+  })();
+
   return (
     <Card>
       <div className="p-6 border-b bg-muted/30">
@@ -236,57 +267,103 @@ function SoundSettingsCard() {
           )}
         </div>
 
+        <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 space-y-2">
+          <p className="text-sm font-semibold">Dùng 1 tiếng cho tất cả sự kiện</p>
+          <p className="text-xs text-muted-foreground">Chọn 1 tiếng rồi bấm “Áp dụng cho tất cả” — mọi sự kiện sẽ dùng chung tiếng này. Vẫn chỉnh lại từng sự kiện được sau.</p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <select
+              value={applyAllId}
+              onChange={(e) => setApplyAllId(e.target.value)}
+              className="flex-1 min-w-[160px] rounded-lg border border-border bg-background px-3 py-2 text-sm"
+            >
+              {RINGTONE_LIBRARY.map((r) => (
+                <option key={r.id} value={r.id}>{r.label}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => { const p = RINGTONE_LIBRARY.find((r) => r.id === applyAllId); if (p && applyAllId !== "none") preview(p); }}
+              className="shrink-0 px-3 py-2 rounded-lg border border-border bg-background hover:bg-muted text-sm font-medium flex items-center gap-1.5"
+            >
+              <Play className="w-3.5 h-3.5" /> Nghe thử
+            </button>
+            <button
+              type="button"
+              onClick={() => applyToAll(applyAllId)}
+              className="shrink-0 px-3 py-2 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground text-sm font-semibold"
+            >
+              Áp dụng cho tất cả
+            </button>
+          </div>
+        </div>
+
         <div className="space-y-1">
           <p className="text-sm font-semibold">Âm thanh cho từng sự kiện</p>
           <p className="text-xs text-muted-foreground">Mỗi sự kiện chọn 1 tiếng riêng — nghe là biết ngay. Bấm vào tiếng để nghe thử &amp; chọn luôn.</p>
         </div>
 
-        {SOUND_EVENTS.map((ev) => {
-          const open = !!expanded[ev.key];
-          const selLabel = RINGTONE_LIBRARY.find((r) => r.id === eventSel[ev.key])?.label ?? "Tắt tiếng";
-          return (
-            <div key={ev.key} className="border-t pt-3">
-              <button
-                type="button"
-                onClick={() => setExpanded((m) => ({ ...m, [ev.key]: !m[ev.key] }))}
-                className="w-full flex items-center justify-between gap-2 text-left hover:opacity-80 transition-opacity"
-              >
-                <span className="flex items-center gap-2 flex-wrap min-w-0">
-                  <span className="text-sm font-medium">{ev.label}</span>
-                  {!ev.wired && (
-                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-500 border border-amber-200 dark:border-amber-800">chưa bật</span>
+        {groupedEvents.map(({ group, events }) => (
+          <div key={group} className="space-y-3">
+            <p className="text-xs font-bold uppercase tracking-wide text-muted-foreground/80 pt-2">{group}</p>
+            {events.map((ev) => {
+              const open = !!expanded[ev.key];
+              const sel = eventSel[ev.key];
+              const selLabel = RINGTONE_LIBRARY.find((r) => r.id === sel)?.label ?? "Tắt tiếng";
+              const notSet = !sel || sel === "none";
+              return (
+                <div key={ev.key} className="border-t pt-3">
+                  <button
+                    type="button"
+                    onClick={() => setExpanded((m) => ({ ...m, [ev.key]: !m[ev.key] }))}
+                    className="w-full flex items-center justify-between gap-2 text-left hover:opacity-80 transition-opacity"
+                  >
+                    <span className="flex items-center gap-2 flex-wrap min-w-0">
+                      <span className="text-sm font-medium">{ev.label}</span>
+                      {notSet && (
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-500 border border-amber-200 dark:border-amber-800">chưa bật</span>
+                      )}
+                    </span>
+                    <span className="flex items-center gap-1.5 shrink-0 text-muted-foreground">
+                      <span className="text-xs truncate max-w-[110px]" title={selLabel}>{selLabel}</span>
+                      <ChevronDown className={`w-4 h-4 transition-transform ${open ? "rotate-180" : ""}`} />
+                    </span>
+                  </button>
+                  {open && (
+                    <>
+                      {ev.hint && <p className="text-xs text-muted-foreground mt-2">{ev.hint}</p>}
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-64 overflow-auto pr-1 mt-2">
+                        {RINGTONE_LIBRARY.map((r) => (
+                          <button
+                            key={r.id}
+                            type="button"
+                            onClick={() => pickForEvent(ev, r)}
+                            className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 text-sm transition-all ${eventSel[ev.key] === r.id ? "border-primary bg-primary/10 text-primary font-medium ring-1 ring-primary/30" : "border-border hover:border-primary/40 hover:bg-muted/50"}`}
+                          >
+                            {r.id !== "none" ? (
+                              <Play className={`w-3.5 h-3.5 shrink-0 ${playingId === r.id ? "text-primary animate-pulse" : "text-muted-foreground"}`} />
+                            ) : (
+                              <VolumeX className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
+                            )}
+                            <span className="truncate">{r.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                      {ev.defaultId !== "none" && (
+                        <button
+                          type="button"
+                          onClick={() => resetEvent(ev)}
+                          className="mt-2 text-xs text-muted-foreground hover:text-primary underline underline-offset-2"
+                        >
+                          Đặt lại mặc định
+                        </button>
+                      )}
+                    </>
                   )}
-                </span>
-                <span className="flex items-center gap-1.5 shrink-0 text-muted-foreground">
-                  <span className="text-xs truncate max-w-[110px]" title={selLabel}>{selLabel}</span>
-                  <ChevronDown className={`w-4 h-4 transition-transform ${open ? "rotate-180" : ""}`} />
-                </span>
-              </button>
-              {open && (
-                <>
-                  {ev.hint && <p className="text-xs text-muted-foreground mt-2">{ev.hint}</p>}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-64 overflow-auto pr-1 mt-2">
-                    {RINGTONE_LIBRARY.map((r) => (
-                      <button
-                        key={r.id}
-                        type="button"
-                        onClick={() => pickForEvent(ev, r)}
-                        className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 text-sm transition-all ${eventSel[ev.key] === r.id ? "border-primary bg-primary/10 text-primary font-medium ring-1 ring-primary/30" : "border-border hover:border-primary/40 hover:bg-muted/50"}`}
-                      >
-                        {r.id !== "none" ? (
-                          <Play className={`w-3.5 h-3.5 shrink-0 ${playingId === r.id ? "text-primary animate-pulse" : "text-muted-foreground"}`} />
-                        ) : (
-                          <VolumeX className="w-3.5 h-3.5 shrink-0 text-muted-foreground" />
-                        )}
-                        <span className="truncate">{r.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-          );
-        })}
+                </div>
+              );
+            })}
+          </div>
+        ))}
       </CardContent>
     </Card>
   );

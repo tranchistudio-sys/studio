@@ -3270,6 +3270,8 @@ function ShowDetailPanel({
   const [deleting, setDeleting] = useState(false);
   const [removingChildId, setRemovingChildId] = useState<number | null>(null);
   const [previewImg, setPreviewImg] = useState<string | null>(null);
+  // Các dịch vụ admin đã chủ động THU GỌN (dịch vụ đang xem mặc định xổ ra; bấm để gập lại).
+  const [collapsedSvcIds, setCollapsedSvcIds] = useState<Set<number>>(new Set());
 
   const [showContractImages, setShowContractImages] = useState(false);
   const [contractImageUrls, setContractImageUrls] = useState<string[]>([]);
@@ -3931,6 +3933,8 @@ function ShowDetailPanel({
                         const svcLineTotal = Number(svc.totalAmount ?? 0) || svcBasePrice;
                         const isCurrent = svc.id === booking.id;
                         const canNavigate = !isCurrent && onNavigate;
+                        // Chỉ dịch vụ đang xem mới có nội dung để thu gọn; mặc định xổ ra.
+                        const svcCollapsed = isCurrent && collapsedSvcIds.has(svc.id);
                         const svcSt = STATUS[svc.status as keyof typeof STATUS] ?? STATUS.pending;
                         return (
                           <div key={svc.id} className="rounded-lg border border-blue-200 dark:border-blue-800 overflow-hidden mb-2 last:mb-0">
@@ -3971,9 +3975,27 @@ function ShowDetailPanel({
                                   {removingChildId === svc.id ? <span className="w-3.5 h-3.5 border-2 border-current border-t-transparent rounded-full animate-spin inline-block" /> : <Trash2 className="w-3.5 h-3.5" />}
                                 </button>
                               )}
+                              {isCurrent && (
+                                <button
+                                  type="button"
+                                  onClick={e => {
+                                    e.stopPropagation();
+                                    setCollapsedSvcIds(prev => {
+                                      const next = new Set(prev);
+                                      if (next.has(svc.id)) next.delete(svc.id); else next.add(svc.id);
+                                      return next;
+                                    });
+                                  }}
+                                  className="p-1 rounded-md text-blue-400 hover:bg-blue-100 dark:hover:bg-blue-900/30 transition-colors flex-shrink-0"
+                                  aria-expanded={!svcCollapsed}
+                                  title={svcCollapsed ? "Mở rộng dịch vụ" : "Thu gọn dịch vụ"}
+                                >
+                                  <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${svcCollapsed ? "" : "rotate-180"}`} />
+                                </button>
+                              )}
                               {canNavigate && <ChevronRight className="w-3.5 h-3.5 text-blue-400 flex-shrink-0" />}
                             </div>
-                            {isCurrent && (() => {
+                            {isCurrent && !svcCollapsed && (() => {
                               const { photoName: rPhoto, makeupName: rMakeup } = svcFirstItem ? resolveItemStaff(svcFirstItem) : { photoName: "", makeupName: "" };
                               const roleLabelMap: Record<string, string> = {
                                 assistant: "Trợ lý", tro_ly: "Trợ lý",
@@ -4044,7 +4066,7 @@ function ShowDetailPanel({
                                 </div>
                               );
                             })()}
-                            {isCurrent && svcPkgDetail.description && (
+                            {isCurrent && !svcCollapsed && svcPkgDetail.description && (
                               <div className="px-3 py-1.5 border-b border-border/30 bg-gray-50/50 dark:bg-muted/10">
                                 <p className="text-[10px] font-bold text-foreground mb-1">Nội dung gói:</p>
                                 {reflowDescriptionLines(svcPkgDetail.description).map((line, i) => (
@@ -4052,7 +4074,7 @@ function ShowDetailPanel({
                                 ))}
                               </div>
                             )}
-                            {isCurrent && svcAddonNames.length > 0 && (
+                            {isCurrent && !svcCollapsed && svcAddonNames.length > 0 && (
                               <div className="px-3 py-1.5 border-b border-border/30 bg-orange-50/30 dark:bg-orange-950/10">
                                 <span className="text-[10px] font-bold text-orange-700 dark:text-orange-300">➕ Addon:</span>
                                 {svcAddonNames.map((n, i) => (
@@ -4060,7 +4082,7 @@ function ShowDetailPanel({
                                 ))}
                               </div>
                             )}
-                            {extrasReadOnly && (
+                            {isCurrent && !svcCollapsed && extrasReadOnly && (
                               <div className="px-3 py-1.5 border-b border-border/30 bg-muted/20">
                                 <span className="text-[10px] font-bold">Dịch vụ cộng thêm theo số lượng</span>
                                 {svcExtras.map((l, ix) => (
@@ -4071,7 +4093,7 @@ function ShowDetailPanel({
                                 ))}
                               </div>
                             )}
-                            {isCurrent && isAdmin && (
+                            {isCurrent && !svcCollapsed && isAdmin && (
                               <ServicePriceBreakdown
                                 basePrice={svcBasePrice}
                                 surcharges={allSurcharges}
@@ -4080,13 +4102,13 @@ function ShowDetailPanel({
                                 formatVND={fmtVND}
                               />
                             )}
-                            {isCurrent && svcFirstItem?.notes && (
+                            {isCurrent && !svcCollapsed && svcFirstItem?.notes && (
                               <div className="px-3 py-1.5 border-t border-border/30">
                                 <p className="text-[10px] font-bold text-muted-foreground mb-1">📝 Ghi chú dịch vụ</p>
                                 <p className="text-xs text-foreground/80 leading-relaxed whitespace-pre-line">{svcFirstItem.notes}</p>
                               </div>
                             )}
-                            {isCurrent && svcFirstItem?.conceptImages && svcFirstItem.conceptImages.length > 0 && (
+                            {isCurrent && !svcCollapsed && svcFirstItem?.conceptImages && svcFirstItem.conceptImages.length > 0 && (
                               <div className="px-3 py-1.5 border-t border-border/30">
                                 <p className="text-[10px] font-bold text-muted-foreground mb-2">🖼️ Ảnh concept ({svcFirstItem.conceptImages.length})</p>
                                 <div className="grid grid-cols-3 gap-1.5">
@@ -4105,7 +4127,7 @@ function ShowDetailPanel({
                                 </div>
                               </div>
                             )}
-                            {isCurrent && (() => {
+                            {isCurrent && !svcCollapsed && (() => {
                               const svcDresses = bookingDresses.filter(d => d.booking_id === svc.id);
                               if (svcDresses.length === 0) return null;
                               const fmtDR = (d: string | null) => { try { return format(parseISO(d || ""), "dd/MM", { locale: vi }); } catch { return d || ""; } };

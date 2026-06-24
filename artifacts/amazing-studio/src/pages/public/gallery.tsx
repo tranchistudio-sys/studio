@@ -4,6 +4,7 @@ import { Camera, Images } from "lucide-react";
 import { LazyImage } from "@/components/cms-shared";
 import { Style3D, Tilt3D } from "@/components/public-3d";
 import { PublicReveal, PublicRevealItem } from "@/components/public/PublicReveal";
+import { playPublicSound } from "@/lib/feedback";
 import { GALLERY_PAGE } from "@/lib/public-site-config";
 import {
   countAlbumsInBranch,
@@ -104,10 +105,12 @@ export default function PublicGalleryPage() {
     setTier1Id(id);
     setTier2Id(null);
     setVisibleCount(PAGE_SIZE);
+    if (id != null) playPublicSound("public_category_selected");
   }
   function pickTier2(id: number | null) {
     setTier2Id(id);
     setVisibleCount(PAGE_SIZE);
+    if (id != null) playPublicSound("public_category_selected");
   }
 
   const filterNodeId = tier2Id ?? tier1Id;
@@ -314,7 +317,7 @@ export default function PublicGalleryPage() {
                       <GalleryAlbumCard
                         album={a}
                         href={`${BASE}/bo-anh/${a.slug}`}
-                        onNavigate={() => setLocation(`${BASE}/bo-anh/${a.slug}`)}
+                        onNavigate={() => { playPublicSound("public_gallery_album_opened"); setLocation(`${BASE}/bo-anh/${a.slug}`); }}
                       />
                     </PublicRevealItem>
                   ))}
@@ -382,7 +385,7 @@ function GalleryAlbumCard({
   const tags = parseCSV(album.tagsText);
 
   return (
-    <article className="group">
+    <article className="group" onMouseEnter={() => playPublicSound("public_image_hover_soft", { cooldownMs: 1500 })}>
       <a href={href} className="sr-only" tabIndex={-1}>
         {album.name}
       </a>

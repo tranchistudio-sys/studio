@@ -1943,12 +1943,12 @@ function GroupModal({ group, onClose, onSaved }: {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
-      <div className="bg-background rounded-2xl shadow-2xl w-full max-w-md">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+      <div className="bg-background rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border flex-shrink-0">
           <h2 className="text-lg font-bold">{group ? "Sửa nhóm dịch vụ" : "Thêm nhóm dịch vụ"}</h2>
           <button onClick={onClose} className="p-2 rounded-lg hover:bg-muted"><X className="w-4 h-4" /></button>
         </div>
-        <div className="px-6 py-4 space-y-4">
+        <div className="px-6 py-4 space-y-4 flex-1 overflow-y-auto">
           {error && <div className="flex items-center gap-2 p-3 bg-destructive/10 rounded-lg text-destructive text-sm"><AlertCircle className="w-4 h-4" />{error}</div>}
           <div>
             <label className="block text-xs font-semibold text-muted-foreground mb-1.5">Tên nhóm *</label>
@@ -2029,7 +2029,7 @@ function GroupModal({ group, onClose, onSaved }: {
             </p>
           </div>
         </div>
-        <div className="flex gap-3 px-6 py-4 border-t border-border">
+        <div className="flex gap-3 px-6 py-4 border-t border-border flex-shrink-0">
           <Button variant="outline" onClick={onClose} className="flex-1">Huỷ</Button>
           <Button onClick={save} disabled={saving} className="flex-1">{saving ? "Đang lưu..." : group ? "Cập nhật" : "Thêm nhóm"}</Button>
         </div>

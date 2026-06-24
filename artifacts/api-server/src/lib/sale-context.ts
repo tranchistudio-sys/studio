@@ -1,5 +1,6 @@
 import { pool } from "@workspace/db";
 import { getPublicBaseUrl } from "./publicUrl";
+import { resolveDiscount, discountWindowStatus, type DiscountConfig } from "./pricing-discount";
 
 /**
  * Context cho bộ não sale Claude (Giai đoạn 1).
@@ -38,16 +39,51 @@ const DENY_KEYWORDS = [
   "nhân viên", "nhan vien", "internal", "wholesale", "sỉ",
 ];
 
-export type PkgRow = { id: number; group_name: string; pkg_name: string; price: string; code: string | null; description?: string | null };
+export type PkgRow = {
+  id: number; group_id: number; group_name: string; pkg_name: string; price: string; code: string | null; description?: string | null;
+  // Ưu đãi cấp GÓI (discount_* trên service_packages)
+  p_d_enabled?: boolean | null; p_d_type?: string | null; p_d_value?: string | null;
+  p_d_start?: string | Date | null; p_d_end?: string | Date | null; p_d_name?: string | null; p_d_desc?: string | null;
+  // Ưu đãi cấp NHÓM (discount_* trên service_groups)
+  g_d_enabled?: boolean | null; g_d_type?: string | null; g_d_value?: string | null;
+  g_d_start?: string | Date | null; g_d_end?: string | Date | null; g_d_name?: string | null; g_d_desc?: string | null;
+};
 export type AuditRow = PkgRow & { kept: boolean; reason: string };
 
 let cache: { text: string; at: number } | null = null;
 const TTL_MS = 5 * 60 * 1000;
 
+/**
+ * Xoá cache context giá — gọi NGAY khi admin tạo/sửa/xoá gói/nhóm hoặc đổi giảm giá
+ * (routes/pricing.ts) để Lulu + sân test Brain Lab lấy giá/ưu đãi MỚI tức thì, không
+ * phải chờ hết TTL 5 phút. Đồng thời xoá cache "Ý tưởng" cho chắc.
+ */
+export function clearSaleContextCache(): void {
+  cache = null;
+  ideasCache = null;
+}
+
 function formatVnd(price: string | number): string {
   const n = Math.round(Number(price));
   if (!Number.isFinite(n) || n <= 0) return "liên hệ";
   return n.toLocaleString("vi-VN") + "đ";
+}
+
+/** dd/mm/yyyy theo giờ VN cho ngày kết thúc ưu đãi (để Lulu nói "đến 31/07"). */
+function formatDateVn(v: string | Date | null): string {
+  if (!v) return "";
+  const d = v instanceof Date ? v : new Date(v);
+  if (isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
+}
+
+/** DiscountConfig cấp gói / cấp nhóm rút từ 1 PkgRow. */
+function pkgDiscountCfg(r: PkgRow): DiscountConfig {
+  return { enabled: r.p_d_enabled, type: r.p_d_type, value: r.p_d_value, startDate: r.p_d_start, endDate: r.p_d_end, name: r.p_d_name, description: r.p_d_desc };
+}
+function groupDiscountCfg(r: PkgRow): DiscountConfig {
+  return { enabled: r.g_d_enabled, type: r.g_d_type, value: r.g_d_value, startDate: r.g_d_start, endDate: r.g_d_end, name: r.g_d_name, description: r.g_d_desc };
 }
 
 /** Dọn mô tả gói (thành phần/quà tặng) để đưa vào context — bỏ bullet markdown, gọn khoảng trắng. */
@@ -72,7 +108,13 @@ function unsafeReason(r: PkgRow): string | null {
 
 async function fetchActivePackages(): Promise<PkgRow[]> {
   const res = await pool.query(
-    `SELECT p.id, g.name AS group_name, p.name AS pkg_name, p.price, p.code, p.description
+    `SELECT p.id, g.id AS group_id, g.name AS group_name, p.name AS pkg_name, p.price, p.code, p.description,
+            p.discount_enabled AS p_d_enabled, p.discount_type AS p_d_type, p.discount_value AS p_d_value,
+            p.discount_start_date AS p_d_start, p.discount_end_date AS p_d_end,
+            p.discount_name AS p_d_name, p.discount_description AS p_d_desc,
+            g.discount_enabled AS g_d_enabled, g.discount_type AS g_d_type, g.discount_value AS g_d_value,
+            g.discount_start_date AS g_d_start, g.discount_end_date AS g_d_end,
+            g.discount_name AS g_d_name, g.discount_description AS g_d_desc
      FROM service_groups g JOIN service_packages p ON p.group_id = g.id
      WHERE g.is_active = 1 AND p.is_active = 1
      ORDER BY g.sort_order, g.id, p.sort_order, p.id`,
@@ -127,20 +169,39 @@ export async function getSaleContext(): Promise<string> {
     if (kept.length === 0) throw new Error("Không có gói bán lẻ hợp lệ sau khi lọc");
 
     const groups = new Map<string, string[]>();
+    const groupNote = new Map<string, string>();
     for (const r of kept) {
       if (!groups.has(r.group_name)) groups.set(r.group_name, []);
       const desc = cleanDesc(r.description);
       const code = (r.code ?? "").trim().toUpperCase();
       // Mã [CODE] đứng đầu để Claude trích đúng mã gói khi báo giá (dùng cho <<PRICE_IMAGE: MÃ>>).
       const head = code ? `[${code}] ` : "";
-      const line = desc
+      let line = desc
         ? `${head}${r.pkg_name.trim()} — ${formatVnd(r.price)}. Gồm: ${desc}`
         : `${head}${r.pkg_name.trim()} — ${formatVnd(r.price)}`;
+      // Ưu đãi đã TÍNH SẴN (ưu tiên giảm-gói > giảm-nhóm, KHÔNG cộng dồn). Lulu chỉ
+      // báo đúng con số này, không tự tính/tự bịa.
+      const d = resolveDiscount({ basePrice: r.price, pkg: pkgDiscountCfg(r), group: groupDiscountCfg(r) });
+      if (d.discountApplied) {
+        const srcLabel = d.discountSource === "package" ? "ưu đãi riêng gói" : "ưu đãi nhóm";
+        const prog = d.discountName ? ` "${d.discountName}"` : "";
+        const endTxt = d.discountEndDate ? `, đến ${formatDateVn(d.discountEndDate)}` : "";
+        const amt = d.discountType === "percent" ? `giảm ${d.discountValue}%` : `giảm ${formatVnd(d.discountValue ?? 0)}`;
+        line += ` ⟹ ĐANG GIẢM (${srcLabel}${prog}: ${amt}${endTxt}) → còn ${formatVnd(d.finalPrice)} (giá gốc ${formatVnd(r.price)})`;
+      }
       groups.get(r.group_name)!.push(line);
+      // Ghi chú chương trình NHÓM (1 lần/nhóm) để Lulu biết "nhóm này đang có ưu đãi".
+      if (!groupNote.has(r.group_name) && discountWindowStatus(groupDiscountCfg(r)) === "active") {
+        const gprog = r.g_d_name ? ` "${r.g_d_name}"` : "";
+        const gamt = r.g_d_type === "percent" ? `giảm ${Number(r.g_d_value)}%` : `giảm ${formatVnd(r.g_d_value ?? 0)}`;
+        const gend = r.g_d_end ? `, đến ${formatDateVn(r.g_d_end)}` : "";
+        groupNote.set(r.group_name, `(CHƯƠNG TRÌNH NHÓM${gprog}: ${gamt}${gend} — áp cho các gói chưa có ưu đãi riêng)`);
+      }
     }
     let priceText = "";
     for (const [groupName, lines] of groups) {
-      priceText += `\n[${groupName}]\n${lines.join("\n")}\n`;
+      const note = groupNote.get(groupName);
+      priceText += `\n[${groupName}]${note ? ` ${note}` : ""}\n${lines.join("\n")}\n`;
     }
 
     // LINK & CONCEPT thật (Bước 4 & 7). base lấy từ PUBLIC_APP_URL (production); local là placeholder.
@@ -175,7 +236,14 @@ ${linkBlock}
 
 CHÍNH SÁCH:
 - Cọc giữ lịch và lịch trống cần nhân viên xác nhận — không tự hứa lịch khi chưa kiểm tra.
-- Mọi ưu đãi/giảm giá ngoài bảng giá phải do quản lý duyệt.`;
+- Mọi ưu đãi/giảm giá ngoài bảng giá phải do quản lý duyệt.
+
+ƯU ĐÃI / GIẢM GIÁ (CHỈ theo bảng giá ở trên — TUYỆT ĐỐI không tự bịa, không tự cộng dồn, không tự giảm thêm):
+- Gói nào ĐANG có ưu đãi đã được ghi sẵn "⟹ ĐANG GIẢM ... → còn <giá>" ngay trên dòng gói đó. Em báo ĐÚNG tên chương trình, mức giảm, GIÁ SAU GIẢM và ngày kết thúc như đã ghi. KHÔNG tự tính lại.
+- "ưu đãi riêng gói" = chỉ gói đó giảm → em chỉ nói gói đó giảm, KHÔNG nói cả nhóm cùng giảm.
+- Nhóm có "(CHƯƠNG TRÌNH NHÓM ...)" ở tiêu đề = cả nhóm đang có ưu đãi; các gói chưa có ưu đãi riêng đã được tính giá giảm theo nhóm sẵn ở từng dòng.
+- Gói/nhóm KHÔNG ghi "ĐANG GIẢM" = hiện KHÔNG có ưu đãi → em báo giá gốc, KHÔNG tự tạo khuyến mãi. Có thể nói: "Dạ hiện nhóm/gói này em chưa thấy chương trình giảm đang bật trong bảng giá ạ, em gửi anh giá hiện tại trước nha."
+- Khách XIN GIẢM THÊM → KHÔNG tự deal: "Dạ phần ưu đãi hiện em đang áp dụng đúng theo bảng giá ạ. Nếu anh muốn giữ lịch hoặc cần hỗ trợ thêm, em gửi bên tiệm kiểm tra giúp anh nha."`;
 
     cache = { text, at: Date.now() };
     return text;

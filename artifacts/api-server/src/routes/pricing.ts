@@ -6,6 +6,8 @@ import {
 import { eq, asc } from "drizzle-orm";
 import { verifyToken } from "./auth";
 import { defaultRequiresPostProductionForGroupId, defaultRequiresPrintingForGroupId } from "../lib/post-production-eligibility";
+import { resolveDiscount, discountWindowStatus, type DiscountConfig } from "../lib/pricing-discount";
+import { clearSaleContextCache } from "../lib/sale-context";
 
 const router: IRouter = Router();
 
@@ -31,9 +33,53 @@ function toRequiresPrintingFlag(v: unknown): boolean {
   return false;
 }
 
-const fmtGroup = (g: { isActive: number; [k: string]: unknown }) => ({
-  ...g, isActive: Boolean(g.isActive),
+// Chuẩn hoá các field discount_* thô (string numeric / Date) cho FE đọc.
+const fmtDiscountFields = (o: Record<string, unknown>) => ({
+  discountEnabled: Boolean(o.discountEnabled),
+  discountType: (o.discountType as string | null) ?? null,
+  discountValue: o.discountValue != null ? parseFloat(o.discountValue as string) : null,
+  discountStartDate: (o.discountStartDate as Date | string | null) ?? null,
+  discountEndDate: (o.discountEndDate as Date | string | null) ?? null,
+  discountName: (o.discountName as string | null) ?? null,
+  discountDescription: (o.discountDescription as string | null) ?? null,
 });
+
+// Rút DiscountConfig (cho resolveDiscount) từ 1 row group/package đã fmt.
+const toDiscountConfig = (o: {
+  discountEnabled?: boolean; discountType?: string | null; discountValue?: number | null;
+  discountStartDate?: Date | string | null; discountEndDate?: Date | string | null;
+  discountName?: string | null; discountDescription?: string | null;
+}): DiscountConfig => ({
+  enabled: o.discountEnabled, type: o.discountType, value: o.discountValue,
+  startDate: o.discountStartDate, endDate: o.discountEndDate,
+  name: o.discountName, description: o.discountDescription,
+});
+
+const fmtGroup = (g: { isActive: number; [k: string]: unknown }) => {
+  const base = { ...g, isActive: Boolean(g.isActive), ...fmtDiscountFields(g) };
+  return { ...base, discountStatus: discountWindowStatus(toDiscountConfig(base)) };
+};
+
+// Chuẩn hoá payload discount_* từ req.body → giá trị cột DB (dùng cho cả group/package).
+function parseDiscountPayload(body: Record<string, unknown>) {
+  const parseDate = (x: unknown): Date | null => {
+    if (x == null || x === "") return null;
+    const d = new Date(String(x));
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  const t = body.discountType;
+  const v = body.discountValue;
+  const str = (x: unknown) => (typeof x === "string" && x.trim() ? x.trim() : null);
+  return {
+    discountEnabled: body.discountEnabled === true || body.discountEnabled === 1 || body.discountEnabled === "1",
+    discountType: t === "percent" || t === "fixed" ? t : null,
+    discountValue: v == null || v === "" ? null : String(v),
+    discountStartDate: parseDate(body.discountStartDate),
+    discountEndDate: parseDate(body.discountEndDate),
+    discountName: str(body.discountName),
+    discountDescription: str(body.discountDescription),
+  };
+}
 
 const fmtPkg = (p: {
   price: string;
@@ -68,6 +114,7 @@ const fmtPkg = (p: {
     requiresPrinting: toRequiresPrintingFlag(
       p.requiresPrinting ?? (p as { requires_printing?: unknown }).requires_printing,
     ),
+    ...fmtDiscountFields(p),
   };
 };
 
@@ -984,7 +1031,9 @@ router.post("/service-groups", async (req, res) => {
     name: name.trim(), description, sortOrder: sortOrder ?? 0, isActive: isActive !== false ? 1 : 0,
     aiImageUrl: typeof aiImageUrl === "string" && aiImageUrl.trim() ? aiImageUrl.trim() : null,
     publicForCustomer: publicForCustomer === false ? false : true,
+    ...parseDiscountPayload(req.body),
   }).returning();
+  clearSaleContextCache();
   res.status(201).json(fmtGroup(g));
 });
 
@@ -992,6 +1041,7 @@ router.put("/service-groups/:id", async (req, res) => {
   if (!await requireAdmin(req, res)) return;
   const id = parseInt(req.params.id);
   const { name, description, sortOrder, isActive, aiImageUrl, publicForCustomer } = req.body;
+  const discountSet = req.body.discountEnabled !== undefined ? parseDiscountPayload(req.body) : {};
   const [g] = await db.update(serviceGroupsTable).set({
     name, description,
     sortOrder: sortOrder !== undefined ? sortOrder : undefined,
@@ -1001,16 +1051,43 @@ router.put("/service-groups/:id", async (req, res) => {
       ? undefined
       : (typeof aiImageUrl === "string" && aiImageUrl.trim() ? aiImageUrl.trim() : null),
     publicForCustomer: publicForCustomer === undefined ? undefined : Boolean(publicForCustomer),
+    ...discountSet,
   }).where(eq(serviceGroupsTable.id, id)).returning();
   if (!g) return res.status(404).json({ error: "Not found" });
+  clearSaleContextCache();
   res.json(fmtGroup(g));
 });
 
 router.delete("/service-groups/:id", async (req, res) => {
   if (!await requireAdmin(req, res)) return;
   const id = parseInt(req.params.id);
+  // An toàn: chỉ HARD-DELETE khi nhóm RỖNG. Nhóm còn gói → 409 để FE hỏi cách xử lý
+  // (chuyển gói sang nhóm khác, hoặc ẩn nhóm — PUT isActive=false). Tránh mất dữ liệu.
+  const pkgs = await db.select({ id: servicePackagesTable.id }).from(servicePackagesTable)
+    .where(eq(servicePackagesTable.groupId, id));
+  if (pkgs.length > 0) {
+    return res.status(409).json({ error: "group_not_empty", packageCount: pkgs.length });
+  }
   await db.delete(serviceGroupsTable).where(eq(serviceGroupsTable.id, id));
+  clearSaleContextCache();
   res.status(204).send();
+});
+
+// Chuyển TOÀN BỘ gói từ nhóm :id sang nhóm khác (bước trước khi xoá/ẩn nhóm cũ).
+// Gói chuyển sang KHÔNG mang theo giảm giá nhóm cũ (giảm nhóm lưu ở group) — sẽ
+// theo giảm giá của nhóm đích nếu nhóm đích có cấu hình.
+router.post("/service-groups/:id/move-packages", async (req, res) => {
+  if (!await requireAdmin(req, res)) return;
+  const fromId = parseInt(req.params.id);
+  const toId = parseInt(String(req.body?.targetGroupId));
+  if (!Number.isFinite(toId)) return res.status(400).json({ error: "Thiếu nhóm đích" });
+  if (toId === fromId) return res.status(400).json({ error: "Nhóm đích phải khác nhóm hiện tại" });
+  const [target] = await db.select().from(serviceGroupsTable).where(eq(serviceGroupsTable.id, toId)).limit(1);
+  if (!target) return res.status(404).json({ error: "Không tìm thấy nhóm đích" });
+  const moved = await db.update(servicePackagesTable).set({ groupId: toId })
+    .where(eq(servicePackagesTable.groupId, fromId)).returning({ id: servicePackagesTable.id });
+  clearSaleContextCache();
+  res.json({ moved: moved.length });
 });
 
 // ─── Service packages ────────────────────────────────────────────────────────
@@ -1019,10 +1096,27 @@ router.get("/service-packages", async (_req, res) => {
     .orderBy(asc(servicePackagesTable.groupId), asc(servicePackagesTable.sortOrder));
   const items = await db.select().from(packageItemsTable)
     .orderBy(asc(packageItemsTable.packageId), asc(packageItemsTable.sortOrder));
-  const result = packages.map(p => ({
-    ...fmtPkg(p),
-    items: items.filter(i => i.packageId === p.id),
-  }));
+  const groups = await db.select().from(serviceGroupsTable);
+  const groupById = new Map<number, ReturnType<typeof fmtGroup>>();
+  for (const g of groups) groupById.set(g.id, fmtGroup(g));
+  const result = packages.map((p) => {
+    const fp = fmtPkg(p);
+    const g = p.groupId != null ? groupById.get(p.groupId) : undefined;
+    const groupActive = g ? g.isActive : false;
+    // Giảm giá NHÓM chỉ áp khi nhóm đang active (nhóm ẩn → bỏ qua).
+    const discount = resolveDiscount({
+      basePrice: fp.price,
+      pkg: toDiscountConfig(fp),
+      group: g && groupActive ? toDiscountConfig(g) : null,
+    });
+    return {
+      ...fp,
+      items: items.filter((i) => i.packageId === p.id),
+      discount, // giá sau giảm đã tính sẵn (nguồn sự thật) — FE chỉ hiển thị
+      pkgDiscountStatus: discountWindowStatus(toDiscountConfig(fp)),
+      groupDiscountStatus: g && groupActive ? g.discountStatus : "off",
+    };
+  });
   res.json(result);
 });
 
@@ -1079,6 +1173,7 @@ router.post("/service-packages", async (req, res) => {
       : (requiresPrinting === true || requiresPrinting === 1
         ? true
         : (groupId ? await defaultRequiresPrintingForGroupId(parseInt(String(groupId))) : false)),
+    ...parseDiscountPayload(req.body),
   }).returning();
 
   if (items.length > 0) {
@@ -1096,6 +1191,7 @@ router.post("/service-packages", async (req, res) => {
 
   const savedItems = await db.select().from(packageItemsTable)
     .where(eq(packageItemsTable.packageId, pkg.id)).orderBy(asc(packageItemsTable.sortOrder));
+  clearSaleContextCache();
   res.status(201).json({ ...fmtPkg(pkg), items: savedItems });
 });
 
@@ -1146,6 +1242,10 @@ router.put("/service-packages/:id", async (req, res) => {
     if (requiresPrinting !== undefined) {
       update.requiresPrinting = toRequiresPrintingFlag(requiresPrinting);
     }
+    // Chương trình giảm giá riêng cho gói — form luôn gửi cả khối khi lưu.
+    if (req.body.discountEnabled !== undefined) {
+      Object.assign(update, parseDiscountPayload(req.body));
+    }
 
     let pkg: (typeof servicePackagesTable.$inferSelect) | undefined;
     if (Object.keys(update).length > 0) {
@@ -1177,6 +1277,7 @@ router.put("/service-packages/:id", async (req, res) => {
 
     const savedItems = await db.select().from(packageItemsTable)
       .where(eq(packageItemsTable.packageId, id)).orderBy(asc(packageItemsTable.sortOrder));
+    clearSaleContextCache();
     res.json({ ...fmtPkg(pkg), items: savedItems });
   } catch (err: unknown) {
     console.error("PUT /service-packages/:id error:", err instanceof Error ? err.message : err);
@@ -1189,6 +1290,7 @@ router.delete("/service-packages/:id", async (req, res) => {
   const id = parseInt(req.params.id);
   await db.delete(packageItemsTable).where(eq(packageItemsTable.packageId, id));
   await db.delete(servicePackagesTable).where(eq(servicePackagesTable.id, id));
+  clearSaleContextCache();
   res.status(204).send();
 });
 

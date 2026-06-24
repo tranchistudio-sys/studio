@@ -1064,6 +1064,26 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
     console.error("[migrations] Claude Sale tables:", err);
   }
 
+  // ── Chương trình giảm giá theo NHÓM dịch vụ + theo GÓI riêng lẻ (module Bảng giá) ──
+  // 7 cột discount_* trên CẢ service_groups (giảm cấp nhóm) lẫn service_packages
+  // (giảm riêng gói). Ưu tiên giảm-gói > giảm-nhóm, KHÔNG cộng dồn — xem
+  // resolveDiscount() ở lib/pricing-discount.ts. ADD COLUMN IF NOT EXISTS nên an toàn
+  // chạy nhiều lần; KHÔNG đụng dữ liệu/giá hiện có.
+  try {
+    for (const tbl of ["service_groups", "service_packages"]) {
+      await pool.query(`ALTER TABLE ${tbl} ADD COLUMN IF NOT EXISTS discount_enabled boolean NOT NULL DEFAULT false`);
+      await pool.query(`ALTER TABLE ${tbl} ADD COLUMN IF NOT EXISTS discount_type text`);
+      await pool.query(`ALTER TABLE ${tbl} ADD COLUMN IF NOT EXISTS discount_value numeric(12,2)`);
+      await pool.query(`ALTER TABLE ${tbl} ADD COLUMN IF NOT EXISTS discount_start_date timestamptz`);
+      await pool.query(`ALTER TABLE ${tbl} ADD COLUMN IF NOT EXISTS discount_end_date timestamptz`);
+      await pool.query(`ALTER TABLE ${tbl} ADD COLUMN IF NOT EXISTS discount_name text`);
+      await pool.query(`ALTER TABLE ${tbl} ADD COLUMN IF NOT EXISTS discount_description text`);
+    }
+    console.log("[migrations] discount_* (service_groups + service_packages) OK");
+  } catch (err) {
+    console.error("[migrations] discount_* columns:", err);
+  }
+
   // ── Giờ vàng (Golden Hour) — campaign giảm giá theo nhóm danh mục / sản phẩm ───
   // Bảng cấu hình riêng, KHÔNG đụng dresses/cms_categories, KHÔNG ghi đè giá gốc.
   try {

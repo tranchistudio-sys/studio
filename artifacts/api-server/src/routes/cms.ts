@@ -6,6 +6,8 @@ import {
 } from "@workspace/db/schema";
 import { eq, and, isNull, isNotNull, asc, desc, sql } from "drizzle-orm";
 import { verifyToken, getCallerRole } from "./auth";
+import { resolveDiscount } from "../lib/pricing-discount";
+import { clearSaleContextCache } from "../lib/sale-context";
 
 const router: IRouter = Router();
 
@@ -1313,6 +1315,7 @@ router.patch("/cms/packages/:id", async (req, res) => {
     if (!upd.length) return res.json({ ok: true });
     vals.push(+req.params.id);
     await pool.query(`UPDATE service_packages SET ${upd.join(", ")} WHERE id = $${i}`, vals);
+    clearSaleContextCache();
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
@@ -1483,18 +1486,38 @@ router.get("/cms/public/packages", async (_req, res) => {
              p.short_description AS "shortDescription",
              p.description,
              p.products,
-             g.name AS "groupName"
+             g.name AS "groupName",
+             p.discount_enabled AS "pDEnabled", p.discount_type AS "pDType", p.discount_value AS "pDValue",
+             p.discount_start_date AS "pDStart", p.discount_end_date AS "pDEnd",
+             p.discount_name AS "pDName", p.discount_description AS "pDDesc",
+             g.discount_enabled AS "gDEnabled", g.discount_type AS "gDType", g.discount_value AS "gDValue",
+             g.discount_start_date AS "gDStart", g.discount_end_date AS "gDEnd",
+             g.discount_name AS "gDName", g.discount_description AS "gDDesc"
       FROM service_packages p
       LEFT JOIN service_groups g ON g.id = p.group_id
       WHERE p.deleted_at IS NULL
         AND p.is_public = 1
         AND p.cms_status = 'visible'
+        AND (p.group_id IS NULL OR g.is_active = 1)
       ORDER BY g.sort_order ASC NULLS LAST, p.sort_order ASC`);
-    res.json(r.rows.map(row => ({
-      ...row,
-      price: parseFloat(row.price),
-      products: (() => { try { return JSON.parse(row.products ?? "[]"); } catch { return []; } })(),
-    })));
+    res.json(r.rows.map(row => {
+      // Giá sau giảm tính SẴN ở backend (ưu tiên gói > nhóm, không cộng dồn, chỉ ưu
+      // đãi đang hiệu lực — scheduled/expired tự bị loại). Website chỉ hiển thị.
+      const discount = resolveDiscount({
+        basePrice: row.price,
+        pkg: { enabled: row.pDEnabled, type: row.pDType, value: row.pDValue, startDate: row.pDStart, endDate: row.pDEnd, name: row.pDName, description: row.pDDesc },
+        group: { enabled: row.gDEnabled, type: row.gDType, value: row.gDValue, startDate: row.gDStart, endDate: row.gDEnd, name: row.gDName, description: row.gDDesc },
+      });
+      return {
+        id: row.id, code: row.code, name: row.name,
+        price: parseFloat(row.price),
+        shortDescription: row.shortDescription,
+        description: row.description,
+        products: (() => { try { return JSON.parse(row.products ?? "[]"); } catch { return []; } })(),
+        groupName: row.groupName,
+        discount,
+      };
+    }));
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 

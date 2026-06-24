@@ -869,6 +869,7 @@ router.put("/bookings/:id", async (req, res) => {
   try {
   const id = parseInt(req.params.id);
   const {
+    customerId,
     shootDate, shootTime, serviceCategory, packageType, location, status,
     totalAmount, depositAmount, discountAmount, items, surcharges, notes, internalNotes,
     assignedStaff, parentId, serviceLabel, isParentContract, photoCount, includedRetouchedPhotosSnapshot,
@@ -887,6 +888,11 @@ router.put("/bookings/:id", async (req, res) => {
     new Date(iso).toLocaleDateString("en-CA", { timeZone: "Asia/Ho_Chi_Minh" });
 
   const updateData: Record<string, unknown> = {};
+  // Cho phép đổi khách của show (sửa tên/đổi khách). Chỉ nhận id hợp lệ.
+  if (customerId !== undefined && customerId !== null) {
+    const cidNum = parseInt(String(customerId));
+    if (Number.isInteger(cidNum) && cidNum > 0) updateData.customerId = cidNum;
+  }
   if (shootDate !== undefined) updateData.shootDate = shootDate;
   if (shootTime !== undefined) updateData.shootTime = shootTime;
   if (serviceCategory !== undefined) updateData.serviceCategory = serviceCategory;
@@ -1363,7 +1369,10 @@ router.post("/bookings/:parentId/add-child", async (req, res) => {
     if (!parent) return res.status(404).json({ error: "Không tìm thấy hợp đồng gốc" });
     if (!parent.isParentContract) return res.status(400).json({ error: "Booking này không phải hợp đồng multi-service" });
 
-    const { serviceLabel, shootDate, shootTime, items, totalAmount, surcharges, deductions, notes, assignedStaff, servicePackageId, location, additionalServices } = req.body;
+    const { customerId, serviceLabel, shootDate, shootTime, items, totalAmount, surcharges, deductions, notes, assignedStaff, servicePackageId, location, additionalServices } = req.body;
+    // Dịch vụ con mới kế thừa khách của hợp đồng cha, trừ khi FE gửi customerId hợp lệ (đổi khách).
+    const cidNum = parseInt(String(customerId));
+    const childCustomerId = Number.isInteger(cidNum) && cidNum > 0 ? cidNum : parent.customerId;
 
     const existingChildren = await db.select({ id: bookingsTable.id, orderCode: bookingsTable.orderCode })
       .from(bookingsTable).where(eq(bookingsTable.parentId, parentId));
@@ -1380,7 +1389,7 @@ router.post("/bookings/:parentId/add-child", async (req, res) => {
 
     const [child] = await db.insert(bookingsTable).values({
       orderCode: childCode,
-      customerId: parent.customerId,
+      customerId: childCustomerId,
       shootDate: shootDate || parent.shootDate,
       shootTime: shootTime || "08:00",
       serviceCategory: parent.serviceCategory,

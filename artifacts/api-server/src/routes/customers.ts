@@ -24,6 +24,24 @@ function normalizePhone(phone: string): string {
   return phone.replace(/[\s\-\(\)\+\.]/g, "");
 }
 
+// SĐT placeholder ("0", "00", "000", "chưa có", rỗng...) KHÔNG phải số thật → coi như thiếu.
+// Tránh dùng số rác để tra/merge khách (bug khách bị quay về khách cũ có phone "0").
+function isMissingPhone(raw: unknown): boolean {
+  const s = String(raw ?? "").trim().toLowerCase();
+  if (!s) return true;
+  if (["chưa có", "chua co", "không", "khong", "n/a", "na", "-", "/"].includes(s)) return true;
+  const digits = s.replace(/\D/g, "");
+  if (!digits) return true;          // không có chữ số
+  if (/^0+$/.test(digits)) return true; // toàn số 0: "0", "00", "000"...
+  return false;
+}
+
+/** Chuẩn hoá SĐT để LƯU: trả null nếu là placeholder/thiếu, ngược lại chuẩn hoá định dạng. */
+function normalizePhoneOrNull(raw: unknown): string | null {
+  if (isMissingPhone(raw)) return null;
+  return normalizePhone(String(raw).trim());
+}
+
 const ALLOWED_RANKS = new Set(["new", "potential", "vip", "super_vip", "model", "needs_care"]);
 function normalizeRank(rank: unknown): string {
   if (typeof rank !== "string" || !ALLOWED_RANKS.has(rank)) return "new";
@@ -94,8 +112,9 @@ router.get("/customers", async (req, res) => {
 router.get("/customers/by-phone", async (req, res) => {
   try {
   const rawPhone = (req.query.phone as string | undefined) ?? "";
+  // Không tra theo SĐT placeholder ("0"...) — tránh merge nhầm khách.
+  if (isMissingPhone(rawPhone)) return res.status(400).json({ error: "Số điện thoại không hợp lệ để tra cứu" });
   const phone = normalizePhone(rawPhone.trim());
-  if (!phone) return res.status(400).json({ error: "Thiếu số điện thoại" });
   const r = await pool.query(
     `SELECT * FROM customers
      WHERE REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '(', ''), ')', ''), '.', ''), '+', '') = $1
@@ -119,7 +138,7 @@ router.get("/customers/by-phone", async (req, res) => {
 
 router.post("/customers", async (req, res) => {
   const { name, phone, email, address, notes, facebook, zalo, source, tags, gender, avatar, customerRank } = req.body;
-  const normalizedPhone = phone ? normalizePhone(String(phone).trim()) : null;
+  const normalizedPhone = normalizePhoneOrNull(phone);
   try {
     const count = await db.select().from(customersTable);
     const customCode = `KH${String(count.length + 1).padStart(3, "0")}`;
@@ -195,8 +214,7 @@ router.put("/customers/:id", async (req, res) => {
     };
     if (customerRank !== undefined) setFields.customerRank = normalizeRank(customerRank);
     if (rawPhone !== undefined) {
-      const normalized = normalizePhone(rawPhone.trim());
-      setFields.phone = normalized || null;
+      setFields.phone = normalizePhoneOrNull(rawPhone);
     }
     const [customer] = await db
       .update(customersTable)

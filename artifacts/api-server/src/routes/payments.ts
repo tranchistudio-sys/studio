@@ -78,6 +78,7 @@ const BOOKING_JOIN_SQL = `
   FROM bookings b
   LEFT JOIN customers c ON b.customer_id = c.id
   WHERE b.parent_id IS NULL
+    AND b.deleted_at IS NULL
 `;
 
 // GET /payments/suggestions — gợi ý thông minh khi mở ô tìm kiếm (chưa nhập)
@@ -207,6 +208,7 @@ router.get("/payments/recent", async (req, res) => {
     LEFT JOIN bookings b ON p.booking_id = b.id
     LEFT JOIN customers c ON b.customer_id = c.id
     WHERE p.payment_type IN ('payment', 'deposit', 'ad_hoc')
+      AND (p.booking_id IS NULL OR b.deleted_at IS NULL)
       AND ${dateFilter}
     ORDER BY p.paid_at DESC, p.id DESC
     LIMIT $1`;

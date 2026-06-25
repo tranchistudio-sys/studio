@@ -25,10 +25,11 @@ import { pool } from "@workspace/db";
 import { publishToPage, isDryRun } from "./lib/facebook-page-publish";
 import { generateCaptions } from "./lib/autopost-caption";
 import { emitNotification } from "./routes/notifications";
-import { poolRowToCaptionItem, clampImages, sha1, resolveSlotImageCount } from "./lib/autopost-route-helpers";
+import { poolRowToCaptionItem, clampImages, sha1, resolveSlotImageCount, pickRecommendedCaption } from "./lib/autopost-route-helpers";
 import { getBrandFooter, appendFooter } from "./lib/autopost-brand";
 import { getDefaultSignatureContent, appendSignature } from "./lib/autopost-signature";
 import { stripContacts } from "./lib/autopost-sanitize";
+import { getAutopostConfig } from "./lib/autopost-config";
 
 const TAG = "[AutoPost]";
 
@@ -194,6 +195,43 @@ async function publishClaimedPost(post: DuePost): Promise<PublishOutcome> {
   }
 }
 
+/** Bài đã claim 'posting' nhưng caption_final CÓ THỂ còn trống (luồng tự đăng / đăng ngay). */
+type ClaimedRow = {
+  id: number;
+  page_id: string | null;
+  images: unknown;
+  caption_final: string | null;
+  content_pool_id: number | null;
+  image_hash: string | null;
+  caption_hash: string | null;
+  footer_enabled: boolean | null;
+  caption_options?: unknown;
+  caption_recommended_index?: number | null;
+};
+
+/**
+ * Bảo đảm bài (đã claim 'posting') có caption_final: nếu trống thì lấy caption
+ * ĐỀ XUẤT từ caption_options[recommendedIndex], GHI vào DB (kèm caption_hash) để
+ * bản ghi nhất quán + dedupe hoạt động. Trả false nếu không có caption nào dùng được.
+ */
+async function ensureCaptionFinal(row: ClaimedRow): Promise<boolean> {
+  if (row.caption_final && row.caption_final.trim().length > 0) return true;
+  const fc = pickRecommendedCaption(row.caption_options, row.caption_recommended_index);
+  if (!fc) return false;
+  const h = sha1(fc);
+  try {
+    await pool.query(
+      `UPDATE autopost_posts SET caption_final = $2, caption_hash = $3, updated_at = now() WHERE id = $1`,
+      [row.id, fc, h],
+    );
+  } catch (e) {
+    console.error(`${TAG} ghi caption_final bài #${row.id} lỗi:`, e);
+  }
+  row.caption_final = fc;
+  row.caption_hash = h;
+  return true;
+}
+
 /**
  * Đăng các bài đã duyệt tới giờ. Atomic-claim chống đua, dedupe chống trùng,
  * báo lỗi admin khi thất bại. Không bao giờ throw (tự bắt mọi lỗi).
@@ -257,12 +295,17 @@ export async function publishPostNow(
   id: number,
 ): Promise<{ ok: boolean; status: string; dryRun?: boolean; postId?: string; permalink?: string | null; error?: string }> {
   // Atomic claim NGAY (không phụ thuộc scheduled_at) — chống đua với scheduler.
+  // Cho cả bài ĐÃ DUYỆT (approved/scheduled) lẫn bài trong cửa sổ kiểm duyệt
+  // (review_pending — caption_final có thể còn trống, sẽ tự lấy caption đề xuất).
   let claim: { rowCount: number | null };
   try {
     claim = await pool.query(
       `UPDATE autopost_posts SET status = 'posting', updated_at = now()
-        WHERE id = $1 AND status IN ('approved','scheduled')
-          AND approved_by IS NOT NULL AND caption_final IS NOT NULL
+        WHERE id = $1
+          AND (
+            (status IN ('approved','scheduled') AND approved_by IS NOT NULL AND caption_final IS NOT NULL)
+            OR status = 'review_pending'
+          )
         RETURNING id`,
       [id],
     );
@@ -270,25 +313,31 @@ export async function publishPostNow(
     return { ok: false, status: "error", error: String(e instanceof Error ? e.message : e).slice(0, 200) };
   }
   if ((claim.rowCount ?? 0) === 0) {
-    return { ok: false, status: "not_publishable", error: "Chỉ đăng ngay được bài ĐÃ DUYỆT (chưa duyệt / đang đăng / đã đăng / đã huỷ)" };
+    return { ok: false, status: "not_publishable", error: "Chỉ đăng ngay được bài ĐÃ DUYỆT hoặc đang chờ tự đăng (chưa duyệt / đang đăng / đã đăng / đã huỷ)" };
   }
 
-  let row: DuePost | undefined;
+  let row: ClaimedRow | undefined;
   try {
     const r = await pool.query(
-      `SELECT id, page_id, images, caption_final, content_pool_id, image_hash, caption_hash, footer_enabled
+      `SELECT id, page_id, images, caption_final, caption_options, caption_recommended_index,
+              content_pool_id, image_hash, caption_hash, footer_enabled
          FROM autopost_posts WHERE id = $1`,
       [id],
     );
-    row = r.rows[0] as DuePost | undefined;
+    row = r.rows[0] as ClaimedRow | undefined;
   } catch (e) {
-    // Đã claim 'posting' nhưng không đọc được dữ liệu → trả bài về 'approved' cho khỏi kẹt.
-    await pool.query(`UPDATE autopost_posts SET status = 'approved', updated_at = now() WHERE id = $1 AND status = 'posting'`, [id]).catch(() => {});
+    // Đã claim 'posting' nhưng không đọc được dữ liệu → trả bài về 'review_pending' cho khỏi kẹt.
+    await pool.query(`UPDATE autopost_posts SET status = 'review_pending', updated_at = now() WHERE id = $1 AND status = 'posting'`, [id]).catch(() => {});
     return { ok: false, status: "error", error: String(e instanceof Error ? e.message : e).slice(0, 200) };
   }
   if (!row) return { ok: false, status: "not_found", error: "Không tìm thấy bài" };
 
-  const outcome = await publishClaimedPost(row);
+  if (!(await ensureCaptionFinal(row))) {
+    await pool.query(`UPDATE autopost_posts SET status = 'failed', error_message = 'thiếu caption để đăng', updated_at = now() WHERE id = $1`, [id]).catch(() => {});
+    return { ok: false, status: "failed", error: "Bài chưa có caption để đăng" };
+  }
+
+  const outcome = await publishClaimedPost(row as DuePost);
   return {
     ok: outcome.status === "posted",
     status: outcome.status,
@@ -297,6 +346,129 @@ export async function publishPostNow(
     permalink: outcome.permalink,
     error: outcome.error,
   };
+}
+
+// ─────────────────── REVIEW COUNTDOWN (cửa sổ kiểm duyệt 30') ────────────────
+
+/**
+ * Sweep A — ĐƯA BÀI VÀO CỬA SỔ KIỂM DUYỆT: các bài 'pending_review' đã CÓ giờ đăng
+ * và sắp tới giờ (trong `autoApproveAfterMinutes` phút tới) → chuyển 'review_pending'
+ * để hiện đếm ngược trên UI và bật cơ chế tự đăng. Bỏ qua bài đang sửa / tạm ngưng.
+ * GATED bởi config autoApproveEnabled (TẮT mặc định → không làm gì). KHÔNG throw.
+ */
+export async function sweepEnterReviewWindow(nowMs: number = Date.now()): Promise<{ entered: number }> {
+  void nowMs; // mốc thời gian do DB (now()) đánh giá; tham số giữ cho test/đối xứng.
+  let entered = 0;
+  let cfg: Awaited<ReturnType<typeof getAutopostConfig>> | null = null;
+  try { cfg = await getAutopostConfig(); } catch { cfg = null; }
+  if (!cfg?.autoApproveEnabled) return { entered };
+  const windowMin = Math.max(1, Math.min(1440, cfg.autoApproveAfterMinutes || 30));
+  try {
+    const r = await pool.query(
+      `UPDATE autopost_posts
+          SET status = 'review_pending', updated_at = now()
+        WHERE status = 'pending_review'
+          AND scheduled_at IS NOT NULL
+          AND auto_paused = false
+          AND (editing_until IS NULL OR editing_until <= now())
+          AND scheduled_at > now()
+          AND scheduled_at <= now() + make_interval(mins => $1::int)
+        RETURNING id`,
+      [windowMin],
+    );
+    entered = r.rowCount ?? 0;
+    for (const row of r.rows as Array<{ id: number }>) {
+      emitNotification({
+        staffId: null,
+        type: "autopost_review",
+        priority: "normal",
+        title: "AutoPost: bài sắp tự đăng",
+        message: `Bài #${row.id} vào cửa sổ kiểm duyệt ${windowMin} phút`,
+        targetModule: "auto-post-facebook",
+        targetId: String(row.id),
+      });
+    }
+  } catch (e) {
+    console.error(`${TAG} sweep vào cửa sổ kiểm duyệt lỗi:`, e);
+  }
+  return { entered };
+}
+
+/**
+ * Sweep B — TỰ ĐĂNG khi countdown về 0: các bài 'review_pending' đã tới giờ
+ * (scheduled_at <= now), KHÔNG đang sửa / tạm ngưng. Atomic-claim review_pending →
+ * posting (idempotent, chống đăng trùng), tự lấy caption đề xuất nếu chưa có, rồi
+ * dùng chung publishClaimedPost (DRY_RUN + dedupe + posted/failed). KHÔNG throw.
+ * GATED bởi autoApproveEnabled (tắt switch giữa chừng = dừng tự đăng — an toàn).
+ */
+export async function sweepAutoPublishDue(nowMs: number = Date.now()): Promise<{ posted: number; failed: number; skipped: number }> {
+  void nowMs;
+  let posted = 0, failed = 0, skipped = 0;
+  let cfg: Awaited<ReturnType<typeof getAutopostConfig>> | null = null;
+  try { cfg = await getAutopostConfig(); } catch { cfg = null; }
+  if (!cfg?.autoApproveEnabled) return { posted, failed, skipped };
+
+  let due: { rows: ClaimedRow[] };
+  try {
+    due = await pool.query(
+      `SELECT id, page_id, images, caption_final, caption_options, caption_recommended_index,
+              content_pool_id, image_hash, caption_hash, footer_enabled
+         FROM autopost_posts
+        WHERE status = 'review_pending'
+          AND scheduled_at IS NOT NULL AND scheduled_at <= now()
+          AND auto_paused = false
+          AND (editing_until IS NULL OR editing_until <= now())
+        ORDER BY scheduled_at ASC
+        LIMIT 10`,
+    );
+  } catch (e) {
+    console.error(`${TAG} query review_pending tới giờ lỗi:`, e);
+    return { posted, failed, skipped };
+  }
+
+  for (const row of due.rows) {
+    // Atomic claim: chỉ worker đầu tiên chiếm được bài (review_pending → posting).
+    // Gắn approved_by=0 (sentinel "hệ thống") + approved_at để bản ghi nhất quán.
+    let claim: { rowCount: number | null };
+    try {
+      claim = await pool.query(
+        `UPDATE autopost_posts
+            SET status = 'posting',
+                approved_by = COALESCE(approved_by, 0),
+                approved_at = COALESCE(approved_at, now()),
+                updated_at = now()
+          WHERE id = $1 AND status = 'review_pending' AND auto_paused = false
+            AND (editing_until IS NULL OR editing_until <= now())
+          RETURNING id`,
+        [row.id],
+      );
+    } catch (e) {
+      console.error(`${TAG} claim review #${row.id} lỗi:`, e);
+      continue;
+    }
+    if ((claim.rowCount ?? 0) === 0) continue; // worker khác đã chiếm / đang sửa / đã tạm ngưng
+
+    if (!(await ensureCaptionFinal(row))) {
+      await pool.query(
+        `UPDATE autopost_posts SET status = 'failed', error_message = 'thiếu caption để tự đăng', updated_at = now() WHERE id = $1`,
+        [row.id],
+      ).catch(() => {});
+      console.warn(`${TAG} ✗ tự đăng bài #${row.id} thất bại: thiếu caption`);
+      failed++;
+      continue;
+    }
+    const outcome = await publishClaimedPost(row as DuePost);
+    if (outcome.status === "posted") posted++;
+    else if (outcome.status === "skipped") skipped++;
+    else failed++;
+  }
+  return { posted, failed, skipped };
+}
+
+/** Một nhịp cửa sổ kiểm duyệt (chạy mỗi ~1 phút): vào cửa sổ rồi tự đăng tới giờ. */
+export async function runReviewCountdownTick(nowMs: number = Date.now()): Promise<void> {
+  await sweepEnterReviewWindow(nowMs);
+  await sweepAutoPublishDue(nowMs);
 }
 
 // ─────────────────────────── GENERATE PENDING ────────────────────────────────
@@ -494,5 +666,16 @@ export function startAutoPostScheduler(): void {
     run();
     setInterval(run, sec * 1000);
   }, 30_000);
-  console.log(`${TAG} scheduler khởi động — poll mỗi ${sec}s (DRY_RUN=${isDryRun()})`);
+
+  // Cửa sổ kiểm duyệt 30': quét RIÊNG mỗi 60s (truy vấn rẻ, KHÔNG tốn token AI) —
+  // đưa bài sắp tới giờ vào 'review_pending' rồi tự đăng khi countdown về 0.
+  const reviewRun = () => {
+    runReviewCountdownTick().catch((e) => console.error(`${TAG} review tick lỗi:`, e));
+  };
+  setTimeout(() => {
+    reviewRun();
+    setInterval(reviewRun, 60_000);
+  }, 45_000);
+
+  console.log(`${TAG} scheduler khởi động — poll mỗi ${sec}s + cửa sổ kiểm duyệt mỗi 60s (DRY_RUN=${isDryRun()})`);
 }

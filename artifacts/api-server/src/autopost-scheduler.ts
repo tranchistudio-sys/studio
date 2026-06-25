@@ -246,6 +246,13 @@ export async function publishDuePosts(nowMs: number = Date.now()): Promise<{ pos
   let failed = 0;
   let skipped = 0;
 
+  // CÔNG TẮC TỔNG "Tự động đăng bài" (autoApproveEnabled). TẮT → KHÔNG tự đăng bất
+  // kỳ bài nào (kể cả bài người-thật đã duyệt + hẹn giờ): bài giữ nguyên trạng thái,
+  // chờ admin bấm "Đăng ngay" thủ công. (Sweep cửa sổ kiểm duyệt cũng gated tương tự.)
+  let cfg: Awaited<ReturnType<typeof getAutopostConfig>> | null = null;
+  try { cfg = await getAutopostConfig(); } catch { cfg = null; }
+  if (!cfg?.autoApproveEnabled) return { posted, failed, skipped };
+
   let due: { rows: DuePost[] };
   try {
     due = await pool.query(

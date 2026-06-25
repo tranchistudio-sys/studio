@@ -130,6 +130,8 @@ describe("computeSlotDateUtc (giờ VN, UTC+7)", () => {
 });
 
 describe("publishDuePosts", () => {
+  beforeEach(() => setConfig()); // công tắc tổng BẬT cho các test đăng theo lịch
+
   it("(a) bài tới giờ → posted + lưu id/link + tăng times_posted của pool", async () => {
     routePool({ due: [ONE_POST] });
     publishMock.mockResolvedValue({ postId: "fb_123", permalink: "https://fb/fb_123", dryRun: true });
@@ -310,8 +312,20 @@ describe("sweepAutoPublishDue", () => {
   });
 });
 
-describe("publishDuePosts — tôn trọng auto_paused", () => {
+describe("publishDuePosts — công tắc tổng + auto_paused", () => {
+  it("CÔNG TẮC TẮT (autoApproveEnabled=false) → KHÔNG đăng gì, không query bài tới giờ", async () => {
+    setConfig({ autoApproveEnabled: false });
+    routePool({ due: [ONE_POST] });
+    publishMock.mockResolvedValue({ postId: "x", permalink: null, dryRun: true });
+    const res = await publishDuePosts();
+    expect(res.posted).toBe(0);
+    expect(publishMock).not.toHaveBeenCalled();
+    const sqls = q.mock.calls.map((c) => String(c[0]));
+    expect(sqls.some((s) => s.includes("scheduled_at <= now()"))).toBe(false); // chặn trước khi query
+  });
+
   it("query bài tới giờ phải lọc auto_paused = false (cả SELECT lẫn claim)", async () => {
+    setConfig();
     routePool({ due: [] });
     await publishDuePosts();
     const sqls = q.mock.calls.map((c) => String(c[0]));

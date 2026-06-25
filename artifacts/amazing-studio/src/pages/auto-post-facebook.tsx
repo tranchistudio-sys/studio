@@ -174,6 +174,8 @@ export default function AutoPostFacebookPage() {
         </div>
       )}
 
+      <AutoPostMasterSwitch notify={notify} />
+
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="flex flex-wrap h-auto">
           <TabsTrigger value="pending"><Sparkles className="w-4 h-4 mr-1" /> Bài chờ duyệt</TabsTrigger>
@@ -225,6 +227,44 @@ function Empty({ text }: { text: string }) {
 
 function Spin() {
   return <div className="py-12 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-muted-foreground" /></div>;
+}
+
+// CÔNG TẮC TỔNG "Tự động đăng bài" + banner trạng thái rõ ràng (hiện ở mọi tab).
+// BẬT → hệ thống chạy đếm ngược + tự đăng theo lịch. TẮT → bài chỉ nằm chờ, KHÔNG
+// tự đăng (kể cả đã tới giờ); admin vẫn bấm "Đăng ngay" thủ công được. Lưu vào config
+// (autoApproveEnabled) nên reload không mất. Backend (scheduler) kiểm tra cờ này
+// trước khi publish — xem publishDuePosts + sweepAutoPublishDue.
+function AutoPostMasterSwitch({ notify }: { notify: Notify }) {
+  const { data: cfg, isLoading } = useConfig();
+  const saveCfg = useSaveConfig();
+  const on = !!cfg?.autoApproveEnabled;
+  const mins = cfg?.autoApproveAfterMinutes || 30;
+
+  const toggle = async (next: boolean) => {
+    try {
+      await saveCfg.mutateAsync({ autoApproveEnabled: next });
+      notify(true, next ? `Đã BẬT tự động đăng bài — bài sẽ tự đăng theo lịch (cửa sổ kiểm duyệt ${mins} phút)` : "Đã TẮT tự động đăng bài — bài chỉ nằm chờ, không tự đăng");
+    } catch (e) { notify(false, String((e as Error).message)); }
+  };
+
+  if (isLoading) return null;
+  return (
+    <div className={`flex items-center gap-3 px-4 py-3 rounded-2xl border ${on ? "bg-emerald-50 border-emerald-200" : "bg-muted/40 border-border"}`}>
+      <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${on ? "bg-emerald-100 text-emerald-600" : "bg-muted text-muted-foreground"}`}>
+        {on ? <CheckCircle2 className="w-5 h-5" /> : <Clock className="w-5 h-5" />}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="font-semibold text-sm">Tự động đăng bài</div>
+        <div className={`text-xs ${on ? "text-emerald-700" : "text-muted-foreground"}`}>
+          {on
+            ? "AutoPost đang BẬT — bài sẽ tự đăng theo lịch."
+            : "AutoPost đang TẮT — bài chỉ nằm chờ, không tự đăng."}
+        </div>
+      </div>
+      <span className={`text-xs font-semibold ${on ? "text-emerald-600" : "text-muted-foreground"}`}>{on ? "ON" : "OFF"}</span>
+      <Switch checked={on} disabled={saveCfg.isPending} onCheckedChange={toggle} aria-label="Bật/tắt tự động đăng bài" />
+    </div>
+  );
 }
 
 // ─────────────────────────────── Tab: Bài chờ duyệt ──────────────────────────
@@ -284,7 +324,7 @@ function ReviewSection({ posts, notify }: { posts: Post[]; notify: Notify }) {
         <Clock className="w-4 h-4 text-amber-600" />
         <h2 className="text-sm font-semibold">Sắp tự đăng <span className="text-muted-foreground font-normal">({posts.length})</span></h2>
         {cfg && !cfg.autoApproveEnabled && (
-          <Badge variant="outline" className="text-amber-600 border-amber-300">Tự đăng đang TẮT — bật ở Cấu hình Lulu</Badge>
+          <Badge variant="outline" className="text-amber-600 border-amber-300">Tự đăng đang TẮT — bật công tắc ở đầu trang</Badge>
         )}
       </div>
       <div className="grid gap-4 md:grid-cols-2">
@@ -1765,39 +1805,29 @@ function ConfigTab({ notify }: { notify: Notify }) {
   );
 }
 
-// Công tắc TỰ ĐĂNG + cửa sổ kiểm duyệt. Khi BẬT: bài đã hẹn giờ sẽ vào đếm ngược
-// trước giờ đăng N phút, không ai sửa/huỷ thì hệ thống TỰ đăng (vẫn theo DRY_RUN).
+// Cửa sổ kiểm duyệt (số phút). CÔNG TẮC bật/tắt tự đăng nằm ở thanh trạng thái đầu
+// trang (AutoPostMasterSwitch) — ở đây chỉ chỉnh số phút để tránh 2 công tắc trùng.
 function AutoPublishConfigSection({ notify }: { notify: Notify }) {
   const { data: cfg, isLoading } = useConfig();
   const saveCfg = useSaveConfig();
-  const [enabled, setEnabled] = useState(false);
   const [mins, setMins] = useState(30);
-  useEffect(() => {
-    if (cfg) {
-      setEnabled(!!cfg.autoApproveEnabled);
-      setMins(cfg.autoApproveAfterMinutes || 30);
-    }
-  }, [cfg]);
+  useEffect(() => { if (cfg) setMins(cfg.autoApproveAfterMinutes || 30); }, [cfg]);
 
   const onSave = async () => {
     const m = Math.max(1, Math.min(1440, Math.round(mins) || 30));
     try {
-      await saveCfg.mutateAsync({ autoApproveEnabled: enabled, autoApproveAfterMinutes: m });
-      notify(true, enabled ? `Đã bật tự đăng — cửa sổ kiểm duyệt ${m} phút` : "Đã tắt tự đăng (chỉ đăng khi bấm tay)");
+      await saveCfg.mutateAsync({ autoApproveAfterMinutes: m });
+      notify(true, `Đã lưu cửa sổ kiểm duyệt ${m} phút`);
     } catch (e) { notify(false, String((e as Error).message)); }
   };
 
   if (isLoading) return null;
   return (
     <div className="rounded-2xl border bg-card p-4 space-y-3">
-      <h3 className="font-semibold flex items-center gap-1.5"><Clock className="w-4 h-4 text-amber-500" /> Tự đăng (cửa sổ kiểm duyệt)</h3>
+      <h3 className="font-semibold flex items-center gap-1.5"><Clock className="w-4 h-4 text-amber-500" /> Cửa sổ kiểm duyệt (tự đăng)</h3>
       <p className="text-xs text-muted-foreground leading-relaxed">
-        Khi BẬT: bài đã hẹn giờ sẽ vào khu <b>"Sắp tự đăng"</b> trước giờ đăng và đếm ngược; nếu không ai sửa/huỷ thì hệ thống <b>tự đăng</b> (vẫn tôn trọng chế độ an toàn DRY_RUN). Khi TẮT: chỉ đăng khi admin bấm tay.
+        Bật/tắt <b>Tự động đăng bài</b> ở thanh trạng thái đầu trang. Khi BẬT: bài đã hẹn giờ vào khu <b>"Sắp tự đăng"</b> trước giờ đăng số phút dưới đây rồi đếm ngược; không ai sửa/huỷ thì tự đăng (vẫn tôn trọng DRY_RUN).
       </p>
-      <label className="flex items-center gap-2 cursor-pointer">
-        <Switch checked={enabled} onCheckedChange={setEnabled} />
-        <span className="text-sm font-medium">Cho phép tự đăng sau cửa sổ kiểm duyệt</span>
-      </label>
       <div className="flex items-end gap-2">
         <div>
           <Label className="text-xs">Số phút kiểm duyệt trước giờ đăng</Label>

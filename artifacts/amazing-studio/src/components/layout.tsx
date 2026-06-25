@@ -79,6 +79,7 @@ const FACEBOOK_NAV = [
   { href: "/claude-sale-reengage", label: "Khách cần chăm lại", icon: RefreshCw,         adminOnly: true  },
   { href: "/sale-learning",        label: "Sale Learning",      icon: Sparkles,          adminOnly: true  },
   { href: "/auto-post-facebook",   label: "AutoPost Facebook",  icon: Share2,            adminOnly: true  },
+  { href: "/autopost-style-queue", label: "Văn phong mẫu (hàng chờ)", icon: Sparkles,    adminOnly: true  },
 ];
 
 const SECONDARY_NAV = [

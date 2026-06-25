@@ -40,6 +40,7 @@ import SaleLearningPage from "@/pages/sale-learning";
 import LuluHumanReviewPage from "@/pages/lulu-human-review";
 import LuluBrainLabPage from "@/pages/lulu-brain-lab";
 import AutoPostFacebookPage from "@/pages/auto-post-facebook";
+import AutopostStyleQueuePage from "@/pages/autopost-style-queue";
 import NotificationsPage from "@/pages/notifications";
 import NotFound from "@/pages/not-found";
 import LoginPage from "@/pages/login";
@@ -101,7 +102,7 @@ const INTERNAL_PREFIXES = [
   "/pricing", "/services", "/staff", "/accounting", "/ai-assistant", "/settings",
   "/bookings", "/payments", "/expenses", "/revenue", "/contracts", "/reports",
   "/my-profile", "/photoshop-jobs", "/attendance",
-  "/crm-leads", "/facebook-inbox-ai", "/ai-sale-scripts", "/ai-test", "/claude-sale-test", "/claude-sale-settings", "/claude-sale-monitor", "/claude-sale-reengage", "/sale-learning", "/lulu-human-review", "/lulu-brain-lab", "/auto-post-facebook", "/notifications",
+  "/crm-leads", "/facebook-inbox-ai", "/ai-sale-scripts", "/ai-test", "/claude-sale-test", "/claude-sale-settings", "/claude-sale-monitor", "/claude-sale-reengage", "/sale-learning", "/lulu-human-review", "/lulu-brain-lab", "/auto-post-facebook", "/autopost-style-queue", "/notifications",
   "/cms",
 ];
 
@@ -278,6 +279,7 @@ function InternalRouter() {
         <Route path="/lulu-human-review" component={() => <AdminRoute component={LuluHumanReviewPage} />} />
         <Route path="/lulu-brain-lab" component={LuluBrainLabPage} />
         <Route path="/auto-post-facebook" component={() => <AdminRoute component={AutoPostFacebookPage} />} />
+        <Route path="/autopost-style-queue" component={() => <AdminRoute component={AutopostStyleQueuePage} />} />
         <Route path="/notifications" component={NotificationsPage} />
         <Route path="/cms/home-settings" component={CmsHomeSettingsPage} />
         <Route path="/cms/gallery" component={CmsGalleryPage} />

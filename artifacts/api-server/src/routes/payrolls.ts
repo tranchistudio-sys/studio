@@ -183,7 +183,7 @@ router.post("/payrolls/generate", async (req, res) => {
   const earnBids = Array.from(new Set(earningsRaw.map(e => e.bookingId).filter((x): x is number => x != null)));
   const cancelledBids = new Set<number>();
   if (earnBids.length > 0) {
-    const cR = await pool.query(`SELECT id FROM bookings WHERE id = ANY($1::int[]) AND status = 'cancelled'`, [earnBids]);
+    const cR = await pool.query(`SELECT id FROM bookings WHERE id = ANY($1::int[]) AND (status = 'cancelled' OR deleted_at IS NOT NULL)`, [earnBids]);
     for (const r of cR.rows as Array<{ id: number }>) cancelledBids.add(r.id);
   }
   const earnings = earningsRaw.filter(e => e.bookingId == null || !cancelledBids.has(e.bookingId));
@@ -196,7 +196,8 @@ router.post("/payrolls/generate", async (req, res) => {
       WHERE sa.staff_id = $1
         AND EXTRACT(YEAR  FROM b.shoot_date) = $2
         AND EXTRACT(MONTH FROM b.shoot_date) = $3
-        AND COALESCE(b.status, '') <> 'cancelled'`,
+        AND COALESCE(b.status, '') <> 'cancelled'
+        AND b.deleted_at IS NULL`,
     [staffId, year, month]
   );
   const allowanceTotal = parseFloat(String(allowQ.rows[0]?.total ?? 0));

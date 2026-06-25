@@ -921,6 +921,13 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
 
     await client.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS additional_services jsonb NOT NULL DEFAULT '[]'::jsonb`);
 
+    // ── Thùng rác Booking (soft-delete) ───────────────────────────────────────
+    // deleted_at != null = booking trong thùng rác. Index để query active/trash nhanh.
+    await client.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS deleted_at timestamp`);
+    await client.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS deleted_by integer`);
+    await client.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS delete_reason text`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_bookings_deleted_at ON bookings(deleted_at)`);
+
     // ── CMS Cho thuê đồ: Ưu tiên hiển thị + Giá giảm ────────────────────────
     // is_priority/priority_at: sản phẩm hot ghim lên đầu danh sách (CMS + web public).
     // sale_price: giá giảm hiển thị kèm giá gốc gạch ngang (null/0 = không giảm).

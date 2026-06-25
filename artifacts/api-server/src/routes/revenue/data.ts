@@ -1,4 +1,5 @@
 import { db } from "@workspace/db";
+import { isNull } from "drizzle-orm";
 import { bookingsTable, expensesTable, tasksTable, paymentsTable, fixedCostsTable } from "@workspace/db/schema";
 
 export async function loadAllData() {
@@ -15,7 +16,7 @@ export async function loadAllData() {
       serviceCategory: bookingsTable.serviceCategory,
       assignedStaff: bookingsTable.assignedStaff,
       createdAt: bookingsTable.createdAt,
-    }).from(bookingsTable),
+    }).from(bookingsTable).where(isNull(bookingsTable.deletedAt)), // Thùng rác: loại booking đã xoá khỏi MỌI báo cáo + lương
     db.select({
       id: tasksTable.id,
       bookingId: tasksTable.bookingId,

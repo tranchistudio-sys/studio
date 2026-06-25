@@ -82,9 +82,26 @@ export type Post = {
   visionImageCount?: number | null;
   usedSampleIds?: number[] | null;
   footerEnabled?: boolean | null;
+  /** Cửa sổ kiểm duyệt 30': mốc hết khoá "đang sửa" (auto-publish tạm dừng tới đây). */
+  editingUntil?: string | null;
+  /** Admin đã "Tạm ngưng tự đăng" riêng bài này. */
+  autoPaused?: boolean;
   poolTitle: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+// Cấu hình vận hành (/autopost/config) — gồm công tắc tự đăng + số phút kiểm duyệt.
+export type AutopostOpConfig = {
+  postsPerTick: number;
+  postsPerDay: number;
+  captionOptionsPerPost: number;
+  maxVisionImagesPerPost: number;
+  autoApproveEnabled: boolean;
+  autoApproveAfterMinutes: number;
+  autoPublishAfterApproved: boolean;
+  requireManualApproval: boolean;
+  dryRun: boolean | null;
 };
 
 export type AutoPostSettings = {
@@ -241,10 +258,35 @@ export function useSchedules() {
   return useQuery({ queryKey: K.schedules(), queryFn: () => apGet<Schedule[]>(`/autopost/schedules`) });
 }
 
-export function usePosts(status?: string) {
+export function usePosts(status?: string, opts?: { refetchInterval?: number }) {
   return useQuery({
     queryKey: K.posts(status),
     queryFn: () => apGet<Post[]>(`/autopost/posts${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+    ...(opts?.refetchInterval ? { refetchInterval: opts.refetchInterval } : {}),
+  });
+}
+
+// Giờ server (ISO) để tính đếm ngược chuẩn, không lệ thuộc đồng hồ máy client.
+// Refresh mỗi 5 phút là đủ (offset gần như không đổi).
+export function useServerTime() {
+  return useQuery({
+    queryKey: ["autopost", "server-time"],
+    queryFn: () => apGet<{ now: string }>(`/autopost/server-time`),
+    refetchInterval: 5 * 60 * 1000,
+    staleTime: 60 * 1000,
+  });
+}
+
+// Cấu hình vận hành (công tắc tự đăng + số phút kiểm duyệt…).
+export function useConfig() {
+  return useQuery({ queryKey: ["autopost", "config"], queryFn: () => apGet<AutopostOpConfig>(`/autopost/config`) });
+}
+
+export function useSaveConfig() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: Partial<AutopostOpConfig>) => apPut<AutopostOpConfig>(`/autopost/config`, patch),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["autopost", "config"] }),
   });
 }
 
@@ -437,11 +479,38 @@ export type PublishNowResult = {
   error?: string;
 };
 
-// Đăng NGAY 1 bài đã duyệt (bỏ qua giờ hẹn) — để test gấp.
+// Đăng NGAY 1 bài đã duyệt / đang chờ tự đăng (bỏ qua giờ hẹn).
 export function usePublishNow() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: number) => apPost<PublishNowResult>(`/autopost/posts/${id}/publish-now`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["autopost", "posts"] }),
+  });
+}
+
+// "Sửa" bài đang chờ tự đăng → khoá auto-publish ~15' (editing_until) cho khỏi bị
+// tự đăng mất trong lúc đang chỉnh.
+export function useLockEdit() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => apPost<{ id: number; editingUntil: string }>(`/autopost/posts/${id}/lock-edit`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["autopost", "posts"] }),
+  });
+}
+
+// "Tạm ngưng tự đăng" riêng 1 bài (rời đếm ngược) / bỏ tạm ngưng.
+export function usePausePost() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => apPost(`/autopost/posts/${id}/pause`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["autopost", "posts"] }),
+  });
+}
+
+export function useResumePost() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => apPost(`/autopost/posts/${id}/resume`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["autopost", "posts"] }),
   });
 }

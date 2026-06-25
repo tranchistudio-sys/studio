@@ -21,11 +21,12 @@ import {
 import {
   usePool, useSchedules, usePosts, useSettings,
   useSyncPool, useUploadPoolItem, useUpdatePoolItem, useDeletePoolItem,
-  useGenerate, useApprove, useSkipPost, useRetryPost, usePublishNow,
+  useGenerate, useApprove, useSkipPost, useRetryPost, usePublishNow, useUpdatePost,
   useSaveSchedule, useToggleSchedule, useDeleteSchedule, useSaveSettings, useTestFacebook,
   useSyncDrive, useTestDrive, useDriveStatus,
   useStyleSamples, useSaveStyleSample, useDeleteStyleSample, useRegeneratePost, useOcrStyleImage,
   useSignatures, useSaveSignature, useDeleteSignature, useDefaultSignature,
+  useServerTime, useConfig, useSaveConfig, useLockEdit, usePausePost, useResumePost,
   type PoolItem, type Post, type Schedule, type Slot, type FbTestResult, type AutoPostSettings, type DriveTestResult,
   type StyleSample, type Signature,
 } from "@/lib/autopost-api";
@@ -115,7 +116,16 @@ function fmtDateTime(s: string | null): string {
   if (!s) return "—";
   const d = new Date(s);
   if (isNaN(d.getTime())) return "—";
-  return d.toLocaleString("vi-VN", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" });
+  // Luôn hiển thị theo giờ VN (Asia/Ho_Chi_Minh) cho khớp fmtHourMin + cơ chế lịch
+  // (không lệ thuộc múi giờ máy admin).
+  return d.toLocaleString("vi-VN", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit", timeZone: "Asia/Ho_Chi_Minh" });
+}
+/** Chỉ "HH:mm" giờ VN — cho dòng cảnh báo "sẽ tự đăng lúc HH:mm". */
+function fmtHourMin(s: string | null): string {
+  if (!s) return "—";
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return "—";
+  return d.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Ho_Chi_Minh" });
 }
 function hasPriceWarning(text: string, flags?: { suspiciousPrice?: boolean }): boolean {
   return !!flags?.suspiciousPrice || text.includes("⚠️") || text.includes("KIỂM TRA GIÁ");
@@ -163,6 +173,8 @@ export default function AutoPostFacebookPage() {
           <button onClick={() => setFlash(null)}><X className="w-4 h-4 opacity-60" /></button>
         </div>
       )}
+
+      <AutoPostMasterSwitch notify={notify} />
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList className="flex flex-wrap h-auto">
@@ -217,17 +229,107 @@ function Spin() {
   return <div className="py-12 flex justify-center"><Loader2 className="w-6 h-6 animate-spin text-muted-foreground" /></div>;
 }
 
+// CÔNG TẮC TỔNG "Tự động đăng bài" + banner trạng thái rõ ràng (hiện ở mọi tab).
+// BẬT → hệ thống chạy đếm ngược + tự đăng theo lịch. TẮT → bài chỉ nằm chờ, KHÔNG
+// tự đăng (kể cả đã tới giờ); admin vẫn bấm "Đăng ngay" thủ công được. Lưu vào config
+// (autoApproveEnabled) nên reload không mất. Backend (scheduler) kiểm tra cờ này
+// trước khi publish — xem publishDuePosts + sweepAutoPublishDue.
+function AutoPostMasterSwitch({ notify }: { notify: Notify }) {
+  const { data: cfg, isLoading } = useConfig();
+  const saveCfg = useSaveConfig();
+  const on = !!cfg?.autoApproveEnabled;
+  const mins = cfg?.autoApproveAfterMinutes || 30;
+
+  const toggle = async (next: boolean) => {
+    try {
+      await saveCfg.mutateAsync({ autoApproveEnabled: next });
+      notify(true, next ? `Đã BẬT tự động đăng bài — bài sẽ tự đăng theo lịch (cửa sổ kiểm duyệt ${mins} phút)` : "Đã TẮT tự động đăng bài — bài chỉ nằm chờ, không tự đăng");
+    } catch (e) { notify(false, String((e as Error).message)); }
+  };
+
+  if (isLoading) return null;
+  return (
+    <div className={`flex items-center gap-3 px-4 py-3 rounded-2xl border ${on ? "bg-emerald-50 border-emerald-200" : "bg-muted/40 border-border"}`}>
+      <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${on ? "bg-emerald-100 text-emerald-600" : "bg-muted text-muted-foreground"}`}>
+        {on ? <CheckCircle2 className="w-5 h-5" /> : <Clock className="w-5 h-5" />}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="font-semibold text-sm">Tự động đăng bài</div>
+        <div className={`text-xs ${on ? "text-emerald-700" : "text-muted-foreground"}`}>
+          {on
+            ? "AutoPost đang BẬT — bài sẽ tự đăng theo lịch."
+            : "AutoPost đang TẮT — bài chỉ nằm chờ, không tự đăng."}
+        </div>
+      </div>
+      <span className={`text-xs font-semibold ${on ? "text-emerald-600" : "text-muted-foreground"}`}>{on ? "ON" : "OFF"}</span>
+      <Switch checked={on} disabled={saveCfg.isPending} onCheckedChange={toggle} aria-label="Bật/tắt tự động đăng bài" />
+    </div>
+  );
+}
+
 // ─────────────────────────────── Tab: Bài chờ duyệt ──────────────────────────
 
 function PendingTab({ notify }: { notify: Notify }) {
-  const { data: posts, isLoading } = usePosts("pending_review");
+  // Cả hai cùng poll 30s để khi scheduler chuyển pending_review → review_pending thì
+  // bài rời "Bài chờ duyệt" và hiện ở "Sắp tự đăng" gần như tức thì (không cần thao tác).
+  const { data: posts, isLoading } = usePosts("pending_review", { refetchInterval: 30000 });
+  const { data: review } = usePosts("review_pending", { refetchInterval: 30000 });
+  const reviewList = (review ?? []).filter((p) => !!p.scheduledAt);
+  const reviewIds = new Set(reviewList.map((p) => p.id));
+
   if (isLoading) return <Spin />;
-  // Chỉ hiện bài có caption hợp lệ (phòng dữ liệu hỏng/sửa tay DB).
-  const valid = (posts ?? []).filter((p) => Array.isArray(p.captionOptions) && p.captionOptions.length > 0);
-  if (!valid.length) return <Empty text="Chưa có bài nào chờ duyệt. Vào 'Kho nội dung' → 'Tạo bài' để Lulu viết caption." />;
+  // Chỉ hiện bài có caption hợp lệ (phòng dữ liệu hỏng/sửa tay DB); và KHÔNG hiện
+  // bài đã sang cửa sổ đếm ngược (tránh trùng ở cả 2 khu lúc đang chuyển trạng thái).
+  const valid = (posts ?? []).filter(
+    (p) => Array.isArray(p.captionOptions) && p.captionOptions.length > 0 && !reviewIds.has(p.id),
+  );
+
+  if (!valid.length && !reviewList.length)
+    return <Empty text="Chưa có bài nào chờ duyệt. Vào 'Kho nội dung' → 'Tạo bài' để Lulu viết caption." />;
+
   return (
-    <div className="grid gap-4 md:grid-cols-2">
-      {valid.map((p) => <PendingCard key={p.id} post={p} notify={notify} />)}
+    <div className="space-y-6">
+      {reviewList.length > 0 && <ReviewSection posts={reviewList} notify={notify} />}
+      {valid.length > 0 && (
+        <div className="space-y-3">
+          {reviewList.length > 0 && (
+            <h2 className="text-sm font-semibold text-muted-foreground flex items-center gap-1.5">
+              <Sparkles className="w-4 h-4" /> Bài chờ duyệt
+            </h2>
+          )}
+          <div className="grid gap-4 md:grid-cols-2">
+            {valid.map((p) => <PendingCard key={p.id} post={p} notify={notify} />)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── "Sắp tự đăng": các bài trong cửa sổ kiểm duyệt 30', có đếm ngược + tự đăng. ──
+function ReviewSection({ posts, notify }: { posts: Post[]; notify: Notify }) {
+  const { data: serverTime } = useServerTime();
+  const { data: cfg } = useConfig();
+  // Lệch giờ server − client (ms) để đếm ngược chuẩn dù đồng hồ máy lệch.
+  const serverOffset = useMemo(() => {
+    if (!serverTime?.now) return 0;
+    const s = new Date(serverTime.now).getTime();
+    return Number.isFinite(s) ? s - Date.now() : 0;
+  }, [serverTime?.now]);
+  const windowMin = cfg?.autoApproveAfterMinutes || 30;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <Clock className="w-4 h-4 text-amber-600" />
+        <h2 className="text-sm font-semibold">Sắp tự đăng <span className="text-muted-foreground font-normal">({posts.length})</span></h2>
+        {cfg && !cfg.autoApproveEnabled && (
+          <Badge variant="outline" className="text-amber-600 border-amber-300">Tự đăng đang TẮT — bật công tắc ở đầu trang</Badge>
+        )}
+      </div>
+      <div className="grid gap-4 md:grid-cols-2">
+        {posts.map((p) => <ReviewCard key={p.id} post={p} notify={notify} serverOffset={serverOffset} windowMin={windowMin} />)}
+      </div>
     </div>
   );
 }
@@ -244,6 +346,7 @@ function PendingCard({ post, notify }: { post: Post; notify: Notify }) {
   const approve = useApprove();
   const skip = useSkipPost();
   const regen = useRegeneratePost();
+  const update = useUpdatePost();
 
   const pickOption = (i: number) => {
     setIdx(i);
@@ -273,6 +376,15 @@ function PendingCard({ post, notify }: { post: Post; notify: Notify }) {
   const onSkip = async () => {
     try { await skip.mutateAsync(post.id); notify(true, `Đã bỏ qua bài #${post.id}`); }
     catch (e) { notify(false, String((e as Error).message)); }
+  };
+  // Hẹn giờ TỰ ĐĂNG: lưu caption + giờ đăng, giữ trạng thái chờ duyệt. Khi tới gần
+  // giờ (và Cấu hình "Tự đăng" đang BẬT) bài sẽ vào cửa sổ đếm ngược 30' rồi tự đăng.
+  const onScheduleAuto = async () => {
+    if (!text.trim()) { notify(false, "Caption không được rỗng"); return; }
+    try {
+      await update.mutateAsync({ id: post.id, patch: { captionFinal: text, scheduledAt: new Date(when).toISOString() } });
+      notify(true, `Đã hẹn tự đăng bài #${post.id} lúc ${fmtDateTime(new Date(when).toISOString())}`);
+    } catch (e) { notify(false, `Hẹn giờ lỗi: ${String((e as Error).message)}`); }
   };
 
   const warn = hasPriceWarning(text, options[idx]?.flags);
@@ -355,8 +467,173 @@ function PendingCard({ post, notify }: { post: Post; notify: Notify }) {
           {approve.isPending ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1" />}
           Duyệt đăng
         </Button>
+        <Button variant="outline" onClick={onScheduleAuto} disabled={update.isPending} title="Hẹn giờ để hệ thống tự đăng (cần bật Tự đăng ở Cấu hình Lulu)">
+          {update.isPending ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Clock className="w-4 h-4 mr-1" />}
+          Hẹn tự đăng
+        </Button>
         <Button variant="outline" onClick={onSkip} disabled={skip.isPending}>Bỏ qua</Button>
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────── Card: Sắp tự đăng (countdown) ────────────────────
+
+function ReviewCard({ post, notify, serverOffset, windowMin }: { post: Post; notify: Notify; serverOffset: number; windowMin: number }) {
+  const options = post.captionOptions ?? [];
+  const initText = post.captionFinal ?? options[post.captionRecommendedIndex ?? 0]?.text ?? options[0]?.text ?? "";
+  const [editing, setEditing] = useState(false);
+  const [text, setText] = useState(initText);
+  const [when, setWhen] = useState(() => {
+    const d = post.scheduledAt ? new Date(post.scheduledAt) : new Date(Date.now() + 15 * 60 * 1000);
+    return toLocalInput(d);
+  });
+  const [imgs, setImgs] = useState<string[]>(post.images ?? []);
+
+  // Đồng hồ đếm ngược — cập nhật mỗi 30s (đủ mượt; không cần realtime từng giây).
+  const [nowMs, setNowMs] = useState(() => Date.now() + serverOffset);
+  useEffect(() => {
+    setNowMs(Date.now() + serverOffset);
+    const t = setInterval(() => setNowMs(Date.now() + serverOffset), 30000);
+    return () => clearInterval(t);
+  }, [serverOffset]);
+
+  const lockEdit = useLockEdit();
+  const update = useUpdatePost();
+  const publishNow = usePublishNow();
+  const skip = useSkipPost();
+  const pause = usePausePost();
+
+  const schedMs = post.scheduledAt ? new Date(post.scheduledAt).getTime() : 0;
+  const remainMs = schedMs - nowMs;
+  const remainMin = Math.max(0, Math.ceil(remainMs / 60000));
+  const pct = Math.max(0, Math.min(100, (remainMin / Math.max(1, windowMin)) * 100));
+  const urgent = remainMin <= 5;
+  // Khoá "đang sửa" còn hiệu lực? (editing_until ở tương lai)
+  const lockedUntil = post.editingUntil ? new Date(post.editingUntil).getTime() : 0;
+  const isLocked = lockedUntil > nowMs;
+
+  const onEdit = async () => {
+    try {
+      await lockEdit.mutateAsync(post.id);
+      // Nạp lại từ prop MỚI NHẤT (list poll 30s có thể đã cập nhật caption/giờ/ảnh)
+      // để khi Lưu không ghi đè dữ liệu mới bằng giá trị cũ lúc mount.
+      setText(initText);
+      setWhen(toLocalInput(post.scheduledAt ? new Date(post.scheduledAt) : new Date(Date.now() + 15 * 60 * 1000)));
+      setImgs(post.images ?? []);
+      setEditing(true);
+    } catch (e) { notify(false, `Không khoá sửa được: ${String((e as Error).message)}`); }
+  };
+  const onSave = async () => {
+    if (!text.trim()) { notify(false, "Caption không được rỗng"); return; }
+    try {
+      await update.mutateAsync({ id: post.id, patch: { captionFinal: text, scheduledAt: new Date(when).toISOString(), images: imgs } });
+      setEditing(false);
+      notify(true, `Đã lưu bài #${post.id}`);
+    } catch (e) { notify(false, `Lưu lỗi: ${String((e as Error).message)}`); }
+  };
+  const onPublishNow = async () => {
+    try {
+      const r = await publishNow.mutateAsync(post.id);
+      if (r.ok) notify(true, r.dryRun ? `Đăng thử (DRY_RUN) bài #${post.id} OK` : `Đã đăng bài #${post.id}`);
+      else notify(false, `Đăng ngay lỗi: ${r.error ?? r.status}`);
+    } catch (e) { notify(false, `Đăng ngay lỗi: ${String((e as Error).message)}`); }
+  };
+  const onCancel = async () => {
+    try { await skip.mutateAsync(post.id); notify(true, `Đã huỷ bài #${post.id}`); }
+    catch (e) { notify(false, String((e as Error).message)); }
+  };
+  const onPause = async () => {
+    try { await pause.mutateAsync(post.id); notify(true, `Đã tạm ngưng tự đăng bài #${post.id}`); }
+    catch (e) { notify(false, String((e as Error).message)); }
+  };
+
+  return (
+    <div className={`rounded-2xl border p-4 space-y-3 ${urgent ? "border-red-300 bg-red-50/60" : "border-amber-200 bg-amber-50/40"}`}>
+      <div className="flex gap-3">
+        <Thumb url={imgs[0]} className="w-20 h-20 rounded-xl flex-shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-semibold truncate">{post.poolTitle ?? `Bài #${post.id}`}</span>
+            <Badge variant="secondary">{ctLabel(post.contentType)}</Badge>
+            {(imgs.length ?? 0) >= 1 && <Badge variant="outline">{imgs.length} ảnh</Badge>}
+          </div>
+          <div className="mt-1.5 flex items-center gap-2 flex-wrap text-xs">
+            {isLocked ? (
+              <Badge className="bg-slate-600">Đang sửa — tạm ngưng tự đăng</Badge>
+            ) : (
+              <Badge className={urgent ? "bg-red-600" : "bg-amber-600"}>
+                <Clock className="w-3 h-3 mr-1" /> Còn {remainMin} phút
+              </Badge>
+            )}
+            <span className="text-muted-foreground">Giờ đăng: {fmtDateTime(post.scheduledAt)}</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Progress bar 30' → 0 */}
+      <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+        <div className={`h-full rounded-full ${urgent ? "bg-red-500" : "bg-amber-500"}`} style={{ width: `${pct}%` }} />
+      </div>
+
+      <div className={`text-xs px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 ${urgent ? "bg-red-100 text-red-700 font-medium" : "bg-amber-100/70 text-amber-800"}`}>
+        <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" />
+        {isLocked
+          ? "Đang chỉnh sửa — bài sẽ KHÔNG tự đăng tới khi bạn Lưu."
+          : urgent
+            ? `Bài sẽ tự đăng sau ${remainMin} phút nếu không chỉnh sửa.`
+            : `Nếu không chỉnh sửa, bài này sẽ tự đăng lúc ${fmtHourMin(post.scheduledAt)}.`}
+      </div>
+
+      {editing ? (
+        <div className="space-y-2">
+          <div>
+            <Label className="text-xs">Caption</Label>
+            <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={5} className="mt-1" />
+          </div>
+          {imgs.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {imgs.map((u, i) => (
+                <div key={i} className="relative">
+                  <Thumb url={u} className="w-14 h-14 rounded-lg" />
+                  <button
+                    type="button"
+                    onClick={() => setImgs(imgs.filter((_, j) => j !== i))}
+                    className="absolute -top-1.5 -right-1.5 bg-red-600 text-white rounded-full w-5 h-5 flex items-center justify-center"
+                    title="Bỏ ảnh này"
+                  ><X className="w-3 h-3" /></button>
+                </div>
+              ))}
+            </div>
+          )}
+          <div>
+            <Label className="text-xs">Giờ đăng (giờ VN) — đổi để dời lịch</Label>
+            <Input type="datetime-local" value={when} onChange={(e) => setWhen(e.target.value)} className="mt-1" />
+          </div>
+          <div className="flex gap-2">
+            <Button size="sm" onClick={onSave} disabled={update.isPending}>
+              {update.isPending ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1" />} Lưu
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => { setEditing(false); setText(initText); setImgs(post.images ?? []); }}>Huỷ sửa</Button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <p className="text-sm whitespace-pre-wrap line-clamp-4 text-foreground/90">{initText}</p>
+          <div className="flex flex-wrap gap-2">
+            <Button size="sm" variant="outline" onClick={onEdit} disabled={lockEdit.isPending}>
+              <Pencil className="w-3.5 h-3.5 mr-1" /> Sửa bài
+            </Button>
+            <Button size="sm" onClick={onPublishNow} disabled={publishNow.isPending}>
+              {publishNow.isPending ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Share2 className="w-3.5 h-3.5 mr-1" />} Đăng ngay
+            </Button>
+            <Button size="sm" variant="ghost" onClick={onPause} disabled={pause.isPending}>Tạm ngưng</Button>
+            <Button size="sm" variant="ghost" className="text-red-600" onClick={onCancel} disabled={skip.isPending}>
+              <Trash2 className="w-3.5 h-3.5 mr-1" /> Huỷ
+            </Button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1521,7 +1798,45 @@ function ConfigTab({ notify }: { notify: Notify }) {
         <Button onClick={onSave} disabled={save.isPending}>{save.isPending && <Loader2 className="w-4 h-4 mr-1 animate-spin" />} Lưu cấu hình</Button>
       </div>
 
+      <AutoPublishConfigSection notify={notify} />
+
       <DriveConfigSection notify={notify} />
+    </div>
+  );
+}
+
+// Cửa sổ kiểm duyệt (số phút). CÔNG TẮC bật/tắt tự đăng nằm ở thanh trạng thái đầu
+// trang (AutoPostMasterSwitch) — ở đây chỉ chỉnh số phút để tránh 2 công tắc trùng.
+function AutoPublishConfigSection({ notify }: { notify: Notify }) {
+  const { data: cfg, isLoading } = useConfig();
+  const saveCfg = useSaveConfig();
+  const [mins, setMins] = useState(30);
+  useEffect(() => { if (cfg) setMins(cfg.autoApproveAfterMinutes || 30); }, [cfg]);
+
+  const onSave = async () => {
+    const m = Math.max(1, Math.min(1440, Math.round(mins) || 30));
+    try {
+      await saveCfg.mutateAsync({ autoApproveAfterMinutes: m });
+      notify(true, `Đã lưu cửa sổ kiểm duyệt ${m} phút`);
+    } catch (e) { notify(false, String((e as Error).message)); }
+  };
+
+  if (isLoading) return null;
+  return (
+    <div className="rounded-2xl border bg-card p-4 space-y-3">
+      <h3 className="font-semibold flex items-center gap-1.5"><Clock className="w-4 h-4 text-amber-500" /> Cửa sổ kiểm duyệt (tự đăng)</h3>
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        Bật/tắt <b>Tự động đăng bài</b> ở thanh trạng thái đầu trang. Khi BẬT: bài đã hẹn giờ vào khu <b>"Sắp tự đăng"</b> trước giờ đăng số phút dưới đây rồi đếm ngược; không ai sửa/huỷ thì tự đăng (vẫn tôn trọng DRY_RUN).
+      </p>
+      <div className="flex items-end gap-2">
+        <div>
+          <Label className="text-xs">Số phút kiểm duyệt trước giờ đăng</Label>
+          <Input type="number" min={1} max={1440} value={mins} onChange={(e) => setMins(Number(e.target.value))} className="mt-1 w-28" />
+        </div>
+        <Button onClick={onSave} disabled={saveCfg.isPending}>
+          {saveCfg.isPending && <Loader2 className="w-4 h-4 mr-1 animate-spin" />} Lưu
+        </Button>
+      </div>
     </div>
   );
 }

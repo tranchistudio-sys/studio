@@ -6,12 +6,14 @@ import {
   clampImages,
   DEFAULT_POST_IMAGES,
   resolveSlotImageCount,
+  pickRecommendedCaption,
 } from "./autopost-route-helpers";
 
 describe("isValidStatus", () => {
   it("accepts known statuses", () => {
     expect(isValidStatus("approved")).toBe(true);
     expect(isValidStatus("pending_review")).toBe(true);
+    expect(isValidStatus("review_pending")).toBe(true);
     expect(isValidStatus("posted")).toBe(true);
   });
   it("rejects unknown / non-string", () => {
@@ -144,5 +146,29 @@ describe("resolveSlotImageCount", () => {
   });
   it("handles non-numeric input as DEFAULT_POST_IMAGES (never NaN)", () => {
     expect(resolveSlotImageCount("abc")).toBe(DEFAULT_POST_IMAGES);
+  });
+});
+
+describe("pickRecommendedCaption", () => {
+  const opts = [{ text: "A" }, { text: "B" }, { text: "C" }];
+  it("picks the recommended index", () => {
+    expect(pickRecommendedCaption(opts, 1)).toBe("B");
+  });
+  it("falls back to index 0 when recommended is out of range / null", () => {
+    expect(pickRecommendedCaption(opts, 9)).toBe("A");
+    expect(pickRecommendedCaption(opts, null)).toBe("A");
+    expect(pickRecommendedCaption(opts, undefined)).toBe("A");
+  });
+  it("skips an empty recommended option and falls back to index 0", () => {
+    expect(pickRecommendedCaption([{ text: "A" }, { text: "   " }], 1)).toBe("A");
+  });
+  it("parses a JSON string of options", () => {
+    expect(pickRecommendedCaption(JSON.stringify(opts), 2)).toBe("C");
+  });
+  it("returns null for empty / invalid input (no throw)", () => {
+    expect(pickRecommendedCaption([], 0)).toBeNull();
+    expect(pickRecommendedCaption("not json", 0)).toBeNull();
+    expect(pickRecommendedCaption(null, 0)).toBeNull();
+    expect(pickRecommendedCaption([{ text: "" }], 0)).toBeNull();
   });
 });

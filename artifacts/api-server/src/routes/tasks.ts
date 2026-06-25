@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db, pool } from "@workspace/db";
 import { tasksTable, staffTable, staffRatePricesTable, bookingsTable } from "@workspace/db/schema";
-import { eq, desc, and, or } from "drizzle-orm";
+import { eq, desc, and, or, isNull } from "drizzle-orm";
 
 const router: IRouter = Router();
 
@@ -94,6 +94,7 @@ router.get("/tasks/booking-view", async (req, res) => {
       LEFT JOIN tasks t ON t.booking_id = b.id
       LEFT JOIN staff s ON s.id = t.assignee_id
       WHERE b.status NOT IN ('cancelled')
+        AND b.deleted_at IS NULL
         AND (b.parent_id IS NULL OR b.is_parent_contract = true)
         ${shootMonthWhere}
       ORDER BY b.shoot_date ASC, b.created_at DESC, t.created_at ASC
@@ -281,7 +282,7 @@ router.post("/tasks", async (req, res) => {
 
   // Lookup booking total for percent-rate calc
   let bookingTotal = 0;
-  const [booking] = await db.select({ totalAmount: bookingsTable.totalAmount }).from(bookingsTable).where(eq(bookingsTable.id, parseInt(String(bookingId))));
+  const [booking] = await db.select({ totalAmount: bookingsTable.totalAmount }).from(bookingsTable).where(and(eq(bookingsTable.id, parseInt(String(bookingId))), isNull(bookingsTable.deletedAt)));
   if (booking) bookingTotal = parseFloat(booking.totalAmount);
 
   // Auto-compute cost from staffRates unless manually overridden
@@ -349,7 +350,7 @@ router.put("/tasks/:id", async (req, res) => {
 
       let bookingTotal = 0;
       if (current.bookingId) {
-        const [booking] = await db.select({ totalAmount: bookingsTable.totalAmount }).from(bookingsTable).where(eq(bookingsTable.id, current.bookingId));
+        const [booking] = await db.select({ totalAmount: bookingsTable.totalAmount }).from(bookingsTable).where(and(eq(bookingsTable.id, current.bookingId), isNull(bookingsTable.deletedAt)));
         if (booking) bookingTotal = parseFloat(booking.totalAmount);
       }
       const recomputedCost = await lookupCost(effectiveStaffId, effectiveRole, effectiveTaskType, bookingTotal);

@@ -91,7 +91,7 @@ router.get("/customers", async (req, res) => {
 
   const result = await Promise.all(
     customers.map(async (c) => {
-      const bookings = await db.select().from(bookingsTable).where(eq(bookingsTable.customerId, c.id as number));
+      const bookings = await db.select().from(bookingsTable).where(and(eq(bookingsTable.customerId, c.id as number), isNull(bookingsTable.deletedAt)));
       const bookingIds = bookings.map((b) => b.id);
       const totalPaid = allPayments
         .filter((p) => p.bookingId && bookingIds.includes(p.bookingId))
@@ -166,7 +166,7 @@ router.get("/customers/:id", async (req, res) => {
   const id = parseInt(req.params.id);
   const [customer] = await db.select().from(customersTable).where(eq(customersTable.id, id));
   if (!customer) return res.status(404).json({ error: "Không tìm thấy khách hàng" });
-  const bookings = await db.select().from(bookingsTable).where(eq(bookingsTable.customerId, id));
+  const bookings = await db.select().from(bookingsTable).where(and(eq(bookingsTable.customerId, id), isNull(bookingsTable.deletedAt)));
   const allPayments = await db.select().from(paymentsTable);
   const bookingIds = bookings.map((b) => b.id);
   const totalPaid = allPayments.filter(p => p.bookingId && bookingIds.includes(p.bookingId)).reduce((s, p) => s + parseFloat(p.amount), 0);
@@ -194,7 +194,7 @@ router.get("/customers/:id/recent-bookings", async (req, res) => {
         totalAmount: bookingsTable.totalAmount,
       })
       .from(bookingsTable)
-      .where(and(eq(bookingsTable.customerId, id), isNull(bookingsTable.parentId)))
+      .where(and(eq(bookingsTable.customerId, id), isNull(bookingsTable.parentId), isNull(bookingsTable.deletedAt)))
       .orderBy(desc(bookingsTable.shootDate))
       .limit(2);
     res.json(rows);

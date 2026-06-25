@@ -1,4 +1,5 @@
-import { useMemo, useState, useCallback, useEffect } from "react";
+import { useMemo, useState, useCallback, useEffect, useRef } from "react";
+import { useSearch } from "wouter";
 import { paymentFeedback } from "@/lib/feedback";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { formatVND, formatDate } from "@/lib/utils";
@@ -87,6 +88,9 @@ type SimpleBooking = {
 
 export default function BookingsPage() {
   const qc = useQueryClient();
+  const urlSearch = useSearch(); // query string hiện tại (reactive) — để deep-link ?bookingId mở đơn kể cả khi đang ở trang này
+  const detailPanelRef = useRef<HTMLDivElement>(null); // cuộn tới ô chi tiết khi mở đơn từ deep-link
+  const scrollPendingRef = useRef(false); // true = lần mở đơn này tới từ deep-link → cần cuộn tới ô chi tiết
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const today = new Date();
@@ -152,24 +156,42 @@ export default function BookingsPage() {
     enabled: !!selectedId,
   });
 
-  // Deep-link từ Lịch chụp: /bookings?bookingId=N → tự động mở chi tiết đơn
-  // Mở rộng filter sang "Tất cả" để chắc chắn đơn nằm trong danh sách (kể cả khi
-  // shootDate khác tháng đang xem).
+  // Deep-link từ Lịch chụp / ô Tìm kiếm thông minh: /bookings?bookingId=N → tự động mở chi tiết đơn.
+  // Phản ứng theo query string (urlSearch) nên hoạt động kể cả khi ĐANG ở trang Đơn hàng mà bấm
+  // 1 kết quả tìm kiếm khác (component không remount). Mở rộng filter sang "Tất cả" để chắc chắn
+  // đơn nằm trong danh sách (kể cả khi shootDate khác tháng đang xem).
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(urlSearch || window.location.search);
     const bid = params.get("bookingId");
     if (!bid) return;
+    const id = Number(bid);
+    if (Number.isFinite(id) && id > 0) {
+      setPeriodPreset("all");
+      setSelectedId(id);
+      scrollPendingRef.current = true; // cuộn tới ô chi tiết khi panel mount xong (đỡ phải tự kéo trang)
+    }
+    // Xoá bookingId khỏi URL sau khi đã mở (tránh mở lại khi reload / cho phép bấm lại cùng 1 đơn).
     try {
       const url = new URL(window.location.href);
       url.searchParams.delete("bookingId");
       window.history.replaceState({}, "", url.toString());
     } catch { /* ignore */ }
-    const id = Number(bid);
-    if (!Number.isFinite(id) || id <= 0) return;
-    setPeriodPreset("all");
-    setSelectedId(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [urlSearch]);
+
+  // Mở đơn từ deep-link → cuộn ô chi tiết vào tầm nhìn. Key theo selectedId (ỔN ĐỊNH, set 1 lần) chứ
+  // KHÔNG theo `detail` (react-query đổi tham chiếu liên tục làm cleanup hủy interval trước khi cuộn).
+  // Re-assert cuộn nhiều lần vì panel tải bất đồng bộ + khối "Tổng hợp dịch vụ" phía trên xê dịch layout.
+  useEffect(() => {
+    if (!scrollPendingRef.current || !selectedId) return;
+    scrollPendingRef.current = false;
+    let n = 0;
+    const timer = setInterval(() => {
+      const el = detailPanelRef.current;
+      if (el) el.scrollIntoView({ behavior: "auto", block: "start" });
+      if (++n >= 12) clearInterval(timer); // ~1.8s, đủ chờ chi tiết tải xong & layout ổn định
+    }, 150);
+    return () => clearInterval(timer);
+  }, [selectedId]);
 
   const addPayment = useMutation({
     mutationFn: (data: Record<string, unknown>) => fetchJson("/api/payments", { method: "POST", body: JSON.stringify(data) }),
@@ -186,9 +208,12 @@ export default function BookingsPage() {
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["booking", selectedId] }); qc.invalidateQueries({ queryKey: ["bookings"] }); },
   });
 
+  const [trashDialog, setTrashDialog] = useState<number | null>(null);
+  const [trashReason, setTrashReason] = useState("");
   const deleteBooking = useMutation({
-    mutationFn: (id: number) => fetch(`${BASE}/api/bookings/${id}`, { method: "DELETE" }),
-    onSuccess: () => { setSelectedId(null); qc.invalidateQueries({ queryKey: ["bookings"] }); },
+    mutationFn: ({ id, reason }: { id: number; reason?: string }) =>
+      fetch(`${BASE}/api/bookings/${id}`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: reason || null }) }),
+    onSuccess: () => { setSelectedId(null); setTrashDialog(null); setTrashReason(""); qc.invalidateQueries({ queryKey: ["bookings"] }); qc.invalidateQueries({ queryKey: ["dashboard"] }); },
   });
 
   // ── Task #10: Booking items ──────────────────────────────────────────────
@@ -510,7 +535,7 @@ export default function BookingsPage() {
 
         {/* Detail Panel */}
         {selectedId && (
-          <div className="w-full lg:w-[55%] xl:w-[60%] flex-shrink-0">
+          <div ref={detailPanelRef} className="w-full lg:w-[55%] xl:w-[60%] flex-shrink-0">
             <div className="bg-card rounded-2xl border shadow-sm overflow-hidden h-full">
               {detailLoading || !detail ? (
                 <div className="flex items-center justify-center h-64 text-muted-foreground">Đang tải chi tiết...</div>
@@ -669,10 +694,29 @@ export default function BookingsPage() {
                           <Button variant="outline" size="sm" className="gap-1.5" onClick={() => { setShowReschedule(true); setRescheduleForm({ newDate: detail.shootDate, newTime: detail.shootTime || "", reason: "" }); }}>
                             <CalendarDays className="w-3.5 h-3.5" /> Đổi lịch
                           </Button>
-                          <Button variant="destructive" size="sm" className="gap-1.5" onClick={() => { if (confirm("Xóa đơn hàng này?")) deleteBooking.mutate(detail.id); }}>
+                          <Button variant="destructive" size="sm" className="gap-1.5" onClick={() => { setTrashReason(""); setTrashDialog(detail.id); }}>
                             <Trash2 className="w-3.5 h-3.5" /> Xóa đơn
                           </Button>
                         </div>
+                        {trashDialog === detail.id && (
+                          <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4" onClick={() => setTrashDialog(null)}>
+                            <div className="bg-background w-full max-w-md rounded-2xl shadow-2xl p-5 space-y-4" onClick={e => e.stopPropagation()}>
+                              <h3 className="font-bold text-base flex items-center gap-2 text-destructive"><Trash2 className="w-5 h-5" /> Chuyển vào Thùng rác</h3>
+                              <p className="text-sm text-muted-foreground">Booking sẽ được chuyển vào <b>Thùng rác</b>. Các dữ liệu liên quan như giao việc, lương, thu chi sẽ <b>không còn được tính</b> trong hệ thống hoạt động. Có thể phục hồi sau trong "Thùng rác Booking".</p>
+                              <div>
+                                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">Lý do xóa (không bắt buộc)</label>
+                                <textarea value={trashReason} onChange={e => setTrashReason(e.target.value)} rows={2} placeholder="VD: khách hủy, nhập nhầm..." className="w-full px-3 py-2 border border-border rounded-xl bg-background text-sm resize-none focus:outline-none focus:ring-2 focus:ring-red-300" />
+                              </div>
+                              <div className="flex gap-3 pt-1">
+                                <button onClick={() => setTrashDialog(null)} className="flex-1 py-2.5 border border-border rounded-xl text-sm font-medium text-muted-foreground hover:bg-muted">Hủy</button>
+                                <button onClick={() => deleteBooking.mutate({ id: detail.id, reason: trashReason })} disabled={deleteBooking.isPending}
+                                  className="flex-1 py-2.5 bg-destructive text-white rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-50">
+                                  {deleteBooking.isPending ? "Đang xử lý..." : "Chuyển vào thùng rác"}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
 

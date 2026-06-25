@@ -672,7 +672,7 @@ router.post("/autopost/posts/:id/approve", async (req: Request, res: Response) =
               approved_at = now(), scheduled_at = $3, caption_hash = $4,
               footer_enabled = COALESCE($6, footer_enabled), updated_at = now()
         WHERE id = $5
-          AND status IN ('pending_review', 'draft_ai', 'approved', 'scheduled')
+          AND status IN ('pending_review', 'draft_ai', 'review_pending', 'approved', 'scheduled')
         RETURNING id, status`,
       [captionFinal, approver, when, sha1(captionFinal), Number(req.params.id), footerVal],
     );
@@ -686,16 +686,18 @@ router.post("/autopost/posts/:id/approve", async (req: Request, res: Response) =
   }
 });
 
-// POST /autopost/posts/:id/skip — bỏ qua bài.
+// POST /autopost/posts/:id/skip — bỏ qua / HUỶ bài. Có status-guard: KHÔNG huỷ
+// được bài đang đăng / đã đăng (chống đua: tránh trường hợp scheduler vừa claim
+// 'posting' thì lệnh huỷ vẫn ghi 'skipped' nhưng bài vẫn lên Facebook).
 router.post("/autopost/posts/:id/skip", async (req: Request, res: Response) => {
   if (!(await requireAdmin(req, res))) return;
   try {
     const r = await pool.query(
       `UPDATE autopost_posts SET status = 'skipped', updated_at = now()
-        WHERE id = $1 RETURNING id`,
+        WHERE id = $1 AND status NOT IN ('posting', 'posted') RETURNING id`,
       [Number(req.params.id)],
     );
-    if (!r.rows[0]) { res.status(404).json({ error: "Không tìm thấy bài" }); return; }
+    if (!r.rows[0]) { res.status(409).json({ error: "Không huỷ được — bài đang đăng hoặc đã đăng (hoặc không tồn tại)" }); return; }
     res.json(r.rows[0]);
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -934,6 +936,14 @@ router.put("/autopost/config", async (req: Request, res: Response) => {
       if (typeof b[k] === "boolean") patch[k] = b[k];
     }
     await patchAutopostConfig(patch, approver);
+    // TẮT công tắc tự đăng → trả các bài đang đếm ngược ('review_pending') về
+    // 'pending_review' để KHÔNG bị kẹt (sweep dừng đụng review_pending khi tắt; mà
+    // /approve cũ thì không nhận). Tránh bài treo "đang đếm ngược" mà chẳng làm gì.
+    if (patch.autoApproveEnabled === false) {
+      await pool.query(
+        `UPDATE autopost_posts SET status = 'pending_review', updated_at = now() WHERE status = 'review_pending'`,
+      ).catch((e) => console.error("[AutoPost] demote review_pending khi tắt tự đăng lỗi:", e));
+    }
     res.json(await getAutopostConfig());
   } catch (e) {
     res.status(500).json({ error: String(e) });

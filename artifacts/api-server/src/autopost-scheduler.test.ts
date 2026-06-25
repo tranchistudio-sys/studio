@@ -38,6 +38,7 @@ import {
   publishDuePosts,
   sweepEnterReviewWindow,
   sweepAutoPublishDue,
+  reclaimStalePostingPosts,
 } from "./autopost-scheduler";
 
 const q = pool.query as ReturnType<typeof vi.fn>;
@@ -294,5 +295,44 @@ describe("sweepAutoPublishDue", () => {
     expect(publishMock.mock.calls[0][0]).toMatchObject({ message: "Đề xuất 2" });
     const sqls = q.mock.calls.map((c) => String(c[0]));
     expect(sqls.some((s) => s.includes("SET caption_final"))).toBe(true); // đã ghi caption_final
+  });
+
+  it("Sweep A đón cả bài QUÁ giờ (trong 24h), không đòi scheduled_at > now()", async () => {
+    setConfig();
+    q.mockImplementation((sql: string) => {
+      if (String(sql).includes("SET status = 'review_pending'")) return Promise.resolve({ rowCount: 0, rows: [] });
+      return Promise.resolve({ rowCount: 0, rows: [] });
+    });
+    await sweepEnterReviewWindow();
+    const sql = q.mock.calls.map((c) => String(c[0])).find((s) => s.includes("SET status = 'review_pending'"))!;
+    expect(sql).toContain("interval '24 hours'"); // có sàn 24h
+    expect(sql).not.toContain("scheduled_at > now()"); // KHÔNG loại bài quá giờ nữa
+  });
+});
+
+describe("publishDuePosts — tôn trọng auto_paused", () => {
+  it("query bài tới giờ phải lọc auto_paused = false (cả SELECT lẫn claim)", async () => {
+    routePool({ due: [] });
+    await publishDuePosts();
+    const sqls = q.mock.calls.map((c) => String(c[0]));
+    const dueSql = sqls.find((s) => s.includes("scheduled_at <= now()"))!;
+    expect(dueSql).toContain("auto_paused = false");
+  });
+});
+
+describe("reclaimStalePostingPosts (reaper bài kẹt 'posting')", () => {
+  it("đưa bài kẹt 'posting' quá 10' về 'failed' và đếm số thu hồi", async () => {
+    q.mockImplementation((sql: string) => {
+      const s = String(sql);
+      if (s.includes("status = 'posting'") && s.includes("status = 'failed'")) {
+        return Promise.resolve({ rowCount: 2, rows: [{ id: 1 }, { id: 2 }] });
+      }
+      return Promise.resolve({ rowCount: 0, rows: [] });
+    });
+    const res = await reclaimStalePostingPosts();
+    expect(res.reclaimed).toBe(2);
+    const sql = q.mock.calls.map((c) => String(c[0])).find((s) => s.includes("status = 'failed'"))!;
+    expect(sql).toContain("status = 'posting'");
+    expect(sql).toContain("interval '10 minutes'");
   });
 });

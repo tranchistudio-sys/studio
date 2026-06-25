@@ -116,7 +116,9 @@ function fmtDateTime(s: string | null): string {
   if (!s) return "—";
   const d = new Date(s);
   if (isNaN(d.getTime())) return "—";
-  return d.toLocaleString("vi-VN", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" });
+  // Luôn hiển thị theo giờ VN (Asia/Ho_Chi_Minh) cho khớp fmtHourMin + cơ chế lịch
+  // (không lệ thuộc múi giờ máy admin).
+  return d.toLocaleString("vi-VN", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit", timeZone: "Asia/Ho_Chi_Minh" });
 }
 /** Chỉ "HH:mm" giờ VN — cho dòng cảnh báo "sẽ tự đăng lúc HH:mm". */
 function fmtHourMin(s: string | null): string {
@@ -228,14 +230,19 @@ function Spin() {
 // ─────────────────────────────── Tab: Bài chờ duyệt ──────────────────────────
 
 function PendingTab({ notify }: { notify: Notify }) {
-  const { data: posts, isLoading } = usePosts("pending_review");
-  // Bài đang trong cửa sổ kiểm duyệt (sắp tự đăng) — refresh nhẹ mỗi 30s.
+  // Cả hai cùng poll 30s để khi scheduler chuyển pending_review → review_pending thì
+  // bài rời "Bài chờ duyệt" và hiện ở "Sắp tự đăng" gần như tức thì (không cần thao tác).
+  const { data: posts, isLoading } = usePosts("pending_review", { refetchInterval: 30000 });
   const { data: review } = usePosts("review_pending", { refetchInterval: 30000 });
   const reviewList = (review ?? []).filter((p) => !!p.scheduledAt);
+  const reviewIds = new Set(reviewList.map((p) => p.id));
 
   if (isLoading) return <Spin />;
-  // Chỉ hiện bài có caption hợp lệ (phòng dữ liệu hỏng/sửa tay DB).
-  const valid = (posts ?? []).filter((p) => Array.isArray(p.captionOptions) && p.captionOptions.length > 0);
+  // Chỉ hiện bài có caption hợp lệ (phòng dữ liệu hỏng/sửa tay DB); và KHÔNG hiện
+  // bài đã sang cửa sổ đếm ngược (tránh trùng ở cả 2 khu lúc đang chuyển trạng thái).
+  const valid = (posts ?? []).filter(
+    (p) => Array.isArray(p.captionOptions) && p.captionOptions.length > 0 && !reviewIds.has(p.id),
+  );
 
   if (!valid.length && !reviewList.length)
     return <Empty text="Chưa có bài nào chờ duyệt. Vào 'Kho nội dung' → 'Tạo bài' để Lulu viết caption." />;
@@ -467,8 +474,15 @@ function ReviewCard({ post, notify, serverOffset, windowMin }: { post: Post; not
   const isLocked = lockedUntil > nowMs;
 
   const onEdit = async () => {
-    try { await lockEdit.mutateAsync(post.id); setEditing(true); }
-    catch (e) { notify(false, `Không khoá sửa được: ${String((e as Error).message)}`); }
+    try {
+      await lockEdit.mutateAsync(post.id);
+      // Nạp lại từ prop MỚI NHẤT (list poll 30s có thể đã cập nhật caption/giờ/ảnh)
+      // để khi Lưu không ghi đè dữ liệu mới bằng giá trị cũ lúc mount.
+      setText(initText);
+      setWhen(toLocalInput(post.scheduledAt ? new Date(post.scheduledAt) : new Date(Date.now() + 15 * 60 * 1000)));
+      setImgs(post.images ?? []);
+      setEditing(true);
+    } catch (e) { notify(false, `Không khoá sửa được: ${String((e as Error).message)}`); }
   };
   const onSave = async () => {
     if (!text.trim()) { notify(false, "Caption không được rỗng"); return; }

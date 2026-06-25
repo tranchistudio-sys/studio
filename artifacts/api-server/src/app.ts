@@ -7,6 +7,7 @@ import { startFollowUpScheduler } from "./follow-up-scheduler";
 import { startTestFollowUpScheduler } from "./test-follow-up-scheduler";
 import { startDeadlineChecker, startWeddingPrepReminder } from "./routes/notifications";
 import { startAutoPostScheduler } from "./autopost-scheduler";
+import { startStyleSampleWorker } from "./autopost-style-worker";
 
 const app: Express = express();
 
@@ -54,5 +55,6 @@ startTestFollowUpScheduler();
 startDeadlineChecker();
 startWeddingPrepReminder();
 startAutoPostScheduler();
+startStyleSampleWorker();
 
 export default app;

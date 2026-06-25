@@ -51,6 +51,7 @@ import weddingCardsRouter from "./wedding-cards";
 import staffAllowancesRouter from "./staff-allowances";
 import goldenHourRouter from "./golden-hour";
 import autoPostFacebookRouter from "./auto-post-facebook";
+import autopostStyleJobsRouter from "./autopost-style-jobs";
 
 const router: IRouter = Router();
 
@@ -105,6 +106,7 @@ router.use(visualAdvisorRouter);
 router.use(weddingCardsRouter);
 router.use(staffAllowancesRouter);
 router.use(goldenHourRouter);
+router.use(autopostStyleJobsRouter); // đặt TRƯỚC autoPostFacebookRouter để /jobs không bị nuốt
 router.use(autoPostFacebookRouter);
 
 export default router;

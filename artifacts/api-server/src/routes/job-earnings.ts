@@ -238,7 +238,12 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
   }
 
   if (earnings.length > 0) {
-    await db.insert(staffJobEarningsTable).values(earnings.map(e => ({ ...e, status: "pending" })));
+    await db.insert(staffJobEarningsTable).values(earnings.map(e => ({
+      ...e,
+      status: "pending",
+      // Phase 2: source_id deterministic (khớp backfill migration) để truy nguồn + chống trùng.
+      sourceId: `${e.role}:booking:${e.bookingId}:${e.serviceKey}`,
+    })));
   }
 }
 

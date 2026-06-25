@@ -928,6 +928,14 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
     await client.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS delete_reason text`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_bookings_deleted_at ON bookings(deleted_at)`);
 
+    // ── Phase 2 Payroll: source_id cho staff_job_earnings (chống trùng + truy nguồn) ──
+    await client.query(`ALTER TABLE staff_job_earnings ADD COLUMN IF NOT EXISTS source_id text`);
+    // Backfill dòng cũ: suy source_id từ role + booking_id + service_key.
+    await client.query(`UPDATE staff_job_earnings
+                          SET source_id = role || ':booking:' || booking_id || ':' || COALESCE(service_key, '')
+                        WHERE source_id IS NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_sje_source_id ON staff_job_earnings(source_id)`);
+
     // ── CMS Cho thuê đồ: Ưu tiên hiển thị + Giá giảm ────────────────────────
     // is_priority/priority_at: sản phẩm hot ghim lên đầu danh sách (CMS + web public).
     // sale_price: giá giảm hiển thị kèm giá gốc gạch ngang (null/0 = không giảm).

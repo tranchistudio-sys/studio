@@ -44,6 +44,10 @@ export const staffJobEarningsTable = pgTable("staff_job_earnings", {
   status: text("status").notNull().default("pending"),
   payrollId: integer("payroll_id").references(() => payrollsTable.id, { onDelete: "set null" }),
   serviceBookingId: integer("service_booking_id"),
+  // Phase 2: khóa chống trùng + truy nguồn 1 dòng lương sản phẩm. Dạng
+  // "<role>:booking:<bookingId>:<serviceKey>" hoặc "photoshop:job:<jobId>".
+  // KHÔNG đặt UNIQUE cứng (tránh crash boot nếu data cũ trùng) — dùng để dedup khi tạo.
+  sourceId: text("source_id"),
   notes: text("notes"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });

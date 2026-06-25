@@ -440,6 +440,8 @@ export async function syncPhotoshopEarning(jobId: number): Promise<void> {
       month,
       year,
       status: "pending",
+      // Phase 2: source_id khớp format backfill (role:booking:<id>:<serviceKey>).
+      sourceId: `photoshop:booking:${bookingId}:${serviceKey}`,
       notes: noteKey,
     });
   }

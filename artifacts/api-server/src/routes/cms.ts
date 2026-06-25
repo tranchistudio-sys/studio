@@ -369,6 +369,79 @@ router.post("/cms/albums", async (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
+// ── Bulk cho ALBUM (chuyển danh mục / ưu tiên / xoá hàng loạt). BẮT BUỘC đặt
+//    TRƯỚC route "/cms/albums/:id" — nếu không Express khớp "bulk-*" thành :id
+//    → +"bulk-category" = NaN → update where id=NaN (bug "params: 32, NaN"). ──
+
+// PATCH /api/cms/albums/bulk-category — đổi danh mục cho NHIỀU album cùng lúc.
+router.patch("/cms/albums/bulk-category", async (req, res) => {
+  if (!(await requireCmsStaff(req, res))) return;
+  try {
+    const { ids, categoryId } = req.body ?? {};
+    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: "Thiếu danh sách album" });
+    const intIds = [...new Set(ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+    if (intIds.length === 0) return res.status(400).json({ error: "ids không hợp lệ" });
+
+    let targetCatId: number | null = null;
+    if (categoryId != null) {
+      targetCatId = Number(categoryId);
+      if (!Number.isInteger(targetCatId) || targetCatId <= 0) return res.status(400).json({ error: "categoryId không hợp lệ" });
+      const cat = await pool.query(`SELECT type, deleted_at FROM cms_categories WHERE id = $1`, [targetCatId]);
+      if (!cat.rows.length) return res.status(404).json({ error: "Danh mục không tồn tại" });
+      const row = cat.rows[0] as { type: string; deleted_at: Date | null };
+      if (row.deleted_at) return res.status(400).json({ error: "Danh mục đã bị xoá" });
+      if (row.type !== "gallery") return res.status(400).json({ error: "Danh mục phải là loại Bộ ảnh" });
+    }
+    const r = await pool.query(
+      `UPDATE gallery_albums SET category_id = $1
+        WHERE id = ANY($2::int[]) AND deleted_at IS NULL RETURNING id`,
+      [targetCatId, intIds],
+    );
+    res.json({ ok: true, affected: r.rowCount ?? 0, targetCategoryId: targetCatId });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// PATCH /api/cms/albums/bulk-priority — đưa các album đã chọn LÊN ĐẦU.
+// Album sắp theo sort_order ASC (số nhỏ = trước) → đặt nhóm chọn xuống dưới MIN hiện tại.
+router.patch("/cms/albums/bulk-priority", async (req, res) => {
+  if (!(await requireCmsStaff(req, res))) return;
+  try {
+    const { ids } = req.body ?? {};
+    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: "Thiếu danh sách album" });
+    const intIds = [...new Set(ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+    if (intIds.length === 0) return res.status(400).json({ error: "ids không hợp lệ" });
+    const mn = await pool.query(`SELECT COALESCE(MIN(sort_order), 0)::int AS m FROM gallery_albums WHERE deleted_at IS NULL`);
+    const base = ((mn.rows[0] as { m: number }).m) - 1;
+    const r = await pool.query(
+      `UPDATE gallery_albums SET sort_order = $1
+        WHERE id = ANY($2::int[]) AND deleted_at IS NULL RETURNING id`,
+      [base, intIds],
+    );
+    res.json({ ok: true, affected: r.rowCount ?? 0 });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// POST /api/cms/albums/bulk-delete — xoá MỀM nhiều album (KHÔNG xoá danh mục) + ảnh bên trong.
+router.post("/cms/albums/bulk-delete", async (req, res) => {
+  if (!(await requireCmsStaff(req, res))) return;
+  try {
+    const { ids } = req.body ?? {};
+    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: "Thiếu danh sách album" });
+    const intIds = [...new Set(ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+    if (intIds.length === 0) return res.status(400).json({ error: "ids không hợp lệ" });
+    const r = await pool.query(
+      `UPDATE gallery_albums SET deleted_at = NOW()
+        WHERE id = ANY($1::int[]) AND deleted_at IS NULL RETURNING id`,
+      [intIds],
+    );
+    await pool.query(
+      `UPDATE gallery_photos SET deleted_at = NOW() WHERE album_id = ANY($1::int[]) AND deleted_at IS NULL`,
+      [intIds],
+    );
+    res.json({ ok: true, affected: r.rowCount ?? 0 });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
 router.patch("/cms/albums/:id", async (req, res) => {
   if (!(await requireAuth(req, res))) return;
   try {

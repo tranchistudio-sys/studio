@@ -52,7 +52,7 @@ router.get("/revenue/v2/monthly", async (req, res) => {
       const d = getBookingDate(b);
       return d >= effFrom && d <= effTo;
     });
-    const contractValue = monthBookings.reduce((s, b) => s + (parseFloat(b.totalAmount) || 0), 0);
+    const contractValue = monthBookings.reduce((s, b) => s + (b.netAmount || 0), 0); // NET (đã trừ giảm giá)
     const bookingIds = new Set(monthBookings.map(b => b.id));
 
     // Task #394: "Đã thu" = tất cả payments có paidAt trong khoảng ngày, bao gồm ad_hoc — không filter theo booking_id cohort.

@@ -7,6 +7,7 @@ import { getBookingDate } from "./helpers";
 export type BySaleBooking = {
   id: number;
   totalAmount: string;
+  netAmount: number; // doanh thu NET (đã trừ giảm giá) — nguồn tiền chuẩn
   assignedStaff: unknown;
   createdAt: Date;
 };
@@ -44,7 +45,7 @@ export function buildBySaleRows(
       ? (staff["sale"] as number | undefined) : undefined;
 
     const cost = (castByBooking.get(b.id) ?? 0) + (directExpByBooking.get(b.id) ?? 0);
-    const rev = parseFloat(b.totalAmount) || 0;
+    const rev = b.netAmount || 0; // NET (đã trừ giảm giá)
 
     if (saleId && typeof saleId === "number") {
       const existing = map.get(saleId) ?? { count: 0, revenue: 0, expenses: 0 };
@@ -56,7 +57,7 @@ export function buildBySaleRows(
     }
   }
 
-  const totalRevenue = scoped.reduce((s, b) => s + (parseFloat(b.totalAmount) || 0), 0);
+  const totalRevenue = scoped.reduce((s, b) => s + (b.netAmount || 0), 0); // NET (đã trừ giảm giá)
 
   const rows: BySaleRow[] = Array.from(map.entries())
     .map(([saleId, data]) => ({

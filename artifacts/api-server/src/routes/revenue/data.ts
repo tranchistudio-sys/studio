@@ -1,6 +1,7 @@
 import { db } from "@workspace/db";
 import { isNull } from "drizzle-orm";
 import { bookingsTable, expensesTable, tasksTable, paymentsTable, fixedCostsTable } from "@workspace/db/schema";
+import { money } from "../../lib/booking-money";
 
 export async function loadAllData() {
   const [bookings, tasks, expenses, payments] = await Promise.all([
@@ -85,7 +86,11 @@ export async function loadAllData() {
     }
   }
 
-  const validBookings = bookings.filter(b => !b.isParentContract && b.status !== "cancelled");
+  // Nguồn tiền chuẩn (chủ chốt): doanh thu = NET = giá gốc − giảm giá (không âm).
+  // netAmount gắn sẵn vào từng booking để mọi route dùng CHUNG, hết cảnh chỗ gross chỗ net.
+  const validBookings = bookings
+    .filter(b => !b.isParentContract && b.status !== "cancelled")
+    .map(b => ({ ...b, netAmount: Math.max(0, money(b.totalAmount) - money(b.discountAmount)) }));
 
   // Task #363: kèm danh sách chi phí đã phân lớp + ngày để route nào cần lọc theo range chính xác (ngày/tuần)
   // có thể tự gom lại mà không cần đụng vào loadAllData() của các route khác.
@@ -112,8 +117,12 @@ export async function loadAllData() {
     .filter(r => r.active)
     .reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
 
-  // Task #397: loại bỏ phiếu thu đã huỷ khỏi mọi tính toán doanh thu
-  const activePayments = payments.filter(p => (p.status ?? 'active') !== 'voided');
+  // Task #397: loại phiếu đã huỷ (voided) + phiếu HOÀN TIỀN (refund — lưu DƯƠNG, KHÔNG phải
+  // tiền thu) khỏi MỌI tính toán doanh thu/dòng tiền. Vá lỗi daily-cashflow cộng nhầm refund.
+  // (Giữ ad_hoc vì đó là khoản thu thật của kỳ, chỉ không gắn vào 1 booking.)
+  const activePayments = payments.filter(
+    p => (p.status ?? 'active') !== 'voided' && (p.paymentType ?? '') !== 'refund',
+  );
 
   return { validBookings, castByBooking, directExpByBooking, directExpByDate, operatingExpByDate, depreciationByDate, interestByDate, payments: activePayments, classifiedExpenses, fixedCostPerMonth };
 }

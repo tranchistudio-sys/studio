@@ -292,4 +292,50 @@ describe("computeMonthEstimate", () => {
     expect(r!.showItems[0].earningId).toBe(7);
     expect(r!.showItems[0].fromCastAmount).toBe(false);
   });
+
+  it("KHÔNG tính lương earning thuộc booking đã HỦY (cancelled)", async () => {
+    setupDbForRealtime({
+      existingEarnings: [{
+        id: 11, bookingId: 700, role: "photoshop",
+        serviceKey: "mac_dinh", serviceName: "Hậu kỳ", rate: "300000",
+        status: "active",
+      }],
+    });
+    poolQueryMock.mockImplementation((sql: string) => {
+      // pass chính: không có booking gắn staff → earning 700 thành orphan
+      if (/FROM bookings/i.test(sql) && /assigned_staff IS NOT NULL/i.test(sql)) {
+        return Promise.resolve({ rows: [] });
+      }
+      // pass cuối (orphan meta): booking 700 đã HỦY
+      if (/FROM bookings/i.test(sql) && /id = ANY/i.test(sql)) {
+        return Promise.resolve({ rows: [{ id: 700, shoot_date: "2026-05-10", package_type: "wedding", service_label: "Album", status: "cancelled" }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+    const r = await computeMonthEstimate(3, 5, 2026);
+    expect(r!.showEarnings).toBe(0);
+    expect(r!.showItems.some(s => s.bookingId === 700)).toBe(false);
+  });
+
+  it("VẪN tính earning orphan nếu booking KHÔNG hủy (đối chứng)", async () => {
+    setupDbForRealtime({
+      existingEarnings: [{
+        id: 11, bookingId: 700, role: "photoshop",
+        serviceKey: "mac_dinh", serviceName: "Hậu kỳ", rate: "300000",
+        status: "active",
+      }],
+    });
+    poolQueryMock.mockImplementation((sql: string) => {
+      if (/FROM bookings/i.test(sql) && /assigned_staff IS NOT NULL/i.test(sql)) {
+        return Promise.resolve({ rows: [] });
+      }
+      if (/FROM bookings/i.test(sql) && /id = ANY/i.test(sql)) {
+        return Promise.resolve({ rows: [{ id: 700, shoot_date: "2026-05-10", package_type: "wedding", service_label: "Album", status: "completed" }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+    const r = await computeMonthEstimate(3, 5, 2026);
+    expect(r!.showEarnings).toBe(300000);
+    expect(r!.showItems.some(s => s.bookingId === 700)).toBe(true);
+  });
 });

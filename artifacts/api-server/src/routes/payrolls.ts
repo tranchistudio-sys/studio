@@ -17,6 +17,19 @@ const fmt = (p: { baseSalary: string; showBonus: string; commission: string; bon
   netSalary: parseFloat(p.netSalary),
 });
 
+// ─── Helper quyền: admin = role='admin' HOẶC roles[] chứa 'admin' ───────────
+// Trả { id, isAdmin } hoặc null nếu token không hợp lệ. Dùng để chặn quyền
+// ở các endpoint write/detail (trước đây thiếu → ai cũng sửa được lương).
+async function getCaller(req: { headers: { authorization?: string } }): Promise<{ id: number; isAdmin: boolean } | null> {
+  const { verifyToken } = await import("./auth");
+  const callerId = verifyToken(req.headers.authorization);
+  if (!callerId) return null;
+  const cr = await pool.query(`SELECT role, roles FROM staff WHERE id=$1`, [callerId]);
+  const u = cr.rows[0] as { role?: string; roles?: unknown } | undefined;
+  const isAdmin = !!(u && (u.role === "admin" || (Array.isArray(u.roles) && u.roles.includes("admin"))));
+  return { id: callerId, isAdmin };
+}
+
 // ─── Helper: cap leave 2 ngày/tháng, tính số ngày approved trong tháng ──────
 async function countApprovedLeaveDays(staffId: number, month: number, year: number): Promise<{ used: number; capped: number; cap: number }> {
   const cap = 2;
@@ -96,6 +109,9 @@ router.get("/payrolls", async (req, res) => {
 });
 
 router.post("/payrolls", async (req, res) => {
+  const caller = await getCaller(req);
+  if (!caller) return res.status(401).json({ error: "Chưa đăng nhập" });
+  if (!caller.isAdmin) return res.status(403).json({ error: "Chỉ admin được tạo bảng lương" });
   const { staffId, month, year, baseSalary, showBonus, commission, bonus, deductions, advance, items, notes } = req.body;
   const netSalary = (parseFloat(baseSalary || 0) + parseFloat(showBonus || 0) + parseFloat(commission || 0) + parseFloat(bonus || 0)) - parseFloat(deductions || 0) - parseFloat(advance || 0);
   const [payroll] = await db
@@ -122,6 +138,9 @@ router.post("/payrolls", async (req, res) => {
 // Aggregate draft payroll: base + earnings(pending) + attendance bonus/penalty
 // − leaveDeduction (vượt 2 ngày/tháng). Status luôn 'draft'.
 router.post("/payrolls/generate", async (req, res) => {
+  const caller = await getCaller(req);
+  if (!caller) return res.status(401).json({ error: "Chưa đăng nhập" });
+  if (!caller.isAdmin) return res.status(403).json({ error: "Chỉ admin được tạo bảng lương" });
   const staffId = parseInt(String(req.body?.staffId));
   // Accept either `month` as number + `year`, or `month` as "YYYY-MM"
   let month: number;
@@ -154,21 +173,30 @@ router.post("/payrolls/generate", async (req, res) => {
     parseFloat(String(staff.salary ?? "0").replace(/[^\d.]/g, "")) || 0;
 
   // Earnings pending (tiền show)
-  const earnings = await db.select().from(staffJobEarningsTable).where(and(
+  const earningsRaw = await db.select().from(staffJobEarningsTable).where(and(
     eq(staffJobEarningsTable.staffId, staffId),
     eq(staffJobEarningsTable.month, month),
     eq(staffJobEarningsTable.year, year),
     eq(staffJobEarningsTable.status, "pending"),
   ));
+  // Loại earnings thuộc booking đã HỦY (cancelled) — không đưa vào bảng lương.
+  const earnBids = Array.from(new Set(earningsRaw.map(e => e.bookingId).filter((x): x is number => x != null)));
+  const cancelledBids = new Set<number>();
+  if (earnBids.length > 0) {
+    const cR = await pool.query(`SELECT id FROM bookings WHERE id = ANY($1::int[]) AND status = 'cancelled'`, [earnBids]);
+    for (const r of cR.rows as Array<{ id: number }>) cancelledBids.add(r.id);
+  }
+  const earnings = earningsRaw.filter(e => e.bookingId == null || !cancelledBids.has(e.bookingId));
   const showBonus0 = earnings.reduce((s, e) => s + parseFloat(e.rate), 0);
-  // Task #483: add per-show allowances to showBonus
+  // Task #483: add per-show allowances to showBonus (loại booking đã hủy)
   const allowQ = await pool.query(
     `SELECT COALESCE(SUM(sa.amount), 0) AS total
        FROM staff_allowances sa
        JOIN bookings b ON b.id = sa.booking_id
       WHERE sa.staff_id = $1
         AND EXTRACT(YEAR  FROM b.shoot_date) = $2
-        AND EXTRACT(MONTH FROM b.shoot_date) = $3`,
+        AND EXTRACT(MONTH FROM b.shoot_date) = $3
+        AND COALESCE(b.status, '') <> 'cancelled'`,
     [staffId, year, month]
   );
   const allowanceTotal = parseFloat(String(allowQ.rows[0]?.total ?? 0));
@@ -274,6 +302,9 @@ router.post("/payrolls/generate", async (req, res) => {
 });
 
 router.put("/payrolls/:id", async (req, res) => {
+  const caller = await getCaller(req);
+  if (!caller) return res.status(401).json({ error: "Chưa đăng nhập" });
+  if (!caller.isAdmin) return res.status(403).json({ error: "Chỉ admin được sửa bảng lương" });
   const id = parseInt(req.params.id);
   if (isNaN(id)) return res.status(400).json({ error: "ID không hợp lệ" });
   const { baseSalary, showBonus, commission, bonus, deductions, advance, items, status, notes } = req.body;
@@ -335,6 +366,9 @@ router.put("/payrolls/:id", async (req, res) => {
 });
 
 router.delete("/payrolls/:id", async (req, res) => {
+  const caller = await getCaller(req);
+  if (!caller) return res.status(401).json({ error: "Chưa đăng nhập" });
+  if (!caller.isAdmin) return res.status(403).json({ error: "Chỉ admin được xóa bảng lương" });
   const id = parseInt(req.params.id);
   if (isNaN(id)) return res.status(400).json({ error: "ID không hợp lệ" });
   const [current] = await db.select().from(payrollsTable).where(eq(payrollsTable.id, id));
@@ -352,10 +386,15 @@ router.delete("/payrolls/:id", async (req, res) => {
 
 // ─── GET /payrolls/:id/detail — payroll + linked earnings + leave summary ──
 router.get("/payrolls/:id/detail", async (req, res) => {
+  const caller = await getCaller(req);
+  if (!caller) return res.status(401).json({ error: "Chưa đăng nhập" });
   const id = parseInt(req.params.id);
   if (isNaN(id)) return res.status(400).json({ error: "ID không hợp lệ" });
   const [payroll] = await db.select().from(payrollsTable).where(eq(payrollsTable.id, id));
   if (!payroll) return res.status(404).json({ error: "Không tìm thấy" });
+  if (!caller.isAdmin && payroll.staffId !== caller.id) {
+    return res.status(403).json({ error: "Không có quyền xem bảng lương của nhân viên khác" });
+  }
   const [staff] = await db.select().from(staffTable).where(eq(staffTable.id, payroll.staffId));
   const earnings = await db.select().from(staffJobEarningsTable).where(eq(staffJobEarningsTable.payrollId, id));
   const leave = await countApprovedLeaveDays(payroll.staffId, payroll.month, payroll.year);

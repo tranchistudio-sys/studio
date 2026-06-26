@@ -1903,12 +1903,18 @@ function FixTestTab({
                   {t.result.escalated && <span className="text-rose-600 font-medium">⚠ Sẽ chuyển người thật ({t.result.escalationReason})</span>}
                 </div>
                 {/* Báo lỗi / sửa phản hồi này (text & ảnh). Lượt XEM TRƯỚC thì không hiện (chỉ để xem). */}
-                {!t.preview && (t.fixed ? (
-                  <div className="text-emerald-700 text-xs font-medium flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Đã dạy vào bản nháp — xem ô “Xem trước” ngay dưới để kiểm tra.</div>
-                ) : fixingId === t.id ? (
+                {/* Mở panel sửa được kiểm TRƯỚC → câu đã dạy rồi vẫn bấm "Sửa lại" để dạy đè được. */}
+                {!t.preview && (fixingId === t.id ? (
                   <FixResponsePanel turn={t} onDraftChange={onDraftChange} onPreview={previewTaught}
                     markFixed={() => setTurns((p) => p.map((x) => (x.id === t.id ? { ...x, fixed: true } : x)))}
                     onClose={() => setFixingId(null)} showOk={showOk} showErr={showErr} />
+                ) : t.fixed ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-emerald-700 text-xs font-medium flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Đã dạy vào bản nháp — xem ô “Xem trước” ngay dưới để kiểm tra.</span>
+                    <button onClick={() => setFixingId(t.id)} className="flex items-center gap-1.5 text-[12px] text-rose-600 border border-rose-200 px-2 py-1 rounded-lg hover:bg-rose-50">
+                      <Pencil className="w-3.5 h-3.5" /> Sửa lại
+                    </button>
+                  </div>
                 ) : (
                   <button onClick={() => setFixingId(t.id)} className="flex items-center gap-1.5 text-[12px] text-rose-600 border border-rose-200 px-2 py-1 rounded-lg hover:bg-rose-50">
                     <AlertTriangle className="w-3.5 h-3.5" /> Báo lỗi / Sửa phản hồi này

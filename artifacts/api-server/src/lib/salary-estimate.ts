@@ -496,6 +496,10 @@ export async function computeMonthEstimate(
 
       for (const ent of entries) {
         if (consumedRoles.has(ent.role)) continue;
+        // MẢNG-5 dedup: 1 booking có thể liệt kê nhiều dòng cùng role cho 1 nhân viên
+        // (assigned_staff + items[].assignedStaff trùng, hoặc 2 dòng sale). Không đánh dấu
+        // role đã xử lý → cộng TRÙNG show/hoa hồng. Add ngay khi vào vòng (giống Pass1).
+        consumedRoles.add(ent.role);
 
         let rate = 0;
         let rateType = "fixed";
@@ -826,6 +830,8 @@ export async function computeMonthEstimate(
       // 2) realtime rate (cả future và past chưa persist)
       for (const ent of entries) {
         if (consumedRoles.has(ent.role)) continue;
+        // MẢNG-5 dedup (nhánh forecast): giống Pass1, tránh cộng trùng khi nhiều dòng cùng role.
+        consumedRoles.add(ent.role);
         let rate = 0;
         if (ent.castAmount && ent.castAmount > 0) {
           rate = ent.castAmount;

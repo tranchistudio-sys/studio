@@ -79,7 +79,10 @@ export async function finalizePayrollPayment(
   const advance = existing ? parseFloat(String(existing.advance)) || adj.advance : adj.advance;
   const penalty = adj.penalty;
   const leaveDeduction = estimate.leaveDeduction;
-  const baseSalaryLocked = estimate.baseSalaryAccrued;
+  // MẢNG-5: chốt giữa tháng VẪN TRẢ ĐỦ lương cứng (đồng bộ /payrolls/generate dùng
+  // baseSalary đủ tháng). KHÔNG dùng baseSalaryAccrued (pro-rate tới hôm nay) — nếu không,
+  // chốt ngày 15 sẽ trả thiếu ~nửa lương cứng so với nút "Tạo bảng lương".
+  const baseSalaryLocked = estimate.baseSalary;
   const showBonus = estimate.showEarnings;
   const netSalary = baseSalaryLocked + showBonus + bonus + ot.pay - penalty - leaveDeduction - advance;
 

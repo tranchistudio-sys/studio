@@ -53,7 +53,13 @@ router.get("/dashboard/stats", async (_req, res) => {
     ));
   const revenueThisMonth = allPayments.reduce((s, p) => s + parseFloat(p.amount), 0);
 
-  const allBookings = await db.select().from(bookingsTable).where(isNull(bookingsTable.deletedAt));
+  const allBookings = await db.select().from(bookingsTable).where(
+    and(
+      isNull(bookingsTable.deletedAt),
+      eq(bookingsTable.isParentContract, false),
+      ne(bookingsTable.status, "cancelled"),
+    ),
+  );
   const allPaymentsAll = await db.select().from(paymentsTable);
   const totalOwed = allBookings.reduce((s, b) => s + parseFloat(b.totalAmount), 0);
   const totalPaidAll = allPaymentsAll
@@ -337,6 +343,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
         WHERE b.shoot_date >= $1 AND b.shoot_date <= $2
           AND b.status != 'cancelled'
           AND b.is_parent_contract = false
+          AND b.deleted_at IS NULL
         ORDER BY b.shoot_date
       `, [startDate, endOfMonth]);
 
@@ -833,7 +840,7 @@ router.get("/dashboard/simple", async (req, res): Promise<void> => {
         FROM payments
         WHERE paid_at >= $1::date
           AND paid_at < ($2::date + INTERVAL '1 day')
-          AND payment_type IN ('payment', 'deposit')
+          AND payment_type != 'refund'
           AND COALESCE(status, 'active') != 'voided'
       `, [from, to]),
       pool.query(`
@@ -847,6 +854,7 @@ router.get("/dashboard/simple", async (req, res): Promise<void> => {
         FROM bookings
         WHERE status != 'cancelled'
           AND is_parent_contract = false
+          AND deleted_at IS NULL
       `),
       pool.query(`
         SELECT COALESCE(SUM(amount::numeric), 0) AS total

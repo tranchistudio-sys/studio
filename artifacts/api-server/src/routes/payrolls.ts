@@ -187,21 +187,14 @@ router.post("/payrolls/generate", async (req, res) => {
     for (const r of cR.rows as Array<{ id: number }>) cancelledBids.add(r.id);
   }
   const earnings = earningsRaw.filter(e => e.bookingId == null || !cancelledBids.has(e.bookingId));
-  const showBonus0 = earnings.reduce((s, e) => s + parseFloat(e.rate), 0);
-  // Task #483: add per-show allowances to showBonus (loại booking đã hủy)
-  const allowQ = await pool.query(
-    `SELECT COALESCE(SUM(sa.amount), 0) AS total
-       FROM staff_allowances sa
-       JOIN bookings b ON b.id = sa.booking_id
-      WHERE sa.staff_id = $1
-        AND EXTRACT(YEAR  FROM b.shoot_date) = $2
-        AND EXTRACT(MONTH FROM b.shoot_date) = $3
-        AND COALESCE(b.status, '') <> 'cancelled'
-        AND b.deleted_at IS NULL`,
-    [staffId, year, month]
-  );
-  const allowanceTotal = parseFloat(String(allowQ.rows[0]?.total ?? 0));
-  const showBonus = showBonus0 + allowanceTotal;
+  // MẢNG-5: NGUỒN TIỀN SHOW DUY NHẤT = computeMonthEstimate (sale = % cast × tiền ĐÃ THU
+  // realtime) để nút "Tạo bảng lương" KHỚP với nút "Chốt thanh toán" (finalizePayrollPayment
+  // cũng đọc estimate.showEarnings). estimate đã gộp phụ cấp (allowance) vào showEarnings.
+  const { computeMonthEstimate } = await import("../lib/salary-estimate");
+  const estimate = await computeMonthEstimate(staffId, month, year, { includeForecast: false });
+  const showBonus0 = estimate ? estimate.showEarnings : earnings.reduce((s, e) => s + parseFloat(e.rate), 0);
+  // Phụ cấp ĐÃ nằm trong estimate.showEarnings (role='allowance') → KHÔNG cộng lần nữa (tránh cộng đôi).
+  const showBonus = showBonus0;
 
   // Attendance adjustments (bonus/penalty/advance) trong tháng
   const adjR = await pool.query(
@@ -346,7 +339,12 @@ router.put("/payrolls/:id", async (req, res) => {
   const bn = parseFloat(String(bonus ?? current.bonus));
   const dd = parseFloat(String(deductions ?? current.deductions));
   const av = parseFloat(String(advance ?? current.advance));
-  update.netSalary = String(bS + sB + cm + bn - dd - av);
+  // MẢNG-5: tăng ca (items.overtime.pay) được cộng thẳng vào netSalary lúc generate/finalize,
+  // KHÔNG có cột riêng. Recompute mà bỏ ot.pay → MẤT tiền tăng ca mỗi lần PUT (kể cả bấm "Đã trả").
+  const itemsForOt = (items ?? current.items ?? {}) as Record<string, unknown>;
+  const otObj = (itemsForOt.overtime ?? {}) as { pay?: unknown };
+  const otPay = parseFloat(String(otObj.pay ?? 0)) || 0;
+  update.netSalary = String(bS + sB + cm + bn + otPay - dd - av);
 
   const [payroll] = await db.update(payrollsTable).set(update).where(eq(payrollsTable.id, id)).returning();
 

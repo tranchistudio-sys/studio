@@ -19,6 +19,7 @@ import StaffProfilePage from "@/pages/staff-profile";
 import AiAssistantPage from "@/pages/ai-assistant";
 import SettingsPage from "@/pages/settings";
 import BookingsPage from "@/pages/bookings";
+import BookingsTrashPage from "@/pages/bookings/trash";
 import ContractsPage from "@/pages/contracts";
 import ReportsPage from "@/pages/reports";
 import PaymentsPage from "@/pages/payments";
@@ -253,6 +254,7 @@ function InternalRouter() {
         <Route path="/accounting" component={AccountingHrPage} />
         <Route path="/ai-assistant" component={AiAssistantPage} />
         <Route path="/settings" component={() => <AdminRoute component={SettingsPage} />} />
+        <Route path="/bookings/trash" component={() => <AdminRoute component={BookingsTrashPage} />} />
         <Route path="/bookings" component={BookingsPage} />
         <Route path="/payments" component={PaymentsPage} />
         <Route path="/expenses" component={ExpensesPage} />

@@ -49,6 +49,7 @@ const ALL_NAV_ITEMS = [
   { href: "/customers",       label: "Khách hàng",           icon: Users,           adminOnly: false },
   { href: "/crm-leads",       label: "CRM Leads",            icon: Funnel,          adminOnly: false },
   { href: "/bookings",        label: "Đơn hàng",             icon: ClipboardList,   adminOnly: false },
+  { href: "/bookings/trash",  label: "Thùng rác Booking",    icon: Trash2,          adminOnly: true  },
   { href: "/revenue",         label: "Doanh thu & Lợi nhuận", icon: TrendingUp,    adminOnly: true },
 
   // 🧠 Nhóm Facebook & Sale (Lulu) ĐÃ TÁCH RA → xem FACEBOOK_NAV (nhóm thu gọn được, đặt cuối sidebar).

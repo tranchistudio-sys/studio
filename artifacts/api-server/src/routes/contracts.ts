@@ -6,7 +6,7 @@ import {
   bookingsTable,
   notificationsTable,
 } from "@workspace/db/schema";
-import { eq, desc } from "drizzle-orm";
+import { eq, desc, and, isNull } from "drizzle-orm";
 import crypto from "node:crypto";
 import { getPublicBaseUrl } from "../lib/publicUrl";
 
@@ -421,7 +421,7 @@ router.get("/contracts/:id/sync", async (req, res): Promise<void> => {
     ? await db
         .select()
         .from(bookingsTable)
-        .where(eq(bookingsTable.id, contract.bookingId))
+        .where(and(eq(bookingsTable.id, contract.bookingId), isNull(bookingsTable.deletedAt)))
     : [];
 
   res.json({

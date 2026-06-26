@@ -4,7 +4,7 @@ import {
   bookingsTable, customersTable, dressesTable, rentalsTable,
   paymentsTable, tasksTable, transactionsTable, expensesTable,
 } from "@workspace/db/schema";
-import { eq, and, gte, lte, count, sum, ne, sql } from "drizzle-orm";
+import { eq, and, gte, lte, count, sum, ne, sql, isNull } from "drizzle-orm";
 import { getCallerRole } from "./auth";
 
 const router: IRouter = Router();
@@ -17,12 +17,12 @@ router.get("/dashboard/stats", async (_req, res) => {
   const today = now.toISOString().slice(0, 10);
 
   const [totalCustomers] = await db.select({ count: count() }).from(customersTable);
-  const [totalBookings] = await db.select({ count: count() }).from(bookingsTable);
+  const [totalBookings] = await db.select({ count: count() }).from(bookingsTable).where(isNull(bookingsTable.deletedAt));
   const [bookingsThisMonth] = await db.select({ count: count() }).from(bookingsTable)
-    .where(and(gte(bookingsTable.shootDate, startOfMonth), lte(bookingsTable.shootDate, endOfMonth)));
-  const [pendingBookings] = await db.select({ count: count() }).from(bookingsTable).where(eq(bookingsTable.status, "pending"));
-  const [confirmedBookings] = await db.select({ count: count() }).from(bookingsTable).where(eq(bookingsTable.status, "confirmed"));
-  const [completedBookings] = await db.select({ count: count() }).from(bookingsTable).where(eq(bookingsTable.status, "completed"));
+    .where(and(isNull(bookingsTable.deletedAt), gte(bookingsTable.shootDate, startOfMonth), lte(bookingsTable.shootDate, endOfMonth)));
+  const [pendingBookings] = await db.select({ count: count() }).from(bookingsTable).where(and(isNull(bookingsTable.deletedAt), eq(bookingsTable.status, "pending")));
+  const [confirmedBookings] = await db.select({ count: count() }).from(bookingsTable).where(and(isNull(bookingsTable.deletedAt), eq(bookingsTable.status, "confirmed")));
+  const [completedBookings] = await db.select({ count: count() }).from(bookingsTable).where(and(isNull(bookingsTable.deletedAt), eq(bookingsTable.status, "completed")));
 
   const [totalDresses] = await db.select({ count: count() }).from(dressesTable);
   const [availableDresses] = await db.select({ count: count() }).from(dressesTable).where(eq(dressesTable.isAvailable, true));
@@ -53,7 +53,7 @@ router.get("/dashboard/stats", async (_req, res) => {
     ));
   const revenueThisMonth = allPayments.reduce((s, p) => s + parseFloat(p.amount), 0);
 
-  const allBookings = await db.select().from(bookingsTable);
+  const allBookings = await db.select().from(bookingsTable).where(isNull(bookingsTable.deletedAt));
   const allPaymentsAll = await db.select().from(paymentsTable);
   const totalOwed = allBookings.reduce((s, b) => s + parseFloat(b.totalAmount), 0);
   const totalPaidAll = allPaymentsAll
@@ -78,7 +78,7 @@ router.get("/dashboard/stats", async (_req, res) => {
     })
     .from(bookingsTable)
     .innerJoin(customersTable, eq(bookingsTable.customerId, customersTable.id))
-    .where(and(gte(bookingsTable.shootDate, today), eq(bookingsTable.status, "confirmed")))
+    .where(and(isNull(bookingsTable.deletedAt), gte(bookingsTable.shootDate, today), eq(bookingsTable.status, "confirmed")))
     .orderBy(bookingsTable.shootDate)
     .limit(5);
 
@@ -442,6 +442,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
       .from(bookingsTable)
       .where(
         and(
+          isNull(bookingsTable.deletedAt),
           gte(bookingsTable.createdAt, start),
           lte(bookingsTable.createdAt, end),
           eq(bookingsTable.isParentContract, false),
@@ -468,6 +469,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
       .from(bookingsTable)
       .where(
         and(
+          isNull(bookingsTable.deletedAt),
           eq(bookingsTable.isParentContract, false),
           ne(bookingsTable.status, "cancelled"),
         ),
@@ -492,7 +494,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
         createdAt: bookingsTable.createdAt,
       })
       .from(bookingsTable)
-      .where(ne(bookingsTable.status, "cancelled"));
+      .where(and(isNull(bookingsTable.deletedAt), ne(bookingsTable.status, "cancelled")));
 
     // ── 3. All active bookings WITH customer info — for top debtors ────────
     const allActiveWithCustomer = await db
@@ -511,6 +513,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
       .leftJoin(customersTable, eq(bookingsTable.customerId, customersTable.id))
       .where(
         and(
+          isNull(bookingsTable.deletedAt),
           eq(bookingsTable.isParentContract, false),
           ne(bookingsTable.status, "cancelled"),
         ),
@@ -566,6 +569,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
       .from(bookingsTable)
       .innerJoin(customersTable, eq(bookingsTable.customerId, customersTable.id))
       .where(and(
+        isNull(bookingsTable.deletedAt),
         gte(bookingsTable.shootDate, today),
         ne(bookingsTable.status, "cancelled"),
         eq(bookingsTable.isParentContract, false),

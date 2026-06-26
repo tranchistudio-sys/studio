@@ -418,6 +418,7 @@ export async function computeMonthEstimate(
       FROM bookings
       WHERE shoot_date >= $1::date AND shoot_date <= $2::date
         AND COALESCE(status, '') <> 'cancelled'
+        AND deleted_at IS NULL
         AND (assigned_staff IS NOT NULL OR items IS NOT NULL OR created_by_staff_id IS NOT NULL)
       ORDER BY shoot_date ASC
     `, [monthStart, effectiveEnd]);
@@ -584,18 +585,18 @@ export async function computeMonthEstimate(
     if (orphanIds.length > 0) {
       const uniqueIds = Array.from(new Set(orphanIds));
       const bookingsR = await pool.query(
-        `SELECT id, shoot_date, package_type, service_label, status
+        `SELECT id, shoot_date, package_type, service_label, status, deleted_at
            FROM bookings WHERE id = ANY($1::int[])`,
         [uniqueIds],
       );
       const bookingMeta = new Map<number, { shootDate: string; serviceName: string }>();
-      // Booking đã HỦY (cancelled) → không surface earning của nó vào lương.
+      // Booking đã HỦY (cancelled) hoặc đã vào THÙNG RÁC (deleted_at) → không surface earning.
       const cancelledOrphan = new Set<number>();
       for (const b of bookingsR.rows as Array<{
         id: number; shoot_date: string | Date;
-        package_type: string | null; service_label: string | null; status: string | null;
+        package_type: string | null; service_label: string | null; status: string | null; deleted_at: string | Date | null;
       }>) {
-        if (b.status === "cancelled") { cancelledOrphan.add(b.id); continue; }
+        if (b.status === "cancelled" || b.deleted_at != null) { cancelledOrphan.add(b.id); continue; }
         const sd = typeof b.shoot_date === "string"
           ? b.shoot_date.slice(0, 10)
           : new Date(b.shoot_date).toISOString().slice(0, 10);
@@ -646,6 +647,7 @@ export async function computeMonthEstimate(
           AND b.shoot_date >= $2::date
           AND b.shoot_date <= $3::date
           AND COALESCE(b.status, '') <> 'cancelled'
+          AND b.deleted_at IS NULL
         ORDER BY b.shoot_date`,
       [staffId, monthStart, effectiveEnd]
     );
@@ -772,6 +774,7 @@ export async function computeMonthEstimate(
       FROM bookings
       WHERE shoot_date >= $1::date AND shoot_date <= $2::date
         AND COALESCE(status, '') <> 'cancelled'
+        AND deleted_at IS NULL
         AND (assigned_staff IS NOT NULL OR items IS NOT NULL OR created_by_staff_id IS NOT NULL)
       ORDER BY shoot_date ASC
     `, [monthStart, monthEnd]);

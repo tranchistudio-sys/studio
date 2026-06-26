@@ -43,6 +43,11 @@ export const bookingsTable = pgTable("bookings", {
   // Dịch vụ cộng thêm (qty × unitPrice + staff assignments) — additive, không đụng items[]
   additionalServices: jsonb("additional_services").notNull().default([]),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  // Thùng rác Booking (soft-delete): deletedAt != null = đã vào thùng rác.
+  // Mọi query active phải lọc deletedAt IS NULL; chỉ admin xem/khôi phục/xoá vĩnh viễn.
+  deletedAt: timestamp("deleted_at"),
+  deletedBy: integer("deleted_by").references(() => staffTable.id, { onDelete: "set null" }),
+  deleteReason: text("delete_reason"),
 });
 
 // ─── Task #10: Booking items (hạng mục & upsell) ──────────────────────────────

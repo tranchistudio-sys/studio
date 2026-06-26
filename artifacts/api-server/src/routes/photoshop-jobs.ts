@@ -73,7 +73,7 @@ function shootYearMonth(val: unknown): string {
 async function bookingOrderCode(bookingId: number | null | undefined): Promise<string> {
   if (!bookingId) return "";
   try {
-    const r = await pool.query(`SELECT order_code FROM bookings WHERE id = $1 LIMIT 1`, [bookingId]);
+    const r = await pool.query(`SELECT order_code FROM bookings WHERE id = $1 AND deleted_at IS NULL LIMIT 1`, [bookingId]);
     return String(r.rows[0]?.order_code ?? "").trim();
   } catch {
     return "";
@@ -553,6 +553,7 @@ router.get("/photoshop-jobs/booking-view", async (req, res) => {
       LEFT JOIN service_packages sp ON sp.id = b.service_package_id
       LEFT JOIN service_groups sg ON sg.id = sp.group_id
       WHERE b.status NOT IN ('cancelled')
+        AND b.deleted_at IS NULL
         AND COALESCE(b.is_parent_contract, false) = false
         AND (
           (
@@ -887,6 +888,7 @@ router.get("/photoshop-jobs/deep-link", async (req, res) => {
       LEFT JOIN service_packages sp ON sp.id = b.service_package_id
       LEFT JOIN service_groups sg ON sg.id = sp.group_id
       WHERE b.status NOT IN ('cancelled')
+        AND b.deleted_at IS NULL
         AND COALESCE(b.is_parent_contract, false) = false
         AND (b.id = $1 OR b.parent_id = $1)
       ORDER BY b.created_at ASC
@@ -1046,6 +1048,7 @@ router.get("/photoshop-jobs/my-stats", async (req, res) => {
     const backlogQ = await pool.query(`
       SELECT COUNT(*) FROM bookings b
       WHERE b.status NOT IN ('cancelled')
+        AND b.deleted_at IS NULL
         AND b.shoot_date::date <= NOW()::date
         AND (b.parent_id IS NULL OR b.is_parent_contract = true)
         AND NOT EXISTS (

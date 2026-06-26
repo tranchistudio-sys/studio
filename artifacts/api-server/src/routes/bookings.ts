@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db, pool } from "@workspace/db";
 import { bookingsTable, customersTable, paymentsTable, expensesTable, tasksTable, staffTable, servicePackagesTable, packageItemsTable, photoshopJobsTable, servicesTable, bookingChangeLogTable, contractsTable, bookingDressesTable, bookingItemsTable, staffJobEarningsTable, staffAllowancesTable, attendanceLogsTable } from "@workspace/db/schema";
-import { eq, and, desc, inArray, or, ilike, sql, asc, gte, lte } from "drizzle-orm";
+import { eq, and, desc, inArray, or, ilike, sql, asc, gte, lte, isNull } from "drizzle-orm";
 import { verifyToken, getCallerRole } from "./auth";
 import { computeBookingEarnings } from "./job-earnings";
 import { emitNotification } from "./notifications";
@@ -191,6 +191,7 @@ router.get("/bookings", async (req, res) => {
     .innerJoin(customersTable, eq(bookingsTable.customerId, customersTable.id))
     .where(
       and(
+        isNull(bookingsTable.deletedAt), // Thùng rác: ẩn booking đã xoá mềm khỏi danh sách active
         status ? eq(bookingsTable.status, status) : undefined,
         customerId ? eq(bookingsTable.customerId, customerId) : undefined,
         parentId ? eq(bookingsTable.parentId, parentId) : undefined,
@@ -422,6 +423,37 @@ router.get("/bookings", async (req, res) => {
   } catch (err) {
     console.error("GET /bookings error:", err);
     res.status(500).json({ error: "Lỗi hệ thống" });
+  }
+});
+
+// ─── Thùng rác Booking — danh sách booking đã xoá mềm (CHỈ admin) ───────────
+// Đặt TRƯỚC GET /bookings/:id để "trash" không bị bắt nhầm thành :id.
+router.get("/bookings/trash", async (req, res) => {
+  try {
+    if ((await getCallerRole(req.headers.authorization)) !== "admin") {
+      return res.status(403).json({ error: "Chỉ admin được xem thùng rác" });
+    }
+    const rows = await db
+      .select({
+        ...bookingFields,
+        deletedAt: bookingsTable.deletedAt,
+        deletedBy: bookingsTable.deletedBy,
+        deleteReason: bookingsTable.deleteReason,
+        deletedByName: staffTable.name,
+      })
+      .from(bookingsTable)
+      .innerJoin(customersTable, eq(bookingsTable.customerId, customersTable.id))
+      .leftJoin(staffTable, eq(bookingsTable.deletedBy, staffTable.id))
+      // Hiện: đơn lẻ/đơn cha đã xoá + đơn con bị xoá LẺ (cha còn sống). Ẩn con khi
+      // cha CŨNG bị xoá (cascade) để khỏi trùng — cha đại diện cho cả cụm.
+      .where(sql`${bookingsTable.deletedAt} IS NOT NULL
+        AND (${bookingsTable.parentId} IS NULL
+          OR NOT EXISTS (SELECT 1 FROM bookings p WHERE p.id = ${bookingsTable.parentId} AND p.deleted_at IS NOT NULL))`)
+      .orderBy(desc(bookingsTable.deletedAt));
+    res.json(rows);
+  } catch (err) {
+    console.error("GET /bookings/trash error:", err);
+    res.status(500).json({ error: "Lỗi hệ thống khi tải thùng rác" });
   }
 });
 
@@ -1488,22 +1520,130 @@ router.delete("/bookings/:parentId/remove-child/:childId", async (req, res) => {
   }
 });
 
+// ─── Thùng rác: XOÁ MỀM (soft-delete) — chuyển booking vào thùng rác (CHỈ admin) ──
+// KHÔNG hard-delete. Giữ nguyên dữ liệu con (lương/thu/chi/task) — chúng bị ẩn khỏi
+// hệ thống active qua filter deleted_at ở các query, và quay lại khi phục hồi.
 router.delete("/bookings/:id", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const callerId = verifyToken(req.headers.authorization);
+    if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
+    if ((await getCallerRole(req.headers.authorization)) !== "admin") {
+      return res.status(403).json({ error: "Chỉ admin được đưa booking vào thùng rác" });
+    }
+
+    const [target] = await db.select({
+      isParentContract: bookingsTable.isParentContract,
+      deletedAt: bookingsTable.deletedAt,
+    }).from(bookingsTable).where(eq(bookingsTable.id, id));
+    if (!target) return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
+    if (target.deletedAt) return res.status(400).json({ error: "Đơn đã ở trong thùng rác" });
+
+    const reason = typeof req.body?.reason === "string" && req.body.reason.trim() ? req.body.reason.trim() : null;
+
+    // Hợp đồng cha → đưa toàn bộ dịch vụ con vào thùng rác cùng (khôi phục cùng nhau).
+    const ids = [id];
+    if (target.isParentContract) {
+      const children = await db.select({ id: bookingsTable.id }).from(bookingsTable).where(eq(bookingsTable.parentId, id));
+      for (const c of children) ids.push(c.id);
+    }
+
+    await db.transaction(async (tx) => {
+      await tx.update(bookingsTable)
+        .set({ deletedAt: new Date(), deletedBy: callerId, deleteReason: reason })
+        .where(inArray(bookingsTable.id, ids));
+      await tx.insert(bookingChangeLogTable).values({
+        bookingId: id,
+        fieldChanged: "trash",
+        oldValue: null,
+        newValue: "deleted",
+        reason: reason ?? "Đưa vào thùng rác",
+        changedById: callerId,
+      });
+    });
+
+    emitNotification({ staffId: null, type: "booking_cancelled", title: "Đưa đơn vào thùng rác", message: `Đơn #${id} đã được chuyển vào thùng rác`, targetModule: "calendar", targetId: String(id), bookingId: id });
+    res.json({ ok: true, trashed: true, ids });
+  } catch (err) {
+    console.error("DELETE /bookings/:id (soft-delete) error:", err);
+    res.status(500).json({ error: "Lỗi hệ thống khi đưa đơn vào thùng rác" });
+  }
+});
+
+// ─── Thùng rác: PHỤC HỒI (CHỈ admin) — cảnh báo conflict, không tự sửa lương đã chốt ──
+router.post("/bookings/:id/restore", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    const callerId = verifyToken(req.headers.authorization);
+    if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
+    if ((await getCallerRole(req.headers.authorization)) !== "admin") {
+      return res.status(403).json({ error: "Chỉ admin được phục hồi booking" });
+    }
+    const [target] = await db.select().from(bookingsTable).where(eq(bookingsTable.id, id));
+    if (!target) return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
+    if (!target.deletedAt) return res.status(400).json({ error: "Đơn không ở trong thùng rác" });
+
+    // Cảnh báo (KHÔNG chặn — admin tự quyết sau khi xem):
+    const conflicts: string[] = [];
+    // 1) Trùng lịch với đơn ACTIVE khác cùng ngày (+giờ nếu có).
+    const clashR = await pool.query(
+      `SELECT id FROM bookings
+        WHERE deleted_at IS NULL AND id <> $1 AND shoot_date = $2
+          AND ($3::text IS NULL OR shoot_time = $3) AND COALESCE(status,'') <> 'cancelled'
+        LIMIT 5`,
+      [id, target.shootDate, target.shootTime ?? null],
+    );
+    if (clashR.rows.length) conflicts.push(`Trùng lịch với ${clashR.rows.length} đơn khác cùng ngày${target.shootTime ? "/giờ" : ""}`);
+    // 2) Lương liên quan ĐÃ CHỐT (payroll paid) — phục hồi không tự sửa bảng đã chốt.
+    const paidR = await pool.query(
+      `SELECT COUNT(*)::int AS n FROM staff_job_earnings e
+         JOIN payrolls p ON p.id = e.payroll_id
+        WHERE (e.booking_id = $1 OR e.service_booking_id = $1) AND p.status = 'paid'`,
+      [id],
+    );
+    if (Number(paidR.rows[0]?.n ?? 0) > 0) {
+      conflicts.push("Có khoản lương liên quan ĐÃ CHỐT — phục hồi sẽ KHÔNG tự sửa bảng lương đã chốt, cần kiểm tra/điều chỉnh tay");
+    }
+
+    const ids = [id];
+    if (target.isParentContract) {
+      const children = await db.select({ id: bookingsTable.id }).from(bookingsTable).where(eq(bookingsTable.parentId, id));
+      for (const c of children) ids.push(c.id);
+    }
+    await db.transaction(async (tx) => {
+      await tx.update(bookingsTable)
+        .set({ deletedAt: null, deletedBy: null, deleteReason: null })
+        .where(inArray(bookingsTable.id, ids));
+      await tx.insert(bookingChangeLogTable).values({
+        bookingId: id, fieldChanged: "restore", oldValue: "deleted", newValue: "restored",
+        reason: "Phục hồi từ thùng rác", changedById: callerId,
+      });
+    });
+    emitNotification({ staffId: null, type: "booking_cancelled", title: "Phục hồi đơn", message: `Đơn #${id} đã được phục hồi từ thùng rác`, targetModule: "calendar", targetId: String(id), bookingId: id });
+    res.json({ ok: true, restored: true, ids, conflicts });
+  } catch (err) {
+    console.error("POST /bookings/:id/restore error:", err);
+    res.status(500).json({ error: "Lỗi hệ thống khi phục hồi đơn" });
+  }
+});
+
+// ─── Thùng rác: XOÁ VĨNH VIỄN (purge, CHỈ admin) — hard-delete toàn bộ dữ liệu con ──
+// Chỉ áp dụng cho đơn ĐANG trong thùng rác. Giữ nguyên logic dọn dữ liệu nguyên tử cũ.
+router.delete("/bookings/:id/purge", async (req, res) => {
   try {
   const id = parseInt(req.params.id);
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
+  if ((await getCallerRole(req.headers.authorization)) !== "admin") {
+    return res.status(403).json({ error: "Chỉ admin được xoá vĩnh viễn" });
+  }
 
   const [target] = await db.select({
     isParentContract: bookingsTable.isParentContract,
-    createdByStaffId: bookingsTable.createdByStaffId,
+    deletedAt: bookingsTable.deletedAt,
   }).from(bookingsTable).where(eq(bookingsTable.id, id));
   if (!target) return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
-
-  const role = await getCallerRole(req.headers.authorization);
-  if (role !== "admin" && target.createdByStaffId !== callerId) {
-    return res.status(403).json({ error: "Bạn chỉ được xoá đơn do mình tạo" });
-  }
+  if (!target.deletedAt) return res.status(400).json({ error: "Chỉ xoá vĩnh viễn đơn đang trong thùng rác (hãy đưa vào thùng rác trước)" });
 
   // Gom id cần xoá: nếu là hợp đồng cha → kèm toàn bộ dịch vụ con.
   const idsToDelete = [id];
@@ -1540,11 +1680,11 @@ router.delete("/bookings/:id", async (req, res) => {
     await tx.delete(bookingsTable).where(inArray(bookingsTable.id, idsToDelete));
   });
 
-  emitNotification({ staffId: null, type: "booking_cancelled", title: "Xóa đơn hàng", message: `Đơn #${id} đã bị xóa`, targetModule: "calendar", targetId: String(id), bookingId: id });
+  emitNotification({ staffId: null, type: "booking_cancelled", title: "Xoá vĩnh viễn đơn hàng", message: `Đơn #${id} đã bị xoá vĩnh viễn`, targetModule: "calendar", targetId: String(id), bookingId: id });
   res.status(204).send();
   } catch (err) {
-    console.error("DELETE /bookings/:id error:", err);
-    res.status(500).json({ error: "Lỗi hệ thống khi xóa đơn hàng" });
+    console.error("DELETE /bookings/:id/purge error:", err);
+    res.status(500).json({ error: "Lỗi hệ thống khi xoá vĩnh viễn đơn hàng" });
   }
 });
 

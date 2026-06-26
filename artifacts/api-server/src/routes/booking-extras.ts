@@ -3,7 +3,7 @@ import { db, pool } from "@workspace/db";
 import {
   bookingItemsTable, bookingChangeLogTable, bookingsTable, staffTable,
 } from "@workspace/db/schema";
-import { eq, desc, and } from "drizzle-orm";
+import { eq, desc, and, isNull } from "drizzle-orm";
 import { verifyToken } from "./auth";
 
 const router: IRouter = Router();
@@ -81,7 +81,7 @@ router.post("/bookings/:id/upgrade", async (req, res) => {
     return res.status(400).json({ error: "Vui lòng nhập tên gói mới và giá" });
   }
 
-  const [booking] = await db.select().from(bookingsTable).where(eq(bookingsTable.id, bookingId));
+  const [booking] = await db.select().from(bookingsTable).where(and(eq(bookingsTable.id, bookingId), isNull(bookingsTable.deletedAt)));
   if (!booking) return res.status(404).json({ error: "Không tìm thấy booking" });
 
   const existingItems = await db.select().from(bookingItemsTable)
@@ -140,7 +140,7 @@ router.patch("/bookings/:id/reschedule", async (req, res) => {
   if (!newDate) return res.status(400).json({ error: "Vui lòng chọn ngày mới" });
   if (!reason?.trim()) return res.status(400).json({ error: "Vui lòng nhập lý do đổi lịch" });
 
-  const [booking] = await db.select().from(bookingsTable).where(eq(bookingsTable.id, bookingId));
+  const [booking] = await db.select().from(bookingsTable).where(and(eq(bookingsTable.id, bookingId), isNull(bookingsTable.deletedAt)));
   if (!booking) return res.status(404).json({ error: "Không tìm thấy booking" });
 
   // Phân quyền: admin hoặc nhân viên được assigned vào buổi đó
@@ -205,6 +205,7 @@ router.patch("/bookings/:id/reschedule", async (req, res) => {
         LEFT JOIN customers c ON c.id = b.customer_id
         WHERE b.shoot_date = $1
           AND b.id != $2
+          AND b.deleted_at IS NULL
           AND b.status NOT IN ('cancelled', 'huy')
           AND (
             $4::text IS NULL

@@ -49,18 +49,30 @@ export default function ReportsPage() {
 
   // Compute monthly revenue from bookings (last 6 months)
   const now = new Date();
+
+  // NGUỒN TIỀN CHUẨN cho báo cáo (khớp trang Doanh thu):
+  //  • DOANH THU: theo đơn lẻ + đơn CON (bỏ đơn CHA). Tổng cha = cộng dồn con và có
+  //    thể "cũ" khi con bị hủy ⇒ đếm theo con mới khớp /revenue. net = total − giảm giá.
+  //  • ĐÃ THU: theo HỢP ĐỒNG (đơn lẻ + đơn CHA, parentId == null) để mỗi hợp đồng
+  //    tính paid ĐÚNG 1 LẦN — đơn con mang paidAmount của cha, cộng con sẽ ĐẾM TRÙNG.
+  //  • Bỏ đơn đã hủy (cancelled) ở cả hai.
+  const num = (v: any) => parseFloat(v) || 0;
+  const bookingNet = (b: any) => Math.max(0, num(b.totalAmount) - num(b.discountAmount));
+  const revenueBookings = bookings.filter((b: any) => !b.isParentContract && b.status !== "cancelled");
+  const paidBookings = bookings.filter((b: any) => !b.parentId && b.status !== "cancelled");
+
   const monthlyData = Array.from({ length: 6 }, (_, i) => {
     const d = new Date(now.getFullYear(), now.getMonth() - (5 - i), 1);
     const month = d.getMonth();
     const year = d.getFullYear();
     const label = `T${month + 1}/${String(year).slice(2)}`;
-    const monthBookings = bookings.filter(b => {
+    const inMonth = (b: any) => {
       const bd = new Date(b.shootDate || b.createdAt);
       return bd.getMonth() === month && bd.getFullYear() === year;
-    });
-    const revenue = monthBookings.reduce((s: number, b: any) => s + (parseFloat(b.totalAmount) || 0), 0);
-    const paid = monthBookings.reduce((s: number, b: any) => s + (parseFloat(b.paidAmount) || 0), 0);
-    return { label, revenue, paid, count: monthBookings.length };
+    };
+    const revenue = revenueBookings.filter(inMonth).reduce((s: number, b: any) => s + bookingNet(b), 0);
+    const paid = paidBookings.filter(inMonth).reduce((s: number, b: any) => s + num(b.paidAmount), 0);
+    return { label, revenue, paid, count: revenueBookings.filter(inMonth).length };
   });
 
   // Status distribution
@@ -91,16 +103,20 @@ export default function ReportsPage() {
     amount: v,
   })).sort((a, b) => b.amount - a.amount);
 
-  const totalRevenue = bookings.reduce((s: number, b: any) => s + parseFloat(b.totalAmount || 0), 0);
-  const totalPaid = bookings.reduce((s: number, b: any) => s + parseFloat(b.paidAmount || 0), 0);
-  const totalExpenses = expenses.reduce((s: number, e: any) => s + parseFloat(e.amount || 0), 0);
-  const thisMonthRevenue = bookings.filter(b => {
+  const totalRevenue = revenueBookings.reduce((s: number, b: any) => s + bookingNet(b), 0);
+  const totalPaid = paidBookings.reduce((s: number, b: any) => s + num(b.paidAmount), 0);
+  // Chi phí: chỉ tính khoản đã DUYỆT/đã CHI (loại submitted chờ duyệt + rejected).
+  const totalExpenses = expenses.reduce(
+    (s: number, e: any) => (e.status === "approved" || e.status === "paid" ? s + num(e.amount) : s),
+    0
+  );
+  const thisMonthRevenue = revenueBookings.filter(b => {
     const d = new Date(b.shootDate || b.createdAt);
     return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-  }).reduce((s: number, b: any) => s + parseFloat(b.totalAmount || 0), 0);
+  }).reduce((s: number, b: any) => s + bookingNet(b), 0);
 
   const summaryCards = [
-    { label: "Tổng doanh thu", value: formatVND(totalRevenue), sub: "Tất cả đơn hàng", icon: DollarSign, color: "text-primary", bg: "from-primary/10 to-card" },
+    { label: "Tổng doanh thu", value: formatVND(totalRevenue), sub: "Đã trừ giảm giá, bỏ đơn hủy", icon: DollarSign, color: "text-primary", bg: "from-primary/10 to-card" },
     { label: "Đã thu", value: formatVND(totalPaid), sub: `${Math.round(totalRevenue > 0 ? (totalPaid / totalRevenue) * 100 : 0)}% doanh thu`, icon: TrendingUp, color: "text-green-600", bg: "from-green-50 to-card" },
     { label: "Tổng chi phí", value: formatVND(totalExpenses), sub: "Chi phí vận hành", icon: TrendingDown, color: "text-red-600", bg: "from-red-50 to-card" },
     { label: "Tháng này", value: formatVND(thisMonthRevenue), sub: `${bookings.filter(b => { const d = new Date(b.shootDate || b.createdAt); return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear(); }).length} đơn`, icon: Target, color: "text-blue-600", bg: "from-blue-50 to-card" },

@@ -10,26 +10,30 @@ export const SERVICE_LABELS: Record<string, string> = {
   other: "Khác",
 };
 
+// Gom ngày/tháng theo múi giờ Việt Nam (Asia/Ho_Chi_Minh, +7) để không lệch kỳ ở
+// rìa nửa đêm khi server chạy UTC (Replit prod). Cùng kỹ thuật với dashboard.ts.
+// toLocaleDateString('sv-SE', { timeZone }) trả "YYYY-MM-DD" theo giờ VN.
+const APP_TZ = "Asia/Ho_Chi_Minh";
+function toVNDateString(d: Date): string {
+  return d.toLocaleDateString("sv-SE", { timeZone: APP_TZ });
+}
+
 export function getPaymentDate(p: { paidDate: string | null; paidAt: Date }): string {
   if (p.paidDate && p.paidDate.length >= 10) return p.paidDate.slice(0, 10);
-  const d = p.paidAt;
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return toVNDateString(p.paidAt);
 }
 
 export function getBookingDate(b: { createdAt: Date }): string {
-  const d = b.createdAt;
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return toVNDateString(b.createdAt);
 }
 
 export function getBookingMonth(b: { createdAt: Date }): string {
-  const d = b.createdAt;
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  return toVNDateString(b.createdAt).slice(0, 7);
 }
 
 export function getPaymentMonth(p: { paidDate: string | null; paidAt: Date }): string {
   if (p.paidDate && p.paidDate.length >= 7) return p.paidDate.slice(0, 7);
-  const d = p.paidAt;
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  return toVNDateString(p.paidAt).slice(0, 7);
 }
 
 export function monthLabel(ym: string): string {

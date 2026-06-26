@@ -42,7 +42,7 @@ router.get("/revenue/v2/by-service", async (req, res) => {
     const collectedFromPayments = bookingPaymentsMap.get(b.id) ?? 0;
     map.set(cat, {
       count: existing.count + 1,
-      contractValue: existing.contractValue + total,
+      contractValue: existing.contractValue + (b.netAmount || 0), // NET (đã trừ giảm giá)
       collected: existing.collected + collectedFromPayments,
       remaining: existing.remaining + rem,
       staffCast: existing.staffCast + (castByBooking.get(b.id) ?? 0),
@@ -77,12 +77,12 @@ router.get("/revenue/by-service", async (_req, res) => {
     const cost = (castByBooking.get(b.id) ?? 0) + (directExpByBooking.get(b.id) ?? 0);
     map.set(cat, {
       count: existing.count + 1,
-      revenue: existing.revenue + (parseFloat(b.totalAmount) || 0),
+      revenue: existing.revenue + (b.netAmount || 0), // NET (đã trừ giảm giá)
       expenses: existing.expenses + cost,
     });
   }
 
-  const totalRevenue = validBookings.reduce((s, b) => s + (parseFloat(b.totalAmount) || 0), 0);
+  const totalRevenue = validBookings.reduce((s, b) => s + (b.netAmount || 0), 0); // NET (đã trừ giảm giá)
   const totalCount = validBookings.length;
 
   const rows = Array.from(map.entries())

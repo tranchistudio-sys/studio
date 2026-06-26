@@ -20,15 +20,14 @@ router.get("/revenue/v2/warnings", async (_req, res) => {
       warnings.push({ type: "no_staff", bookingId: b.id, message: "Chưa giao nhân viên" });
     }
 
-    const total = parseFloat(b.totalAmount) || 0;
     const directExp = directExpByBooking.get(b.id) ?? 0;
-    if (total > 0 && (total - cast - directExp) < 0) {
+    // Lợi nhuận & công nợ tính trên NET (đã trừ giảm giá)
+    if (b.netAmount > 0 && (b.netAmount - cast - directExp) < 0) {
       warnings.push({ type: "negative_profit", bookingId: b.id, message: "Lợi nhuận âm" });
     }
 
-    const disc = parseFloat(b.discountAmount) || 0;
     const paid = parseFloat(b.paidAmount) || 0;
-    const remaining = total - disc - paid;
+    const remaining = b.netAmount - paid;
     if (remaining > 0 && b.shootDate) {
       const shootDate = new Date(b.shootDate);
       const now = new Date();

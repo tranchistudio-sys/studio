@@ -37,7 +37,7 @@ router.get("/revenue/by-period", async (req, res) => {
 
   for (const p of points) {
     const inPeriod = validBookings.filter(b => b.shootDate >= p.start && b.shootDate <= p.end);
-    p.revenue = inPeriod.reduce((s, b) => s + (parseFloat(b.totalAmount) || 0), 0);
+    p.revenue = inPeriod.reduce((s, b) => s + (b.netAmount || 0), 0); // NET (đã trừ giảm giá)
     let cost = 0;
     for (const b of inPeriod) {
       cost += (castByBooking.get(b.id) ?? 0) + (directExpByBooking.get(b.id) ?? 0);

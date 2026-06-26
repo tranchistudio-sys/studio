@@ -97,8 +97,14 @@ const COST_CLASS_OPTIONS = [
   { value: "depreciation", label: "Khấu hao", short: "Khấu hao", desc: "Phân bổ giá trị tài sản theo tháng", color: "bg-violet-100 text-violet-700 dark:bg-violet-950/30 dark:text-violet-300" },
   { value: "interest", label: "Lãi vay", short: "Lãi vay", desc: "Tiền lãi khoản vay (KHÔNG gồm trả gốc)", color: "bg-fuchsia-100 text-fuchsia-700 dark:bg-fuchsia-950/30 dark:text-fuchsia-300" },
   { value: "loan_principal", label: "Trả gốc khoản vay", short: "Trả gốc vay", desc: "KHÔNG ảnh hưởng lợi nhuận, chỉ là dòng tiền", color: "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300" },
+  { value: "personal", label: "Cá nhân 🔒", short: "Cá nhân 🔒", desc: "Chi tiêu cá nhân/riêng tư — chỉ admin thấy, vẫn tính vào tổng chi & lợi nhuận", color: "bg-zinc-200 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300" },
 ];
 const costClassMeta = (v?: string | null) => COST_CLASS_OPTIONS.find(o => o.value === v);
+// "Cá nhân" là loại chi phí RIÊNG TƯ: chỉ admin thấy option/filter/dòng. Đây chỉ là lớp
+// ẩn UI — quyền THẬT do backend enforce (api-server: lib/expense-permissions + routes/expenses).
+const ADMIN_ONLY_COST_CLASSES = new Set(["personal"]);
+const visibleCostClassOptions = (isAdmin: boolean) =>
+  COST_CLASS_OPTIONS.filter(o => isAdmin || !ADMIN_ONLY_COST_CLASSES.has(o.value));
 
 type Stats = {
   today: number; todayCount: number;
@@ -157,9 +163,13 @@ export default function ExpensesPage() {
       if (viewMine) p.set("mine", "1");
       return fetch(`${BASE}/api/expenses?${p}`, { headers: authHeaders }).then(r => r.json());
     },
-    select: (rows: Expense[]) => filterCostClass
-      ? rows.filter(e => (e.costClass || (e.bookingId ? "direct" : "operating")) === filterCostClass)
-      : rows,
+    select: (rows: Expense[]) => {
+      // Lớp ẩn phòng thủ ở FE: nhân viên không thấy dòng Cá nhân (backend đã loại sẵn).
+      const base = effectiveIsAdmin ? rows : rows.filter(e => e.costClass !== "personal");
+      return filterCostClass
+        ? base.filter(e => (e.costClass || (e.bookingId ? "direct" : "operating")) === filterCostClass)
+        : base;
+    },
     refetchInterval: 30000,
   });
 
@@ -529,7 +539,7 @@ export default function ExpensesPage() {
           className="text-xs border border-border rounded-xl px-3 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-red-300"
           title="Lọc theo loại chi phí (mô hình tài chính)">
           <option value="">Tất cả loại CP</option>
-          {COST_CLASS_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          {visibleCostClassOptions(effectiveIsAdmin).map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
         </select>
 
         <button
@@ -792,7 +802,7 @@ export default function ExpensesPage() {
                   value={form.costClass}
                   onChange={e => setForm(f => ({ ...f, costClass: e.target.value }))}
                   className="w-full px-3 py-2.5 border border-border rounded-xl bg-background focus:outline-none focus:ring-2 focus:ring-red-300 text-sm">
-                  {COST_CLASS_OPTIONS.map(o => (
+                  {visibleCostClassOptions(effectiveIsAdmin).map(o => (
                     <option key={o.value} value={o.value}>{o.label}</option>
                   ))}
                 </select>

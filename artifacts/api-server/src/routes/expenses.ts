@@ -3,6 +3,13 @@ import { db, pool } from "@workspace/db";
 import { expensesTable } from "@workspace/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { verifyToken } from "./auth";
+import {
+  resolveCostClass,
+  isAllowedCostClass,
+  isPersonalClass,
+  filterExpensesForCaller,
+  matchesCostClass,
+} from "../lib/expense-permissions";
 
 const router: IRouter = Router();
 
@@ -84,6 +91,7 @@ router.get("/expenses", async (req, res) => {
   let filtered = rows;
 
   const category = req.query.category as string | undefined;
+  const costClassFilter = req.query.costClass as string | undefined;
   const createdBy = req.query.createdBy as string | undefined;
   const dateRange = req.query.dateRange as string | undefined;
   const statusFilter = req.query.status as string | undefined;
@@ -104,8 +112,9 @@ router.get("/expenses", async (req, res) => {
   }
 
   if (!callerIsAdmin) {
-    // Nhân viên không phải admin luôn chỉ thấy chi tiêu của mình
-    filtered = filtered.filter(e => e.createdByStaffId === callerId);
+    // Nhân viên: chỉ thấy phiếu của chính mình + KHÔNG thấy chi phí Cá nhân (personal).
+    // Lọc qua helper để cùng một luật áp cho cả list lẫn detail (phòng thủ ở backend).
+    filtered = filterExpensesForCaller(filtered, { isAdmin: false, callerId });
   } else if (mine) {
     // Admin chọn xem của mình thôi
     filtered = filtered.filter(e => e.createdByStaffId === callerId);
@@ -130,6 +139,9 @@ router.get("/expenses", async (req, res) => {
   }
 
   if (category) filtered = filtered.filter(e => e.category === category);
+  // Lọc theo loại chi phí (costClass). Nhân viên không bao giờ nhận được phiếu Cá nhân
+  // (đã bị loại ở trên) nên ?costClass=personal với nhân viên luôn trả [] — không lộ dữ liệu.
+  if (costClassFilter) filtered = filtered.filter(e => matchesCostClass(e, costClassFilter));
   if (createdBy) filtered = filtered.filter(e => e.createdBy === createdBy);
   if (statusFilter) filtered = filtered.filter(e => e.status === statusFilter);
   if (dateRange) {
@@ -197,6 +209,8 @@ router.get("/expenses/:id", async (req, res) => {
   const id = parseInt(req.params.id);
   const [e] = await db.select().from(expensesTable).where(eq(expensesTable.id, id));
   if (!e) return res.status(404).json({ error: "Không tìm thấy" });
+  // Chi phí Cá nhân: chỉ admin được xem chi tiết (kể cả gọi API/URL trực tiếp).
+  if (!isAdmin && isPersonalClass(e.costClass)) return res.status(403).json({ error: "Không có quyền xem chi phí Cá nhân" });
   // Staff can only see their own expense detail
   if (!isAdmin && e.createdByStaffId !== callerId) return res.status(403).json({ error: "Không có quyền xem chi phí này" });
   const [enriched] = await enrichExpensesWithBookingInfo([e]);
@@ -217,14 +231,18 @@ router.post("/expenses", async (req, res) => {
   // lệch ngày giữa 2 cột (chỉ fallback expenseDate khi client legacy chỉ gửi
   // expense_date, không gửi expenseAt).
   const resolvedExpenseDate = expenseAt ? vnDateOf(expenseAtDate) : (expenseDate || vnDateOf(expenseAtDate));
-  // Task #363: nếu không truyền costClass → mặc định: gắn booking → direct, không gắn → operating
-  const ALLOWED_CLASS = ["direct", "operating", "depreciation", "interest", "loan_principal"];
-  const resolvedCostClass = ALLOWED_CLASS.includes(costClass) ? costClass : (bookingId ? "direct" : "operating");
+  // Task #363: nếu không truyền costClass → mặc định: gắn booking → direct, không gắn → operating.
+  // (resolveCostClass cũng chấp nhận "personal" — quyền tạo personal kiểm ở dưới.)
+  const resolvedCostClass = resolveCostClass(costClass, !!bookingId);
 
   // Nhân viên tự nộp → status LUÔN = "submitted", admin tạo → "approved"
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
   const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  // Chi phí Cá nhân (personal) chỉ admin/chủ studio được tạo — chặn ở backend, không chỉ ẩn FE.
+  if (isPersonalClass(resolvedCostClass) && !isAdmin) {
+    return res.status(403).json({ error: "Chỉ admin/chủ studio được tạo chi phí Cá nhân" });
+  }
   const status = isAdmin ? "approved" : "submitted";
   const createdByStaffId = isAdmin ? null : callerId;
 
@@ -269,11 +287,16 @@ router.put("/expenses/:id", async (req, res) => {
     // Staff can only edit their own submitted expenses
     const [existing] = await db.select().from(expensesTable).where(eq(expensesTable.id, id));
     if (!existing) return res.status(404).json({ error: "Không tìm thấy chi phí" });
+    // Phiếu Cá nhân: nhân viên không được sửa (kể cả gọi API trực tiếp).
+    if (isPersonalClass(existing.costClass)) return res.status(403).json({ error: "Không có quyền sửa chi phí Cá nhân" });
     if (existing.createdByStaffId !== callerId) return res.status(403).json({ error: "Không có quyền sửa chi phí này" });
     if (existing.status !== "submitted") return res.status(403).json({ error: "Chỉ có thể sửa chi phí chưa duyệt" });
   }
   const { type, category, amount, description, bookingId, paymentMethod, expenseDate, expenseAt, receiptUrl, receiptUrls, notes, bankName, bankAccount, createdBy, costClass } = req.body;
-  const ALLOWED_CLASS = ["direct", "operating", "depreciation", "interest", "loan_principal"];
+  // Nhân viên không được đổi loại chi phí sang Cá nhân.
+  if (isPersonalClass(costClass) && !isAdmin) {
+    return res.status(403).json({ error: "Chỉ admin/chủ studio được dùng loại chi phí Cá nhân" });
+  }
   const update: Record<string, unknown> = {};
   if (type !== undefined) update.type = type;
   if (category !== undefined) update.category = category;
@@ -281,7 +304,7 @@ router.put("/expenses/:id", async (req, res) => {
   if (description !== undefined) update.description = description;
   if (bookingId !== undefined) update.bookingId = bookingId || null;
   // Task #363: nếu client không truyền costClass mà có thay đổi bookingId → tự suy ra mặc định để khớp hợp đồng API.
-  if (costClass !== undefined && ALLOWED_CLASS.includes(costClass)) {
+  if (costClass !== undefined && isAllowedCostClass(costClass)) {
     update.costClass = costClass;
   } else if (bookingId !== undefined) {
     update.costClass = bookingId ? "direct" : "operating";
@@ -388,6 +411,8 @@ router.delete("/expenses/:id", async (req, res) => {
   if (!isAdmin) {
     const [existing] = await db.select().from(expensesTable).where(eq(expensesTable.id, id));
     if (!existing) return res.status(404).json({ error: "Không tìm thấy chi phí" });
+    // Phiếu Cá nhân: nhân viên không được xoá (kể cả gọi API trực tiếp).
+    if (isPersonalClass(existing.costClass)) return res.status(403).json({ error: "Không có quyền xoá chi phí Cá nhân" });
     if (existing.createdByStaffId !== callerId) return res.status(403).json({ error: "Không có quyền xoá chi phí này" });
     if (existing.status !== "submitted") return res.status(403).json({ error: "Chỉ có thể xoá chi phí chưa duyệt" });
   }

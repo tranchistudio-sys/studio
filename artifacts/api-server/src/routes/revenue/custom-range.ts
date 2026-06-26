@@ -18,7 +18,7 @@ router.get("/revenue/v2/custom-range", async (req, res) => {
 
   const bookingIds = new Set(rangeBookings.map(b => b.id));
 
-  const contractValue = rangeBookings.reduce((s, b) => s + (parseFloat(b.totalAmount) || 0), 0);
+  const contractValue = rangeBookings.reduce((s, b) => s + (b.netAmount || 0), 0); // NET (đã trừ giảm giá)
 
   // Task #394: "Đã thu" = tất cả payments có paidAt trong khoảng ngày, bao gồm ad_hoc — không filter theo booking_id cohort.
   // Dùng getPaymentDate() để nhất quán timezone với revenue/monthly.ts.

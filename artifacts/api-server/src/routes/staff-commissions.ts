@@ -48,31 +48,49 @@ router.get("/staff-commissions", async (req, res) => {
         b.shoot_date              AS event_date,
         c.name                    AS customer_name,
         b.total_amount::numeric   AS total_amount,
+        b.discount_amount::numeric AS discount_amount,
         b.paid_amount::numeric    AS paid_amount,
+        b.service_package_id      AS service_package_id,
         b.items
       FROM bookings b
       LEFT JOIN customers c ON c.id = b.customer_id
       WHERE jsonb_typeof(b.assigned_staff) = 'object'
         AND (b.assigned_staff->>'sale') ~ '^[0-9]+$'
         AND (b.assigned_staff->>'sale')::int = $1
+        AND b.deleted_at IS NULL
+        AND COALESCE(b.status, '') <> 'cancelled'
+    ),
+    -- Tầng trong: tính package_id (service_packages.id) từ item.serviceKey "pkg-{id}",
+    -- fallback bookings.service_package_id. (item.serviceId là services.id — KHÁC id-space.)
+    -- Tách subquery để package_id thấy được sb; LEFT JOIN cast ở tầng ngoài join theo nó.
+    item_rows AS (
+      SELECT
+        sb.id AS booking_id,
+        CASE
+          WHEN item->>'serviceKey' LIKE 'pkg-%'
+            THEN NULLIF(substring(item->>'serviceKey' FROM 5), '')::int
+          ELSE sb.service_package_id
+        END                                                         AS package_id,
+        COALESCE(item->>'serviceName', item->>'name', 'Gói')        AS package_name,
+        COALESCE(NULLIF(item->>'price','')::numeric, 0)             AS item_total
+      FROM sale_bookings sb,
+           jsonb_array_elements(sb.items) AS item
+      WHERE jsonb_typeof(sb.items) = 'array'
     ),
     items_expanded AS (
       SELECT
-        sb.id AS booking_id,
-        (item->>'serviceId')::int                                   AS package_id,
-        COALESCE(item->>'serviceName', item->>'name', 'Gói')        AS package_name,
-        COALESCE(NULLIF(item->>'totalPrice','')::numeric, 0)        AS item_total,
+        ir.booking_id,
+        ir.package_id,
+        ir.package_name,
+        ir.item_total,
         COALESCE(scr.amount::numeric, 0)                            AS rate_percent,
-        COALESCE(NULLIF(item->>'totalPrice','')::numeric, 0)
-          * COALESCE(scr.amount::numeric, 0) / 100                  AS item_forecast
-      FROM sale_bookings sb,
-           jsonb_array_elements(sb.items) AS item
+        ir.item_total * COALESCE(scr.amount::numeric, 0) / 100      AS item_forecast
+      FROM item_rows ir
       LEFT JOIN staff_cast_rates scr
         ON scr.staff_id = $1
        AND scr.role = 'sale'
        AND scr.rate_type = 'percent'
-       AND scr.package_id = NULLIF(item->>'serviceId','')::int
-      WHERE jsonb_typeof(sb.items) = 'array'
+       AND scr.package_id = ir.package_id
     ),
     booking_forecast AS (
       SELECT
@@ -108,6 +126,7 @@ router.get("/staff-commissions", async (req, res) => {
     event_date: string | null;
     customer_name: string | null;
     total_amount: string;
+    discount_amount: string | null;
     paid_amount: string;
     forecast: string;
     items_breakdown: Array<{
@@ -141,10 +160,13 @@ router.get("/staff-commissions", async (req, res) => {
 
   const items = bookings.map(b => {
     const totalAmount = Number(b.total_amount) || 0;
+    const discountAmount = Number(b.discount_amount) || 0;
+    // NET = giá gốc − giảm giá (clamp >= 0). Hoa hồng tính trên doanh thu NET.
+    const netAmount = Math.max(0, totalAmount - discountAmount);
     const paidAmount  = Number(b.paid_amount) || 0;
     const forecast    = Number(b.forecast) || 0;
-    // commissionRate = forecast / totalAmount (vd 0.05 = 5% trên doanh thu)
-    const commissionRate = totalAmount > 0 ? forecast / totalAmount : 0;
+    // commissionRate = forecast / NET (vd 0.05 = 5% trên doanh thu net); dùng phân bổ theo tiền ĐÃ THU.
+    const commissionRate = netAmount > 0 ? forecast / netAmount : 0;
     const payments = paymentsByBooking.get(b.id) || [];
 
     // Lọc theo tháng (nếu có)

@@ -1,7 +1,8 @@
 import { Router, type IRouter } from "express";
 import { db, pool } from "@workspace/db";
 import { bookingsTable, customersTable, paymentsTable, expensesTable, tasksTable, staffTable, servicePackagesTable, packageItemsTable, photoshopJobsTable, servicesTable, bookingChangeLogTable, contractsTable, bookingDressesTable, bookingItemsTable, staffJobEarningsTable, staffAllowancesTable, attendanceLogsTable } from "@workspace/db/schema";
-import { eq, and, desc, inArray, or, ilike, sql, asc, gte, lte, isNull } from "drizzle-orm";
+import { eq, and, desc, inArray, or, ilike, sql, asc, gte, lte, isNull, ne } from "drizzle-orm";
+import { isCollectedPayment, money } from "../lib/booking-money";
 import { verifyToken, getCallerRole } from "./auth";
 import { computeBookingEarnings } from "./job-earnings";
 import { emitNotification } from "./notifications";
@@ -62,7 +63,13 @@ async function recalcParentTotalFromChildren(parentId: number): Promise<number> 
   const children = await db
     .select({ totalAmount: bookingsTable.totalAmount })
     .from(bookingsTable)
-    .where(eq(bookingsTable.parentId, parentId));
+    // Nguồn tiền chuẩn: tổng hợp đồng cha chỉ gồm con CÒN HIỆU LỰC
+    // (bỏ con đã hủy + con trong thùng rác) để không thổi phồng tổng/công nợ cha.
+    .where(and(
+      eq(bookingsTable.parentId, parentId),
+      isNull(bookingsTable.deletedAt),
+      ne(bookingsTable.status, "cancelled"),
+    ));
   const newParentTotal = children.reduce((sum, c) => sum + parseFloat(c.totalAmount), 0);
   await db
     .update(bookingsTable)
@@ -213,8 +220,9 @@ router.get("/bookings", async (req, res) => {
   // ── Build paidByBookingId map (tổng payments theo booking_id, loại voided) ─
   const paidByBookingId: Record<number, number> = {};
   for (const p of allPayments) {
-    if (p.bookingId != null && (p.status ?? "active") !== "voided") {
-      paidByBookingId[p.bookingId] = (paidByBookingId[p.bookingId] ?? 0) + parseFloat(p.amount);
+    // Nguồn tiền chuẩn: "đã thu" loại phiếu hoàn (refund), phiếu hủy (voided), thu lẻ (ad_hoc).
+    if (p.bookingId != null && isCollectedPayment(p)) {
+      paidByBookingId[p.bookingId] = (paidByBookingId[p.bookingId] ?? 0) + money(p.amount);
     }
   }
 
@@ -765,8 +773,8 @@ router.get("/bookings/:id", async (req, res) => {
     .where(eq(tasksTable.bookingId, id));
 
   const paidAmount = payments
-    .filter((p) => (p.status ?? "active") !== "voided")
-    .reduce((s, p) => s + parseFloat(p.amount), 0);
+    .filter(isCollectedPayment)
+    .reduce((s, p) => s + money(p.amount), 0);
   const totalAmount = parseFloat(row.totalAmount);
   const discountAmt = parseFloat(row.discountAmount ?? "0");
   const totalExpenses = expenses.reduce((s, e) => s + parseFloat(e.amount), 0);
@@ -834,8 +842,8 @@ router.get("/bookings/:id", async (req, res) => {
     if (parentRow) {
       const parentPayments = await db.select().from(paymentsTable).where(eq(paymentsTable.bookingId, parentRow.id));
       const parentPaid = parentPayments
-    .filter((p) => (p.status ?? "active") !== "voided")
-    .reduce((s, p) => s + parseFloat(p.amount), 0);
+    .filter(isCollectedPayment)
+    .reduce((s, p) => s + money(p.amount), 0);
       const parentTotal = parseFloat(parentRow.totalAmount);
       const parentDiscount = parseFloat(parentRow.discountAmount ?? "0");
       parentContract = {

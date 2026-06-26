@@ -19,7 +19,7 @@ router.get("/revenue/stats", async (_req, res) => {
 
   function sumInPeriod(start: string, end: string) {
     const inPeriod = validBookings.filter(b => b.shootDate >= start && b.shootDate <= end);
-    const revenue = inPeriod.reduce((s, b) => s + (parseFloat(b.totalAmount) || 0), 0);
+    const revenue = inPeriod.reduce((s, b) => s + (b.netAmount || 0), 0); // NET (đã trừ giảm giá)
     let cast = 0, direct = 0;
     for (const b of inPeriod) {
       cast += castByBooking.get(b.id) ?? 0;

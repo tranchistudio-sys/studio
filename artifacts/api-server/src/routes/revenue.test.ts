@@ -32,6 +32,7 @@ function mkBooking(id: number, ymd: string, total: number, saleId: number | null
   return {
     id,
     totalAmount: String(total),
+    netAmount: total, // doanh thu NET (không giảm giá trong test ⇒ = total)
     assignedStaff: saleId == null ? null : { sale: saleId },
     createdAt: new Date(y, (m ?? 1) - 1, d ?? 1, 12, 0, 0),
   };

@@ -216,9 +216,13 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
   const bookingLabel = booking.packageType || items[0]?.serviceName || "Dịch vụ";
 
   // Task #476: photoshop earning chuyển sang module Hậu kỳ (photoshop_jobs) — bỏ khỏi booking-level path.
-  type BookingRole = "sale" | "marketing";
+  // MẢNG-4: KHÔNG persist hoa hồng SALE ở đây nữa. Hoa hồng sale = % cast theo gói
+  // (staff_cast_rates) × TIỀN ĐÃ THU, được tính realtime ở salary-estimate.ts (đã LUÔN bỏ
+  // qua row sale persisted) và staff-commissions.ts. Persist ở đây dùng SAI nguồn
+  // (staff_rate_prices) + SAI base (giá gốc) → ra số khác 2 đường kia, chỉ gây nhiễu ở
+  // GET /job-earnings. Giữ lại marketing (không dùng hoa_hong_*).
+  type BookingRole = "marketing";
   const bookingLevelRoles: Array<{ role: BookingRole; staffKey: string; taskKey: string }> = [
-    { role: "sale", staffKey: "sale", taskKey: (assigned.saleTask as string) || "mac_dinh" },
     { role: "marketing", staffKey: "marketing", taskKey: (assigned.marketingTask as string) || "mac_dinh" },
   ];
 
@@ -226,11 +230,9 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
     const staffId = assigned[staffKey] as number | undefined;
     if (!staffId) continue;
 
-    // For sale commission (hoa_hong_*): use commissionBase (excludes beauty)
-    const isCommission = taskKey.startsWith("hoa_hong_");
     const found = await resolveEarning(
       staffId, role, taskKey, firstServiceId, bookingTotal,
-      photoCount, isCommission ? commissionBase : undefined
+      photoCount, undefined
     );
     if (!found) continue;
 

@@ -1816,9 +1816,9 @@ function FixTestTab({
         </div>
       )}
 
-      {/* Khung chat test — cao để dễ đọc + dễ chụp bằng chứng. Mobile/tablet: 82vh (nhiều hội thoại
-          trước khi cuộn). Desktop: 75vh, tối thiểu 620px, tối đa 1120px (~gấp đôi mức cũ). */}
-      <div className="bg-white border rounded-xl flex flex-col h-[82vh] min-h-[480px] md:h-[75vh] md:min-h-[620px] md:max-h-[1120px]">
+      {/* Khung chat test — cao hơn cho dễ nhìn. Mobile/tablet: 88vh, tối thiểu 560px.
+          Desktop: 85vh, tối thiểu 760px, tối đa 1500px. */}
+      <div className="bg-white border rounded-xl flex flex-col h-[88vh] min-h-[560px] md:h-[85vh] md:min-h-[760px] md:max-h-[1500px]">
         <div className="px-4 py-2.5 border-b flex items-center justify-between">
           <h3 className="font-semibold text-sm flex items-center gap-2"><MessageSquare className="w-4 h-4 text-violet-600" /> Chat test — Lulu trả lời theo Version {testingVersion ?? "—"}</h3>
           {turns.length > 0 && (

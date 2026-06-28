@@ -1,5 +1,5 @@
 import { askClaudeForReply, resolveModel, type ClaudeHistoryItem } from "./claude-sale";
-import { formatLuluHumanChatMessages, type LuluChatChunk } from "./sale-human-chat";
+import { formatLuluHumanChatMessages, splitExactReplyMessages, type LuluChatChunk } from "./sale-human-chat";
 import {
   getSaleContext, resolvePriceImagesByCodes, wantsNewConcept, getPhotoIdeasBlock,
 } from "./sale-context";
@@ -211,13 +211,14 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
   const aiChunks: LuluChatChunk[] = reply.messageChunks.length > 0
     ? reply.messageChunks
     : (reply.raw ? [{ text: reply.raw, delayMs: 900 }] : [{ text: "(Lulu không trả về nội dung)", delayMs: 900 }]);
+  // GIỮ NGUYÊN câu admin gõ (KHÔNG .trim() để khỏi mất xuống dòng/đoạn) — chỉ cần có nội dung.
   const exactPinned = respOverride?.responseMode === "exact_reply" && (respOverride.editedText ?? "").trim()
-    ? (respOverride.editedText as string).trim() : null;
-  // EXACT REPLY: chia bong bóng đúng nhịp người thật NHƯNG giữ NGUYÊN chữ admin (không thêm/sửa,
-  // bỏ emoji theo cấu hình admin — formatter chỉ tách câu, không đổi từ).
-  const exactChunks = exactPinned ? formatLuluHumanChatMessages(exactPinned, { allowEmoji: false }) : [];
+    ? (respOverride.editedText as string) : null;
+  // EXACT REPLY ("nói y chang"): tách bong bóng THEO ĐOẠN (dòng trống), GIỮ NGUYÊN xuống dòng +
+  // chữ + emoji admin gõ. KHÔNG tách theo câu, KHÔNG gộp một dòng (xem splitExactReplyMessages).
+  const exactChunks = exactPinned ? splitExactReplyMessages(exactPinned) : [];
   const finalChunks: LuluChatChunk[] = exactPinned
-    ? (exactChunks.length ? exactChunks : [{ text: exactPinned, delayMs: 900 }])
+    ? (exactChunks.length ? exactChunks : [{ text: exactPinned.trim(), delayMs: 900 }])
     : aiChunks;
   const finalReply = finalChunks.map((c) => c.text);
   const finalEscalated = exactPinned ? false : wouldEscalate;

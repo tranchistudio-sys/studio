@@ -256,6 +256,9 @@ const ESCALATION_KEYWORDS: Array<{ re: RegExp; reason: string }> = [
   { re: /gi[ảa]m th[eê]m|gi[ảa]m gi[áa]|b[ớo]t (ch[uú]t|gi[áa]|th[eê]m)|r[ẻe] h[ơo]n|b[eê]n kia r[ẻe]|m[ắa]c qu[áa]|đ[ắa]t qu[áa]|\bdeal\b/i, reason: "Khách xin giảm giá / so sánh giá / than mắc" },
   // Hủy / dời lịch / hoàn cọc / phát sinh → cần nhân viên xác nhận.
   { re: /h[ủu]y l[ịi]ch|h[ủu]y đơn|d[ờo]i l[ịi]ch|đ[ổo]i l[ịi]ch|ho[àa]n c[ọo]c|ho[àa]n ti[eề]n|ph[áa]t sinh/i, reason: "Khách muốn hủy/dời lịch hoặc có phát sinh" },
+  // Phàn nàn / không hài lòng / bức xúc / tức giận → người thật xoa dịu, AI không tự xử lý khiếu nại.
+  // Lookahead (?![\p{L}]) chặn dương tính giả: "dịch vụ team", "quá team"… (cụm "te" lọt vào "team"/"test").
+  { re: /ph[àa]n n[àa]n|than phi[eề]n|khi[eế]u n[ạa]i|th[ấa]t v[ọo]ng|kh[ôo]ng h[àa]i l[òo]ng|d[ịi]ch v[ụu] (t[ệe]|k[ée]m)(?![\p{L}])|(t[ệe] qu[áa]|qu[áa] t[ệe])(?![\p{L}])|l[ừu]a (đ[ảa]o|d[ảa]o)|b[ứu]c x[úu]c|t[ứu]c gi[ậa]n|n[ổo]i gi[ậa]n/iu, reason: "Khách phàn nàn / không hài lòng / bức xúc / tức giận" },
 ];
 export function detectEscalation(text: string): string | null {
   for (const k of ESCALATION_KEYWORDS) if (k.re.test(text)) return k.reason;

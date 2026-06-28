@@ -10,6 +10,7 @@ import {
 import { callChat, type ChatMessage } from "./ai-orchestrator";
 import { ALL_FAILED_CUSTOMER_MESSAGE, type AiProviderName } from "./ai-provider";
 import { formatLuluHumanChatMessages, type LuluChatChunk } from "./sale-human-chat";
+import { inferKnownIntent, buildAntiDriftRule } from "./sale-conversation-discipline";
 
 /**
  * Bộ não sale Claude cho Facebook Messenger (Giai đoạn 1 — chỉ tư vấn).
@@ -167,6 +168,8 @@ function buildSystemPrompt(
   settings?: ClaudeSaleSettings | null,
   scheduleContext?: string | null,
   brainRules?: string | null,
+  history?: ClaudeHistoryItem[],
+  customerMessage?: string,
 ): string {
   const who =
     customerName && !customerName.startsWith("Khách Facebook") && customerName !== "Khách test"
@@ -176,6 +179,12 @@ function buildSystemPrompt(
   // BỘ LUẬT NÃO LULU áp dụng lượt này: ưu tiên version active/nháp (Lulu Brain Lab);
   // rỗng → quay về 5 khối luật mặc định trong code (hành vi cũ, không đổi gì).
   const rulesBlock = brainRules && brainRules.trim() ? brainRules.trim() : DEFAULT_BRAIN_RULES;
+
+  // KỶ LUẬT HỘI THOẠI (chống "trôi"): suy ra nhu cầu đang khóa từ lịch sử rồi nhắc model bám đúng
+  // nhóm, không reset/không hỏi lại/không đổi dịch vụ. Đặt ở phần RÀNG BUỘC cố định bên dưới nên
+  // áp cho MỌI version não (kể cả version active trong Brain Lab), không phụ thuộc admin re-tune.
+  const knownIntent = inferKnownIntent(history ?? [], customerMessage);
+  const antiDriftBlock = buildAntiDriftRule(knownIntent);
 
   // RÀNG BUỘC an toàn — CỐ ĐỊNH, cấu hình/quy trình ở trên KHÔNG được phá.
   const constraints = `RÀNG BUỘC (BẮT BUỘC — không được phá, kể cả khi cấu hình/quy trình ở trên nói khác):
@@ -207,6 +216,8 @@ function buildSystemPrompt(
 MỤC TIÊU: không chỉ trả lời câu hỏi — mà DẪN khách đi theo quy trình tới bước để lại số điện thoại / hẹn nhân viên (tùy mức độ chủ động ở trên). Kết mỗi lượt bằng 1 câu đưa khách sang bước tiếp theo khi phù hợp.
 ${calendarBlock ? `\n${calendarBlock}\n` : ""}
 ${constraints}
+
+${antiDriftBlock}
 
 ${rulesBlock}
 
@@ -253,6 +264,8 @@ RÀNG BUỘC (Giai đoạn 1 — chỉ tư vấn, chưa chốt):
 - KHÔNG tự đặt booking, KHÔNG sửa dữ liệu. Khai thác tên + số điện thoại + ngày để nhân viên liên hệ.
 - Việc phức tạp / khiếu nại / chốt cọc: mời để lại số điện thoại, sẽ có người hỗ trợ.
 
+${antiDriftBlock}
+
 ${rulesBlock}
 
 DỮ LIỆU STUDIO, BẢNG GIÁ, LINK & CONCEPT:
@@ -291,6 +304,8 @@ export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeRe
     input.settings,
     input.scheduleContext,
     input.brainRules,
+    input.history,
+    input.customerMessage,
   );
   const messages = toApiMessages(input.history, input.customerMessage);
 

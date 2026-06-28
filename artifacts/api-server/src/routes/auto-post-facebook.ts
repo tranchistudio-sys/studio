@@ -46,10 +46,12 @@ void ensureAutoPostSchema();
 
 const router: IRouter = Router();
 
+// Mở AutoPost Facebook cho MỌI nhân viên đã đăng nhập (quyết định của chủ studio).
+// Vẫn yêu cầu đăng nhập; KHÔNG còn bắt buộc vai trò admin.
 async function requireAdmin(req: Request, res: Response): Promise<boolean> {
   const role = await getCallerRole(req.headers.authorization);
-  if (role !== "admin") {
-    res.status(403).json({ error: "Chỉ admin được phép" });
+  if (!role) {
+    res.status(401).json({ error: "Chưa đăng nhập" });
     return false;
   }
   return true;
@@ -1223,7 +1225,7 @@ function drivePage(message: string, ok = false): string {
 // GET /autopost/drive/connect?token=<jwt>&redirectUri=<...> — bắt đầu OAuth (browser nav).
 router.get("/autopost/drive/connect", async (req: Request, res: Response) => {
   const role = await getCallerRole(`Bearer ${String(req.query.token ?? "")}`);
-  if (role !== "admin") { res.status(403).send(drivePage("Chỉ admin được phép kết nối Google Drive.")); return; }
+  if (!role) { res.status(403).send(drivePage("Vui lòng đăng nhập để kết nối Google Drive.")); return; }
   if (!getOAuthClientEnv()) {
     res.status(400).send(drivePage("Thiếu Client ID/Secret: đặt GOOGLE_DRIVE_CLIENT_ID/SECRET hoặc GOOGLE_CLIENT_ID/SECRET trong môi trường."));
     return;

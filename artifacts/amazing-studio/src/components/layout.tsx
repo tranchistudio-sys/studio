@@ -72,13 +72,14 @@ const ALL_NAV_ITEMS = [
 const FACEBOOK_NAV = [
   { href: "/facebook-inbox-ai",    label: "Inbox Facebook",     icon: MessageSquare,     adminOnly: false },
   // "Lulu Sale Test" đã gộp vào "Lulu Brain Lab" → tab "Sửa & Test Lulu" (1 nơi test duy nhất).
-  { href: "/claude-sale-settings", label: "Lulu Sale Settings", icon: SlidersHorizontal, adminOnly: true  },
+  // ⚙️ Mở toàn bộ nhóm Facebook & Sale cho NHÂN VIÊN (quyết định của chủ studio). Vẫn cần đăng nhập.
+  { href: "/claude-sale-settings", label: "Lulu Sale Settings", icon: SlidersHorizontal, adminOnly: false },
   { href: "/lulu-brain-lab",       label: "Lulu Brain Lab",     icon: Brain,             adminOnly: false },
-  { href: "/claude-sale-monitor",  label: "Lulu Sale Monitor",  icon: Activity,          adminOnly: true  },
-  { href: "/lulu-human-review",    label: "Câu hỏi lạ cần xử lý", icon: ShieldAlert,     adminOnly: true  },
-  { href: "/claude-sale-reengage", label: "Khách cần chăm lại", icon: RefreshCw,         adminOnly: true  },
-  { href: "/sale-learning",        label: "Sale Learning",      icon: Sparkles,          adminOnly: true  },
-  { href: "/auto-post-facebook",   label: "AutoPost Facebook",  icon: Share2,            adminOnly: true  },
+  { href: "/claude-sale-monitor",  label: "Lulu Sale Monitor",  icon: Activity,          adminOnly: false },
+  { href: "/lulu-human-review",    label: "Câu hỏi lạ cần xử lý", icon: ShieldAlert,     adminOnly: false },
+  { href: "/claude-sale-reengage", label: "Khách cần chăm lại", icon: RefreshCw,         adminOnly: false },
+  { href: "/sale-learning",        label: "Sale Learning",      icon: Sparkles,          adminOnly: false },
+  { href: "/auto-post-facebook",   label: "AutoPost Facebook",  icon: Share2,            adminOnly: false },
 ];
 
 const SECONDARY_NAV = [
@@ -106,8 +107,9 @@ const CMS_NAV: CmsNavItem[] = [
   { href: "/cms/pricing",    label: "Bảng giá",      icon: DollarSign, adminOnly: false, publicPath: "/bang-gia" },
   { href: "/cms/categories", label: "Cho thuê đồ",   icon: Shirt,      adminOnly: false, publicPath: "/cho-thue-do" },
   { href: "/cms/photo-ideas", label: "Ý tưởng chụp ảnh", icon: Lightbulb, adminOnly: false, publicPath: "/y-tuong-chup-anh" },
-  { href: "/cms/wedding-templates", label: "Cài đặt Thiệp cưới", icon: Heart, adminOnly: true, publicPath: "/thiep-cuoi-online" },
-  { href: "/cms/trash",      label: "Thùng rác CMS", icon: Trash2,     adminOnly: true },
+  // ⚙️ Mở quản lý Website (Thiệp cưới + Thùng rác CMS) cho NHÂN VIÊN (quyết định của chủ studio).
+  { href: "/cms/wedding-templates", label: "Cài đặt Thiệp cưới", icon: Heart, adminOnly: false, publicPath: "/thiep-cuoi-online" },
+  { href: "/cms/trash",      label: "Thùng rác CMS", icon: Trash2,     adminOnly: false },
 ];
 
 const SIMULATE_ROLES: { key: SimulateRole; label: string; icon: React.ElementType; color: string }[] = [

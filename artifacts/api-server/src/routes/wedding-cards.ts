@@ -161,10 +161,11 @@ async function ensureWeddingSchema() {
 ensureWeddingSchema().catch(err => console.error("[wedding-cards] ensureSchema failed:", err));
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+// Mở quản lý mẫu Thiệp cưới cho MỌI nhân viên đã đăng nhập (quyết định của chủ studio).
+// Vẫn yêu cầu đăng nhập (chống truy cập ẩn danh); KHÔNG còn bắt buộc vai trò admin.
 async function requireAdmin(req: Request, res: Response): Promise<boolean> {
   const role = await getCallerRole(req.headers.authorization);
   if (!role) { res.status(401).json({ error: "Chưa đăng nhập" }); return false; }
-  if (role !== "admin") { res.status(403).json({ error: "Chỉ admin được thao tác" }); return false; }
   return true;
 }
 

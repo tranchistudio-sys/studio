@@ -237,6 +237,53 @@ export function usePool(filters?: PoolFilters) {
   });
 }
 
+// ── Cây danh mục theo nguồn (tái sử dụng API CMS sẵn có — KHÔNG đổi DB) ─────────
+// Kho nội dung AutoPost gom từ 3 nguồn: gallery (Ảnh sản phẩm thật) · dress (Cho thuê đồ) ·
+// idea (Ý tưởng chụp ảnh). Mỗi nguồn dùng chung /api/cms/categories?type=... cho cây mẹ/con.
+export type CmsCategory = {
+  id: number;
+  type: string;
+  parentId: number | null;
+  name: string;
+  slug?: string | null;
+  coverImageUrl?: string | null;
+  sortOrder?: number;
+  isActive?: number | boolean;
+  productCount?: number;
+};
+
+export type CmsCatType = "gallery" | "dress" | "idea";
+
+export function useCmsCategories(type: CmsCatType) {
+  return useQuery({
+    queryKey: ["cms", "categories", type] as const,
+    queryFn: () => apGet<CmsCategory[]>(`/cms/categories?type=${type}`),
+    staleTime: 60_000,
+  });
+}
+
+// Map sourceItemId(string) → categoryId(number|null) cho từng nguồn, để gắn item kho vào
+// đúng danh mục cây (nhóm theo categoryId của bản ghi gốc — KHÔNG dùng field category text).
+type SrcRow = { id: number; categoryId: number | null };
+
+function rowsToCatMap(rows: SrcRow[] | undefined): Map<string, number | null> {
+  const m = new Map<string, number | null>();
+  for (const r of rows ?? []) m.set(String(r.id), r.categoryId ?? null);
+  return m;
+}
+
+export function useSourceCategoryMaps() {
+  const gallery = useQuery({ queryKey: ["cms", "albums", "catmap"] as const, queryFn: () => apGet<SrcRow[]>(`/cms/albums`), staleTime: 60_000 });
+  const dress = useQuery({ queryKey: ["dresses", "catmap"] as const, queryFn: () => apGet<SrcRow[]>(`/dresses`), staleTime: 60_000 });
+  const idea = useQuery({ queryKey: ["photo-ideas", "catmap"] as const, queryFn: () => apGet<SrcRow[]>(`/photo-ideas`), staleTime: 60_000 });
+  return {
+    gallery: rowsToCatMap(gallery.data),
+    dress: rowsToCatMap(dress.data),
+    idea: rowsToCatMap(idea.data),
+    isLoading: gallery.isLoading || dress.isLoading || idea.isLoading,
+  };
+}
+
 export function useSchedules() {
   return useQuery({ queryKey: K.schedules(), queryFn: () => apGet<Schedule[]>(`/autopost/schedules`) });
 }

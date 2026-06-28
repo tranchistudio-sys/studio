@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Share2, RefreshCw, Plus, Trash2, CheckCircle2, AlertTriangle, ExternalLink,
   Sparkles, Clock, History, Settings as SettingsIcon, Facebook, Loader2, X, Image as ImageIcon, Eye, EyeOff, Folder,
-  BookOpen, Wand2, Pencil, ArrowUp, ArrowDown, GripVertical, Scissors,
+  BookOpen, Wand2, Pencil, ArrowUp, ArrowDown, GripVertical, Scissors, Search, ListTree,
 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,10 @@ import {
 } from "@/lib/autopost-api";
 import { getImageSrc } from "@/lib/imageUtils";
 import { apiUrl } from "@/lib/api-base";
+import {
+  ContentTree, useContentTree, filterPoolBySelection, buildBreadcrumb, SOURCES,
+  type TreeSelection,
+} from "./autopost-content-tree";
 
 /**
  * AutoPost Facebook — trang quản trị 7 tab (Task 8). Chỉ admin (AdminRoute).
@@ -55,11 +59,6 @@ const CONTENT_TYPES: { value: string; label: string }[] = [
   { value: "bill", label: "Bill chốt đơn" },
   { value: "service", label: "Dịch vụ" },
   { value: "other", label: "Khác" },
-];
-const SOURCE_PRIORITIES = [
-  { value: "app_web", label: "App / Web" },
-  { value: "google_drive", label: "Google Drive" },
-  { value: "upload", label: "Upload thủ công" },
 ];
 // Phong cách viết caption (khớp preset backend: natural|emotional|elegant|fun|short).
 const STYLE_PRESETS: { value: string; label: string }[] = [
@@ -364,22 +363,30 @@ function PendingCard({ post, notify }: { post: Post; notify: Notify }) {
 // ─────────────────────────────── Tab: Kho nội dung ───────────────────────────
 
 function PoolTab({ notify, goPending }: { notify: Notify; goPending: () => void }) {
-  const [contentType, setContentType] = useState("all");
-  const [sourceType, setSourceType] = useState("all");
-  const filters = useMemo(
-    () => ({
-      contentType: contentType === "all" ? undefined : contentType,
-      sourceType: sourceType === "all" ? undefined : sourceType,
-    }),
-    [contentType, sourceType],
-  );
-  const { data: items, isLoading } = usePool(filters);
+  // Nạp TOÀN BỘ item kho (gồm cả item đang ẩn) để cây danh mục đếm đúng + cho ẩn/hiện.
+  const { data: items, isLoading } = usePool({ eligible: "all" });
+  const { cats, maps, isLoading: treeLoading } = useContentTree();
   const sync = useSyncPool();
   const syncDrive = useSyncDrive();
   const generate = useGenerate();
   const del = useDeletePoolItem();
   const update = useUpdatePoolItem();
   const [showUpload, setShowUpload] = useState(false);
+  const [selection, setSelection] = useState<TreeSelection>({ sourceKey: "gallery", categoryId: null });
+  const [search, setSearch] = useState("");
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  const allItems = items ?? [];
+  // Bên phải chỉ hiện item thuộc danh mục đang chọn; search lọc TRONG danh mục đó.
+  const inCategory = useMemo(() => filterPoolBySelection(allItems, selection, maps, cats), [allItems, selection, maps, cats]);
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return q ? inCategory.filter((it) => (it.title ?? "").toLowerCase().includes(q)) : inCategory;
+  }, [inCategory, search]);
+
+  const srcLabel = selection.sourceKey === "other" ? "Tải lên / Google Drive" : (SOURCES.find((s) => s.key === selection.sourceKey)?.label ?? "");
+  const srcCats = selection.sourceKey === "other" ? [] : cats[selection.sourceKey];
+  const catLabel = selection.sourceKey === "other" ? "" : selection.uncategorized ? "Chưa phân loại" : selection.categoryId != null ? buildBreadcrumb(srcCats, selection.categoryId) : "Tất cả";
 
   const onSync = async () => {
     try {
@@ -402,91 +409,116 @@ function PoolTab({ notify, goPending }: { notify: Notify; goPending: () => void 
       goPending();
     } catch (e) { notify(false, `Tạo bài lỗi: ${String((e as Error).message)}`); }
   };
+  const pick = (s: TreeSelection) => { setSelection(s); setDrawerOpen(false); };
+
+  const tree = <ContentTree items={allItems} cats={cats} maps={maps} selection={selection} onSelect={pick} />;
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
+      {/* Thanh công cụ: nút mở cây (mobile) + tìm kiếm + đồng bộ + thêm thủ công */}
       <div className="flex flex-wrap items-center gap-2">
-        <Select value={contentType} onValueChange={setContentType}>
-          <SelectTrigger className="flex-1 min-w-[130px] h-9 sm:w-[160px] sm:flex-none"><SelectValue placeholder="Loại nội dung" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Tất cả loại</SelectItem>
-            {CONTENT_TYPES.map((c) => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
-          </SelectContent>
-        </Select>
-        <Select value={sourceType} onValueChange={setSourceType}>
-          <SelectTrigger className="flex-1 min-w-[130px] h-9 sm:w-[160px] sm:flex-none"><SelectValue placeholder="Nguồn" /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">Tất cả nguồn</SelectItem>
-            {SOURCE_PRIORITIES.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
-          </SelectContent>
-        </Select>
-        <div className="hidden sm:block sm:flex-1" />
-        <Button variant="outline" className="flex-1 h-9 sm:flex-none" onClick={onSync} disabled={sync.isPending}>
-          {sync.isPending ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-1" />}
-          <span className="sm:hidden">App/web</span><span className="hidden sm:inline">Đồng bộ app/web</span>
+        <Button variant="outline" className="md:hidden h-9" onClick={() => setDrawerOpen(true)}>
+          <ListTree className="w-4 h-4 mr-1" /> Danh mục
         </Button>
-        <Button variant="outline" className="flex-1 h-9 sm:flex-none" onClick={onSyncDrive} disabled={syncDrive.isPending} title="Đồng bộ ảnh/video từ Google Drive">
-          {syncDrive.isPending ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <Folder className="w-4 h-4 mr-1" />}
-          <span className="sm:hidden">Drive</span><span className="hidden sm:inline">Đồng bộ Google Drive</span>
+        <div className="relative flex-1 min-w-[150px]">
+          <Search className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-neutral-400" />
+          <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Tìm trong danh mục đang chọn..." className="h-9 pl-8" />
+        </div>
+        <Button variant="outline" className="h-9" onClick={onSync} disabled={sync.isPending} title="Đồng bộ app/web">
+          {sync.isPending ? <Loader2 className="w-4 h-4 sm:mr-1 animate-spin" /> : <RefreshCw className="w-4 h-4 sm:mr-1" />}
+          <span className="hidden sm:inline">Đồng bộ app/web</span>
         </Button>
-        <Button className="flex-1 h-9 sm:flex-none" onClick={() => setShowUpload(true)}>
-          <Plus className="w-4 h-4 mr-1" /><span className="sm:hidden">Thêm</span><span className="hidden sm:inline">Thêm thủ công</span>
+        <Button variant="outline" className="h-9" onClick={onSyncDrive} disabled={syncDrive.isPending} title="Đồng bộ Google Drive">
+          {syncDrive.isPending ? <Loader2 className="w-4 h-4 sm:mr-1 animate-spin" /> : <Folder className="w-4 h-4 sm:mr-1" />}
+          <span className="hidden sm:inline">Google Drive</span>
+        </Button>
+        <Button className="h-9" onClick={() => setShowUpload(true)}>
+          <Plus className="w-4 h-4 sm:mr-1" /><span className="hidden sm:inline">Thêm thủ công</span>
         </Button>
       </div>
 
-      {isLoading ? <Spin /> : !items?.length ? (
-        <Empty text="Kho trống. Bấm 'Đồng bộ app/web' để lấy váy cưới / album / ý tưởng đang public." />
-      ) : (
-        <div className="rental-product-grid grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-2 sm:gap-3">
-          {items.map((it) => {
-            const price = fmtVnd(it.salePrice) || fmtVnd(it.price);
-            return (
-              <div key={it.id} className="gallery-card rental-dress-card concept-card group flex flex-col">
-                {/* Ảnh tỉ lệ 3/4 — giống card Cho thuê đồ */}
-                <div className="relative aspect-[3/4] bg-neutral-100 overflow-hidden">
-                  <Thumb url={it.images?.[0]} className="concept-card-image absolute inset-0 w-full h-full" />
-                  <span className="absolute top-1.5 left-1.5 z-10 text-[9px] sm:text-[10px] bg-white/85 text-neutral-700 px-1.5 py-0.5 rounded-full backdrop-blur-sm">
-                    {ctLabel(it.contentType)}
-                  </span>
-                  {it.images?.length > 0 && (
-                    <span className="absolute top-1.5 right-1.5 z-10 text-[9px] sm:text-[10px] bg-black/55 text-white px-1.5 py-0.5 rounded-full backdrop-blur-sm">
-                      {it.images.length} ảnh
-                    </span>
-                  )}
-                  {!it.isEligible && (
-                    <span className="absolute bottom-1.5 left-1.5 z-10 text-[10px] bg-black/60 text-white px-2 py-0.5 rounded-full backdrop-blur-sm">
-                      Đang ẩn
-                    </span>
-                  )}
-                </div>
-                {/* Thông tin + nút (gọn) */}
-                <div className="px-2 py-2 flex flex-col gap-1 flex-1 border-t border-neutral-100/80 bg-white">
-                  <p className="font-medium text-xs sm:text-sm leading-snug line-clamp-2" title={it.title}>{it.title}</p>
-                  {price ? <p className="text-[11px] sm:text-xs font-semibold text-rose-600 leading-tight">{price}</p> : null}
-                  <div className="flex-1" />
-                  <div className="flex items-center gap-1">
-                    <Button size="sm" className="flex-1 h-9 px-2 text-xs" onClick={() => onGenerate(it)} disabled={!it.isEligible || generate.isPending}>
-                      <Sparkles className="w-3.5 h-3.5 mr-1" /> Tạo bài
-                    </Button>
-                    <Button
-                      size="icon" variant="outline" className="h-9 w-9 shrink-0"
-                      title={it.isEligible ? "Ẩn khỏi chọn đăng" : "Cho phép đăng"}
-                      onClick={() => update.mutate({ id: it.id, patch: { isEligible: !it.isEligible } })}
-                    >
-                      {it.isEligible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                    </Button>
-                    <Button
-                      size="icon" variant="ghost" className="h-9 w-9 shrink-0 text-destructive"
-                      title="Xoá khỏi kho"
-                      onClick={() => { if (confirm("Xoá item khỏi kho?")) del.mutate(it.id); }}
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </Button>
+      <div className="flex gap-3 items-start">
+        {/* Cây nguồn + danh mục (desktop) */}
+        <aside className="hidden md:block w-64 shrink-0 border rounded-xl p-2 self-start sticky top-2 max-h-[calc(100vh-170px)] overflow-auto">
+          <p className="px-2 py-1 text-[11px] font-semibold text-neutral-500 uppercase tracking-wide">Nguồn nội dung</p>
+          {treeLoading ? <Spin /> : tree}
+        </aside>
+
+        {/* Nội dung của danh mục đang chọn */}
+        <div className="flex-1 min-w-0 space-y-3">
+          <div className="flex items-center gap-1.5 text-sm flex-wrap">
+            <span className="font-semibold text-neutral-800">{srcLabel || "—"}</span>
+            {catLabel && <><span className="text-neutral-400">›</span><span className="text-neutral-700">{catLabel}</span></>}
+            <span className="ml-1 text-xs text-neutral-400">({visible.length})</span>
+          </div>
+
+          {(isLoading || treeLoading) ? <Spin /> : !visible.length ? (
+            <Empty text={search ? "Không có nội dung khớp tìm kiếm trong danh mục này." : "Danh mục này chưa có nội dung. Bấm 'Đồng bộ app/web' để lấy về."} />
+          ) : (
+            <div className="rental-product-grid grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-2 sm:gap-3">
+              {visible.map((it) => {
+                const price = fmtVnd(it.salePrice) || fmtVnd(it.price);
+                return (
+                  <div key={it.id} className="gallery-card rental-dress-card concept-card group flex flex-col">
+                    <div className="relative aspect-[3/4] bg-neutral-100 overflow-hidden">
+                      <Thumb url={it.images?.[0]} className="concept-card-image absolute inset-0 w-full h-full" />
+                      <span className="absolute top-1.5 left-1.5 z-10 text-[9px] sm:text-[10px] bg-white/85 text-neutral-700 px-1.5 py-0.5 rounded-full backdrop-blur-sm">
+                        {ctLabel(it.contentType)}
+                      </span>
+                      {it.images?.length > 0 && (
+                        <span className="absolute top-1.5 right-1.5 z-10 text-[9px] sm:text-[10px] bg-black/55 text-white px-1.5 py-0.5 rounded-full backdrop-blur-sm">
+                          {it.images.length} ảnh
+                        </span>
+                      )}
+                      {!it.isEligible && (
+                        <span className="absolute bottom-1.5 left-1.5 z-10 text-[10px] bg-black/60 text-white px-2 py-0.5 rounded-full backdrop-blur-sm">
+                          Đang ẩn
+                        </span>
+                      )}
+                    </div>
+                    <div className="px-2 py-2 flex flex-col gap-1 flex-1 border-t border-neutral-100/80 bg-white">
+                      <p className="font-medium text-xs sm:text-sm leading-snug line-clamp-2" title={it.title}>{it.title}</p>
+                      {price ? <p className="text-[11px] sm:text-xs font-semibold text-rose-600 leading-tight">{price}</p> : null}
+                      <div className="flex-1" />
+                      <div className="flex items-center gap-1">
+                        <Button size="sm" className="flex-1 h-9 px-2 text-xs" onClick={() => onGenerate(it)} disabled={!it.isEligible || generate.isPending}>
+                          <Sparkles className="w-3.5 h-3.5 mr-1" /> Tạo bài
+                        </Button>
+                        <Button
+                          size="icon" variant="outline" className="h-9 w-9 shrink-0"
+                          title={it.isEligible ? "Ẩn khỏi chọn đăng" : "Cho phép đăng"}
+                          onClick={() => update.mutate({ id: it.id, patch: { isEligible: !it.isEligible } })}
+                        >
+                          {it.isEligible ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                        </Button>
+                        <Button
+                          size="icon" variant="ghost" className="h-9 w-9 shrink-0 text-destructive"
+                          title="Xoá khỏi kho"
+                          onClick={() => { if (confirm("Xoá item khỏi kho?")) del.mutate(it.id); }}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </Button>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-            );
-          })}
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Drawer cây danh mục (mobile) */}
+      {drawerOpen && (
+        <div className="fixed inset-0 z-50 md:hidden" role="dialog" aria-label="Cây danh mục">
+          <div className="absolute inset-0 bg-black/40" onClick={() => setDrawerOpen(false)} />
+          <div className="absolute left-0 top-0 bottom-0 w-[82%] max-w-[320px] bg-white shadow-xl flex flex-col">
+            <div className="flex items-center justify-between px-3 py-2.5 border-b">
+              <p className="text-sm font-semibold">Nguồn nội dung</p>
+              <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => setDrawerOpen(false)}><X className="w-4 h-4" /></Button>
+            </div>
+            <div className="flex-1 overflow-auto p-2">{treeLoading ? <Spin /> : tree}</div>
+          </div>
         </div>
       )}
 

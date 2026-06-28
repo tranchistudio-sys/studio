@@ -51,6 +51,41 @@ function authFetch(url: string, opts: RequestInit = {}): Promise<Response> {
   return fetch(url, { ...opts, headers });
 }
 
+// Nén 1 ảnh → data URL jpeg (≤1.5MB, cạnh dài ≤1600px). Dùng cho ảnh bằng chứng cọc.
+function compressImageToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Đọc file ảnh lỗi"));
+    reader.onload = ev => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Ảnh không hợp lệ"));
+      img.onload = () => {
+        const MAX_BYTES = 1.5 * 1024 * 1024;
+        const canvas = document.createElement("canvas");
+        let { width, height } = img;
+        const MAX_DIM = 1600;
+        if (width > MAX_DIM || height > MAX_DIM) {
+          const scale = MAX_DIM / Math.max(width, height);
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d")!.drawImage(img, 0, 0, width, height);
+        let quality = 0.85;
+        let compressed = canvas.toDataURL("image/jpeg", quality);
+        while (compressed.length * 0.75 > MAX_BYTES && quality > 0.3) {
+          quality -= 0.1;
+          compressed = canvas.toDataURL("image/jpeg", quality);
+        }
+        resolve(compressed);
+      };
+      img.src = ev.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
 // ─── SĐT: chỉ chữ số + nhận diện placeholder ("0", "chưa có"...) ────────────────
 function digitsOnly(raw: string | null | undefined): string {
   return String(raw ?? "").replace(/\D/g, "");
@@ -1317,6 +1352,19 @@ function ShowFormPanel({
   const initialDepositDateRef = useRef(initialDepositDate);
   const initialDepositTimeRef = useRef(initialDepositTime);
 
+  // CỌC (tạo show mới): ngày + giờ cọc mặc định theo THỜI ĐIỂM HIỆN TẠI, chỉ tự điền khi đang trống
+  // → không bao giờ đè giá trị user đã gõ. KHÔNG suy theo ngày chụp (dời show không đổi ngày cọc);
+  // muốn đổi thì sửa tay. Edit show có cọc cũ thì giữ nguyên (đã xử lý ở init + fetch riêng).
+  useEffect(() => {
+    if (isEdit) return;
+    if (parseFloat(deposit) > 0) {
+      const now = new Date();
+      if (!depositDate) setDepositDate(format(now, "yyyy-MM-dd"));
+      if (!depositTime) setDepositTime(format(now, "HH:mm"));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deposit, isEdit]);
+
   // Khi edit show, Booking type không kèm payments → fetch riêng để preload đúng
   // ngày + giờ cọc gốc. Cập nhật cả state lẫn ref để so sánh "user đã sửa?" chính xác,
   // tránh trường hợp ô trống → user nghĩ chưa có cọc → vô tình đè lên giá trị gốc.
@@ -1329,8 +1377,16 @@ function ShowFormPanel({
         if (!res.ok) return;
         const list = await res.json();
         if (cancelled || !Array.isArray(list)) return;
-        const dep = list.find((p: { paymentType?: string }) => p.paymentType === "deposit");
+        const dep = list.find((p: { paymentType?: string }) => p.paymentType === "deposit") as
+          { id?: number; paymentType?: string; paidDate?: string | null; paidAt?: string | null; proofImageUrl?: string | null; proofImageUrls?: string[] | null } | undefined;
         if (!dep) return;
+        // Nạp ảnh bằng chứng cọc đang có để form sửa show hiển thị lại (đã bị ẩn từ bản money-source-of-truth).
+        if (dep.id != null) setDepositPaymentId(Number(dep.id));
+        setEditDepositProofs(
+          Array.isArray(dep.proofImageUrls) && dep.proofImageUrls.length
+            ? dep.proofImageUrls
+            : (dep.proofImageUrl ? [dep.proofImageUrl] : []),
+        );
         let isoDate = "";
         let isoTime = "";
         if (dep.paidAt) {
@@ -1382,9 +1438,16 @@ function ShowFormPanel({
     return () => { cancelled = true; };
   }, [booking?.id]);
   const [depositProofImages, setDepositProofImages] = useState<string[]>([]);
+  // EDIT mode (show đã có cọc, số tiền khóa): vẫn cho XEM + THÊM ảnh bằng chứng cọc.
+  // Ảnh gắn thẳng vào payment cọc qua PATCH /payments/:id → KHÔNG đụng số tiền (tránh lệch tiền).
+  const [depositPaymentId, setDepositPaymentId] = useState<number | null>(null);
+  const [editDepositProofs, setEditDepositProofs] = useState<string[]>([]);
+  const [savingDepositProof, setSavingDepositProof] = useState(false);
+  const [depositProofError, setDepositProofError] = useState("");
   const [discount, setDiscount] = useState(booking?.discountAmount?.toString() ?? "0");
   const [notes, setNotes] = useState(booking?.notes ?? "");
-  const [photoCount, setPhotoCount] = useState<string>(() => String(booking?.photoCount ?? ""));
+  // Giữ lại giá trị photoCount cũ của show (để lưu lại không bị mất); ô nhập đã bỏ khỏi form.
+  const [photoCount] = useState<string>(() => String(booking?.photoCount ?? ""));
   const [surcharges, setSurcharges] = useState<SurchargeItem[]>(() => {
     const raw = booking?.surcharges ?? [];
     return raw.map((s: { name: string; amount: number }, i: number) => ({ id: `s${i}`, ...s }));
@@ -1749,6 +1812,55 @@ function ShowFormPanel({
       reader.readAsDataURL(file);
     });
     e.target.value = "";
+  };
+
+  // EDIT mode: ghi ảnh bằng chứng cọc thẳng vào payment cọc (CHỈ ảnh, số tiền giữ nguyên).
+  const patchDepositProofs = async (urls: string[]): Promise<boolean> => {
+    if (depositPaymentId == null) return false;
+    try {
+      const res = await authFetch(`${BASE}/api/payments/${depositPaymentId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ proofImageUrl: urls[0] ?? null, proofImageUrls: urls }),
+      });
+      return res.ok;
+    } catch { return false; }
+  };
+
+  const handleEditDepositProofAdd = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    // Chụp danh sách File NGAY (reset e.target.value bên dưới sẽ làm rỗng e.target.files).
+    const picked = e.target.files ? Array.from(e.target.files) : [];
+    e.target.value = "";
+    if (picked.length === 0 || depositPaymentId == null) return;
+    setDepositProofError("");
+    setSavingDepositProof(true);
+    try {
+      const compressed = await Promise.all(picked.map(compressImageToDataUrl));
+      const next = [...editDepositProofs, ...compressed].slice(0, 20);
+      if (!(await patchDepositProofs(next))) throw new Error("patch fail");
+      setEditDepositProofs(next);
+      qc.invalidateQueries({ queryKey: ["bookings"] });
+    } catch {
+      setDepositProofError("Lưu ảnh cọc chưa được, anh thử lại giúp em nha.");
+    } finally {
+      setSavingDepositProof(false);
+    }
+  };
+
+  const handleEditDepositProofRemove = async (idx: number) => {
+    if (depositPaymentId == null || savingDepositProof) return;
+    const next = editDepositProofs.filter((_, i) => i !== idx);
+    setDepositProofError("");
+    setSavingDepositProof(true);
+    try {
+      if (!(await patchDepositProofs(next))) throw new Error("patch fail");
+      setEditDepositProofs(next);
+      qc.invalidateQueries({ queryKey: ["bookings"] });
+    } catch {
+      setDepositProofError("Xóa ảnh chưa được, anh thử lại nha.");
+    } finally {
+      setSavingDepositProof(false);
+    }
   };
 
   const save = async () => {
@@ -2602,6 +2714,43 @@ function ShowFormPanel({
                     <span className="font-semibold text-emerald-600">{formatVND(actualPaid)}</span>
                   </div>
                   <p className="text-[11px] text-muted-foreground -mt-1">Tổng đã thu theo lịch sử thanh toán. Muốn thu thêm / chỉnh, dùng nút <b>Thu tiền</b> ở chi tiết show (không sửa ở đây để tránh lệch tiền).</p>
+                  {/* Ảnh bằng chứng cọc: xem lại + thêm (chỉ gắn ảnh vào payment cọc, KHÔNG đổi số tiền). */}
+                  <div className="space-y-1.5 pt-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs text-muted-foreground">🧾 Ảnh bằng chứng cọc:</span>
+                      {depositPaymentId != null ? (
+                        <button
+                          type="button"
+                          onClick={() => document.getElementById("edit-deposit-proof-input")?.click()}
+                          disabled={savingDepositProof || editDepositProofs.length >= 20}
+                          className={`h-8 px-3 rounded-lg text-xs font-medium border transition-all ${editDepositProofs.length > 0 ? "border-primary/30 bg-primary/10 text-primary" : "border-dashed border-border text-muted-foreground hover:border-primary/40 hover:bg-muted/20"} ${savingDepositProof ? "opacity-60 cursor-not-allowed" : ""}`}
+                        >
+                          {savingDepositProof ? "Đang lưu…" : <>+ Ảnh cọc {editDepositProofs.length > 0 && `(${editDepositProofs.length})`}</>}
+                        </button>
+                      ) : (
+                        <span className="text-[11px] text-muted-foreground">Chưa có phiếu cọc, thêm ảnh qua nút <b>Thu tiền</b> nha.</span>
+                      )}
+                    </div>
+                    {editDepositProofs.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {editDepositProofs.map((img, idx) => {
+                          const src = getImageSrc(img) || img;
+                          return (
+                            <div key={idx} className="relative rounded-xl overflow-hidden border border-border w-24 h-24">
+                              <a href={src} target="_blank" rel="noopener noreferrer" className="block w-full h-full">
+                                <img src={src} alt={`Ảnh cọc ${idx + 1}`} className="w-full h-full object-cover" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                              </a>
+                              <button type="button" onClick={() => handleEditDepositProofRemove(idx)} disabled={savingDepositProof} className="absolute top-0.5 right-0.5 w-5 h-5 rounded-full bg-black/60 text-white flex items-center justify-center disabled:opacity-50">
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {depositProofError && <p className="text-[11px] text-destructive">{depositProofError}</p>}
+                    <input id="edit-deposit-proof-input" type="file" accept="image/*" multiple className="hidden" onChange={handleEditDepositProofAdd} />
+                  </div>
                 </>
               ) : (
                 <div className="flex justify-between items-center gap-3">
@@ -2628,7 +2777,7 @@ function ShowFormPanel({
               )}
               {!showActualPaid && parseFloat(deposit) > 0 && (
                 <div className="space-y-1.5">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-xs text-muted-foreground whitespace-nowrap">Ngày cọc:</span>
                     <DateInput value={depositDate} onChange={setDepositDate} className="h-8 w-[170px]" />
                     <input
@@ -2664,17 +2813,8 @@ function ShowFormPanel({
             </div>
           </section>
 
-          <div className="flex items-center gap-2">
-            <label className="text-xs text-muted-foreground whitespace-nowrap flex-shrink-0">📸 Số tấm ảnh chỉnh:</label>
-            <input
-              type="number" min="0" step="1"
-              className="w-24 border border-input rounded-lg px-2 py-1.5 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 tabular-nums"
-              placeholder="0"
-              value={photoCount}
-              onChange={e => setPhotoCount(e.target.value)}
-            />
-            <span className="text-xs text-muted-foreground">tấm (dùng tính cast)</span>
-          </div>
+          {/* Đã bỏ ô "Số tấm ảnh chỉnh" khỏi form: studio không dùng cast theo số ảnh (không có rate per_photo).
+              Vẫn giữ photoCount khi lưu để KHÔNG xoá giá trị cũ của các show đã nhập trước đây. */}
           <textarea
             className="w-full border border-input rounded-xl px-3 py-2 text-sm bg-background resize-none focus:outline-none focus:ring-2 focus:ring-primary/30"
             rows={2} placeholder="Ghi chú nội bộ..."

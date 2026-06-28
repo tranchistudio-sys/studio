@@ -1816,8 +1816,9 @@ function FixTestTab({
         </div>
       )}
 
-      {/* Khung chat test */}
-      <div className="bg-white border rounded-xl flex flex-col" style={{ height: "min(64vh, 600px)" }}>
+      {/* Khung chat test — cao để dễ đọc + dễ chụp bằng chứng. Mobile/tablet: 82vh (nhiều hội thoại
+          trước khi cuộn). Desktop: 75vh, tối thiểu 620px, tối đa 1120px (~gấp đôi mức cũ). */}
+      <div className="bg-white border rounded-xl flex flex-col h-[82vh] min-h-[480px] md:h-[75vh] md:min-h-[620px] md:max-h-[1120px]">
         <div className="px-4 py-2.5 border-b flex items-center justify-between">
           <h3 className="font-semibold text-sm flex items-center gap-2"><MessageSquare className="w-4 h-4 text-violet-600" /> Chat test — Lulu trả lời theo Version {testingVersion ?? "—"}</h3>
           {turns.length > 0 && (
@@ -1931,12 +1932,12 @@ function FixTestTab({
           )}
         </div>
 
-        {/* Câu hỏi mẫu nhanh (điền vào ô nhập) */}
+        {/* Câu hỏi mẫu nhanh (điền vào ô nhập) — CUỘN NGANG 1 hàng để KHÔNG ăn chiều cao khung chat. */}
         {exampleChips.length > 0 && (
-          <div className="px-3 pt-2 flex flex-wrap gap-1.5">
+          <div className="px-3 pt-2 flex flex-nowrap gap-1.5 overflow-x-auto pb-1 [scrollbar-width:thin]">
             {exampleChips.map((tc) => (
               <button key={tc.id} onClick={() => setInput(tc.customerMessage)} disabled={sending}
-                className="text-[11px] bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded-full text-gray-600 disabled:opacity-50" title={tc.title}>{tc.customerMessage}</button>
+                className="shrink-0 whitespace-nowrap max-w-[220px] truncate text-[11px] bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded-full text-gray-600 disabled:opacity-50" title={tc.customerMessage}>{tc.customerMessage}</button>
             ))}
           </div>
         )}

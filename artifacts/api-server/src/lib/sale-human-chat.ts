@@ -173,3 +173,25 @@ export function formatLuluHumanChatMessages(text: string, opts: FormatOpts = {})
   // 4) Gắn delay theo vị trí.
   return chunks.map((c, i) => ({ text: c, delayMs: delayFor(i, c) }));
 }
+
+/**
+ * EXACT REPLY ("Tao muốn máy nói y chang câu này"): admin muốn Lulu nói ĐÚNG NGUYÊN VĂN
+ * câu đã ghim. KHÁC HẲN formatLuluHumanChatMessages: KHÔNG tách theo câu, KHÔNG bỏ emoji,
+ * KHÔNG gộp/tidy/sửa chữ — chỉ:
+ *   - Tách thành nhiều bong bóng THEO ĐOẠN (mỗi đoạn cách nhau ≥1 dòng trống = 1 bubble).
+ *   - GIỮ NGUYÊN xuống dòng đơn (\n) bên trong từng đoạn (render bằng white-space: pre-wrap).
+ * Nhờ vậy câu admin gõ nhiều dòng / nhiều đoạn hiện y chang, không bị gộp thành 1 dòng dài.
+ */
+export function splitExactReplyMessages(text: string): LuluChatChunk[] {
+  // Chuẩn hoá CRLF/CR → LF (KHÔNG phải "đổi xuống dòng thành 1 dòng").
+  const raw = (text ?? "").replace(/\r\n?/g, "\n");
+  // 1 dòng trống (có thể chứa space/tab) = ranh giới bubble; gộp nhiều dòng trống liên tiếp.
+  const paragraphs = raw
+    .split(/\n[ \t]*\n[ \t\n]*/)
+    .map((p) => p.replace(/^\n+|\n+$/g, "")) // bỏ \n thừa ở 2 ĐẦU đoạn; GIỮ \n bên trong
+    .filter((p) => p.trim().length > 0);
+  const blocks = paragraphs.length
+    ? paragraphs
+    : (raw.trim() ? [raw.replace(/^\n+|\n+$/g, "")] : []);
+  return blocks.map((t, i) => ({ text: t, delayMs: delayFor(i, t) }));
+}

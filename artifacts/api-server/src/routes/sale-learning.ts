@@ -13,17 +13,18 @@ import { ensureSalePlaybookTable, clearPlaybookCache } from "../lib/sale-playboo
 
 const router: IRouter = Router();
 
+// Mở Sale Learning cho MỌI nhân viên đã đăng nhập (quyết định của chủ studio).
+// Vẫn yêu cầu đăng nhập + tài khoản hợp lệ; KHÔNG còn bắt buộc vai trò admin.
 async function requireAdmin(req: Request, res: Response): Promise<{ id: number; name: string } | null> {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) {
     res.status(401).json({ error: "Chưa đăng nhập hoặc phiên hết hạn" });
     return null;
   }
-  const r = await pool.query(`SELECT name, role, roles FROM staff WHERE id = $1 AND is_active = 1`, [callerId]);
-  const u = r.rows[0] as { name?: string; role?: string; roles?: unknown } | undefined;
-  const isAdmin = u && (u.role === "admin" || (Array.isArray(u.roles) && u.roles.includes("admin")));
-  if (!isAdmin) {
-    res.status(403).json({ error: "Chỉ admin được dùng Sale Learning" });
+  const r = await pool.query(`SELECT name FROM staff WHERE id = $1 AND is_active = 1`, [callerId]);
+  const u = r.rows[0] as { name?: string } | undefined;
+  if (!u) {
+    res.status(401).json({ error: "Tài khoản không hợp lệ" });
     return null;
   }
   return { id: callerId, name: u?.name ?? `#${callerId}` };

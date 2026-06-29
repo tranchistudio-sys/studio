@@ -292,6 +292,9 @@ export function usePosts(status?: string) {
   return useQuery({
     queryKey: K.posts(status),
     queryFn: () => apGet<Post[]>(`/autopost/posts${status ? `?status=${encodeURIComponent(status)}` : ""}`),
+    // Còn bài đang viết caption ('generating') → tự refetch mỗi 3s cho tới khi xong/lỗi.
+    refetchInterval: (query) =>
+      (((query.state.data as Post[] | undefined) ?? []).some((p) => p.status === "generating") ? 3000 : false),
   });
 }
 
@@ -436,8 +439,18 @@ export function useDeletePoolItem() {
 export function useGenerate() {
   const qc = useQueryClient();
   return useMutation({
+    // QUEUE: tạo bài 'generating' tức thì, trả về NGAY; AI viết caption ở nền.
     mutationFn: (body: { poolId: number; scheduleId?: number; slotId?: number; imageCount?: number; style?: string; captionCount?: number; styleSampleIds?: number[] }) =>
-      apPost<Post>(`/autopost/posts/generate`, body),
+      apPost<Post>(`/autopost/posts/generate-async`, body),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["autopost", "posts"] }),
+  });
+}
+
+// "Tạo lại" caption cho bài bị lỗi ('caption_failed') → đưa về 'generating', viết lại ở nền.
+export function useRetryCaption() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: number) => apPost<Post>(`/autopost/posts/${id}/retry-caption`),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["autopost", "posts"] }),
   });
 }

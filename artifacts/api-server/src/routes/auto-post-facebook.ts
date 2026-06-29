@@ -7,7 +7,7 @@ import { ensureAutoPostSchema } from "../lib/autopost-schema";
 import { syncAppWebPool, addManualPoolItem } from "../lib/autopost-pool";
 import { generateCaptions } from "../lib/autopost-caption";
 import { verifyPageToken, MAX_PHOTOS } from "../lib/facebook-page-publish";
-import { publishPostNow } from "../autopost-scheduler";
+import { publishPostNow, sweepStuckGeneratingPosts } from "../autopost-scheduler";
 import {
   syncGoogleDrivePool,
   verifyDriveConnection,
@@ -353,6 +353,83 @@ const POST_SELECT = `
     FROM autopost_posts p
     LEFT JOIN autopost_content_pool cp ON cp.id = p.content_pool_id`;
 
+// ─────────────────────────────────────────────────────────────────────────────
+// AutoPost Queue — viết caption ở NỀN cho bài đang 'generating'.
+// runCaptionJob chạy fire-and-forget SAU khi đã trả response cho client; nó CHỈ
+// cập nhật bài còn ở trạng thái 'generating' (guard `AND status='generating'`) để
+// không đua với sweep / thao tác admin. KHÔNG bao giờ throw ra ngoài.
+//   thành công → 'pending_review' (+caption) ; thất bại/exception → 'caption_failed'.
+// ─────────────────────────────────────────────────────────────────────────────
+type CaptionJobOpts = {
+  item: ReturnType<typeof poolRowToCaptionItem>;
+  tone?: string;
+  bannedWords?: string[];
+  wantCaptions: number;
+  maxVisionImages: number;
+  style?: string;
+  styleSampleIds?: number[];
+  notifyTitle?: string;
+};
+
+async function markCaptionFailed(postId: number, reason: string): Promise<void> {
+  await pool
+    .query(
+      `UPDATE autopost_posts
+          SET status = 'caption_failed', error_message = $2, updated_at = now()
+        WHERE id = $1 AND status = 'generating'`,
+      [postId, reason.slice(0, 500)],
+    )
+    .catch(() => {});
+}
+
+async function runCaptionJob(postId: number, o: CaptionJobOpts): Promise<void> {
+  try {
+    const samples = Array.isArray(o.styleSampleIds) && o.styleSampleIds.length
+      ? await getSamplesByIds(o.styleSampleIds.map(Number))
+      : await pickRelevantSamples({ topicKey: topicForContentType(o.item.contentType), limit: 4 });
+    const styleBlock = buildStyleBlock(samples);
+
+    const result = await generateCaptions(o.item, {
+      tone: o.tone,
+      bannedWords: o.bannedWords,
+      styleBlock,
+      captionCount: o.wantCaptions,
+      maxVisionImages: o.maxVisionImages,
+      style: o.style,
+    });
+    if (!result.ok) {
+      await markCaptionFailed(postId, String(result.reason || "caption_failed"));
+      return;
+    }
+
+    const captionOptions = result.captions.map((c) => ({ text: c.text, flags: c.flags }));
+    const upd = await pool.query(
+      `UPDATE autopost_posts
+          SET caption_options = $2::jsonb, caption_recommended_index = $3, ai_model = $4,
+              vision_image_count = $5, used_sample_ids = $6::jsonb,
+              status = 'pending_review', error_message = NULL, updated_at = now()
+        WHERE id = $1 AND status = 'generating'
+        RETURNING id`,
+      [postId, JSON.stringify(captionOptions), result.recommendedIndex, result.provider,
+       result.visionImageCount, JSON.stringify(samples.map((s) => s.id))],
+    );
+    // Chỉ báo "bài chờ duyệt" nếu thực sự chuyển trạng thái (không bị sweep/huỷ trước đó).
+    if (upd.rows[0]) {
+      emitNotification({
+        staffId: null,
+        type: "autopost_pending",
+        priority: "normal",
+        title: "AutoPost: bài chờ duyệt",
+        message: o.notifyTitle ?? o.item.title,
+        targetModule: "auto-post-facebook",
+        targetId: String(postId),
+      });
+    }
+  } catch (e) {
+    await markCaptionFailed(postId, String(e));
+  }
+}
+
 // POST /autopost/posts/generate — sinh caption AI cho 1 item pool → bài chờ duyệt.
 router.post("/autopost/posts/generate", async (req: Request, res: Response) => {
   if (!(await requireAdmin(req, res))) return;
@@ -466,6 +543,133 @@ router.post("/autopost/posts/generate", async (req: Request, res: Response) => {
   }
 });
 
+// POST /autopost/posts/generate-async — TẠO BÀI TỨC THÌ (status 'generating'), trả
+// về NGAY (không chờ AI), rồi viết caption ở NỀN qua runCaptionJob → 'pending_review'
+// (lỗi → 'caption_failed' có nút "Tạo lại"). Đây là flow của nút "Tạo bài".
+router.post("/autopost/posts/generate-async", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const { poolId, scheduleId, slotId, imageCount, captionCount, styleSampleIds, style } = req.body ?? {};
+
+    // (1) Item pool (phải tồn tại & is_eligible).
+    const poolR = await pool.query(`SELECT * FROM autopost_content_pool WHERE id = $1`, [Number(poolId)]);
+    const row = poolR.rows[0] as any;
+    if (!row) { res.status(404).json({ error: "Không tìm thấy item trong pool" }); return; }
+    if (!row.is_eligible) { res.status(400).json({ error: "Item không đủ điều kiện đăng" }); return; }
+
+    // (2) Settings → tone + bannedWords + defaultPageId + số caption.
+    const cfgR = await pool.query(`SELECT config FROM autopost_settings WHERE id = 1`);
+    const cfg = (cfgR.rows[0]?.config as any) ?? {};
+    const tone = typeof cfg.tone === "string" ? cfg.tone : undefined;
+    const bannedWords = Array.isArray(cfg.bannedWords) ? cfg.bannedWords : undefined;
+    const opcfg = await getAutopostConfig();
+    const wantCaptions = Math.max(1, Math.min(6, Number(captionCount) || opcfg.captionOptionsPerPost));
+
+    // (3) Item + ảnh + page id (KHÔNG gọi AI ở đây).
+    const item = poolRowToCaptionItem(row);
+    const images = clampImages(item.images, Math.min(Number(imageCount) || DEFAULT_POST_IMAGES, MAX_PHOTOS));
+    let pageId: string | null = (cfg.defaultPageId as string | undefined) ?? null;
+    if (scheduleId) {
+      const schR = await pool.query(`SELECT page_id FROM autopost_schedules WHERE id = $1`, [Number(scheduleId)]);
+      if (schR.rows[0]?.page_id) pageId = schR.rows[0].page_id;
+    }
+    const generatedBy = verifyToken(req.headers.authorization);
+
+    // (4) INSERT bài 'generating' (caption rỗng) — runCaptionJob sẽ điền sau.
+    const ins = await pool.query(
+      `INSERT INTO autopost_posts
+         (content_pool_id, schedule_id, slot_id, page_id, content_type, images,
+          caption_options, caption_recommended_index, status, image_hash,
+          source_type, source_item_id, generated_by, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6::jsonb,
+               '[]'::jsonb, NULL, 'generating', $7,
+               $8, $9, $10, now())
+       RETURNING id`,
+      [
+        row.id,
+        scheduleId ? Number(scheduleId) : null,
+        slotId ? Number(slotId) : null,
+        pageId,
+        item.contentType,
+        JSON.stringify(images),
+        images[0] ? sha1(images[0]) : null,
+        row.source_type ?? null,
+        row.source_item_id ?? null,
+        generatedBy,
+      ],
+    );
+    const newId = (ins.rows[0] as any).id;
+
+    // (5) Trả bài 'generating' NGAY (UI hiện "Đang viết caption…").
+    const out = await pool.query(`${POST_SELECT} WHERE p.id = $1`, [newId]);
+    res.json(out.rows[0]);
+
+    // (6) Viết caption ở NỀN (fire-and-forget; tự đổi trạng thái khi xong/lỗi).
+    void runCaptionJob(newId, {
+      item, tone, bannedWords, wantCaptions,
+      maxVisionImages: opcfg.maxVisionImagesPerPost,
+      style: typeof style === "string" ? style : undefined,
+      styleSampleIds: Array.isArray(styleSampleIds) ? styleSampleIds.map(Number) : undefined,
+    });
+  } catch (e) {
+    if (!res.headersSent) res.status(500).json({ error: String(e) });
+  }
+});
+
+// POST /autopost/posts/:id/retry-caption — thử viết lại caption cho bài 'caption_failed'.
+// Đưa về 'generating', trả về NGAY, rồi chạy lại runCaptionJob ở nền (nút "Tạo lại").
+router.post("/autopost/posts/:id/retry-caption", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const id = Number(req.params.id);
+    const pr = await pool.query(
+      `SELECT id, content_pool_id, content_type, images, status FROM autopost_posts WHERE id = $1`,
+      [id],
+    );
+    const post = pr.rows[0] as any;
+    if (!post) { res.status(404).json({ error: "Không tìm thấy bài" }); return; }
+    if (post.status !== "caption_failed") {
+      res.status(400).json({ error: "Chỉ tạo lại được bài bị lỗi caption" });
+      return;
+    }
+
+    // Item: ưu tiên pool item (đủ giá/link); fallback dữ liệu của chính bài.
+    let item: ReturnType<typeof poolRowToCaptionItem> | null = null;
+    if (post.content_pool_id) {
+      const poolR = await pool.query(`SELECT * FROM autopost_content_pool WHERE id = $1`, [post.content_pool_id]);
+      if (poolR.rows[0]) item = poolRowToCaptionItem(poolR.rows[0]);
+    }
+    if (!item) {
+      item = poolRowToCaptionItem({ content_type: post.content_type, title: `Bài #${id}`, images: post.images });
+    }
+
+    const cfgR = await pool.query(`SELECT config FROM autopost_settings WHERE id = 1`);
+    const cfg = (cfgR.rows[0]?.config as any) ?? {};
+    const tone = typeof cfg.tone === "string" ? cfg.tone : undefined;
+    const bannedWords = Array.isArray(cfg.bannedWords) ? cfg.bannedWords : undefined;
+    const opcfg = await getAutopostConfig();
+    const wantCaptions = Math.max(1, Math.min(6, opcfg.captionOptionsPerPost));
+
+    // Đưa về 'generating' (guard: chỉ khi đang 'caption_failed' → chống double-click).
+    const upd = await pool.query(
+      `UPDATE autopost_posts SET status = 'generating', error_message = NULL, updated_at = now()
+        WHERE id = $1 AND status = 'caption_failed' RETURNING id`,
+      [id],
+    );
+    if (!upd.rows[0]) { res.status(409).json({ error: "Bài đã đổi trạng thái" }); return; }
+
+    const out = await pool.query(`${POST_SELECT} WHERE p.id = $1`, [id]);
+    res.json(out.rows[0]);
+
+    void runCaptionJob(id, {
+      item, tone, bannedWords, wantCaptions,
+      maxVisionImages: opcfg.maxVisionImagesPerPost,
+    });
+  } catch (e) {
+    if (!res.headersSent) res.status(500).json({ error: String(e) });
+  }
+});
+
 // POST /autopost/posts/:id/regenerate — viết lại caption cho bài CHỜ DUYỆT theo
 // phong cách/mood (Tạo lại / Ngắn hơn / Tình hơn / Vui hơn). Cập nhật caption_options,
 // KHÔNG đổi status. Chỉ áp dụng cho bài chưa duyệt.
@@ -539,9 +743,16 @@ router.get("/autopost/posts", async (req: Request, res: Response) => {
     const params: unknown[] = [];
     let whereSql = "";
     if (status) {
-      if (!isValidStatus(status)) { res.status(400).json({ error: "status không hợp lệ" }); return; }
-      params.push(status);
-      whereSql = `WHERE p.status = $${params.length}`;
+      // Hỗ trợ NHIỀU status ngăn cách bởi dấu phẩy (vd "pending_review,generating,caption_failed").
+      const wanted = status.split(",").map((s) => s.trim()).filter(Boolean);
+      if (!wanted.length || !wanted.every((s) => isValidStatus(s))) {
+        res.status(400).json({ error: "status không hợp lệ" }); return;
+      }
+      // Tự chữa bài kẹt 'generating' quá lâu mỗi khi tab có theo dõi 'generating'
+      // (hoạt động kể cả khi scheduler đang TẮT).
+      if (wanted.includes("generating")) await sweepStuckGeneratingPosts().catch(() => {});
+      params.push(wanted);
+      whereSql = `WHERE p.status = ANY($${params.length})`;
     }
     const r = await pool.query(
       `${POST_SELECT} ${whereSql} ORDER BY p.created_at DESC LIMIT 300`,

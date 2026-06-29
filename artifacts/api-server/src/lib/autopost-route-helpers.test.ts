@@ -14,11 +14,21 @@ describe("isValidStatus", () => {
     expect(isValidStatus("pending_review")).toBe(true);
     expect(isValidStatus("posted")).toBe(true);
   });
+  it("accepts the async-queue statuses", () => {
+    expect(isValidStatus("generating")).toBe(true);
+    expect(isValidStatus("caption_failed")).toBe(true);
+  });
   it("rejects unknown / non-string", () => {
     expect(isValidStatus("bogus")).toBe(false);
     expect(isValidStatus("")).toBe(false);
     expect(isValidStatus(123)).toBe(false);
     expect(isValidStatus(null)).toBe(false);
+  });
+  it("validates each item of a comma-separated status list (GET /posts behaviour)", () => {
+    const ok = "pending_review,generating,caption_failed".split(",").map((s) => s.trim()).filter(Boolean);
+    expect(ok.every((s) => isValidStatus(s))).toBe(true);
+    const bad = "pending_review,bogus".split(",").map((s) => s.trim()).filter(Boolean);
+    expect(bad.every((s) => isValidStatus(s))).toBe(false);
   });
 });
 

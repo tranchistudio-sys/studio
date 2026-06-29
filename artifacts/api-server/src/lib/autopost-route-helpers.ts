@@ -9,7 +9,9 @@ import { createHash } from "node:crypto";
 export const POST_STATUSES = [
   "unused",
   "draft_ai",
+  "generating",      // đang viết caption ở nền (queue) — chưa có caption
   "pending_review",
+  "caption_failed",  // viết caption thất bại — cho phép bấm "Tạo lại"
   "approved",
   "scheduled",
   "posting",

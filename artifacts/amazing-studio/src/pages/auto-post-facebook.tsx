@@ -21,7 +21,7 @@ import {
 import {
   usePool, useSchedules, usePosts, useSettings,
   useSyncPool, useUploadPoolItem, useUpdatePoolItem, useDeletePoolItem,
-  useGenerate, useApprove, useSkipPost, useRetryPost, usePublishNow,
+  useGenerate, useApprove, useSkipPost, useRetryPost, useRetryCaption, usePublishNow,
   useSaveSchedule, useToggleSchedule, useDeleteSchedule, useSaveSettings, useTestFacebook,
   useSyncDrive, useTestDrive, useDriveStatus,
   useStyleSamples, useSaveStyleSample, useDeleteStyleSample, useRegeneratePost, useOcrStyleImage,
@@ -219,14 +219,80 @@ function Spin() {
 // ─────────────────────────────── Tab: Bài chờ duyệt ──────────────────────────
 
 function PendingTab({ notify }: { notify: Notify }) {
-  const { data: posts, isLoading } = usePosts("pending_review");
+  // Theo dõi cả 3 trạng thái của queue: đang viết / lỗi / đã có caption chờ duyệt.
+  // usePosts tự refetch mỗi 3s khi còn bài 'generating'.
+  const { data: posts, isLoading } = usePosts("pending_review,generating,caption_failed");
   if (isLoading) return <Spin />;
-  // Chỉ hiện bài có caption hợp lệ (phòng dữ liệu hỏng/sửa tay DB).
-  const valid = (posts ?? []).filter((p) => Array.isArray(p.captionOptions) && p.captionOptions.length > 0);
-  if (!valid.length) return <Empty text="Chưa có bài nào chờ duyệt. Vào 'Kho nội dung' → 'Tạo bài' để Lulu viết caption." />;
+  const all = posts ?? [];
+  const generating = all.filter((p) => p.status === "generating");
+  const failed = all.filter((p) => p.status === "caption_failed");
+  // Bài duyệt được: pending_review + có caption hợp lệ (phòng dữ liệu hỏng/sửa tay DB).
+  const ready = all.filter((p) => p.status === "pending_review" && Array.isArray(p.captionOptions) && p.captionOptions.length > 0);
+
+  if (!generating.length && !failed.length && !ready.length) {
+    return <Empty text="Chưa có bài nào chờ duyệt. Vào 'Kho nội dung' → 'Tạo bài' để Lulu viết caption." />;
+  }
   return (
-    <div className="grid gap-4 md:grid-cols-2">
-      {valid.map((p) => <PendingCard key={p.id} post={p} notify={notify} />)}
+    <div className="space-y-4">
+      {(generating.length > 0 || failed.length > 0) && (
+        <div className="grid gap-3 md:grid-cols-2">
+          {generating.map((p) => <GeneratingCard key={p.id} post={p} />)}
+          {failed.map((p) => <FailedCard key={p.id} post={p} notify={notify} />)}
+        </div>
+      )}
+      {ready.length > 0 && (
+        <div className="grid gap-4 md:grid-cols-2">
+          {ready.map((p) => <PendingCard key={p.id} post={p} notify={notify} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Bài đang viết caption ở nền — spinner + "Đang viết caption…". Danh sách tự refetch mỗi 3s.
+function GeneratingCard({ post }: { post: Post }) {
+  return (
+    <div className="rounded-2xl border bg-card p-4 flex gap-3 items-center">
+      <Thumb url={post.images?.[0]} className="w-16 h-16 rounded-xl flex-shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-semibold truncate">{post.poolTitle ?? `Bài #${post.id}`}</span>
+          <Badge variant="secondary">{ctLabel(post.contentType)}</Badge>
+          {(post.images?.length ?? 0) >= 1 && <Badge variant="outline">{post.images!.length} ảnh</Badge>}
+        </div>
+        <p className="text-sm text-muted-foreground mt-1 inline-flex items-center gap-1.5">
+          <Loader2 className="w-4 h-4 animate-spin" /> Đang viết caption…
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// Bài viết caption thất bại — báo lỗi + nút "Tạo lại" (gọi lại runCaptionJob ở nền).
+function FailedCard({ post, notify }: { post: Post; notify: Notify }) {
+  const retry = useRetryCaption();
+  const onRetry = async () => {
+    try { await retry.mutateAsync(post.id); notify(true, `Đang viết lại caption cho bài #${post.id}…`); }
+    catch (e) { notify(false, `Tạo lại lỗi: ${String((e as Error).message)}`); }
+  };
+  return (
+    <div className="rounded-2xl border border-red-200 bg-red-50/50 p-4 flex gap-3 items-center">
+      <Thumb url={post.images?.[0]} className="w-16 h-16 rounded-xl flex-shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-semibold truncate">{post.poolTitle ?? `Bài #${post.id}`}</span>
+          <Badge variant="secondary">{ctLabel(post.contentType)}</Badge>
+        </div>
+        <p className="text-sm text-red-600 mt-1 inline-flex items-center gap-1.5">
+          <AlertTriangle className="w-4 h-4" /> Viết caption thất bại
+        </p>
+        {post.errorMessage && (
+          <p className="text-[11px] text-muted-foreground mt-0.5 line-clamp-2" title={post.errorMessage}>{post.errorMessage}</p>
+        )}
+      </div>
+      <Button size="sm" variant="outline" className="h-9 shrink-0" disabled={retry.isPending} onClick={onRetry}>
+        {retry.isPending ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-1" />} Tạo lại
+      </Button>
     </div>
   );
 }
@@ -405,7 +471,7 @@ function PoolTab({ notify, goPending }: { notify: Notify; goPending: () => void 
   const onGenerate = async (it: PoolItem) => {
     try {
       await generate.mutateAsync({ poolId: it.id });
-      notify(true, `Đã tạo bài chờ duyệt từ "${it.title}". Mở tab 'Bài chờ duyệt' để xem.`);
+      notify(true, `Đang viết caption cho "${it.title}"… Xem tiến độ ở tab 'Bài chờ duyệt'.`);
       goPending();
     } catch (e) { notify(false, `Tạo bài lỗi: ${String((e as Error).message)}`); }
   };

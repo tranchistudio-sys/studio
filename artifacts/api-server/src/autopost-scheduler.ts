@@ -472,7 +472,33 @@ export async function generatePendingPosts(nowMs: number = Date.now()): Promise<
 // ─────────────────────────── TICK + BOOT ─────────────────────────────────────
 
 /** Một nhịp scheduler: sinh bài chờ duyệt rồi đăng bài tới giờ. */
+/**
+ * Quét bài KẸT ở trạng thái 'generating' (queue viết caption nền) quá lâu — thường
+ * do server restart/crash giữa chừng nên runCaptionJob không kịp đổi trạng thái — và
+ * đánh dấu 'caption_failed' để admin bấm "Tạo lại". Ngưỡng 3 phút. CHỈ đụng autopost_posts.
+ * KHÔNG throw (tự log). Trả về số bài đã chữa. Có thể gọi từ scheduler tick HOẶC
+ * khi liệt kê tab "Bài chờ duyệt" (tự chữa kể cả khi scheduler đang TẮT).
+ */
+export async function sweepStuckGeneratingPosts(): Promise<number> {
+  try {
+    const r = await pool.query(
+      `UPDATE autopost_posts
+          SET status = 'caption_failed',
+              error_message = 'Quá thời gian viết caption (kẹt > 3 phút) — bấm "Tạo lại"',
+              updated_at = now()
+        WHERE status = 'generating'
+          AND updated_at < now() - interval '3 minutes'`,
+    );
+    if (r.rowCount) console.log(`${TAG} sweep: ${r.rowCount} bài kẹt 'generating' → 'caption_failed'`);
+    return r.rowCount ?? 0;
+  } catch (e) {
+    console.error(`${TAG} sweep generating lỗi:`, e);
+    return 0;
+  }
+}
+
 export async function runAutoPostTick(nowMs: number = Date.now()): Promise<void> {
+  await sweepStuckGeneratingPosts();
   await generatePendingPosts(nowMs);
   await publishDuePosts(nowMs);
 }

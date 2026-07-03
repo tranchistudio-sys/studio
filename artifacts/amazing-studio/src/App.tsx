@@ -21,6 +21,7 @@ import SettingsPage from "@/pages/settings";
 import BookingsPage from "@/pages/bookings";
 import BookingsTrashPage from "@/pages/bookings/trash";
 import ContractsPage from "@/pages/contracts";
+import ContractDetailPage from "@/pages/contract-detail";
 import ReportsPage from "@/pages/reports";
 import PaymentsPage from "@/pages/payments";
 import ExpensesPage from "@/pages/expenses";
@@ -259,6 +260,9 @@ function InternalRouter() {
         <Route path="/payments" component={PaymentsPage} />
         <Route path="/expenses" component={ExpensesPage} />
         <Route path="/revenue" component={() => <CmsAdminRoute component={RevenuePage} />} />
+        {/* /contracts/:id PHẢI đứng trước /contracts — wouter Switch match theo thứ tự.
+            Trang chi tiết mở cho mọi staff đăng nhập (ký Bên A, copy link); list vẫn admin-only. */}
+        <Route path="/contracts/:id" component={ContractDetailPage} />
         <Route path="/contracts" component={() => <AdminRoute component={ContractsPage} />} />
         <Route path="/reports" component={() => <AdminRoute component={ReportsPage} />} />
         <Route path="/my-profile" component={MyProfilePage} />

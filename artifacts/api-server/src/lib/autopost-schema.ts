@@ -149,6 +149,9 @@ CREATE TABLE IF NOT EXISTS autopost_batches (
       `quality_score integer`,
       `generated_by integer`,
       `footer_enabled boolean`,
+      // Cửa sổ kiểm duyệt 30' (AutoPost Review Countdown):
+      `editing_until timestamptz`, // admin đang sửa → tạm khoá auto-publish tới mốc này (~15')
+      `auto_paused boolean NOT NULL DEFAULT false`, // admin "Tạm ngưng tự đăng" cho riêng bài này
     ]) {
       await pool.query(`ALTER TABLE autopost_posts ADD COLUMN IF NOT EXISTS ${col}`);
     }

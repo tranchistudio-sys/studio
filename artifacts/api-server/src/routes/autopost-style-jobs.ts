@@ -16,9 +16,11 @@ import {
 
 const router: IRouter = Router();
 
+// Mở hàng chờ "Văn phong mẫu" cho MỌI nhân viên đã đăng nhập (quyết định của chủ studio).
+// Vẫn yêu cầu đăng nhập; KHÔNG còn bắt buộc vai trò admin.
 async function requireAdmin(req: Request, res: Response): Promise<boolean> {
   const role = await getCallerRole(req.headers.authorization);
-  if (role !== "admin") { res.status(403).json({ error: "Chỉ admin được phép" }); return false; }
+  if (!role) { res.status(401).json({ error: "Chưa đăng nhập" }); return false; }
   return true;
 }
 

@@ -30,7 +30,7 @@ import {
   Dialog as UIDialog, DialogContent as UIDialogContent, DialogHeader as UIDialogHeader,
   DialogTitle as UIDialogTitle, DialogFooter as UIDialogFooter, DialogDescription as UIDialogDescription,
 } from "@/components/ui/dialog";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { Button, Input } from "@/components/ui";
 import { CurrencyInput } from "@/components/ui/currency-input";
 import { DateInput } from "@/components/ui/date-input";
@@ -49,6 +49,41 @@ function authFetch(url: string, opts: RequestInit = {}): Promise<Response> {
   const token = localStorage.getItem("amazingStudioToken_v2");
   const headers = { ...(opts.headers as Record<string, string> ?? {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) };
   return fetch(url, { ...opts, headers });
+}
+
+// Nén 1 ảnh → data URL jpeg (≤1.5MB, cạnh dài ≤1600px). Dùng cho ảnh bằng chứng cọc.
+function compressImageToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Đọc file ảnh lỗi"));
+    reader.onload = ev => {
+      const img = new Image();
+      img.onerror = () => reject(new Error("Ảnh không hợp lệ"));
+      img.onload = () => {
+        const MAX_BYTES = 1.5 * 1024 * 1024;
+        const canvas = document.createElement("canvas");
+        let { width, height } = img;
+        const MAX_DIM = 1600;
+        if (width > MAX_DIM || height > MAX_DIM) {
+          const scale = MAX_DIM / Math.max(width, height);
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d")!.drawImage(img, 0, 0, width, height);
+        let quality = 0.85;
+        let compressed = canvas.toDataURL("image/jpeg", quality);
+        while (compressed.length * 0.75 > MAX_BYTES && quality > 0.3) {
+          quality -= 0.1;
+          compressed = canvas.toDataURL("image/jpeg", quality);
+        }
+        resolve(compressed);
+      };
+      img.src = ev.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 // ─── SĐT: chỉ chữ số + nhận diện placeholder ("0", "chưa có"...) ────────────────
@@ -1317,6 +1352,19 @@ function ShowFormPanel({
   const initialDepositDateRef = useRef(initialDepositDate);
   const initialDepositTimeRef = useRef(initialDepositTime);
 
+  // CỌC (tạo show mới): ngày + giờ cọc mặc định theo THỜI ĐIỂM HIỆN TẠI, chỉ tự điền khi đang trống
+  // → không bao giờ đè giá trị user đã gõ. KHÔNG suy theo ngày chụp (dời show không đổi ngày cọc);
+  // muốn đổi thì sửa tay. Edit show có cọc cũ thì giữ nguyên (đã xử lý ở init + fetch riêng).
+  useEffect(() => {
+    if (isEdit) return;
+    if (parseFloat(deposit) > 0) {
+      const now = new Date();
+      if (!depositDate) setDepositDate(format(now, "yyyy-MM-dd"));
+      if (!depositTime) setDepositTime(format(now, "HH:mm"));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deposit, isEdit]);
+
   // Khi edit show, Booking type không kèm payments → fetch riêng để preload đúng
   // ngày + giờ cọc gốc. Cập nhật cả state lẫn ref để so sánh "user đã sửa?" chính xác,
   // tránh trường hợp ô trống → user nghĩ chưa có cọc → vô tình đè lên giá trị gốc.
@@ -1329,8 +1377,16 @@ function ShowFormPanel({
         if (!res.ok) return;
         const list = await res.json();
         if (cancelled || !Array.isArray(list)) return;
-        const dep = list.find((p: { paymentType?: string }) => p.paymentType === "deposit");
+        const dep = list.find((p: { paymentType?: string }) => p.paymentType === "deposit") as
+          { id?: number; paymentType?: string; paidDate?: string | null; paidAt?: string | null; proofImageUrl?: string | null; proofImageUrls?: string[] | null } | undefined;
         if (!dep) return;
+        // Nạp ảnh bằng chứng cọc đang có để form sửa show hiển thị lại (đã bị ẩn từ bản money-source-of-truth).
+        if (dep.id != null) setDepositPaymentId(Number(dep.id));
+        setEditDepositProofs(
+          Array.isArray(dep.proofImageUrls) && dep.proofImageUrls.length
+            ? dep.proofImageUrls
+            : (dep.proofImageUrl ? [dep.proofImageUrl] : []),
+        );
         let isoDate = "";
         let isoTime = "";
         if (dep.paidAt) {
@@ -1382,9 +1438,16 @@ function ShowFormPanel({
     return () => { cancelled = true; };
   }, [booking?.id]);
   const [depositProofImages, setDepositProofImages] = useState<string[]>([]);
+  // EDIT mode (show đã có cọc, số tiền khóa): vẫn cho XEM + THÊM ảnh bằng chứng cọc.
+  // Ảnh gắn thẳng vào payment cọc qua PATCH /payments/:id → KHÔNG đụng số tiền (tránh lệch tiền).
+  const [depositPaymentId, setDepositPaymentId] = useState<number | null>(null);
+  const [editDepositProofs, setEditDepositProofs] = useState<string[]>([]);
+  const [savingDepositProof, setSavingDepositProof] = useState(false);
+  const [depositProofError, setDepositProofError] = useState("");
   const [discount, setDiscount] = useState(booking?.discountAmount?.toString() ?? "0");
   const [notes, setNotes] = useState(booking?.notes ?? "");
-  const [photoCount, setPhotoCount] = useState<string>(() => String(booking?.photoCount ?? ""));
+  // Giữ lại giá trị photoCount cũ của show (để lưu lại không bị mất); ô nhập đã bỏ khỏi form.
+  const [photoCount] = useState<string>(() => String(booking?.photoCount ?? ""));
   const [surcharges, setSurcharges] = useState<SurchargeItem[]>(() => {
     const raw = booking?.surcharges ?? [];
     return raw.map((s: { name: string; amount: number }, i: number) => ({ id: `s${i}`, ...s }));
@@ -1749,6 +1812,55 @@ function ShowFormPanel({
       reader.readAsDataURL(file);
     });
     e.target.value = "";
+  };
+
+  // EDIT mode: ghi ảnh bằng chứng cọc thẳng vào payment cọc (CHỈ ảnh, số tiền giữ nguyên).
+  const patchDepositProofs = async (urls: string[]): Promise<boolean> => {
+    if (depositPaymentId == null) return false;
+    try {
+      const res = await authFetch(`${BASE}/api/payments/${depositPaymentId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ proofImageUrl: urls[0] ?? null, proofImageUrls: urls }),
+      });
+      return res.ok;
+    } catch { return false; }
+  };
+
+  const handleEditDepositProofAdd = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    // Chụp danh sách File NGAY (reset e.target.value bên dưới sẽ làm rỗng e.target.files).
+    const picked = e.target.files ? Array.from(e.target.files) : [];
+    e.target.value = "";
+    if (picked.length === 0 || depositPaymentId == null) return;
+    setDepositProofError("");
+    setSavingDepositProof(true);
+    try {
+      const compressed = await Promise.all(picked.map(compressImageToDataUrl));
+      const next = [...editDepositProofs, ...compressed].slice(0, 20);
+      if (!(await patchDepositProofs(next))) throw new Error("patch fail");
+      setEditDepositProofs(next);
+      qc.invalidateQueries({ queryKey: ["bookings"] });
+    } catch {
+      setDepositProofError("Lưu ảnh cọc chưa được, anh thử lại giúp em nha.");
+    } finally {
+      setSavingDepositProof(false);
+    }
+  };
+
+  const handleEditDepositProofRemove = async (idx: number) => {
+    if (depositPaymentId == null || savingDepositProof) return;
+    const next = editDepositProofs.filter((_, i) => i !== idx);
+    setDepositProofError("");
+    setSavingDepositProof(true);
+    try {
+      if (!(await patchDepositProofs(next))) throw new Error("patch fail");
+      setEditDepositProofs(next);
+      qc.invalidateQueries({ queryKey: ["bookings"] });
+    } catch {
+      setDepositProofError("Xóa ảnh chưa được, anh thử lại nha.");
+    } finally {
+      setSavingDepositProof(false);
+    }
   };
 
   const save = async () => {
@@ -2602,6 +2714,43 @@ function ShowFormPanel({
                     <span className="font-semibold text-emerald-600">{formatVND(actualPaid)}</span>
                   </div>
                   <p className="text-[11px] text-muted-foreground -mt-1">Tổng đã thu theo lịch sử thanh toán. Muốn thu thêm / chỉnh, dùng nút <b>Thu tiền</b> ở chi tiết show (không sửa ở đây để tránh lệch tiền).</p>
+                  {/* Ảnh bằng chứng cọc: xem lại + thêm (chỉ gắn ảnh vào payment cọc, KHÔNG đổi số tiền). */}
+                  <div className="space-y-1.5 pt-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs text-muted-foreground">🧾 Ảnh bằng chứng cọc:</span>
+                      {depositPaymentId != null ? (
+                        <button
+                          type="button"
+                          onClick={() => document.getElementById("edit-deposit-proof-input")?.click()}
+                          disabled={savingDepositProof || editDepositProofs.length >= 20}
+                          className={`h-8 px-3 rounded-lg text-xs font-medium border transition-all ${editDepositProofs.length > 0 ? "border-primary/30 bg-primary/10 text-primary" : "border-dashed border-border text-muted-foreground hover:border-primary/40 hover:bg-muted/20"} ${savingDepositProof ? "opacity-60 cursor-not-allowed" : ""}`}
+                        >
+                          {savingDepositProof ? "Đang lưu…" : <>+ Ảnh cọc {editDepositProofs.length > 0 && `(${editDepositProofs.length})`}</>}
+                        </button>
+                      ) : (
+                        <span className="text-[11px] text-muted-foreground">Chưa có phiếu cọc, thêm ảnh qua nút <b>Thu tiền</b> nha.</span>
+                      )}
+                    </div>
+                    {editDepositProofs.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {editDepositProofs.map((img, idx) => {
+                          const src = getImageSrc(img) || img;
+                          return (
+                            <div key={idx} className="relative rounded-xl overflow-hidden border border-border w-24 h-24">
+                              <a href={src} target="_blank" rel="noopener noreferrer" className="block w-full h-full">
+                                <img src={src} alt={`Ảnh cọc ${idx + 1}`} className="w-full h-full object-cover" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                              </a>
+                              <button type="button" onClick={() => handleEditDepositProofRemove(idx)} disabled={savingDepositProof} className="absolute top-0.5 right-0.5 w-5 h-5 rounded-full bg-black/60 text-white flex items-center justify-center disabled:opacity-50">
+                                <X className="w-3 h-3" />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {depositProofError && <p className="text-[11px] text-destructive">{depositProofError}</p>}
+                    <input id="edit-deposit-proof-input" type="file" accept="image/*" multiple className="hidden" onChange={handleEditDepositProofAdd} />
+                  </div>
                 </>
               ) : (
                 <div className="flex justify-between items-center gap-3">
@@ -2628,7 +2777,7 @@ function ShowFormPanel({
               )}
               {!showActualPaid && parseFloat(deposit) > 0 && (
                 <div className="space-y-1.5">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-xs text-muted-foreground whitespace-nowrap">Ngày cọc:</span>
                     <DateInput value={depositDate} onChange={setDepositDate} className="h-8 w-[170px]" />
                     <input
@@ -2664,17 +2813,8 @@ function ShowFormPanel({
             </div>
           </section>
 
-          <div className="flex items-center gap-2">
-            <label className="text-xs text-muted-foreground whitespace-nowrap flex-shrink-0">📸 Số tấm ảnh chỉnh:</label>
-            <input
-              type="number" min="0" step="1"
-              className="w-24 border border-input rounded-lg px-2 py-1.5 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-primary/30 tabular-nums"
-              placeholder="0"
-              value={photoCount}
-              onChange={e => setPhotoCount(e.target.value)}
-            />
-            <span className="text-xs text-muted-foreground">tấm (dùng tính cast)</span>
-          </div>
+          {/* Đã bỏ ô "Số tấm ảnh chỉnh" khỏi form: studio không dùng cast theo số ảnh (không có rate per_photo).
+              Vẫn giữ photoCount khi lưu để KHÔNG xoá giá trị cũ của các show đã nhập trước đây. */}
           <textarea
             className="w-full border border-input rounded-xl px-3 py-2 text-sm bg-background resize-none focus:outline-none focus:ring-2 focus:ring-primary/30"
             rows={2} placeholder="Ghi chú nội bộ..."
@@ -5809,10 +5949,19 @@ function DayView({
                           const noteText = item?.notes || b.notes;
 
                           return (
-                            <button
+                            <div
                               key={b.id}
+                              role="button"
+                              tabIndex={0}
                               onClick={e => { e.stopPropagation(); onEventClick(b); }}
-                              className={`w-full sm:flex-[1_1_160px] sm:min-w-[140px] sm:max-w-[min(100%,340px)] rounded-xl px-2 py-2 sm:px-2.5 text-left shadow-sm hover:shadow-md hover:bg-muted/30 transition-all border border-l-4 bg-card text-foreground touch-manipulation ${isHighlighted ? "ring-2 ring-offset-1 ring-primary animate-pulse" : isVip ? "ring-1 ring-amber-300/60" : ""}`}
+                              onKeyDown={e => {
+                                if (e.key === "Enter" || e.key === " ") {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  onEventClick(b);
+                                }
+                              }}
+                              className={`w-full sm:flex-[1_1_160px] sm:min-w-[140px] sm:max-w-[min(100%,340px)] rounded-xl px-2 py-2 sm:px-2.5 text-left cursor-pointer shadow-sm hover:shadow-md hover:bg-muted/30 transition-all border border-l-4 bg-card text-foreground touch-manipulation ${isHighlighted ? "ring-2 ring-offset-1 ring-primary animate-pulse" : isVip ? "ring-1 ring-amber-300/60" : ""}`}
                               style={{ borderLeftColor: staffDot }}
                             >
                               <div className="flex gap-2 items-start">
@@ -5947,7 +6096,7 @@ function DayView({
                                   ) : null;
                                 })()}
                               </div>
-                            </button>
+                            </div>
                           );
                         })}
                       </div>
@@ -6239,11 +6388,13 @@ class CalendarErrorBoundary extends Component<{ children: ReactNode; onReset?: (
 }
 
 // ─── Zoom UI cho lịch tháng (không dùng pinch zoom) ────────────────────────
-const ZOOM_KEY = "calendar-zoom-v1";
+// v2: đổi mặc định 60% → 50% (ở 60% lịch bị tràn/cắt trên mobile). Bump key để reset zoom đã lưu
+// về mặc định mới 1 lần (zoom cũ lưu ở "calendar-zoom-v1" sẽ bị bỏ qua); chỉnh tay sau vẫn được lưu.
+const ZOOM_KEY = "calendar-zoom-v2";
 const ZOOM_MIN = 0.4;
 const ZOOM_MAX = 1.4;
 const ZOOM_STEP = 0.1;
-const ZOOM_DEFAULT = 0.6;
+const ZOOM_DEFAULT = 0.5;
 function getStoredZoom(): number {
   try {
     const raw = localStorage.getItem(ZOOM_KEY);
@@ -6296,25 +6447,28 @@ function CalendarPageInner() {
     staleTime: 0,
   });
 
-  // Deep-link từ thông báo: ?bookingId=N → tự mở detail panel của booking đó
-  const [pendingBookingIdFromUrl, setPendingBookingIdFromUrl] = useState<number | null>(() => {
-    if (typeof window === "undefined") return null;
-    const p = new URLSearchParams(window.location.search);
-    const v = p.get("bookingId");
-    if (!v) return null;
-    const n = Number(v);
-    return Number.isInteger(n) && n > 0 ? n : null;
-  });
-  // Dọn URL ngay khi mount nếu có ?bookingId (kể cả invalid) — tránh stale param
+  // Deep-link ?bookingId=N → tự mở detail panel của booking đó. Dùng cho: thông báo, VÀ ô Tìm kiếm
+  // thông minh (SmartSearch) — bấm 1 kết quả mở thẳng chi tiết SHOW (không phải trang Đơn hàng).
+  // Reactive theo query string (useSearch) nên hoạt động KỂ CẢ khi đang ở sẵn /calendar (component
+  // không remount → useState-initializer-1-lần sẽ bỏ sót). Bookings query load TẤT CẢ đơn nên tìm
+  // được show ở bất kỳ tháng nào; effect dưới tự canh currentDate về đúng tháng của show.
+  const calUrlSearch = useSearch();
+  const [pendingBookingIdFromUrl, setPendingBookingIdFromUrl] = useState<number | null>(null);
   useEffect(() => {
+    let n: number | null = null;
     try {
+      const p = new URLSearchParams(calUrlSearch || window.location.search);
+      const v = p.get("bookingId");
+      if (v) { const x = Number(v); if (Number.isInteger(x) && x > 0) n = x; }
+      // Dọn ?bookingId khỏi URL (kể cả invalid) — tránh mở lại khi reload / cho phép bấm lại cùng show.
       const url = new URL(window.location.href);
       if (url.searchParams.has("bookingId")) {
         url.searchParams.delete("bookingId");
         window.history.replaceState({}, "", url.toString());
       }
     } catch { /* ignore */ }
-  }, []);
+    if (n != null) setPendingBookingIdFromUrl(n);
+  }, [calUrlSearch]);
   useEffect(() => {
     if (pendingBookingIdFromUrl == null) return;
     if (!bookings || bookings.length === 0) return;
@@ -6885,52 +7039,37 @@ function CalendarPageInner() {
         style={{ maxHeight: "calc(100svh - 160px)" }}
       >
         {/* Month nav */}
-        <div className="flex items-center justify-between px-4 py-3 border-b bg-gradient-to-r from-card to-muted/10 flex-shrink-0">
-          <div>
+        <div className="flex flex-col gap-3 px-4 py-3 border-b bg-gradient-to-r from-card to-muted/10 flex-shrink-0 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+          {/* Tiêu đề tháng (hero) + âm lịch (phụ đề) */}
+          <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <Sun className="w-4 h-4 text-orange-400" />
-              <span className="text-lg font-bold capitalize">{format(currentDate, "MMMM yyyy", { locale: vi })}</span>
+              <Sun className="w-4 h-4 text-orange-400 flex-shrink-0" />
+              <span className="text-lg font-bold capitalize truncate">{format(currentDate, "MMMM yyyy", { locale: vi })}</span>
             </div>
             {showLunar && (
               <p className="text-xs text-muted-foreground flex items-center gap-1 mt-0.5">
-                <Moon className="w-3 h-3 text-indigo-400" />
-                {getLunarMonthName(monthLunar.month, monthLunar.leap)} {getCanChi(monthLunar.year)} ({monthLunar.year})
+                <Moon className="w-3 h-3 text-indigo-400 flex-shrink-0" />
+                <span className="truncate">{getLunarMonthName(monthLunar.month, monthLunar.leap)} {getCanChi(monthLunar.year)} ({monthLunar.year})</span>
               </p>
             )}
           </div>
-          <div className="flex items-center gap-1 flex-wrap">
-            {/* Zoom controls — phóng to/thu nhỏ toàn bộ lưới tháng */}
-            <div className="flex items-center gap-0.5 mr-1 rounded-lg border bg-background p-0.5" title={`Zoom ${Math.round(zoomLevel * 100)}%`}>
+          {/* Hàng điều khiển: cụm chuyển tháng (chính, trái) + cụm zoom (phụ, phải) — dạng segmented pill */}
+          <div className="flex items-center justify-between gap-2 flex-shrink-0 sm:justify-end">
+            {/* Chuyển tháng: ◀ | Hôm nay | ▶ */}
+            <div className="inline-flex items-center rounded-lg border bg-background overflow-hidden">
+              <button onClick={prevMonth} className="w-8 h-8 hover:bg-muted flex items-center justify-center transition-colors text-muted-foreground hover:text-foreground" aria-label="Tháng trước"><ChevronLeft className="w-4 h-4" /></button>
               <button
-                onClick={zoomOut}
-                disabled={zoomLevel <= ZOOM_MIN + 0.001}
-                className="w-7 h-7 rounded hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent flex items-center justify-center transition-colors"
-                aria-label="Thu nhỏ lịch"
-              >
-                <ZoomOut className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={zoomReset}
-                className="px-1.5 h-7 text-[11px] font-semibold tabular-nums hover:bg-muted rounded transition-colors min-w-[40px]"
-                aria-label="Reset zoom về 100%"
-              >
-                {Math.round(zoomLevel * 100)}%
-              </button>
-              <button
-                onClick={zoomIn}
-                disabled={zoomLevel >= ZOOM_MAX - 0.001}
-                className="w-7 h-7 rounded hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent flex items-center justify-center transition-colors"
-                aria-label="Phóng to lịch"
-              >
-                <ZoomIn className="w-3.5 h-3.5" />
-              </button>
+                onClick={() => { const t = new Date(); setCurrentDate(t); setSelectedDate(t); }}
+                className="px-3 h-8 text-sm font-medium hover:bg-muted transition-colors border-l border-r border-border"
+              >Hôm nay</button>
+              <button onClick={nextMonth} className="w-8 h-8 hover:bg-muted flex items-center justify-center transition-colors text-muted-foreground hover:text-foreground" aria-label="Tháng sau"><ChevronRight className="w-4 h-4" /></button>
             </div>
-            <button onClick={prevMonth} className="w-8 h-8 rounded-lg border bg-background hover:bg-muted flex items-center justify-center transition-colors"><ChevronLeft className="w-4 h-4" /></button>
-            <button
-              onClick={() => { const t = new Date(); setCurrentDate(t); setSelectedDate(t); }}
-              className="px-3 h-8 rounded-lg border bg-background hover:bg-muted text-sm font-medium transition-colors"
-            >Hôm nay</button>
-            <button onClick={nextMonth} className="w-8 h-8 rounded-lg border bg-background hover:bg-muted flex items-center justify-center transition-colors"><ChevronRight className="w-4 h-4" /></button>
+            {/* Zoom: − | NN% | + */}
+            <div className="inline-flex items-center rounded-lg border bg-background overflow-hidden" title={`Zoom ${Math.round(zoomLevel * 100)}%`}>
+              <button onClick={zoomOut} disabled={zoomLevel <= ZOOM_MIN + 0.001} className="w-8 h-8 hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent flex items-center justify-center transition-colors" aria-label="Thu nhỏ lịch"><ZoomOut className="w-3.5 h-3.5" /></button>
+              <button onClick={zoomReset} className="px-2 h-8 text-[11px] font-semibold tabular-nums text-muted-foreground hover:bg-muted hover:text-foreground transition-colors min-w-[44px] border-l border-r border-border" aria-label="Reset zoom">{Math.round(zoomLevel * 100)}%</button>
+              <button onClick={zoomIn} disabled={zoomLevel >= ZOOM_MAX - 0.001} className="w-8 h-8 hover:bg-muted disabled:opacity-30 disabled:hover:bg-transparent flex items-center justify-center transition-colors" aria-label="Phóng to lịch"><ZoomIn className="w-3.5 h-3.5" /></button>
+            </div>
           </div>
         </div>
 

@@ -12,6 +12,16 @@ export const serviceGroupsTable = pgTable("service_groups", {
   aiImageUrl: text("ai_image_url"),
   /** Chỉ cho Sale AI gửi ảnh nhóm này khi = true (gate an toàn). */
   publicForCustomer: boolean("public_for_customer").notNull().default(true),
+  // ── Chương trình giảm giá CẤP NHÓM — áp cho MỌI gói active trong nhóm chưa có
+  //    giảm giá riêng. Helper resolveDiscount() (pricing-discount.ts) là nơi tính
+  //    DUY NHẤT; ưu tiên giảm-gói > giảm-nhóm, KHÔNG cộng dồn. ──
+  discountEnabled: boolean("discount_enabled").notNull().default(false),
+  discountType: text("discount_type"), // 'percent' | 'fixed'
+  discountValue: numeric("discount_value", { precision: 12, scale: 2 }),
+  discountStartDate: timestamp("discount_start_date", { withTimezone: true }),
+  discountEndDate: timestamp("discount_end_date", { withTimezone: true }),
+  discountName: text("discount_name"),
+  discountDescription: text("discount_description"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
@@ -53,6 +63,16 @@ export const servicePackagesTable = pgTable("service_packages", {
   requiresPostProduction: boolean("requires_post_production").notNull().default(false),
   /** When true, job shows "Đã xuất in" tracking (physical print). */
   requiresPrinting: boolean("requires_printing").notNull().default(false),
+  // ── Chương trình giảm giá RIÊNG cho gói — ưu tiên hơn giảm giá nhóm (KHÔNG cộng
+  //    dồn). KHÁC salePercent (salePercent = % margin nội bộ trong breakdown chi phí,
+  //    KHÔNG phải ưu đãi cho khách). Tính giá sau giảm bằng resolveDiscount(). ──
+  discountEnabled: boolean("discount_enabled").notNull().default(false),
+  discountType: text("discount_type"), // 'percent' | 'fixed'
+  discountValue: numeric("discount_value", { precision: 12, scale: 2 }),
+  discountStartDate: timestamp("discount_start_date", { withTimezone: true }),
+  discountEndDate: timestamp("discount_end_date", { withTimezone: true }),
+  discountName: text("discount_name"),
+  discountDescription: text("discount_description"),
   isActive: integer("is_active").notNull().default(1),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),

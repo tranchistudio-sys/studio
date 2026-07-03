@@ -1,4 +1,5 @@
 import { askClaudeForReply, resolveModel, type ClaudeHistoryItem } from "./claude-sale";
+import { formatLuluHumanChatMessages, splitExactReplyMessages, type LuluChatChunk } from "./sale-human-chat";
 import {
   getSaleContext, resolvePriceImagesByCodes, wantsNewConcept, getPhotoIdeasBlock,
 } from "./sale-context";
@@ -49,6 +50,8 @@ export type SimulateInput = {
 
 export type SimulateResult = {
   reply: string[];
+  /** Bong bóng có nhịp (human chat pacing): text + delayMs từng bubble. reply = chunks.map(c=>c.text). */
+  chunks: LuluChatChunk[];
   raw: string;
   model: string;
   responseTimeMs: number;
@@ -125,7 +128,7 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
   // exact_reply: xử lý SAU khi có reply (thay text bằng câu admin), để ảnh vẫn dùng marker của AI.
   const priorContextText = prior.filter((h) => !h.message.startsWith("[image:")).slice(-4)
     .map((h) => h.message).join("\n");
-  const respOverride = matchResponseOverride(incomingText, priorContextText, input.imageOverrides ?? []);
+  const respOverride = matchResponseOverride(incomingText, priorContextText, input.imageOverrides ?? [], { hasImage });
   if (respOverride?.responseMode === "learn_from_this" && respOverride.editedText) {
     context += `\n\nGỢI Ý CÂU TRẢ LỜI (admin đã duyệt cho tình huống tương tự — BÁM SÁT ý chính & giọng của câu mẫu, được viết lại cho tự nhiên hơn nhưng KHÔNG đổi ý chính):\n"""\n${respOverride.editedText.trim()}\n"""`;
     console.log("[SaleBrain] responseMode=learn_from_this (chèn câu mẫu admin vào prompt)");
@@ -205,11 +208,19 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
 
   // EXACT REPLY: admin yêu cầu Lulu nói Y CHANG câu đã ghim cho tình huống này → dùng đúng câu đó,
   // KHÔNG dùng text AI, KHÔNG escalate (admin đã cho câu chốt). Ảnh vẫn theo luồng ảnh ở trên.
-  const aiReply = reply.messages.length > 0 ? reply.messages : reply.raw ? [reply.raw] : ["(Lulu không trả về nội dung)"];
+  const aiChunks: LuluChatChunk[] = reply.messageChunks.length > 0
+    ? reply.messageChunks
+    : (reply.raw ? [{ text: reply.raw, delayMs: 900 }] : [{ text: "(Lulu không trả về nội dung)", delayMs: 900 }]);
+  // GIỮ NGUYÊN câu admin gõ (KHÔNG .trim() để khỏi mất xuống dòng/đoạn) — chỉ cần có nội dung.
   const exactPinned = respOverride?.responseMode === "exact_reply" && (respOverride.editedText ?? "").trim()
-    ? (respOverride.editedText as string).trim() : null;
-  const exactParts = exactPinned ? exactPinned.split(/\n{2,}/).map((s) => s.trim()).filter(Boolean) : [];
-  const finalReply = exactPinned ? (exactParts.length ? exactParts : [exactPinned]) : aiReply;
+    ? (respOverride.editedText as string) : null;
+  // EXACT REPLY ("nói y chang"): tách bong bóng THEO ĐOẠN (dòng trống), GIỮ NGUYÊN xuống dòng +
+  // chữ + emoji admin gõ. KHÔNG tách theo câu, KHÔNG gộp một dòng (xem splitExactReplyMessages).
+  const exactChunks = exactPinned ? splitExactReplyMessages(exactPinned) : [];
+  const finalChunks: LuluChatChunk[] = exactPinned
+    ? (exactChunks.length ? exactChunks : [{ text: exactPinned.trim(), delayMs: 900 }])
+    : aiChunks;
+  const finalReply = finalChunks.map((c) => c.text);
   const finalEscalated = exactPinned ? false : wouldEscalate;
   const responseMode: SimulateResult["responseMode"] = respOverride?.responseMode ?? null;
   if (exactPinned) console.log(`[SaleBrain] responseMode=exact_reply (nói y chang câu admin, ${finalReply.length} bubble)`);
@@ -221,6 +232,7 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
 
   return {
     reply: finalReply,
+    chunks: finalChunks,
     raw: reply.raw,
     model,
     responseTimeMs,

@@ -6,6 +6,8 @@ import {
 } from "@workspace/db/schema";
 import { eq, and, isNull, isNotNull, asc, desc, sql } from "drizzle-orm";
 import { verifyToken, getCallerRole } from "./auth";
+import { resolveDiscount } from "../lib/pricing-discount";
+import { clearSaleContextCache } from "../lib/sale-context";
 
 const router: IRouter = Router();
 
@@ -367,6 +369,79 @@ router.post("/cms/albums", async (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
+// ── Bulk cho ALBUM (chuyển danh mục / ưu tiên / xoá hàng loạt). BẮT BUỘC đặt
+//    TRƯỚC route "/cms/albums/:id" — nếu không Express khớp "bulk-*" thành :id
+//    → +"bulk-category" = NaN → update where id=NaN (bug "params: 32, NaN"). ──
+
+// PATCH /api/cms/albums/bulk-category — đổi danh mục cho NHIỀU album cùng lúc.
+router.patch("/cms/albums/bulk-category", async (req, res) => {
+  if (!(await requireCmsStaff(req, res))) return;
+  try {
+    const { ids, categoryId } = req.body ?? {};
+    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: "Thiếu danh sách album" });
+    const intIds = [...new Set(ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+    if (intIds.length === 0) return res.status(400).json({ error: "ids không hợp lệ" });
+
+    let targetCatId: number | null = null;
+    if (categoryId != null) {
+      targetCatId = Number(categoryId);
+      if (!Number.isInteger(targetCatId) || targetCatId <= 0) return res.status(400).json({ error: "categoryId không hợp lệ" });
+      const cat = await pool.query(`SELECT type, deleted_at FROM cms_categories WHERE id = $1`, [targetCatId]);
+      if (!cat.rows.length) return res.status(404).json({ error: "Danh mục không tồn tại" });
+      const row = cat.rows[0] as { type: string; deleted_at: Date | null };
+      if (row.deleted_at) return res.status(400).json({ error: "Danh mục đã bị xoá" });
+      if (row.type !== "gallery") return res.status(400).json({ error: "Danh mục phải là loại Bộ ảnh" });
+    }
+    const r = await pool.query(
+      `UPDATE gallery_albums SET category_id = $1
+        WHERE id = ANY($2::int[]) AND deleted_at IS NULL RETURNING id`,
+      [targetCatId, intIds],
+    );
+    res.json({ ok: true, affected: r.rowCount ?? 0, targetCategoryId: targetCatId });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// PATCH /api/cms/albums/bulk-priority — đưa các album đã chọn LÊN ĐẦU.
+// Album sắp theo sort_order ASC (số nhỏ = trước) → đặt nhóm chọn xuống dưới MIN hiện tại.
+router.patch("/cms/albums/bulk-priority", async (req, res) => {
+  if (!(await requireCmsStaff(req, res))) return;
+  try {
+    const { ids } = req.body ?? {};
+    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: "Thiếu danh sách album" });
+    const intIds = [...new Set(ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+    if (intIds.length === 0) return res.status(400).json({ error: "ids không hợp lệ" });
+    const mn = await pool.query(`SELECT COALESCE(MIN(sort_order), 0)::int AS m FROM gallery_albums WHERE deleted_at IS NULL`);
+    const base = ((mn.rows[0] as { m: number }).m) - 1;
+    const r = await pool.query(
+      `UPDATE gallery_albums SET sort_order = $1
+        WHERE id = ANY($2::int[]) AND deleted_at IS NULL RETURNING id`,
+      [base, intIds],
+    );
+    res.json({ ok: true, affected: r.rowCount ?? 0 });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// POST /api/cms/albums/bulk-delete — xoá MỀM nhiều album (KHÔNG xoá danh mục) + ảnh bên trong.
+router.post("/cms/albums/bulk-delete", async (req, res) => {
+  if (!(await requireCmsStaff(req, res))) return;
+  try {
+    const { ids } = req.body ?? {};
+    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: "Thiếu danh sách album" });
+    const intIds = [...new Set(ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+    if (intIds.length === 0) return res.status(400).json({ error: "ids không hợp lệ" });
+    const r = await pool.query(
+      `UPDATE gallery_albums SET deleted_at = NOW()
+        WHERE id = ANY($1::int[]) AND deleted_at IS NULL RETURNING id`,
+      [intIds],
+    );
+    await pool.query(
+      `UPDATE gallery_photos SET deleted_at = NOW() WHERE album_id = ANY($1::int[]) AND deleted_at IS NULL`,
+      [intIds],
+    );
+    res.json({ ok: true, affected: r.rowCount ?? 0 });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
 router.patch("/cms/albums/:id", async (req, res) => {
   if (!(await requireAuth(req, res))) return;
   try {
@@ -716,6 +791,21 @@ router.post("/cms/categories", async (req, res) => {
       sortOrder: order,
     }).returning();
     res.status(201).json(row);
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// PHẢI đặt TRƯỚC "/cms/categories/:id" — nếu không Express khớp "reorder" thành
+// :id → +"reorder" = NaN → handler :id chạy với body {order} rỗng field → no-op
+// (drag sắp xếp không lưu được). Chỉ đổi sort_order, KHÔNG đụng parent_id.
+router.patch("/cms/categories/reorder", async (req, res) => {
+  if (!(await requireAuth(req, res))) return;
+  try {
+    const order = req.body?.order as Array<{ id: number; sortOrder: number }>;
+    if (!Array.isArray(order)) return res.status(400).json({ error: "order phải là mảng" });
+    for (const o of order) {
+      await pool.query(`UPDATE cms_categories SET sort_order = $1 WHERE id = $2`, [o.sortOrder, o.id]);
+    }
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
@@ -1209,17 +1299,8 @@ router.post("/cms/categories/:id/move-children", async (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
-router.patch("/cms/categories/reorder", async (req, res) => {
-  if (!(await requireAuth(req, res))) return;
-  try {
-    const order = req.body?.order as Array<{ id: number; sortOrder: number }>;
-    if (!Array.isArray(order)) return res.status(400).json({ error: "order phải là mảng" });
-    for (const o of order) {
-      await pool.query(`UPDATE cms_categories SET sort_order = $1 WHERE id = $2`, [o.sortOrder, o.id]);
-    }
-    res.json({ ok: true });
-  } catch (e) { res.status(500).json({ error: String(e) }); }
-});
+// (route "/cms/categories/reorder" đã được dời LÊN TRƯỚC "/cms/categories/:id"
+//  để Express không khớp "reorder" thành :id → NaN → no-op. Xem khối phía trên.)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // PUBLIC TOGGLES — wrap existing dresses + service_packages
@@ -1313,6 +1394,7 @@ router.patch("/cms/packages/:id", async (req, res) => {
     if (!upd.length) return res.json({ ok: true });
     vals.push(+req.params.id);
     await pool.query(`UPDATE service_packages SET ${upd.join(", ")} WHERE id = $${i}`, vals);
+    clearSaleContextCache();
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
@@ -1483,18 +1565,38 @@ router.get("/cms/public/packages", async (_req, res) => {
              p.short_description AS "shortDescription",
              p.description,
              p.products,
-             g.name AS "groupName"
+             g.name AS "groupName",
+             p.discount_enabled AS "pDEnabled", p.discount_type AS "pDType", p.discount_value AS "pDValue",
+             p.discount_start_date AS "pDStart", p.discount_end_date AS "pDEnd",
+             p.discount_name AS "pDName", p.discount_description AS "pDDesc",
+             g.discount_enabled AS "gDEnabled", g.discount_type AS "gDType", g.discount_value AS "gDValue",
+             g.discount_start_date AS "gDStart", g.discount_end_date AS "gDEnd",
+             g.discount_name AS "gDName", g.discount_description AS "gDDesc"
       FROM service_packages p
       LEFT JOIN service_groups g ON g.id = p.group_id
       WHERE p.deleted_at IS NULL
         AND p.is_public = 1
         AND p.cms_status = 'visible'
+        AND (p.group_id IS NULL OR g.is_active = 1)
       ORDER BY g.sort_order ASC NULLS LAST, p.sort_order ASC`);
-    res.json(r.rows.map(row => ({
-      ...row,
-      price: parseFloat(row.price),
-      products: (() => { try { return JSON.parse(row.products ?? "[]"); } catch { return []; } })(),
-    })));
+    res.json(r.rows.map(row => {
+      // Giá sau giảm tính SẴN ở backend (ưu tiên gói > nhóm, không cộng dồn, chỉ ưu
+      // đãi đang hiệu lực — scheduled/expired tự bị loại). Website chỉ hiển thị.
+      const discount = resolveDiscount({
+        basePrice: row.price,
+        pkg: { enabled: row.pDEnabled, type: row.pDType, value: row.pDValue, startDate: row.pDStart, endDate: row.pDEnd, name: row.pDName, description: row.pDDesc },
+        group: { enabled: row.gDEnabled, type: row.gDType, value: row.gDValue, startDate: row.gDStart, endDate: row.gDEnd, name: row.gDName, description: row.gDDesc },
+      });
+      return {
+        id: row.id, code: row.code, name: row.name,
+        price: parseFloat(row.price),
+        shortDescription: row.shortDescription,
+        description: row.description,
+        products: (() => { try { return JSON.parse(row.products ?? "[]"); } catch { return []; } })(),
+        groupName: row.groupName,
+        discount,
+      };
+    }));
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 

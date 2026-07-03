@@ -24,15 +24,37 @@ vi.mock("./lib/autopost-signature", () => ({
   getDefaultSignatureContent: async () => "",
   appendSignature: (c: string) => c,
 }));
+// Cấu hình vận hành (cổng autoApproveEnabled + số phút) — điều khiển trong từng test.
+vi.mock("./lib/autopost-config", () => ({
+  getAutopostConfig: vi.fn(),
+}));
 
 import { pool } from "@workspace/db";
 import { publishToPage } from "./lib/facebook-page-publish";
 import { emitNotification } from "./routes/notifications";
-import { computeSlotDateUtc, publishDuePosts } from "./autopost-scheduler";
+import { getAutopostConfig } from "./lib/autopost-config";
+import {
+  computeSlotDateUtc,
+  publishDuePosts,
+  sweepEnterReviewWindow,
+  sweepAutoPublishDue,
+  reclaimStalePostingPosts,
+} from "./autopost-scheduler";
 
 const q = pool.query as ReturnType<typeof vi.fn>;
 const publishMock = publishToPage as ReturnType<typeof vi.fn>;
 const notifyMock = emitNotification as ReturnType<typeof vi.fn>;
+const cfgMock = getAutopostConfig as ReturnType<typeof vi.fn>;
+
+/** Cấu hình mặc định cho test: bật tự đăng, cửa sổ 30'. Ghi đè bằng cfgMock khi cần. */
+function setConfig(over: Partial<{ autoApproveEnabled: boolean; autoApproveAfterMinutes: number }> = {}) {
+  cfgMock.mockResolvedValue({
+    postsPerTick: 5, postsPerDay: 7, captionOptionsPerPost: 3, maxVisionImagesPerPost: 3,
+    autoApproveEnabled: true, autoApproveAfterMinutes: 30,
+    autoPublishAfterApproved: false, requireManualApproval: false, dryRun: null,
+    ...over,
+  });
+}
 
 const ONE_POST = {
   id: 1,
@@ -75,6 +97,7 @@ beforeEach(() => {
   q.mockReset();
   publishMock.mockReset();
   notifyMock.mockReset();
+  cfgMock.mockReset();
 });
 
 afterEach(() => {
@@ -107,6 +130,8 @@ describe("computeSlotDateUtc (giờ VN, UTC+7)", () => {
 });
 
 describe("publishDuePosts", () => {
+  beforeEach(() => setConfig()); // công tắc tổng BẬT cho các test đăng theo lịch
+
   it("(a) bài tới giờ → posted + lưu id/link + tăng times_posted của pool", async () => {
     routePool({ due: [ONE_POST] });
     publishMock.mockResolvedValue({ postId: "fb_123", permalink: "https://fb/fb_123", dryRun: true });
@@ -174,5 +199,154 @@ describe("publishDuePosts", () => {
     expect(publishMock).not.toHaveBeenCalled();
     const sqls = q.mock.calls.map((c) => String(c[0]));
     expect(sqls.some((s) => s.includes("SET status = 'skipped'"))).toBe(true);
+  });
+});
+
+// ───────────────── Cửa sổ kiểm duyệt 30' (Review Countdown) ───────────────────
+
+describe("sweepEnterReviewWindow", () => {
+  it("TẮT khi autoApproveEnabled=false → không truy vấn gì", async () => {
+    setConfig({ autoApproveEnabled: false });
+    const res = await sweepEnterReviewWindow();
+    expect(res.entered).toBe(0);
+    expect(q).not.toHaveBeenCalled();
+  });
+
+  it("BẬT → đưa bài 'pending_review' sắp tới giờ sang 'review_pending'", async () => {
+    setConfig();
+    q.mockImplementation((sql: string) => {
+      if (String(sql).includes("SET status = 'review_pending'")) return Promise.resolve({ rowCount: 1, rows: [{ id: 5 }] });
+      return Promise.resolve({ rowCount: 0, rows: [] });
+    });
+    const res = await sweepEnterReviewWindow();
+    expect(res.entered).toBe(1);
+    const sql = q.mock.calls.map((c) => String(c[0])).find((s) => s.includes("SET status = 'review_pending'"))!;
+    expect(sql).toContain("status = 'pending_review'"); // chỉ lấy bài chờ duyệt đã có giờ
+    expect(sql).toContain("auto_paused = false");       // bỏ bài đã tạm ngưng
+    expect(sql).toContain("editing_until");             // bỏ bài đang sửa
+    expect(sql).toContain("make_interval");             // trong cửa sổ N phút
+    expect(notifyMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+const REVIEW_ROW = {
+  id: 1, page_id: "P", images: ["a.jpg"],
+  caption_final: "Tự đăng nha", caption_options: [{ text: "Tự đăng nha" }], caption_recommended_index: 0,
+  content_pool_id: 7, image_hash: "ih", caption_hash: "ch",
+};
+
+/** Router pool cho sweepAutoPublishDue. */
+function routeReview(opts: { due?: unknown[]; claimRowCounts?: number[]; dedupeHit?: boolean }) {
+  const due = opts.due ?? [];
+  const claims = [...(opts.claimRowCounts ?? [])];
+  q.mockImplementation((sql: string) => {
+    const s = String(sql);
+    if (s.includes("SET status = 'posting'")) {
+      const rc = claims.length ? claims.shift()! : 1;
+      return Promise.resolve({ rowCount: rc, rows: rc ? [{ id: 1 }] : [] });
+    }
+    if (s.includes("SET caption_final")) return Promise.resolve({ rowCount: 1, rows: [] });
+    if (s.includes("IS NOT DISTINCT FROM")) return Promise.resolve({ rows: opts.dedupeHit ? [{ "?column?": 1 }] : [] });
+    if (s.includes("status = 'review_pending'") && s.includes("scheduled_at <= now()")) return Promise.resolve({ rows: due });
+    return Promise.resolve({ rowCount: 1, rows: [] });
+  });
+}
+
+describe("sweepAutoPublishDue", () => {
+  it("TẮT khi autoApproveEnabled=false → không tự đăng, không truy vấn", async () => {
+    setConfig({ autoApproveEnabled: false });
+    const res = await sweepAutoPublishDue();
+    expect(res.posted).toBe(0);
+    expect(q).not.toHaveBeenCalled();
+    expect(publishMock).not.toHaveBeenCalled();
+  });
+
+  it("BẬT → bài review_pending tới giờ tự đăng (posted)", async () => {
+    setConfig();
+    routeReview({ due: [REVIEW_ROW] });
+    publishMock.mockResolvedValue({ postId: "fb_9", permalink: null, dryRun: true });
+
+    const res = await sweepAutoPublishDue();
+
+    expect(res.posted).toBe(1);
+    expect(publishMock).toHaveBeenCalledTimes(1);
+    expect(publishMock.mock.calls[0][0]).toMatchObject({ pageId: "P", message: "Tự đăng nha" });
+    const claimSql = q.mock.calls.map((c) => String(c[0])).find((s) => s.includes("SET status = 'posting'"))!;
+    expect(claimSql).toContain("status = 'review_pending'"); // claim đúng trạng thái
+  });
+
+  it("idempotent: claim thất bại (worker khác / đã đổi state) → KHÔNG đăng", async () => {
+    setConfig();
+    routeReview({ due: [REVIEW_ROW], claimRowCounts: [0] });
+    publishMock.mockResolvedValue({ postId: "x", permalink: null, dryRun: true });
+
+    const res = await sweepAutoPublishDue();
+
+    expect(res.posted).toBe(0);
+    expect(publishMock).not.toHaveBeenCalled();
+  });
+
+  it("caption_final trống → tự lấy caption đề xuất rồi đăng", async () => {
+    setConfig();
+    routeReview({ due: [{ ...REVIEW_ROW, caption_final: null, caption_options: [{ text: "Đề xuất 1" }, { text: "Đề xuất 2" }], caption_recommended_index: 1 }] });
+    publishMock.mockResolvedValue({ postId: "fb_10", permalink: null, dryRun: true });
+
+    const res = await sweepAutoPublishDue();
+
+    expect(res.posted).toBe(1);
+    expect(publishMock.mock.calls[0][0]).toMatchObject({ message: "Đề xuất 2" });
+    const sqls = q.mock.calls.map((c) => String(c[0]));
+    expect(sqls.some((s) => s.includes("SET caption_final"))).toBe(true); // đã ghi caption_final
+  });
+
+  it("Sweep A đón cả bài QUÁ giờ (trong 24h), không đòi scheduled_at > now()", async () => {
+    setConfig();
+    q.mockImplementation((sql: string) => {
+      if (String(sql).includes("SET status = 'review_pending'")) return Promise.resolve({ rowCount: 0, rows: [] });
+      return Promise.resolve({ rowCount: 0, rows: [] });
+    });
+    await sweepEnterReviewWindow();
+    const sql = q.mock.calls.map((c) => String(c[0])).find((s) => s.includes("SET status = 'review_pending'"))!;
+    expect(sql).toContain("interval '24 hours'"); // có sàn 24h
+    expect(sql).not.toContain("scheduled_at > now()"); // KHÔNG loại bài quá giờ nữa
+  });
+});
+
+describe("publishDuePosts — công tắc tổng + auto_paused", () => {
+  it("CÔNG TẮC TẮT (autoApproveEnabled=false) → KHÔNG đăng gì, không query bài tới giờ", async () => {
+    setConfig({ autoApproveEnabled: false });
+    routePool({ due: [ONE_POST] });
+    publishMock.mockResolvedValue({ postId: "x", permalink: null, dryRun: true });
+    const res = await publishDuePosts();
+    expect(res.posted).toBe(0);
+    expect(publishMock).not.toHaveBeenCalled();
+    const sqls = q.mock.calls.map((c) => String(c[0]));
+    expect(sqls.some((s) => s.includes("scheduled_at <= now()"))).toBe(false); // chặn trước khi query
+  });
+
+  it("query bài tới giờ phải lọc auto_paused = false (cả SELECT lẫn claim)", async () => {
+    setConfig();
+    routePool({ due: [] });
+    await publishDuePosts();
+    const sqls = q.mock.calls.map((c) => String(c[0]));
+    const dueSql = sqls.find((s) => s.includes("scheduled_at <= now()"))!;
+    expect(dueSql).toContain("auto_paused = false");
+  });
+});
+
+describe("reclaimStalePostingPosts (reaper bài kẹt 'posting')", () => {
+  it("đưa bài kẹt 'posting' quá 10' về 'failed' và đếm số thu hồi", async () => {
+    q.mockImplementation((sql: string) => {
+      const s = String(sql);
+      if (s.includes("status = 'posting'") && s.includes("status = 'failed'")) {
+        return Promise.resolve({ rowCount: 2, rows: [{ id: 1 }, { id: 2 }] });
+      }
+      return Promise.resolve({ rowCount: 0, rows: [] });
+    });
+    const res = await reclaimStalePostingPosts();
+    expect(res.reclaimed).toBe(2);
+    const sql = q.mock.calls.map((c) => String(c[0])).find((s) => s.includes("status = 'failed'"))!;
+    expect(sql).toContain("status = 'posting'");
+    expect(sql).toContain("interval '10 minutes'");
   });
 });

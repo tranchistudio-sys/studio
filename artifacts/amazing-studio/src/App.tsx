@@ -272,24 +272,25 @@ function InternalRouter() {
         <Route path="/ai-test" component={AiTestRoomPage} />
         {/* "Lulu Sale Test" gộp vào Lulu Brain Lab → tab "Sửa & Test Lulu". Giữ route để link/bookmark cũ tự chuyển hướng. */}
         <Route path="/claude-sale-test" component={() => <Redirect to="/lulu-brain-lab?tab=fixtest" />} />
-        <Route path="/claude-sale-settings" component={() => <AdminRoute component={ClaudeSaleSettingsPage} />} />
-        <Route path="/claude-sale-monitor" component={() => <AdminRoute component={ClaudeSaleMonitorPage} />} />
-        <Route path="/claude-sale-reengage" component={() => <AdminRoute component={ClaudeSaleReengagePage} />} />
-        <Route path="/sale-learning" component={() => <AdminRoute component={SaleLearningPage} />} />
-        <Route path="/lulu-human-review" component={() => <AdminRoute component={LuluHumanReviewPage} />} />
+        {/* Nhóm Facebook & Sale mở cho mọi nhân viên đã đăng nhập (bỏ AdminRoute). BE vẫn yêu cầu đăng nhập. */}
+        <Route path="/claude-sale-settings" component={ClaudeSaleSettingsPage} />
+        <Route path="/claude-sale-monitor" component={ClaudeSaleMonitorPage} />
+        <Route path="/claude-sale-reengage" component={ClaudeSaleReengagePage} />
+        <Route path="/sale-learning" component={SaleLearningPage} />
+        <Route path="/lulu-human-review" component={LuluHumanReviewPage} />
         <Route path="/lulu-brain-lab" component={LuluBrainLabPage} />
-        <Route path="/auto-post-facebook" component={() => <AdminRoute component={AutoPostFacebookPage} />} />
-        <Route path="/autopost-style-queue" component={() => <AdminRoute component={AutopostStyleQueuePage} />} />
+        <Route path="/auto-post-facebook" component={AutoPostFacebookPage} />
+        <Route path="/autopost-style-queue" component={AutopostStyleQueuePage} />
         <Route path="/notifications" component={NotificationsPage} />
         <Route path="/cms/home-settings" component={CmsHomeSettingsPage} />
         <Route path="/cms/gallery" component={CmsGalleryPage} />
-        <Route path="/cms/wedding-templates" component={() => <CmsAdminRoute component={CmsWeddingTemplatesPage} />} />
+        <Route path="/cms/wedding-templates" component={CmsWeddingTemplatesPage} />
         <Route path="/cms/pricing" component={CmsPricingPublicPage} />
         <Route path="/cms/rentals" component={() => <Redirect to="/cms/categories" />} />
         <Route path="/cms/products-rental" component={() => <Redirect to="/cms/categories" />} />
         <Route path="/cms/categories" component={CmsCategoriesPage} />
         <Route path="/cms/photo-ideas" component={CmsPhotoIdeasPage} />
-        <Route path="/cms/trash" component={() => <CmsAdminRoute component={CmsTrashPage} />} />
+        <Route path="/cms/trash" component={CmsTrashPage} />
         <Route component={NotFound} />
       </Switch>
     </Layout>

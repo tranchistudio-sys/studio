@@ -50,17 +50,29 @@ async function requireAdmin(req: Request, res: Response): Promise<number | null>
   return callerId;
 }
 
+// Mở Lulu Sale (Cài đặt/Monitor/Khách cần chăm lại) cho MỌI nhân viên đã đăng nhập
+// (quyết định của chủ studio). Vẫn yêu cầu đăng nhập; KHÔNG bắt buộc vai trò admin.
+// LƯU Ý: endpoint đổi nhà cung cấp AI (/ai-provider) vẫn dùng requireAdmin ở trên.
+async function requireAuth(req: Request, res: Response): Promise<number | null> {
+  const callerId = verifyToken(req.headers.authorization);
+  if (!callerId) {
+    res.status(401).json({ error: "Chưa đăng nhập hoặc phiên hết hạn" });
+    return null;
+  }
+  return callerId;
+}
+
 // ─── Cấu hình ─────────────────────────────────────────────────────────────────
 
 router.get("/claude-sale/settings", async (req, res) => {
-  if (!(await requireAdmin(req, res))) return;
+  if (!(await requireAuth(req, res))) return;
   const settings = await getClaudeSaleSettings();
   const masterEnabled = await getMasterEnabled();
   res.json({ settings, defaults: defaultClaudeSaleSettings(), masterEnabled });
 });
 
 router.put("/claude-sale/settings", async (req, res) => {
-  const callerId = await requireAdmin(req, res);
+  const callerId = await requireAuth(req, res);
   if (!callerId) return;
   try {
     const incoming = (req.body?.settings ?? req.body) as Partial<ClaudeSaleSettings>;
@@ -73,7 +85,7 @@ router.put("/claude-sale/settings", async (req, res) => {
 });
 
 router.post("/claude-sale/settings/reset", async (req, res) => {
-  const callerId = await requireAdmin(req, res);
+  const callerId = await requireAuth(req, res);
   if (!callerId) return;
   const saved = await saveClaudeSaleSettings(defaultClaudeSaleSettings(), callerId);
   res.json({ settings: saved });
@@ -81,7 +93,7 @@ router.post("/claude-sale/settings/reset", async (req, res) => {
 
 // "Xem prompt đang dùng" — dựng đúng system prompt (rút gọn context để dễ đọc).
 router.get("/claude-sale/settings/prompt-preview", async (req, res) => {
-  if (!(await requireAdmin(req, res))) return;
+  if (!(await requireAuth(req, res))) return;
   const settings = await getClaudeSaleSettings();
   const [persona, calendar, playbook] = [
     buildSettingsPromptBlock(settings),
@@ -100,12 +112,12 @@ router.get("/claude-sale/settings/prompt-preview", async (req, res) => {
 // ─── Cầu dao tổng ─────────────────────────────────────────────────────────────
 
 router.get("/claude-sale/master", async (req, res) => {
-  if (!(await requireAdmin(req, res))) return;
+  if (!(await requireAuth(req, res))) return;
   res.json({ enabled: await getMasterEnabled() });
 });
 
 router.put("/claude-sale/master", async (req, res) => {
-  if (!(await requireAdmin(req, res))) return;
+  if (!(await requireAuth(req, res))) return;
   const enabled = !!(req.body as { enabled?: boolean }).enabled;
   await setMasterEnabled(enabled);
   res.json({ enabled });
@@ -114,7 +126,7 @@ router.put("/claude-sale/master", async (req, res) => {
 // ─── Monitor ──────────────────────────────────────────────────────────────────
 
 router.get("/claude-sale/monitor", async (req, res) => {
-  if (!(await requireAdmin(req, res))) return;
+  if (!(await requireAuth(req, res))) return;
   try {
     const [stats, leads, masterEnabled] = await Promise.all([
       getMonitorStats(),
@@ -129,7 +141,7 @@ router.get("/claude-sale/monitor", async (req, res) => {
 
 // Gỡ cờ "cần nhân viên" sau khi đã xử lý.
 router.patch("/claude-sale/leads/:psid/clear-escalation", async (req, res) => {
-  if (!(await requireAdmin(req, res))) return;
+  if (!(await requireAuth(req, res))) return;
   const psid = req.params.psid;
   try {
     await clearNeedsHuman(psid);
@@ -142,7 +154,7 @@ router.patch("/claude-sale/leads/:psid/clear-escalation", async (req, res) => {
 // ─── Follow-up khách cũ ("Khách cần chăm lại") ────────────────────────────────
 
 router.get("/claude-sale/reengage", async (req, res) => {
-  if (!(await requireAdmin(req, res))) return;
+  if (!(await requireAuth(req, res))) return;
   const minSilenceDays = Number(req.query.minSilenceDays);
   const includeSkip = req.query.includeSkip === "1" || req.query.includeSkip === "true";
   try {

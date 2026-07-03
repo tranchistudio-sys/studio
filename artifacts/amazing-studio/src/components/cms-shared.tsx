@@ -1,5 +1,6 @@
-import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, type ReactNode } from "react";
 import { Upload, X, Image as ImageIcon, Loader2, GripVertical } from "lucide-react";
+import { Button } from "@/components/ui";
 import { getImageSrc } from "@/lib/imageUtils";
 import { API_BASE } from "@/lib/api-base";
 
@@ -11,6 +12,83 @@ import type { UploadAttachTarget } from "@/lib/upload-queue/types";
 function authHeaders(): HeadersInit {
   const token = localStorage.getItem("amazingStudioToken_v2");
   return { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MoveCategoryDialog — LỒNG / chuyển 1 DANH MỤC vào mục khác (đổi parentId thật).
+// Dùng chung cho mọi cây danh mục CMS (Ảnh sản phẩm, Cho thuê đồ, Ý tưởng chụp ảnh).
+// Album/sản phẩm/ý tưởng + mục con đi theo (vì nối qua category_id/parent_id),
+// KHÔNG bị lạc như nút "Chuyển danh mục" (vốn chỉ dời ITEM). Tự loại chính nó +
+// mọi mục con khỏi danh sách đích → chống vòng lặp.
+// ═══════════════════════════════════════════════════════════════════════════
+export type MovableCat = { id: number; parentId: number | null; name: string; sortOrder?: number };
+
+function descendantIdsOf(cats: MovableCat[], rootId: number): Set<number> {
+  const ids = new Set<number>([rootId]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const c of cats) {
+      if (c.parentId !== null && ids.has(c.parentId) && !ids.has(c.id)) { ids.add(c.id); changed = true; }
+    }
+  }
+  return ids;
+}
+
+export function MoveCategoryDialog({ cat, cats, busy, onConfirm, onClose }: {
+  cat: MovableCat; cats: MovableCat[]; busy?: boolean;
+  onConfirm: (parentId: number | null) => void; onClose: () => void;
+}) {
+  const [target, setTarget] = useState<string>(cat.parentId == null ? "" : String(cat.parentId));
+  // Loại CHÍNH NÓ + mọi mục con → không cho làm con của chính mình (chống vòng lặp).
+  const excluded = useMemo(() => descendantIdsOf(cats, cat.id), [cats, cat.id]);
+  const options = useMemo(() => {
+    const out: { id: number; label: string }[] = [];
+    const walk = (parentId: number | null, depth: number) => {
+      cats.filter(c => c.parentId === parentId)
+        .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+        .forEach(c => {
+          if (excluded.has(c.id)) return;
+          out.push({ id: c.id, label: `${"— ".repeat(depth)}${c.name}` });
+          walk(c.id, depth + 1);
+        });
+    };
+    walk(null, 0);
+    return out;
+  }, [cats, excluded]);
+
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-background rounded-2xl shadow-xl w-full max-w-md" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b flex items-center justify-between">
+          <h3 className="font-semibold truncate">Chuyển "{cat.name}" vào mục…</h3>
+          <button onClick={onClose} className="p-1 hover:bg-muted rounded"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="p-5 space-y-3">
+          <p className="text-xs text-muted-foreground">
+            Mọi thứ bên trong "{cat.name}" (mục con + album/sản phẩm/ý tưởng) sẽ đi theo — KHÔNG làm lạc.
+          </p>
+          <div>
+            <label className="text-sm font-medium">Chuyển vào</label>
+            <select
+              value={target}
+              onChange={e => setTarget(e.target.value)}
+              className="w-full mt-1 px-3 py-2 text-sm border border-input rounded-md bg-background"
+            >
+              <option value="">— Đưa ra ngoài cùng (mục gốc) —</option>
+              {options.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+            </select>
+          </div>
+        </div>
+        <div className="px-5 py-4 border-t flex justify-end gap-2">
+          <Button variant="outline" onClick={onClose}>Huỷ</Button>
+          <Button onClick={() => onConfirm(target === "" ? null : Number(target))} disabled={busy}>
+            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : "Chuyển"}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

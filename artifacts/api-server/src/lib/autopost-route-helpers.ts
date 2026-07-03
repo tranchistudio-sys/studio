@@ -10,6 +10,7 @@ export const POST_STATUSES = [
   "unused",
   "draft_ai",
   "pending_review",
+  "review_pending", // trong cửa sổ kiểm duyệt 30' — đang đếm ngược, sẽ tự đăng nếu không ai sửa/huỷ
   "approved",
   "scheduled",
   "posting",
@@ -114,4 +115,29 @@ export const DEFAULT_POST_IMAGES = 10;
 export function resolveSlotImageCount(slotImageCount: unknown): number {
   const n = Number(slotImageCount);
   return Number.isFinite(n) && n >= 2 ? n : DEFAULT_POST_IMAGES;
+}
+
+/**
+ * Chọn caption ĐỀ XUẤT từ mảng caption_options + chỉ số recommended (cho luồng
+ * TỰ ĐĂNG: khi countdown về 0 mà bài chưa có caption_final, lấy caption admin
+ * được gợi ý sẵn). Thứ tự: options[recommendedIndex] → options[0] → null.
+ * captionOptions là mảng { text } (đã parse từ jsonb) hoặc chuỗi JSON. KHÔNG throw.
+ */
+export function pickRecommendedCaption(captionOptions: unknown, recommendedIndex: unknown): string | null {
+  let arr: unknown = captionOptions;
+  if (typeof captionOptions === "string") {
+    try { arr = JSON.parse(captionOptions); } catch { return null; }
+  }
+  if (!Array.isArray(arr) || arr.length === 0) return null;
+  const pick = (i: number): string | null => {
+    const o = arr[i] as { text?: unknown } | undefined;
+    const t = o && typeof o.text === "string" ? o.text.trim() : "";
+    return t.length > 0 ? t : null;
+  };
+  const idx = Number(recommendedIndex);
+  if (Number.isInteger(idx) && idx >= 0 && idx < arr.length) {
+    const r = pick(idx);
+    if (r) return r;
+  }
+  return pick(0);
 }

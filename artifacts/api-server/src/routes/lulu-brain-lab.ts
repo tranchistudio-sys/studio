@@ -10,7 +10,7 @@ import {
   createChangeRequest, listChangeRequests, setChangeRequestStatus,
   listTestCases, getTestCase, createTestCase, deleteTestCase,
   saveTestResult, listTestResults, missingMarkers, recoverMissingMarkers,
-  getActiveImageOverrides, appendImageOverrideToDraft,
+  getActiveImageOverrides, appendImageOverrideToDraft, removeImageOverrideFromDraft,
   type BrainVersion,
   type ChangeRequestStatus,
 } from "../lib/sale-brain-lab";
@@ -800,6 +800,60 @@ router.post("/lulu-brain/image-feedback", async (req, res) => {
   } catch (err) {
     console.error("[BrainLab] image-feedback lỗi:", String(err).slice(0, 300));
     res.status(500).json({ error: `Lưu feedback ảnh lỗi: ${String(err).slice(0, 200)}` });
+  }
+});
+
+/**
+ * GET /lulu-brain/draft-overrides — liệt kê "câu Lulu đã được dạy" (image override) trong
+ * BẢN NHÁP đang mở, để FE hiện danh sách + nút xoá từng câu. Trả gọn (không kèm ảnh nặng).
+ * Chưa có nháp → overrides rỗng.
+ */
+router.get("/lulu-brain/draft-overrides", async (req, res) => {
+  const caller = await requireStaff(req, res);
+  if (!caller) return;
+  try {
+    await ensureBrainLabTables();
+    const draft = await getOpenDraftVersion();
+    if (!draft) return res.json({ draftId: null, versionNumber: null, overrides: [] });
+    const overrides = parseImageOverrides(draft.rulesJson).map((o) => ({
+      id: o.id,
+      customerQuestion: o.customerQuestion,
+      intent: o.intent,
+      tone: o.tone,
+      editedText: o.editedText,
+      responseMode: o.responseMode,
+      correctImageCount: o.correctImages.length,
+      createdByName: o.createdByName,
+      createdAt: o.createdAt,
+    }));
+    res.json({ draftId: draft.id, versionNumber: draft.versionNumber, overrides });
+  } catch (err) {
+    console.error("[BrainLab] draft-overrides lỗi:", String(err).slice(0, 200));
+    res.status(500).json({ error: `Không đọc được câu đã dạy: ${String(err).slice(0, 150)}` });
+  }
+});
+
+/**
+ * DELETE /lulu-brain/draft-overrides/:overrideId — xoá 1 câu đã dạy khỏi bản nháp đang mở.
+ * Chỉ đụng rulesJson của bản nháp (KHÔNG đụng bản chạy thật / lịch sử). Mọi staff được xoá
+ * (giống quyền dạy ở image-feedback); áp dụng lên Fanpage thật vẫn là quyền admin.
+ */
+router.delete("/lulu-brain/draft-overrides/:overrideId", async (req, res) => {
+  const caller = await requireStaff(req, res);
+  if (!caller) return;
+  const overrideId = String(req.params.overrideId || "").trim();
+  if (!overrideId) return res.status(400).json({ error: "Thiếu mã câu đã dạy." });
+  try {
+    await ensureBrainLabTables();
+    const draft = await getOpenDraftVersion();
+    if (!draft) return res.status(400).json({ error: "Chưa có bản nháp để xoá câu đã dạy." });
+    const r = await removeImageOverrideFromDraft(draft.id, overrideId);
+    if (!r.version) return res.status(400).json({ error: "Chỉ xoá được câu đã dạy trong bản nháp." });
+    if (!r.removed) return res.status(404).json({ error: "Không tìm thấy câu đã dạy này (có thể đã xoá rồi)." });
+    res.json({ draft: r.version, total: r.total });
+  } catch (err) {
+    console.error("[BrainLab] xoá draft-override lỗi:", String(err).slice(0, 200));
+    res.status(500).json({ error: `Xoá câu đã dạy lỗi: ${String(err).slice(0, 150)}` });
   }
 });
 

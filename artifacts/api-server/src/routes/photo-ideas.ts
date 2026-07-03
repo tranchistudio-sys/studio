@@ -85,6 +85,74 @@ router.get("/photo-ideas", async (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
+// ─── Thao tác HÀNG LOẠT (tích chọn) ─────────────────────────────────────────
+// BẮT BUỘC đặt TRƯỚC các route "/photo-ideas/:id" — nếu không Express khớp
+// "bulk-*" thành :id → id = NaN. (Cùng bẫy với bug "params 32, NaN" của album.)
+
+// PATCH /api/photo-ideas/bulk-category — đổi danh mục cho NHIỀU ý tưởng cùng lúc.
+router.patch("/photo-ideas/bulk-category", async (req, res) => {
+  if (!(await requireStaff(req, res))) return;
+  try {
+    const { ids, categoryId } = req.body ?? {};
+    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: "Thiếu danh sách ý tưởng" });
+    const intIds = [...new Set(ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+    if (intIds.length === 0) return res.status(400).json({ error: "ids không hợp lệ" });
+
+    let targetCatId: number | null = null;
+    if (categoryId != null) {
+      targetCatId = Number(categoryId);
+      if (!Number.isInteger(targetCatId) || targetCatId <= 0) return res.status(400).json({ error: "categoryId không hợp lệ" });
+      const cat = await pool.query(`SELECT type, deleted_at FROM cms_categories WHERE id = $1`, [targetCatId]);
+      if (!cat.rows.length) return res.status(404).json({ error: "Danh mục không tồn tại" });
+      const row = cat.rows[0] as { type: string; deleted_at: Date | null };
+      if (row.deleted_at) return res.status(400).json({ error: "Danh mục đã bị xoá" });
+      if (row.type !== "idea") return res.status(400).json({ error: "Danh mục phải là loại Ý tưởng" });
+    }
+    const r = await pool.query(
+      `UPDATE photo_ideas SET category_id = $1
+        WHERE id = ANY($2::int[]) AND deleted_at IS NULL RETURNING id`,
+      [targetCatId, intIds],
+    );
+    res.json({ ok: true, affected: r.rowCount ?? 0, targetCategoryId: targetCatId });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// PATCH /api/photo-ideas/bulk-priority — đưa các ý tưởng đã chọn LÊN ĐẦU.
+router.patch("/photo-ideas/bulk-priority", async (req, res) => {
+  if (!(await requireStaff(req, res))) return;
+  try {
+    const { ids } = req.body ?? {};
+    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: "Thiếu danh sách ý tưởng" });
+    const intIds = [...new Set(ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+    if (intIds.length === 0) return res.status(400).json({ error: "ids không hợp lệ" });
+    const mn = await pool.query(`SELECT COALESCE(MIN(sort_order), 0)::int AS m FROM photo_ideas WHERE deleted_at IS NULL`);
+    const base = ((mn.rows[0] as { m: number }).m) - 1;
+    const r = await pool.query(
+      `UPDATE photo_ideas SET sort_order = $1
+        WHERE id = ANY($2::int[]) AND deleted_at IS NULL RETURNING id`,
+      [base, intIds],
+    );
+    res.json({ ok: true, affected: r.rowCount ?? 0 });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// POST /api/photo-ideas/bulk-delete — xoá MỀM nhiều ý tưởng (vào thùng rác).
+router.post("/photo-ideas/bulk-delete", async (req, res) => {
+  if (!(await requireStaff(req, res))) return;
+  try {
+    const { ids } = req.body ?? {};
+    if (!Array.isArray(ids) || ids.length === 0) return res.status(400).json({ error: "Thiếu danh sách ý tưởng" });
+    const intIds = [...new Set(ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+    if (intIds.length === 0) return res.status(400).json({ error: "ids không hợp lệ" });
+    const r = await pool.query(
+      `UPDATE photo_ideas SET deleted_at = now()
+        WHERE id = ANY($1::int[]) AND deleted_at IS NULL RETURNING id`,
+      [intIds],
+    );
+    res.json({ ok: true, affected: r.rowCount ?? 0 });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
 router.get("/photo-ideas/:id", async (req, res) => {
   if (!(await requireStaff(req, res))) return;
   try {

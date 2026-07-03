@@ -4,16 +4,28 @@
     {
       "name": "api-server",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["--env-file=.env", "--enable-source-maps", "artifacts/api-server/dist/index.mjs"],
+      "runtimeArgs": [
+        "--env-file=D:/CAC PHIEN BAN CODE/CODE SUSU 14-6/BACKUP_FULL_TRANCHISTUDIO_20260614_092037/BACKUP_FULL_TRANCHISTUDIO/code/.env",
+        "--enable-source-maps",
+        "D:/CAC PHIEN BAN CODE/CODE SUSU 14-6/BACKUP_FULL_TRANCHISTUDIO_20260614_092037/BACKUP_FULL_TRANCHISTUDIO/code/artifacts/api-server/dist/index.mjs"
+      ],
       "port": 3000,
       "autoPort": false
     },
     {
       "name": "amazing-studio",
-      "runtimeExecutable": "pnpm",
-      "runtimeArgs": ["dev:web"],
-      "port": 5001,
-      "autoPort": true
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "D:/CAC PHIEN BAN CODE/CODE SUSU 14-6/BACKUP_FULL_TRANCHISTUDIO_20260614_092037/BACKUP_FULL_TRANCHISTUDIO/code/artifacts/amazing-studio/node_modules/vite/bin/vite.js",
+        "--config",
+        "D:/CAC PHIEN BAN CODE/CODE SUSU 14-6/BACKUP_FULL_TRANCHISTUDIO_20260614_092037/BACKUP_FULL_TRANCHISTUDIO/code/artifacts/amazing-studio/vite.config.ts",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "5173"
+      ],
+      "port": 5173,
+      "autoPort": false
     }
   ]
 }

@@ -1,0 +1,25 @@
+[web-push] VAPID keys not set — push disabled
+[AutoPostStyleWorker] ensure table lỗi: error: duplicate key value violates unique constraint "pg_class_relname_nsp_index"
+    at <anonymous> (D:\CAC PHIEN BAN CODE\CODE SUSU 14-6\BACKUP_FULL_TRANCHISTUDIO_20260614_092037\BACKUP_FULL_TRANCHISTUDIO\code\node_modules\.pnpm\pg-pool@3.13.0_pg@8.20.0\node_modules\pg-pool\index.js:45:11)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async ensureStyleJobsTable (D:\CAC PHIEN BAN CODE\CODE SUSU 14-6\BACKUP_FULL_TRANCHISTUDIO_20260614_092037\BACKUP_FULL_TRANCHISTUDIO\code\artifacts\api-server\src\lib\autopost-style-jobs.ts:97:3) {
+  length: 270,
+  severity: 'ERROR',
+  code: '23505',
+  detail: 'Key (relname, relnamespace)=(autopost_style_jobs_id_seq, 54535) already exists.',
+  hint: undefined,
+  position: undefined,
+  internalPosition: undefined,
+  internalQuery: undefined,
+  where: undefined,
+  schema: 'pg_catalog',
+  table: 'pg_class',
+  column: undefined,
+  dataType: undefined,
+  constraint: 'pg_class_relname_nsp_index',
+  file: 'nbtinsert.c',
+  line: '673',
+  routine: '_bt_check_unique'
+}
+[AI] [style-ocr] Claude lỗi bad_request → DỪNG (báo admin cấu hình lại), KHÔNG fallback
+[AI] [style-ocr] Claude lỗi bad_request → DỪNG (báo admin cấu hình lại), KHÔNG fallback

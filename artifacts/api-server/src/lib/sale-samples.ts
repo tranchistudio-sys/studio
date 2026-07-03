@@ -63,8 +63,10 @@ const RENTAL_TEXT_RE =
   /(thuê|thue)\s*(đồ|do|váy|vay|áo dài|ao dai|vest)|váy cưới|vay cuoi|áo dài|ao dai|\bvest\b|việt phục|viet phuc|cổ phục|co phuc|cho thuê|cho thue|có (váy|vay|đồ|do)|co (vay|do)/i;
 const WEDDING_GATE_RE = /(cổng|cong)\s*(cưới|cuoi)?|chụp cổng|chup cong/i;
 const WEDDING_PARTY_RE = /(tiệc cưới|tiec cuoi|phóng sự|phong su|đãi tiệc|dai tiec|chụp tiệc|chup tiec)/i;
+// LUẬT 4 — "ngoại cảnh" TRẦN (không kèm "cưới") cố tình KHÔNG khớp ở đây: có thể là
+// ngoại cảnh CƯỚI hoặc ngoại cảnh BEAUTY → để Lulu hỏi lại thay vì đoán bừa.
 const WEDDING_ALBUM_RE =
-  /(cưới|cuoi|cô dâu|co dau|chú rể|chu re|album cưới|ngoại cảnh|ngoai canh|chụp cưới|chup cuoi|pre[- ]?wedding|wedding)/i;
+  /(cưới|cuoi|cô dâu|co dau|chú rể|chu re|album cưới|chụp cưới|chup cuoi|pre[- ]?wedding|wedding)/i;
 const MATERNITY_RE = /(bầu|bau|mẹ bầu|me bau|mang thai|maternity)/i;
 const FAMILY_RE = /(gia đình|gia dinh|cả nhà|ca nha|family|chụp gia đình)/i;
 const BEAUTY_RE =
@@ -225,61 +227,84 @@ export function toPublicImageUrl(path: string | null | undefined): string {
   return `${base}${withSlash}`;
 }
 
-// ─── Khớp nhóm cho GALLERY (beauty / cưới / bầu / gia đình) ───────────────────
-// pos = phải có ÍT NHẤT 1; neg = có 1 từ là LOẠI (chống lẫn nhóm). Khớp trên
-// haystack = tên album + tags + ĐƯỜNG DẪN DANH MỤC (own + cha + gốc).
+// ─── PRIMARY CATEGORY (cửa chính) — KHÓA NHÓM LỚN THEO DANH MỤC GỐC ───────────
+// Triết lý: "DANH MỤC LÀ XƯƠNG SỐNG, TAGS LÀ GIA VỊ". Album thuộc nhóm nào do CÂY
+// DANH MỤC (đi tới GỐC) quyết định — KHÔNG đoán theo tag/tên album. Tag chỉ lọc gu
+// SAU KHI đã khóa đúng danh mục, và TUYỆT ĐỐI không kéo album sang nhóm khác.
 type GalleryRule = { pos: string[]; neg: string[] };
-const GALLERY_RULES: Partial<Record<ServiceIntent, GalleryRule>> = {
-  beauty: {
-    // KHÔNG để "cool" trần (dễ trúng album cưới tên "Cool Love"); cool boy đã route qua intent beauty.
-    pos: ["beauty", "beaty", "ca tinh", "ngau", "nang tho", "sexy", "gym", "profile", "ky yeu", "fashion", "khi chat", "chan dung", "hac thien nga", "sang trong"],
-    neg: ["cuoi", "co dau", "chu re", "bau", "me bau", "gia dinh", "tiec cuoi", "phong su", "wedding", "ngoai canh", "phong xam", "say yes"],
-  },
-  wedding_album: {
-    pos: ["cuoi", "co dau", "chu re", "ngoai canh", "phong xam", "wedding", "say yes"],
-    neg: ["beauty", "beaty", "bau", "me bau", "gym", "profile", "tiec cuoi", "phong su", "gia dinh", "ca tinh", "khi chat", "hac thien nga"],
-  },
-  wedding_gate: {
-    // bỏ "cong" trần (trúng "công sở/công chúa/thành công"); chỉ "cong cuoi".
-    pos: ["cong cuoi"],
-    neg: ["beauty", "beaty", "bau", "me bau", "gia dinh"],
-  },
-  wedding_party: {
-    // bỏ "tiec" trần (trúng "tiệc sinh nhật"); giữ cụm cưới rõ ràng.
-    pos: ["tiec cuoi", "phong su", "dai tiec"],
-    neg: ["beauty", "beaty", "bau", "me bau"],
-  },
-  maternity: {
-    pos: ["bau", "me bau", "maternity", "mang thai"],
-    neg: ["cuoi", "co dau", "chu re", "gia dinh", "beauty"],
-  },
-  family: {
-    pos: ["gia dinh", "family", "ca nha"],
-    neg: ["cuoi", "co dau", "chu re", "beauty", "bau", "me bau"],
-  },
-};
 
-// Nhóm sản phẩm suy từ CÂY DANH MỤC (own + cha + gốc) — chống lẫn nhóm theo CẤU
-// TRÚC (không chỉ tên album). Ưu tiên bầu > gia đình > cưới > beauty (bầu nằm
-// trong gốc Beauty nên phải xét trước). null = chưa phân loại / album chưa gắn danh mục.
-type GalleryGroup = "beauty" | "wedding" | "maternity" | "family";
-function categoryGroup(catId: number | null, byId: Map<number, CatRow>): GalleryGroup | null {
+export type PrimaryGroup = "thoitrang" | "wedding" | "family";
+
+// Dấu hiệu nhóm THỜI TRANG/Beauty trên đường dẫn danh mục (gồm cả các nhánh con quen thuộc).
+const THOITRANG_MARKERS = [
+  "thoi trang", "beauty", "beaty", "fashion", "ao dai",
+  "sexy", "nang tho", "sang trong", "ngau", "cool", "ca tinh", "ca tanh",
+  "ky yeu", "gym", "profile", "chan dung", "tet", "couple", "sinh nhat",
+  "co trang", "bau", "me bau", "maternity", "mang thai",
+];
+
+/**
+ * LUẬT 1 — Suy NHÓM LỚN từ ĐƯỜNG DẪN DANH MỤC (own + cha + … + gốc), ưu tiên
+ * wedding > family > thoitrang (đặc trưng xét trước). Quét CẢ đường dẫn nên dù admin
+ * LỒNG danh mục ở đâu (vd Gia đình nằm trong Thời trang) vẫn nhận đúng nhóm — KHÔNG
+ * phải sửa code mỗi lần dời. null = chưa gắn danh mục / không thuộc nhóm ảnh nào →
+ * KHÔNG được chọn cho nhóm cứng (thà thiếu còn hơn gửi sai nhóm).
+ */
+export function resolvePrimaryGroup(catId: number | null, byId: Map<number, CatRow>): PrimaryGroup | null {
   const path = catPath(catId, byId);
   if (!path) return null;
-  if (hayHasAny(path, ["bau", "me bau", "maternity", "mang thai"])) return "maternity";
+  if (hayHasAny(path, ["cuoi", "co dau", "chu re", "wedding"])) return "wedding";
   if (hayHasAny(path, ["gia dinh", "family", "ca nha"])) return "family";
-  if (hayHasAny(path, ["cuoi", "co dau", "chu re", "ngoai canh", "phong xam"])) return "wedding";
-  if (hayHasAny(path, ["beauty", "beaty", "sexy", "nang tho", "sang trong", "ngau", "gym", "ky yeu", "ca tinh", "khi chat", "hac thien nga", "chan dung", "fashion", "tet"])) return "beauty";
+  if (hayHasAny(path, THOITRANG_MARKERS)) return "thoitrang";
   return null;
 }
-const INTENT_TO_GROUP: Partial<Record<ServiceIntent, GalleryGroup>> = {
-  beauty: "beauty",
+
+// intent → nhóm lớn bắt buộc. rental_outfit (đồ thuê) & new_concept_idea (ý tưởng)
+// dùng nguồn khác (dresses / photo_ideas) nên KHÔNG nằm ở bảng gallery này.
+const INTENT_PRIMARY: Partial<Record<ServiceIntent, PrimaryGroup>> = {
+  beauty: "thoitrang",
+  maternity: "thoitrang",
   wedding_album: "wedding",
   wedding_gate: "wedding",
   wedding_party: "wedding",
-  maternity: "maternity",
   family: "family",
 };
+export function intentPrimaryGroup(intent: ServiceIntent): PrimaryGroup | null {
+  return INTENT_PRIMARY[intent] ?? null;
+}
+
+// LUẬT 2 — Lọc NHÁNH CON bên trong nhóm lớn, CHẠY TRÊN ĐƯỜNG DẪN DANH MỤC (KHÔNG xét
+// tag/tên). pos rỗng = chấp nhận mọi nhánh trong nhóm; pos có → phải khớp ≥1; neg → có 1 là loại.
+const INTENT_SUBRULE: Partial<Record<ServiceIntent, GalleryRule>> = {
+  beauty: { pos: [], neg: ["bau", "me bau", "maternity", "mang thai"] }, // thời trang nói chung, TRỪ bầu
+  maternity: { pos: ["bau", "me bau", "maternity", "mang thai"], neg: [] },
+  wedding_album: { pos: [], neg: [] }, // bất kỳ nhánh nào trong Ảnh Cưới
+  wedding_gate: { pos: ["cong", "studio", "trong nha", "album"], neg: ["ngoai canh", "tiec", "phong su"] },
+  wedding_party: { pos: ["tiec", "phong su", "dai tiec"], neg: [] },
+  family: { pos: [], neg: [] },
+};
+/** catPath đã norm có thỏa nhánh con của intent không (gia vị cấp DANH MỤC). */
+export function subcategoryAllows(intent: ServiceIntent, catPathNorm: string): boolean {
+  const rule = INTENT_SUBRULE[intent];
+  if (!rule) return true;
+  if (rule.neg.length && hayHasAny(catPathNorm, rule.neg)) return false;
+  if (rule.pos.length && !hayHasAny(catPathNorm, rule.pos)) return false;
+  return true;
+}
+
+// ─── LUẬT 3 — TAGS = "gia vị": chỉ XẾP HẠNG trong nhóm ĐÃ KHÓA, KHÔNG bao giờ đổi nhóm ──
+const TAG_STOPWORDS = new Set([
+  "anh", "chi", "minh", "muon", "chup", "cho", "xem", "coi", "mau", "hinh", "duoc",
+  "khong", "nha", "cai", "kieu", "mot", "vai", "gui", "the", "nay", "shop", "studio",
+]);
+function preferenceTokens(messageText: string): string[] {
+  return norm(messageText).split(" ").filter((w) => w.length >= 3 && !TAG_STOPWORDS.has(w));
+}
+function tagScore(nameTagsNorm: string, tokens: string[]): number {
+  let s = 0;
+  for (const t of tokens) if (hayHas(nameTagsNorm, t)) s++;
+  return s;
+}
 
 type GalleryRow = {
   id: number;
@@ -289,6 +314,7 @@ type GalleryRow = {
   category_id: number | null;
   cover_image_url: string | null;
   first_photo: string | null;
+  sort_order: number | null; // ưu tiên: số NHỎ = được ghim lên đầu (bulk-priority)
 };
 
 type CatRow = { id: number; name: string; parent_id: number | null };
@@ -310,13 +336,14 @@ async function resolveGallerySamples(
   limit: number,
   excludeUrls: Set<string>,
   gender?: Gender | null,
+  messageText = "",
 ): Promise<SampleImage[]> {
-  const rule = GALLERY_RULES[intent];
-  if (!rule) return [];
+  const primary = intentPrimaryGroup(intent);
+  if (!primary) return [];
   try {
     const [albumsRes, catsRes] = await Promise.all([
       pool.query(
-        `SELECT a.id, a.name, a.slug, a.tags_text, a.category_id, a.cover_image_url,
+        `SELECT a.id, a.name, a.slug, a.tags_text, a.category_id, a.cover_image_url, a.sort_order,
                 gp.image_url AS first_photo
          FROM gallery_albums a
          LEFT JOIN LATERAL (
@@ -332,43 +359,59 @@ async function resolveGallerySamples(
     const byId = new Map<number, CatRow>(
       (catsRes.rows as CatRow[]).map((c) => [c.id, c]),
     );
-    const requiredGroup = INTENT_TO_GROUP[intent] ?? null;
     const base = getPublicBaseUrl().replace(/\/+$/, "");
-    const out: SampleImage[] = [];
-    const candidates: SampleImage[] = [];
+    const tokens = preferenceTokens(messageText);
+
+    type Scored = SampleImage & { score: number; sortOrder: number };
+    const strict: Scored[] = [];  // đúng nhóm lớn + đúng nhánh con
+    const relaxed: Scored[] = []; // đúng nhóm lớn nhưng nhánh con chưa khớp (dự phòng TRONG cùng nhóm)
+
     for (const a of albumsRes.rows as GalleryRow[]) {
       const imageUrl = (a.cover_image_url ?? a.first_photo ?? "").trim();
       if (!imageUrl) continue; // không có ảnh thật → bỏ (KHÔNG bịa)
-      // GATE CẤU TRÚC: nếu album đã gắn danh mục thuộc NHÓM KHÁC → loại ngay
-      // (vd album cưới tên "Cool Love" KHÔNG lọt vào beauty). Album chưa gắn danh
-      // mục (group=null) thì để keyword bên dưới quyết định.
-      const grp = categoryGroup(a.category_id, byId);
-      if (requiredGroup && grp && grp !== requiredGroup) continue;
-      const hay = `${norm(a.name)} ${norm(a.tags_text)} ${catPath(a.category_id, byId)}`;
-      if (hayHasAny(hay, rule.neg)) continue; // chống lẫn nhóm (theo tên/tag)
-      if (!hayHasAny(hay, rule.pos)) continue;
-      // LỌC GIỚI TÍNH (chỉ cho beauty/cá nhân — cưới/bầu/gia đình là cặp đôi/gia
-      // đình nên bỏ qua). Khách hỏi NAM → CHỈ lấy mẫu nam (loại nữ + không rõ),
-      // thà thiếu còn hơn gửi sai giới. Khách hỏi NỮ → loại mẫu nam.
+
+      // LUẬT 1+5 — KHÓA NHÓM LỚN theo DANH MỤC GỐC. Sai nhóm (hoặc chưa gắn danh
+      // mục) → LOẠI NGAY; tag/tên KHÔNG cứu được (chống nhảy nhóm).
+      if (resolvePrimaryGroup(a.category_id, byId) !== primary) continue;
+
+      const catP = catPath(a.category_id, byId);
+      const nameTags = `${norm(a.name)} ${norm(a.tags_text)}`;
+
+      // LỌC GIỚI TÍNH (chỉ beauty/cá nhân — cưới/bầu/gia đình là cặp đôi/gia đình).
+      // Khách hỏi NAM → CHỈ mẫu nam (thà thiếu còn hơn sai giới); NỮ → loại mẫu nam.
       if (intent === "beauty" && gender) {
-        const g = sampleGender(hay);
+        const g = sampleGender(`${nameTags} ${catP}`);
         if (gender === "male" && g !== "male") continue;
         if (gender === "female" && g === "male") continue;
       }
       if (excludeUrls.has(imageUrl)) continue;
-      candidates.push({
+
+      const img: Scored = {
         title: (a.name ?? "").trim() || "Bộ ảnh mẫu",
         imageUrl,
         detailUrl: a.slug ? `${base}/bo-anh/${a.slug}` : undefined,
         sourceType: "gallery",
         serviceIntent: intent,
-      });
+        score: tagScore(nameTags, tokens), // LUẬT 3 — tag chỉ XẾP HẠNG gu trong nhóm
+        sortOrder: a.sort_order ?? 0,      // LUẬT 8 — ưu tiên: số NHỎ (được ghim) lên trước
+      };
+
+      // LUẬT 2 — nhánh con xét trên ĐƯỜNG DẪN DANH MỤC (KHÔNG xét tag/tên).
+      // neg = nhánh SAI rõ ràng (vd hỏi cổng cưới mà gặp album ngoại cảnh) → LOẠI HẲN,
+      // không dùng kể cả khi phải fallback. Chỉ album "thiếu pos" mới vào diện dự phòng.
+      const sub = INTENT_SUBRULE[intent];
+      if (sub?.neg.length && hayHasAny(catP, sub.neg)) continue;
+      if (subcategoryAllows(intent, catP)) strict.push(img);
+      else relaxed.push(img);
     }
-    for (const c of candidates) {
-      if (out.length >= limit) break;
-      out.push(c);
-    }
-    return out;
+
+    // Ưu tiên đúng nhánh con; nếu trống thì CHỈ nhóm cưới mới nới về cùng nhóm lớn
+    // (vd "cổng cưới" chưa tách nhánh Studio → vẫn lấy album Ảnh Cưới, KHÔNG sang beauty).
+    const picked = strict.length ? strict : primary === "wedding" ? relaxed : [];
+    // Thứ tự gửi (LUẬT 1 + 8): khớp gu (tag) nhiều hơn TRƯỚC; cùng mức gu thì album
+    // ƯU TIÊN/được ghim (sort_order nhỏ) lên trước; rồi tới album thường.
+    picked.sort((x, y) => (y.score - x.score) || (x.sortOrder - y.sortOrder));
+    return picked.slice(0, limit).map(({ score, sortOrder, ...s }) => s);
   } catch (err) {
     console.error("[Samples] gallery lỗi:", String(err).slice(0, 160));
     return [];
@@ -412,11 +455,12 @@ async function resolveRentalSamples(
   try {
     const [dressRes, catsRes] = await Promise.all([
       pool.query(
+        // LUẬT 8 — đồ được "Ưu tiên hiển thị" (is_priority) lên TRƯỚC, rồi mới tới đồ hay dùng.
         `SELECT id, code, name, category, category_id, style, outfit_tag, image_url, usage_count
          FROM dresses
          WHERE is_available = TRUE
            AND image_url IS NOT NULL AND length(trim(image_url)) > 0
-         ORDER BY usage_count DESC, id`,
+         ORDER BY is_priority DESC NULLS LAST, priority_at DESC NULLS LAST, usage_count DESC, id`,
       ),
       pool.query(`SELECT id, name, parent_id FROM cms_categories WHERE type = 'dress'`),
     ]);
@@ -573,9 +617,9 @@ export async function resolveSampleImages(opts: ResolveSampleImagesOpts): Promis
       pushUnique(await resolveIdeaSamples(messageText, pool, new Set()));
     } else {
       // gallery (beauty/wedding_*/maternity/family). gate/party rỗng → fallback wedding_album.
-      let imgs = await resolveGallerySamples(intent, pool, new Set(), gender);
+      let imgs = await resolveGallerySamples(intent, pool, new Set(), gender, messageText);
       if (imgs.length === 0 && (intent === "wedding_gate" || intent === "wedding_party")) {
-        imgs = await resolveGallerySamples("wedding_album", pool, new Set(), gender);
+        imgs = await resolveGallerySamples("wedding_album", pool, new Set(), gender, messageText);
         imgs = imgs.map((i) => ({ ...i, serviceIntent: intent }));
       }
       pushUnique(imgs);

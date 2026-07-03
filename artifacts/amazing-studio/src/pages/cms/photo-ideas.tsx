@@ -3,14 +3,14 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Tag, Plus, Trash2, Edit2, Save, Loader2, X, ChevronRight, ChevronDown,
   FolderPlus, Lightbulb, Image as ImageIcon, Eye, EyeOff, Search, Check,
-  AlertCircle, MoreHorizontal, ArrowLeft, Sparkles, Wrench, SlidersHorizontal,
+  AlertCircle, MoreHorizontal, ArrowLeft, Sparkles, Wrench, SlidersHorizontal, FolderInput, CheckSquare,
 } from "lucide-react";
 import { Button, Input } from "@/components/ui";
 import {
   Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription,
 } from "@/components/ui/sheet";
 import {
-  authHeaders, CMS_BASE, LazyImage, MultiImageUploader, SortableList,
+  authHeaders, CMS_BASE, LazyImage, MultiImageUploader, SortableList, MoveCategoryDialog,
   type UploadedImage,
 } from "@/components/cms-shared";
 import { getImageSrc } from "@/lib/imageUtils";
@@ -19,6 +19,10 @@ import {
   ChipSuggest, useCommonTags, IDEA_TAG_KEY, IDEA_TAG_DEFAULTS,
   FilterChipRow, FilterRadioRow, mergeTagOptions,
 } from "@/components/cms-tag-input";
+import {
+  useBulkSelect, BulkActionBar, BulkMoveDialog, TriCheckbox,
+  itemIdsInCategorySubtree, subtreeSelectState, type TriState,
+} from "@/components/cms-bulk-select";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 interface Category {
@@ -129,24 +133,34 @@ function DragSortImageGrid({ images, onReorder, onRemove }: {
 }
 
 // ─── IdeaCard ────────────────────────────────────────────────────────────────
-function IdeaCard({ idea, onSelect, onToggleVisibility, toggling }: {
+function IdeaCard({ idea, onSelect, onToggleVisibility, toggling, selectMode = false, selected = false, onToggleSelect }: {
   idea: Idea; onSelect: () => void;
   onToggleVisibility: (i: Idea) => void; toggling: boolean;
+  selectMode?: boolean; selected?: boolean; onToggleSelect?: () => void;
 }) {
   const cover = coverOf(idea);
   const exec = EXECUTION_META[idea.executionStatus] ?? EXECUTION_META.available;
   const isVisible = idea.visibilityStatus === "public";
   return (
     <div
-      className="group relative rounded-xl overflow-hidden bg-muted border cursor-pointer hover:shadow-md hover:border-primary/40 transition-all"
-      onClick={onSelect}
+      className={`group relative rounded-xl overflow-hidden bg-muted border transition-all ${
+        selectMode
+          ? `cursor-pointer ${selected ? "border-primary ring-2 ring-primary/40" : "border-border hover:border-primary/40"}`
+          : "cursor-pointer hover:shadow-md hover:border-primary/40"
+      }`}
+      onClick={selectMode ? onToggleSelect : onSelect}
     >
       <div className="aspect-[3/4] relative">
         <LazyImage src={cover} className="absolute inset-0 w-full h-full" />
         <div className="absolute inset-x-0 bottom-0 h-2/3 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
-        <div className={`absolute top-2 left-2 px-1.5 py-0.5 rounded-full text-[10px] font-medium ${exec.bg} ${exec.color}`}>
-          {idea.executionStatus === "available" ? "Có sẵn" : "Cần đầu tư"}
-        </div>
+        {selectMode ? (
+          <div className="absolute top-2 left-2"><TriCheckbox state={selected} /></div>
+        ) : (
+          <div className={`absolute top-2 left-2 px-1.5 py-0.5 rounded-full text-[10px] font-medium ${exec.bg} ${exec.color}`}>
+            {idea.executionStatus === "available" ? "Có sẵn" : "Cần đầu tư"}
+          </div>
+        )}
+        {!selectMode && (
         <button
           onClick={e => { e.stopPropagation(); onToggleVisibility(idea); }}
           disabled={toggling}
@@ -157,6 +171,7 @@ function IdeaCard({ idea, onSelect, onToggleVisibility, toggling }: {
         >
           {toggling ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : isVisible ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
         </button>
+        )}
         <div className="absolute inset-x-0 bottom-0 p-2.5 text-white">
           <p className="font-semibold text-sm leading-tight line-clamp-2">{idea.name}</p>
           <p className="text-[10px] text-white/70 mt-0.5">{(idea.extraImages?.length ?? 0) + (idea.imageUrl ? 1 : 0)} ảnh</p>
@@ -468,7 +483,7 @@ function IdeaDrawer({ idea, categories, defaultCategoryId, onClose, onSaved, onD
 }
 
 // ─── CategoryNode (cây danh mục đệ quy — vô hạn cấp) ─────────────────────────
-function CategoryNode({ cat, depth, allCats, expanded, selectedCatId, onSelect, onToggle, onAddChild, onAddIdea, onRename, onDelete, onToggleActive, onReorder }: {
+function CategoryNode({ cat, depth, allCats, expanded, selectedCatId, onSelect, onToggle, onAddChild, onAddIdea, onRename, onMove, onDelete, onToggleActive, onReorder, selectMode, catSelectState, onToggleCatSelect }: {
   cat: Category; depth: number; allCats: Category[];
   expanded: Set<number>; selectedCatId: number | null;
   onSelect: (id: number) => void;
@@ -476,9 +491,13 @@ function CategoryNode({ cat, depth, allCats, expanded, selectedCatId, onSelect, 
   onAddChild: (parentId: number) => void;
   onAddIdea: (catId: number) => void;
   onRename: (cat: Category) => void;
+  onMove: (cat: Category) => void;
   onDelete: (cat: Category) => void;
   onToggleActive: (cat: Category) => void;
   onReorder: (parentId: number | null, orderedIds: number[]) => void;
+  selectMode?: boolean;
+  catSelectState?: (id: number) => TriState;
+  onToggleCatSelect?: (id: number) => void;
 }) {
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
   const children = allCats.filter(c => c.parentId === cat.id).sort((a, b) => a.sortOrder - b.sortOrder);
@@ -492,6 +511,7 @@ function CategoryNode({ cat, depth, allCats, expanded, selectedCatId, onSelect, 
     { icon: <FolderPlus className="w-4 h-4" />, label: "Thêm mục con", fn: () => { onAddChild(cat.id); setMobileSheetOpen(false); } },
     { icon: cat.isActive ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />, label: cat.isActive ? "Ẩn danh mục" : "Hiện danh mục", fn: () => { onToggleActive(cat); setMobileSheetOpen(false); } },
     { icon: <Edit2 className="w-4 h-4" />, label: "Đổi tên", fn: () => { onRename(cat); setMobileSheetOpen(false); } },
+    { icon: <FolderInput className="w-4 h-4 text-sky-600" />, label: "Chuyển vào mục khác", fn: () => { onMove(cat); setMobileSheetOpen(false); } },
     { icon: <Trash2 className="w-4 h-4 text-destructive" />, label: "Xoá", fn: () => { onDelete(cat); setMobileSheetOpen(false); }, danger: true },
   ];
 
@@ -503,6 +523,15 @@ function CategoryNode({ cat, depth, allCats, expanded, selectedCatId, onSelect, 
           isSelected ? "bg-primary/10" : "hover:bg-muted/60"
         } ${isInactive ? "opacity-50" : ""}`}
       >
+        {selectMode && (
+          <button
+            onClick={e => { e.stopPropagation(); onToggleCatSelect?.(cat.id); }}
+            className="flex-shrink-0"
+            title="Chọn toàn bộ ý tưởng trong danh mục này (gồm mục con)"
+          >
+            <TriCheckbox state={catSelectState ? catSelectState(cat.id) : "none"} className="w-4 h-4" />
+          </button>
+        )}
         <button
           onClick={e => { e.stopPropagation(); if (children.length > 0) onToggle(cat.id); }}
           className="flex-shrink-0 w-5 h-5 flex items-center justify-center text-muted-foreground"
@@ -562,6 +591,13 @@ function CategoryNode({ cat, depth, allCats, expanded, selectedCatId, onSelect, 
             <Edit2 className="w-3 h-3" />
           </button>
           <button
+            onClick={e => { e.stopPropagation(); onMove(cat); }}
+            className="w-6 h-6 flex items-center justify-center rounded hover:bg-sky-100 text-sky-600"
+            title="Chuyển vào mục khác (kèm ý tưởng & mục con)"
+          >
+            <FolderInput className="w-3 h-3" />
+          </button>
+          <button
             onClick={e => { e.stopPropagation(); onToggleActive(cat); }}
             className="w-6 h-6 flex items-center justify-center rounded hover:bg-muted"
             title={cat.isActive ? "Ẩn" : "Hiện"}
@@ -613,8 +649,9 @@ function CategoryNode({ cat, depth, allCats, expanded, selectedCatId, onSelect, 
               expanded={expanded} selectedCatId={selectedCatId}
               onSelect={onSelect} onToggle={onToggle}
               onAddChild={onAddChild} onAddIdea={onAddIdea}
-              onRename={onRename} onDelete={onDelete}
+              onRename={onRename} onMove={onMove} onDelete={onDelete}
               onToggleActive={onToggleActive} onReorder={onReorder}
+              selectMode={selectMode} catSelectState={catSelectState} onToggleCatSelect={onToggleCatSelect}
             />
           )}
         />
@@ -642,9 +679,13 @@ export default function CmsPhotoIdeasPage() {
   const [addUnderParent, setAddUnderParent] = useState<number | "root" | null>(null);
   const [newCatName, setNewCatName] = useState("");
   const [renamingCat, setRenamingCat] = useState<Category | null>(null);
+  const [movingCat, setMovingCat] = useState<Category | null>(null); // "Chuyển vào mục khác"
   const [renameValue, setRenameValue] = useState("");
   const [togglingId, setTogglingId] = useState<number | null>(null);
   const [mobileView, setMobileView] = useState<"cats" | "ideas">("cats");
+  // Tích chọn hàng loạt
+  const bulk = useBulkSelect();
+  const [moveOpen, setMoveOpen] = useState(false);
 
   const { data: cats = [], isLoading: catsLoading } = useQuery<Category[]>({
     queryKey: ["idea-categories"],
@@ -719,13 +760,18 @@ export default function CmsPhotoIdeasPage() {
   });
 
   const patchCat = useMutation({
-    mutationFn: (c: { id: number; name?: string; isActive?: number }) => {
+    mutationFn: (c: { id: number; name?: string; isActive?: number; parentId?: number | null }) => {
       const { id, ...body } = c;
       return fetch(`${CMS_BASE}/api/cms/categories/${id}`, {
         method: "PATCH", headers: authHeaders(), body: JSON.stringify(body),
       }).then(async r => { if (!r.ok) throw new Error((await r.json()).error ?? "Lỗi lưu"); });
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["idea-categories"] }); setRenamingCat(null); },
+    // Đổi cha → cây + số đếm ý tưởng đổi theo → refetch cả danh mục lẫn ý tưởng.
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["idea-categories"] });
+      qc.invalidateQueries({ queryKey: ["photo-ideas"] });
+      setRenamingCat(null); setMovingCat(null);
+    },
     onError: (e: Error) => toast({ title: "Không lưu được", description: e.message, variant: "destructive" }),
   });
 
@@ -759,6 +805,66 @@ export default function CmsPhotoIdeasPage() {
     onSettled: () => setTogglingId(null),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["photo-ideas"] }),
   });
+
+  // ── Tích chọn hàng loạt ─────────────────────────────────────────────────────
+  const bulkInvalidate = () => {
+    qc.invalidateQueries({ queryKey: ["photo-ideas"] });
+    qc.invalidateQueries({ queryKey: ["idea-categories"] });
+  };
+  const bulkMove = useMutation({
+    mutationFn: async (categoryId: number) => {
+      const r = await fetch(`${CMS_BASE}/api/photo-ideas/bulk-category`, {
+        method: "PATCH", headers: authHeaders(),
+        body: JSON.stringify({ ids: [...bulk.selected], categoryId }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? "Lỗi chuyển danh mục");
+      return r.json() as Promise<{ affected: number }>;
+    },
+    onSuccess: (d) => { bulkInvalidate(); setMoveOpen(false); bulk.exit(); toast({ title: `Đã chuyển ${d.affected} ý tưởng` }); },
+    onError: (e: Error) => toast({ title: "Lỗi chuyển danh mục", description: e.message, variant: "destructive" }),
+  });
+  const bulkDelete = useMutation({
+    mutationFn: async () => {
+      const r = await fetch(`${CMS_BASE}/api/photo-ideas/bulk-delete`, {
+        method: "POST", headers: authHeaders(), body: JSON.stringify({ ids: [...bulk.selected] }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? "Lỗi xoá");
+      return r.json() as Promise<{ affected: number }>;
+    },
+    onSuccess: (d) => { bulkInvalidate(); bulk.exit(); toast({ title: `Đã xoá ${d.affected} ý tưởng` }); },
+    onError: (e: Error) => toast({ title: "Lỗi xoá", description: e.message, variant: "destructive" }),
+  });
+  const bulkPriority = useMutation({
+    mutationFn: async () => {
+      const r = await fetch(`${CMS_BASE}/api/photo-ideas/bulk-priority`, {
+        method: "PATCH", headers: authHeaders(), body: JSON.stringify({ ids: [...bulk.selected] }),
+      });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error ?? "Lỗi ưu tiên");
+      return r.json() as Promise<{ affected: number }>;
+    },
+    onSuccess: (d) => { bulkInvalidate(); bulk.exit(); toast({ title: `Đã ưu tiên ${d.affected} ý tưởng lên đầu` }); },
+    onError: (e: Error) => toast({ title: "Lỗi ưu tiên", description: e.message, variant: "destructive" }),
+  });
+  const bulkBusy = bulkMove.isPending || bulkDelete.isPending || bulkPriority.isPending;
+
+  // Tích trên danh mục = chọn TOÀN BỘ ý tưởng trong nhánh đó (gồm mục con). Dùng
+  // `ideas` (đã là toàn bộ, không lọc) nên không cần truy vấn "all" riêng như gallery.
+  const catSelectState = useCallback((catId: number): TriState =>
+    subtreeSelectState(itemIdsInCategorySubtree(ideas, cats, catId), bulk.selected),
+    [ideas, cats, bulk.selected]);
+  const toggleCatSelect = useCallback((catId: number) => {
+    const ids = itemIdsInCategorySubtree(ideas, cats, catId);
+    if (ids.length === 0) { toast({ title: "Danh mục này chưa có ý tưởng" }); return; }
+    const st = subtreeSelectState(ids, bulk.selected);
+    bulk.toggleMany(ids, st !== "all");
+    toast({ title: st === "all" ? `Đã bỏ chọn ${ids.length} ý tưởng` : `Đã chọn ${ids.length} ý tưởng trong danh mục này` });
+  }, [ideas, cats, bulk, toast]);
+  function handleBulkDelete() {
+    const n = bulk.selected.size;
+    if (n === 0) return;
+    if (!confirm(`Xoá ${n} ý tưởng đã chọn? (Có thể tạo lại sau)`)) return;
+    bulkDelete.mutate();
+  }
 
   function toggleExpand(id: number) {
     setExpanded(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
@@ -818,9 +924,13 @@ export default function CmsPhotoIdeasPage() {
                   onAddChild={id => { setAddUnderParent(id); setNewCatName(""); }}
                   onAddIdea={openNewIdea}
                   onRename={c => { setRenamingCat(c); setRenameValue(c.name); }}
+                  onMove={c => setMovingCat(c)}
                   onDelete={handleDeleteCat}
                   onToggleActive={c => patchCat.mutate({ id: c.id, isActive: c.isActive ? 0 : 1 })}
                   onReorder={(_pid, ids) => reorderCats.mutate(ids)}
+                  selectMode={bulk.selectMode}
+                  catSelectState={catSelectState}
+                  onToggleCatSelect={toggleCatSelect}
                 />
               )}
             />
@@ -840,9 +950,21 @@ export default function CmsPhotoIdeasPage() {
                 <h1 className="font-semibold truncate">{selectedCat.name}</h1>
                 <span className="text-xs text-muted-foreground">{filteredIdeas.length} ý tưởng</span>
                 <div className="flex-1" />
-                <Button size="sm" className="gap-1.5" onClick={() => openNewIdea(selectedCatId)}>
-                  <Plus className="w-4 h-4" /> Thêm ý tưởng
+                <Button
+                  size="sm"
+                  variant={bulk.selectMode ? "default" : "outline"}
+                  className="gap-1.5 whitespace-nowrap"
+                  onClick={() => (bulk.selectMode ? bulk.exit() : bulk.enter())}
+                  title="Chọn nhiều ý tưởng để thao tác hàng loạt"
+                >
+                  <CheckSquare className="w-4 h-4" />
+                  <span className="hidden sm:inline">{bulk.selectMode ? "Xong" : "Tích chọn"}</span>
                 </Button>
+                {!bulk.selectMode && (
+                  <Button size="sm" className="gap-1.5" onClick={() => openNewIdea(selectedCatId)}>
+                    <Plus className="w-4 h-4" /> Thêm ý tưởng
+                  </Button>
+                )}
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 <div className="relative flex-1 min-w-[180px] max-w-sm">
@@ -934,6 +1056,9 @@ export default function CmsPhotoIdeasPage() {
                       onSelect={() => setEditingIdea(d)}
                       onToggleVisibility={i => toggleVisibility.mutate(i)}
                       toggling={togglingId === d.id}
+                      selectMode={bulk.selectMode}
+                      selected={bulk.selected.has(d.id)}
+                      onToggleSelect={() => bulk.toggle(d.id)}
                     />
                   ))}
                 </div>
@@ -1025,6 +1150,39 @@ export default function CmsPhotoIdeasPage() {
             </div>
           </div>
         </div>
+      )}
+      {movingCat && (
+        <MoveCategoryDialog
+          cat={movingCat}
+          cats={cats}
+          busy={patchCat.isPending}
+          onConfirm={(parentId) => {
+            if (parentId !== (movingCat.parentId ?? null)) patchCat.mutate({ id: movingCat.id, parentId });
+            setMovingCat(null);
+          }}
+          onClose={() => setMovingCat(null)}
+        />
+      )}
+
+      {/* ── Thanh thao tác hàng loạt + hộp thoại chuyển danh mục ── */}
+      {bulk.selectMode && (
+        <BulkActionBar
+          count={bulk.selected.size}
+          busy={bulkBusy}
+          onPriority={() => bulk.selected.size > 0 && bulkPriority.mutate()}
+          onMove={() => bulk.selected.size > 0 && setMoveOpen(true)}
+          onDelete={handleBulkDelete}
+          onClear={bulk.clear}
+        />
+      )}
+      {moveOpen && (
+        <BulkMoveDialog
+          cats={cats}
+          count={bulk.selected.size}
+          busy={bulkMove.isPending}
+          onConfirm={(cid) => bulkMove.mutate(cid)}
+          onClose={() => setMoveOpen(false)}
+        />
       )}
     </div>
   );

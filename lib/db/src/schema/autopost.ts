@@ -81,6 +81,9 @@ export const autopostPosts = pgTable("autopost_posts", {
   qualityScore: integer("quality_score"),
   generatedBy: integer("generated_by"),
   footerEnabled: boolean("footer_enabled"),
+  // Cửa sổ kiểm duyệt 30' (AutoPost Review Countdown):
+  editingUntil: timestamp("editing_until", { withTimezone: true }), // admin đang sửa → tạm khoá auto-publish
+  autoPaused: boolean("auto_paused").notNull().default(false), // tạm ngưng tự đăng cho riêng bài này
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (t) => ({

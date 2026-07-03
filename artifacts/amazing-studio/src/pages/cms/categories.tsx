@@ -15,8 +15,11 @@ import {
 import {
   authHeaders, CMS_BASE, LazyImage, MultiImageUploader, SortableList,
   type UploadedImage,
-  convertToWebP, uploadFileViaPresign,
+  convertToWebP, uploadFileViaPresign, MoveCategoryDialog,
 } from "@/components/cms-shared";
+import {
+  TriCheckbox, itemIdsInCategorySubtree, subtreeSelectState, type TriState,
+} from "@/components/cms-bulk-select";
 import { getImageSrc } from "@/lib/imageUtils";
 import { formatVND } from "@/lib/utils";
 import { OUTFIT_TAGS, OutfitTagBadge } from "@/lib/outfit-tags";
@@ -1670,7 +1673,7 @@ function CatQrModal({ cat, link, breadcrumb, onClose }: {
 }
 
 // ─── CategoryNode (recursive sidebar item) ───────────────────────────────────
-function CategoryNode({ cat, depth, allCats, expanded, selectedCatId, onSelect, onToggle, onAddChild, onAddProduct, onEdit, onDelete, onCover, onQr, onToggleActive, onReorder, saving }: {
+function CategoryNode({ cat, depth, allCats, expanded, selectedCatId, onSelect, onToggle, onAddChild, onAddProduct, onEdit, onMove, onDelete, onCover, onQr, onToggleActive, onReorder, saving, selectMode, catSelectState, onToggleCatSelect, onDnd }: {
   cat: Category; depth: number; allCats: Category[];
   expanded: Set<number>; selectedCatId: number | null;
   onSelect: (id: number) => void;
@@ -1678,6 +1681,7 @@ function CategoryNode({ cat, depth, allCats, expanded, selectedCatId, onSelect, 
   onAddChild: (parentId: number) => void;
   onAddProduct: (catId: number) => void;
   onEdit: (cat: Category) => void;
+  onMove: (cat: Category) => void;
   onDelete: (cat: Category) => void;
   onCover: (cat: Category) => void;
   onQr: (cat: Category) => void;
@@ -1685,9 +1689,14 @@ function CategoryNode({ cat, depth, allCats, expanded, selectedCatId, onSelect, 
   // onMoveAllToChild removed – product-first flow only via tick selection
   onReorder: (parentId: number | null, orderedIds: number[]) => void;
   saving: boolean;
+  selectMode?: boolean;
+  catSelectState?: (id: number) => TriState;
+  onToggleCatSelect?: (id: number) => void;
+  onDnd?: (draggedId: number, targetId: number, zone: "before" | "inside" | "after") => void;
 }) {
   const [showActions, setShowActions] = useState(false);
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
+  const [dropZone, setDropZone] = useState<"before" | "inside" | "after" | null>(null);
   const children = allCats.filter(c => c.parentId === cat.id).sort((a, b) => a.sortOrder - b.sortOrder);
   const isOpen = expanded.has(cat.id);
   const isSelected = selectedCatId === cat.id;
@@ -1701,17 +1710,53 @@ function CategoryNode({ cat, depth, allCats, expanded, selectedCatId, onSelect, 
     { icon: <ImageIcon className="w-4 h-4" />, label: "Ảnh bìa", fn: () => { onCover(cat); setMobileSheetOpen(false); } },
     { icon: cat.isActive ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />, label: cat.isActive ? "Ẩn danh mục" : "Hiện danh mục", fn: () => { onToggleActive(cat); setMobileSheetOpen(false); } },
     { icon: <Edit2 className="w-4 h-4" />, label: "Sửa", fn: () => { onEdit(cat); setMobileSheetOpen(false); } },
+    { icon: <FolderInput className="w-4 h-4 text-sky-600" />, label: "Chuyển vào mục khác", fn: () => { onMove(cat); setMobileSheetOpen(false); } },
     { icon: <Trash2 className="w-4 h-4 text-destructive" />, label: "Xoá", fn: () => { onDelete(cat); setMobileSheetOpen(false); }, danger: true },
   ];
 
   return (
     <div>
       <div
+        draggable={!selectMode}
+        onDragStart={e => { if (selectMode) return; e.dataTransfer.setData("text/plain", String(cat.id)); e.dataTransfer.effectAllowed = "move"; }}
+        onDragOver={e => {
+          if (selectMode) return;
+          e.preventDefault();
+          const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          const y = e.clientY - r.top;
+          // Vùng GIỮA (chuyển VÀO TRONG) chiếm phần lớn để dễ trúng; chỉ mép mỏng trên/dưới mới là sắp xếp.
+          const z = y < r.height * 0.18 ? "before" : y > r.height * 0.82 ? "after" : "inside";
+          setDropZone(prev => (prev === z ? prev : z));
+          e.dataTransfer.dropEffect = "move";
+        }}
+        onDragLeave={e => { if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) setDropZone(null); }}
+        onDrop={e => {
+          if (selectMode) return;
+          e.preventDefault(); e.stopPropagation();
+          const z = dropZone ?? "inside";
+          setDropZone(null);
+          const draggedId = Number(e.dataTransfer.getData("text/plain"));
+          if (draggedId) onDnd?.(draggedId, cat.id, z);
+        }}
+        onDragEnd={() => setDropZone(null)}
+        title="Kéo để sắp xếp; thả VÀO GIỮA một mục để chuyển vào trong mục đó"
         style={{ paddingLeft: `${depth * 14 + 4}px` }}
-        className={`group flex items-center gap-1 py-1.5 pr-1 rounded-lg cursor-pointer transition-colors ${
+        className={`group relative flex items-center gap-1 py-1.5 pr-1 rounded-lg cursor-pointer transition-colors ${
           isSelected ? "bg-primary/10" : "hover:bg-muted/60"
-        } ${isInactive ? "opacity-50" : ""}`}
+        } ${isInactive ? "opacity-50" : ""} ${dropZone === "inside" ? "ring-2 ring-primary ring-inset bg-primary/5" : ""}`}
       >
+        {dropZone === "before" && <span className="pointer-events-none absolute left-2 right-2 -top-px h-0.5 bg-primary rounded-full" />}
+        {dropZone === "after" && <span className="pointer-events-none absolute left-2 right-2 -bottom-px h-0.5 bg-primary rounded-full" />}
+        {dropZone === "inside" && <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 z-10 text-[9px] font-medium px-1.5 py-0.5 rounded-full bg-primary text-primary-foreground whitespace-nowrap">↳ vào trong</span>}
+        {selectMode && (
+          <button
+            onClick={e => { e.stopPropagation(); onToggleCatSelect?.(cat.id); }}
+            className="flex-shrink-0"
+            title="Chọn toàn bộ sản phẩm trong danh mục này (gồm mục con)"
+          >
+            <TriCheckbox state={catSelectState ? catSelectState(cat.id) : "none"} className="w-4 h-4" />
+          </button>
+        )}
         <button
           onClick={e => { e.stopPropagation(); if (children.length > 0) onToggle(cat.id); }}
           className="flex-shrink-0 w-5 h-5 flex items-center justify-center text-muted-foreground"
@@ -1807,6 +1852,7 @@ function CategoryNode({ cat, depth, allCats, expanded, selectedCatId, onSelect, 
             { icon: <ImageIcon className="w-3 h-3" />, label: "Bìa", fn: () => { onCover(cat); setShowActions(false); } },
             { icon: cat.isActive ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />, label: cat.isActive ? "Ẩn" : "Hiện", fn: () => { onToggleActive(cat); setShowActions(false); } },
             { icon: <Edit2 className="w-3 h-3" />, label: "Sửa", fn: () => { onEdit(cat); setShowActions(false); } },
+            { icon: <FolderInput className="w-3 h-3 text-sky-600" />, label: "Chuyển mục", fn: () => { onMove(cat); setShowActions(false); } },
             { icon: <Trash2 className="w-3 h-3 text-destructive" />, label: "Xoá", fn: () => { onDelete(cat); setShowActions(false); } },
           ].map((action, i) => (
             <button
@@ -1823,11 +1869,10 @@ function CategoryNode({ cat, depth, allCats, expanded, selectedCatId, onSelect, 
       )}
 
       {isOpen && children.length > 0 && (
-        <SortableList
-          items={children}
-          onReorder={ids => onReorder(cat.id, ids)}
-          renderItem={child => (
+        <div>
+          {children.map(child => (
             <CategoryNode
+              key={child.id}
               cat={child}
               depth={depth + 1}
               allCats={allCats}
@@ -1838,15 +1883,20 @@ function CategoryNode({ cat, depth, allCats, expanded, selectedCatId, onSelect, 
               onAddChild={onAddChild}
               onAddProduct={onAddProduct}
               onEdit={onEdit}
+              onMove={onMove}
               onDelete={onDelete}
               onCover={onCover}
               onQr={onQr}
               onToggleActive={onToggleActive}
               onReorder={onReorder}
               saving={saving}
+              selectMode={selectMode}
+              catSelectState={catSelectState}
+              onToggleCatSelect={onToggleCatSelect}
+              onDnd={onDnd}
             />
-          )}
-        />
+          ))}
+        </div>
       )}
     </div>
   );
@@ -1996,6 +2046,7 @@ export default function CmsCategoriesPage() {
   const [editDraftSlug, setEditDraftSlug] = useState("");
   const [coverFor, setCoverFor] = useState<Category | null>(null);
   const [qrFor, setQrFor] = useState<Category | null>(null);
+  const [movingCat, setMovingCat] = useState<Category | null>(null); // "Chuyển vào mục khác"
   // moveAllToChild flow removed – product-first via tick selection only
 
   // Product panel state
@@ -2077,6 +2128,23 @@ export default function CmsCategoriesPage() {
   const dressCats = useMemo(() => allCats.filter(c => c.type === "dress"), [allCats]);
   const rootCats = useMemo(() => dressCats.filter(c => c.parentId === null).sort((a, b) => a.sortOrder - b.sortOrder), [dressCats]);
 
+  // Tích trên danh mục (khi đang Tích chọn) = chọn TOÀN BỘ sản phẩm trong nhánh đó (gồm mục con).
+  const catSelectState = useCallback((catId: number): TriState =>
+    subtreeSelectState(itemIdsInCategorySubtree(allProducts, dressCats, catId), selected),
+    [allProducts, dressCats, selected]);
+  const toggleCatSelect = useCallback((catId: number) => {
+    const ids = itemIdsInCategorySubtree(allProducts, dressCats, catId);
+    if (ids.length === 0) { toast({ title: "Danh mục này chưa có sản phẩm" }); return; }
+    const st = subtreeSelectState(ids, selected);
+    const sel = st !== "all";
+    setSelected(prev => {
+      const n = new Set(prev);
+      for (const id of ids) { if (sel) n.add(id); else n.delete(id); }
+      return n;
+    });
+    toast({ title: sel ? `Đã chọn ${ids.length} sản phẩm trong danh mục này` : `Đã bỏ chọn ${ids.length} sản phẩm` });
+  }, [allProducts, dressCats, selected, toast]);
+
   const selectedCat = useMemo(() => dressCats.find(c => c.id === selectedCatId) ?? null, [dressCats, selectedCatId]);
   const breadcrumb = useMemo(() => selectedCatId ? buildBreadcrumb(dressCats, selectedCatId) : "", [dressCats, selectedCatId]);
 
@@ -2122,6 +2190,38 @@ export default function CmsCategoriesPage() {
     reorderCats.mutate(orderedIds);
   }
 
+  // ── Kéo-thả cây danh mục (3 vùng): trên/dưới = sắp xếp cùng cấp, giữa = chuyển VÀO TRONG ──
+  // AN TOÀN: chỉ đổi parent_id của ĐÚNG node được kéo; con tự đi theo qua hierarchy;
+  // KHÔNG đổi parent_id hàng loạt, KHÔNG flatten, KHÔNG merge. Chặn kéo vào chính nó/con-cháu.
+  function handleCatDnd(draggedId: number, targetId: number, zone: "before" | "inside" | "after") {
+    if (!draggedId || draggedId === targetId) return;
+    const dragged = dressCats.find(c => c.id === draggedId);
+    const target = dressCats.find(c => c.id === targetId);
+    if (!dragged || !target) return;
+    const draggedParent = dragged.parentId ?? null;
+    const newParent = zone === "inside" ? target.id : (target.parentId ?? null);
+    // Chặn kéo vào chính nó hoặc con/cháu của nó (subtree gồm cả chính nó)
+    const subtree = getDescendantIds(dressCats, draggedId);
+    if (newParent != null && subtree.has(newParent)) {
+      toast({ title: "Không hợp lệ", description: "Không thể chuyển một mục vào chính nó hoặc mục con/cháu của nó.", variant: "destructive" });
+      return;
+    }
+    if (newParent === draggedParent) {
+      if (zone === "inside") return; // đã là con của target rồi → không làm gì
+      // Cùng cha → CHỈ sắp xếp lại sort_order (không đổi parent)
+      const sibs = dressCats.filter(c => (c.parentId ?? null) === newParent && c.id !== draggedId).sort((a, b) => a.sortOrder - b.sortOrder);
+      const idx = sibs.findIndex(c => c.id === target.id);
+      if (idx < 0) return;
+      const at = zone === "before" ? idx : idx + 1;
+      const orderedIds = [...sibs.slice(0, at).map(c => c.id), draggedId, ...sibs.slice(at).map(c => c.id)];
+      reorderCats.mutate(orderedIds);
+      return;
+    }
+    // Khác cha → CHỈ đổi parent_id của node được kéo (con đi theo tự nhiên)
+    if (newParent != null) setExpanded(s => { const n = new Set(s); n.add(newParent); return n; });
+    saveCat.mutate({ id: draggedId, parentId: newParent });
+  }
+
   const addCat = useMutation({
     mutationFn: (p: { name: string; parentId: number | null }) =>
       fetch(`${CMS_BASE}/api/cms/categories`, {
@@ -2137,13 +2237,18 @@ export default function CmsCategoriesPage() {
   });
 
   const saveCat = useMutation({
-    mutationFn: (c: { id: number; name?: string; slug?: string; coverImageUrl?: string | null; isActive?: number }) => {
+    mutationFn: (c: { id: number; name?: string; slug?: string; coverImageUrl?: string | null; isActive?: number; parentId?: number | null }) => {
       const { id, ...body } = c;
       return fetch(`${CMS_BASE}/api/cms/categories/${id}`, {
         method: "PATCH", headers: authHeaders(), body: JSON.stringify(body),
       }).then(async r => { if (!r.ok) throw new Error((await r.json()).error ?? "Lỗi lưu"); });
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["cms-categories"] }); setEditingCat(null); setCoverFor(null); },
+    // Đổi cha (parentId) → cây + số đếm sản phẩm đổi theo → refetch cả danh mục lẫn sản phẩm.
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["cms-categories"] });
+      qc.invalidateQueries({ queryKey: ["cms-products"] });
+      setEditingCat(null); setCoverFor(null); setMovingCat(null);
+    },
     onError: (e: Error) => toast({ title: "Không lưu được", description: e.message, variant: "destructive" }),
   });
 
@@ -2254,11 +2359,10 @@ export default function CmsCategoriesPage() {
               </button>
             </div>
           ) : (
-            <SortableList
-              items={rootCats}
-              onReorder={ids => handleReorderCats(null, ids)}
-              renderItem={cat => (
+            <div>
+              {rootCats.map(cat => (
                 <CategoryNode
+                  key={cat.id}
                   cat={cat}
                   depth={0}
                   allCats={dressCats}
@@ -2269,15 +2373,20 @@ export default function CmsCategoriesPage() {
                   onAddChild={parentId => { setAddUnderParent(parentId); setNewCatName(""); setNewCatSlug(""); }}
                   onAddProduct={catId => { setSelectedCatId(catId); setEditingDress("new"); }}
                   onEdit={cat => { setEditingCat(cat); setEditDraftName(cat.name); setEditDraftSlug(cat.slug ?? ""); }}
+                  onMove={cat => setMovingCat(cat)}
                   onDelete={handleDeleteCat}
                   onCover={cat => setCoverFor(cat)}
                   onQr={cat => setQrFor(cat)}
                   onToggleActive={cat => saveCat.mutate({ id: cat.id, isActive: cat.isActive ? 0 : 1 })}
                   onReorder={handleReorderCats}
                   saving={saveCat.isPending || deleteCat.isPending}
+                  selectMode={selectMode}
+                  catSelectState={catSelectState}
+                  onToggleCatSelect={toggleCatSelect}
+                  onDnd={handleCatDnd}
                 />
-              )}
-            />
+              ))}
+            </div>
           )}
         </div>
       </aside>
@@ -2716,6 +2825,18 @@ export default function CmsCategoriesPage() {
           link={buildPublicLink(qrFor)}
           breadcrumb={buildBreadcrumb(dressCats, qrFor.id)}
           onClose={() => setQrFor(null)}
+        />
+      )}
+      {movingCat && (
+        <MoveCategoryDialog
+          cat={movingCat}
+          cats={dressCats}
+          busy={saveCat.isPending}
+          onConfirm={(parentId) => {
+            if (parentId !== (movingCat.parentId ?? null)) saveCat.mutate({ id: movingCat.id, parentId });
+            setMovingCat(null);
+          }}
+          onClose={() => setMovingCat(null)}
         />
       )}
     </div>

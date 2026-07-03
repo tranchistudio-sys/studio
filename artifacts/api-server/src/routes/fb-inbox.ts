@@ -164,14 +164,19 @@ async function sendChunksWithTyping(
   settings?: AiSettings,
   /** Nếu set: bubble ĐẦU chờ đúng số ms này (delay theo độ dài tin khách); các bubble sau gõ nhanh tự nhiên. */
   firstDelayMs?: number,
+  /** Nếu set: delay riêng cho TỪNG bubble (human chat pacing). Bubble đầu lấy max(firstDelayMs, perChunkDelays[0]). */
+  perChunkDelays?: number[],
 ): Promise<boolean> {
   if (settings?.logDecisions) console.log(`[AI] psid=${psid} chunks=${chunks.length} decision=${aiDecision}`);
   let allSent = true;
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
-    const delayMs = firstDelayMs != null
-      ? (i === 0 ? firstDelayMs : Math.min(2500, 600 + chunk.length * 15))
-      : naturalDelayMs(chunk, settings);
+    const perChunk = perChunkDelays?.[i];
+    const delayMs = perChunk != null
+      ? (i === 0 && firstDelayMs != null ? Math.max(firstDelayMs, perChunk) : perChunk)
+      : firstDelayMs != null
+        ? (i === 0 ? firstDelayMs : Math.min(2500, 600 + chunk.length * 15))
+        : naturalDelayMs(chunk, settings);
     if (settings?.logDecisions) console.log(`[AI] psid=${psid} chunk[${i}]="${chunk.slice(0, 60)}" delay=${delayMs}ms`);
     if (settings?.typingIndicator !== false) await sendTypingOn(psid, token);
     await sleep(delayMs);
@@ -935,10 +940,13 @@ async function handleClaudeSaleReply(
     console.error(`[Claude] psid=${psid} gửi ảnh mẫu lỗi:`, String(e).slice(0, 160));
   }
 
-  const chunks = reply.messages.filter((m) => m.trim().length > 0);
+  // Human chat pacing: lấy bong bóng + delay từng tin từ reply.messageChunks (đã căn 1:1 với messages).
+  const pacedChunks = reply.messageChunks.filter((c) => c.text.trim().length > 0);
+  const chunks = pacedChunks.map((c) => c.text);
+  const perChunkDelays = pacedChunks.map((c) => c.delayMs);
   // Hết mẫu mới → ghép câu nhắn khéo VÀO chunks để đi qua sendChunksWithTyping (được LOG vào DB
   // + có typing, đồng bộ với mọi tin khác) thay vì gửi rời không log.
-  if (samplesExhausted) chunks.push(SAMPLES_EXHAUSTED_NOTE);
+  if (samplesExhausted) { chunks.push(SAMPLES_EXHAUSTED_NOTE); perChunkDelays.push(2000); }
   if (chunks.length === 0) {
     console.warn(`[Claude] psid=${psid} Claude trả về rỗng`);
     await markIncoming(escalationReason ? "claude_escalated_empty" : "claude_empty");
@@ -973,7 +981,7 @@ async function handleClaudeSaleReply(
 
   // Tốc độ trả lời: delay theo độ dài tin KHÁCH (cấu hình + random ±30%). Áp dụng cho bubble đầu.
   const replyDelayMs = computeReplyDelayMs(text, settings);
-  const allSent = await sendChunksWithTyping(psid, cfg.pageAccessToken, chunks, "claude_replied", undefined, replyDelayMs);
+  const allSent = await sendChunksWithTyping(psid, cfg.pageAccessToken, chunks, "claude_replied", undefined, replyDelayMs, perChunkDelays);
   await markIncoming(allSent ? (escalationReason ? "claude_replied_escalated" : "claude_replied") : "claude_partial_failed");
   console.log(`[Claude] psid=${psid} đã gửi ${chunks.length} tin (allSent=${allSent})`);
 

@@ -501,7 +501,7 @@ export default function PublicRentalPage() {
     <div className="pb-16 sm:pb-28">
       <RentalHero />
 
-      <div className="max-w-7xl mx-auto px-3 sm:px-8 pt-5 sm:pt-14 pb-4 sm:pb-6">
+      <div className="max-w-7xl mx-auto px-3 sm:px-8 pt-3 sm:pt-6 pb-4 sm:pb-6">
         {loading ? (
           <>
             <div className="flex gap-2 sm:gap-3 overflow-hidden mb-6 sm:mb-10">
@@ -518,7 +518,7 @@ export default function PublicRentalPage() {
           </div>
         ) : (
           <>
-            <PublicReveal className="mb-4 sm:mb-10">
+            <PublicReveal className="mb-3 sm:mb-5">
               <div
                 className="flex gap-3 sm:gap-4 overflow-x-auto pb-2 -mx-1 px-1 snap-x snap-mandatory"
                 style={{ WebkitOverflowScrolling: "touch" }}
@@ -578,7 +578,7 @@ export default function PublicRentalPage() {
               </div>
             </PublicReveal>
 
-            <div ref={smartFilterRef} className="mb-4 sm:mb-8">
+            <div ref={smartFilterRef} className="mb-3 sm:mb-4">
               <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 items-stretch sm:items-center">
                 <input
                   type="search"
@@ -684,7 +684,7 @@ export default function PublicRentalPage() {
               )}
             </div>
 
-            <p className="text-center text-[10px] sm:text-xs tracking-[0.15em] sm:tracking-[0.2em] uppercase text-neutral-500 mb-3 sm:mb-6">
+            <p className="text-center text-[10px] sm:text-xs tracking-[0.15em] sm:tracking-[0.2em] uppercase text-neutral-500 mb-2 sm:mb-3">
               {breadcrumbLabel}
               <span className="text-neutral-400 mx-2">—</span>
               <span className="text-neutral-700">{sortedDresses.length} mẫu</span>
@@ -751,18 +751,18 @@ function toggleSet<T>(prev: Set<T>, value: T): Set<T> {
 
 function RentalHero() {
   return (
-    <section className="gallery-hero px-3 sm:px-8 pt-8 sm:pt-20 pb-8 sm:pb-24">
+    <section className="gallery-hero px-3 sm:px-8 pt-3 sm:pt-5 pb-2 sm:pb-3">
       <div className="gallery-hero-watermark" aria-hidden>
         {RENTAL_PAGE.watermark}
       </div>
       <div className="relative z-10 max-w-4xl mx-auto text-center hero-content hero-ready">
-        <p className="text-[10px] sm:text-[11px] tracking-[0.35em] text-neutral-500 uppercase mb-3 sm:mb-5">
+        <p className="text-[10px] sm:text-[11px] tracking-[0.35em] text-neutral-500 uppercase mb-1.5 sm:mb-2">
           {RENTAL_PAGE.eyebrow}
         </p>
-        <h1 className="font-serif text-3xl sm:text-5xl lg:text-[3.25rem] font-light text-neutral-900 leading-tight mb-2 sm:mb-4">
+        <h1 className="font-serif text-2xl sm:text-4xl lg:text-[2.5rem] font-light text-neutral-900 leading-tight uppercase mb-1 sm:mb-1.5">
           {RENTAL_PAGE.title}
         </h1>
-        <p className="text-neutral-600 text-sm sm:text-base max-w-lg mx-auto leading-relaxed">
+        <p className="text-neutral-600 text-[11px] sm:text-sm max-w-lg mx-auto leading-relaxed uppercase tracking-wide">
           {RENTAL_PAGE.description}
         </p>
       </div>
@@ -1033,7 +1033,7 @@ function RentalDressCard({
       </div>
 
       <div className="px-2 py-2 sm:px-4 sm:py-3 border-t border-neutral-100/80 bg-white">
-        <p className="font-serif text-xs sm:text-lg text-neutral-900 leading-snug line-clamp-2">{d.name}</p>
+        <p className="font-serif text-xs sm:text-lg text-neutral-900 leading-snug line-clamp-2 uppercase">{d.name}</p>
         <p className="text-[9px] sm:text-[11px] text-neutral-500 font-mono mt-0.5 truncate">{d.code}</p>
         {d.rentalPrice > 0 && (
           (d.salePrice ?? 0) > 0 && (d.salePrice ?? 0) < d.rentalPrice ? (

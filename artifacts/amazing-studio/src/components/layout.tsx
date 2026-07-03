@@ -72,14 +72,15 @@ const ALL_NAV_ITEMS = [
 const FACEBOOK_NAV = [
   { href: "/facebook-inbox-ai",    label: "Inbox Facebook",     icon: MessageSquare,     adminOnly: false },
   // "Lulu Sale Test" đã gộp vào "Lulu Brain Lab" → tab "Sửa & Test Lulu" (1 nơi test duy nhất).
-  { href: "/claude-sale-settings", label: "Lulu Sale Settings", icon: SlidersHorizontal, adminOnly: true  },
+  // ⚙️ Mở toàn bộ nhóm Facebook & Sale cho NHÂN VIÊN (quyết định của chủ studio). Vẫn cần đăng nhập.
+  { href: "/claude-sale-settings", label: "Lulu Sale Settings", icon: SlidersHorizontal, adminOnly: false },
   { href: "/lulu-brain-lab",       label: "Lulu Brain Lab",     icon: Brain,             adminOnly: false },
-  { href: "/claude-sale-monitor",  label: "Lulu Sale Monitor",  icon: Activity,          adminOnly: true  },
-  { href: "/lulu-human-review",    label: "Câu hỏi lạ cần xử lý", icon: ShieldAlert,     adminOnly: true  },
-  { href: "/claude-sale-reengage", label: "Khách cần chăm lại", icon: RefreshCw,         adminOnly: true  },
-  { href: "/sale-learning",        label: "Sale Learning",      icon: Sparkles,          adminOnly: true  },
-  { href: "/auto-post-facebook",   label: "AutoPost Facebook",  icon: Share2,            adminOnly: true  },
-  { href: "/autopost-style-queue", label: "Văn phong mẫu (hàng chờ)", icon: Sparkles,    adminOnly: true  },
+  { href: "/claude-sale-monitor",  label: "Lulu Sale Monitor",  icon: Activity,          adminOnly: false },
+  { href: "/lulu-human-review",    label: "Câu hỏi lạ cần xử lý", icon: ShieldAlert,     adminOnly: false },
+  { href: "/claude-sale-reengage", label: "Khách cần chăm lại", icon: RefreshCw,         adminOnly: false },
+  { href: "/sale-learning",        label: "Sale Learning",      icon: Sparkles,          adminOnly: false },
+  { href: "/auto-post-facebook",   label: "AutoPost Facebook",  icon: Share2,            adminOnly: false },
+  { href: "/autopost-style-queue", label: "Văn phong mẫu (hàng chờ)", icon: Sparkles,    adminOnly: false },
 ];
 
 const SECONDARY_NAV = [

@@ -61,6 +61,8 @@ type SimResult = {
   reply: string[]; raw: string; escalation: string | null; escalated: boolean; escalationReason: string | null;
   holdMessage: string | null; detectedIntent: string | null; priceImages: string[];
   sampleImages: SampleImage[]; sampleNote: string | null; responseTimeMs: number;
+  /** Bong bóng có nhịp (human chat pacing): text + delayMs từng bubble. reply = chunks.map(c=>c.text). */
+  chunks?: { text: string; delayMs: number }[];
   overrideApplied?: boolean;
   /** Cách lượt này dùng câu sửa tay admin: "exact_reply" = nói y chang; "learn_from_this" = AI học theo. */
   responseMode?: "exact_reply" | "learn_from_this" | null;
@@ -1534,6 +1536,12 @@ function AiFixTab({ active, draft, showOk, showErr, onDraftChange, goTest, queue
 type TestTurn =
   | { id: string; role: "customer"; text: string; imageUrl?: string }
   | { id: string; role: "lulu"; result: SimResult; forText: string; fixed?: boolean; preview?: boolean };
+// "Câu Lulu đã được dạy" trong bản nháp (gọn, khớp GET /lulu-brain/draft-overrides).
+type TaughtOverride = {
+  id: string; customerQuestion: string; intent: string | null; tone: string | null;
+  editedText: string | null; responseMode: "exact_reply" | "learn_from_this" | null;
+  correctImageCount: number; createdByName: string | null; createdAt: string;
+};
 
 function FixTestTab({
   draft, active, testCases = [], effectiveIsAdmin, busy, setBusy, showOk, showErr,
@@ -1565,6 +1573,51 @@ function FixTestTab({
 
   // ── Báo lỗi / sửa phản hồi (panel sửa text & ảnh nằm ở FixResponsePanel) ──
   const [fixingId, setFixingId] = useState<string | null>(null);
+
+  // ── Human chat pacing: hé lộ bong bóng từng tin theo delayMs (transient, KHÔNG lưu localStorage —
+  //    reload giữa chừng thì hiện đủ luôn). Lượt "Xem trước" không dùng → hiện ngay. ──
+  const [revealCounts, setRevealCounts] = useState<Record<string, number>>({});
+  const revealTimers = useRef<ReturnType<typeof setTimeout>[]>([]);
+  useEffect(() => () => { revealTimers.current.forEach(clearTimeout); }, []);
+  const revealChunks = (turnId: string, chunks?: { text: string; delayMs: number }[]) => {
+    if (!chunks || chunks.length <= 1) return; // 0–1 bubble → hiện ngay, không cần hé lộ
+    setRevealCounts((m) => ({ ...m, [turnId]: 1 }));
+    let acc = 0;
+    for (let i = 1; i < chunks.length; i++) {
+      acc += Math.max(300, Math.min(3000, chunks[i].delayMs || 1500));
+      const n = i + 1;
+      revealTimers.current.push(setTimeout(() => setRevealCounts((m) => ({ ...m, [turnId]: n })), acc));
+    }
+  };
+
+  // ── "Câu Lulu đã được dạy" trong bản nháp: liệt kê + xoá từng câu (sửa lại khi lỡ dạy nhầm) ──
+  const [taught, setTaught] = useState<TaughtOverride[]>([]);
+  const [taughtOpen, setTaughtOpen] = useState(false);
+  const [taughtLoading, setTaughtLoading] = useState(false);
+  const [deletingTaught, setDeletingTaught] = useState<string | null>(null);
+  const loadTaught = useCallback(async () => {
+    if (!draft) { setTaught([]); return; }
+    setTaughtLoading(true);
+    try {
+      const d = await apiGet<{ overrides: TaughtOverride[] }>("/lulu-brain/draft-overrides");
+      setTaught(Array.isArray(d.overrides) ? d.overrides : []);
+    } catch { /* danh sách phụ — lỗi thì để trống, không quấy người dùng */ }
+    finally { setTaughtLoading(false); }
+  }, [draft]);
+  // Tải lại khi bản nháp đổi (id hoặc nội dung cập nhật tại chỗ sau khi dạy thêm).
+  useEffect(() => { loadTaught(); }, [draft?.id, draft?.updatedAt]); // eslint-disable-line react-hooks/exhaustive-deps
+  const deleteTaught = async (id: string) => {
+    if (deletingTaught) return;
+    if (!confirm("Xoá câu đã dạy này khỏi bản nháp?\n\n(Lulu thật chỉ đổi sau khi bấm “Áp dụng version này”.)")) return;
+    setDeletingTaught(id);
+    try {
+      const d = await apiSend<{ draft: BrainVersion }>("DELETE", `/lulu-brain/draft-overrides/${encodeURIComponent(id)}`);
+      onDraftChange(d.draft);
+      setTaught((p) => p.filter((o) => o.id !== id));
+      showOk("Đã xoá câu đã dạy khỏi bản nháp.");
+    } catch (e) { showErr(String((e as Error).message)); }
+    finally { setDeletingTaught(null); }
+  };
 
   // ── Sửa tay nâng cao (ẩn mặc định) ──
   const [advOpen, setAdvOpen] = useState(false);
@@ -1608,7 +1661,9 @@ function FixTestTab({
       });
       const res = draft ? d.draft : d.active;
       if (!res) { showErr("Lulu chưa trả lời được — thử gửi lại nha."); return; }
-      setTurns((p) => [...p, { id: newId(), role: "lulu", result: res, forText: text || "[ảnh]" }]);
+      const luluId = newId();
+      setTurns((p) => [...p, { id: luluId, role: "lulu", result: res, forText: text || "[ảnh]" }]);
+      revealChunks(luluId, res.chunks); // hé lộ từng bong bóng theo nhịp (nếu có nhiều tin)
       const next: ConvoMsg[] = [...convo, { direction: "incoming", text: text || "[ảnh]" }];
       // Ghi lại ảnh mẫu ĐÃ GỬI vào lịch sử dạng [image:<url>] để lượt sau KHÔNG gửi trùng
       // (backend dedupe qua extractRecentSampleUrls — giống Messenger thật). Các dòng [image:] này
@@ -1622,6 +1677,9 @@ function FixTestTab({
   };
 
   const clearChat = () => { setTurns([]); setConvo([]); setFixingId(null); };
+  // Xoá 1 lượt khỏi KHUNG CHAT (chỉ dọn hiển thị; KHÔNG đụng bộ luật/bản nháp). Để xoá câu ĐÃ DẠY
+  // thì dùng danh sách "Câu Lulu đã được dạy" bên dưới.
+  const deleteTurn = (id: string) => { setTurns((p) => p.filter((x) => x.id !== id)); if (fixingId === id) setFixingId(null); };
 
   // Sau khi admin "Lưu & xem trước": tự gửi lại ĐÚNG câu khách qua bản nháp để hiện kết quả THẬT
   // (ảnh + lời Lulu sẽ dùng + badge cách dùng câu). Đây là 1 lượt test thật, KHÔNG phải preview giả.
@@ -1758,8 +1816,9 @@ function FixTestTab({
         </div>
       )}
 
-      {/* Khung chat test */}
-      <div className="bg-white border rounded-xl flex flex-col" style={{ height: "min(64vh, 600px)" }}>
+      {/* Khung chat test — cao hơn cho dễ nhìn. Mobile/tablet: 88vh, tối thiểu 560px.
+          Desktop: 85vh, tối thiểu 760px, tối đa 1500px. */}
+      <div className="bg-white border rounded-xl flex flex-col h-[88vh] min-h-[560px] md:h-[85vh] md:min-h-[760px] md:max-h-[1500px]">
         <div className="px-4 py-2.5 border-b flex items-center justify-between">
           <h3 className="font-semibold text-sm flex items-center gap-2"><MessageSquare className="w-4 h-4 text-violet-600" /> Chat test — Lulu trả lời theo Version {testingVersion ?? "—"}</h3>
           {turns.length > 0 && (
@@ -1780,16 +1839,20 @@ function FixTestTab({
             </div>
           )}
           {turns.map((t) => t.role === "customer" ? (
-            <div key={t.id} className="flex justify-end">
+            <div key={t.id} className="flex justify-end items-start gap-1.5 group">
+              <button onClick={() => deleteTurn(t.id)} title="Xóa câu này khỏi khung chat"
+                className="opacity-0 group-hover:opacity-100 transition text-gray-300 hover:text-rose-500 mt-1.5 shrink-0"><X className="w-3.5 h-3.5" /></button>
               <div className="max-w-[80%] bg-sky-600 text-white rounded-2xl rounded-br-sm px-3 py-2 text-sm">
                 {t.imageUrl && <img src={t.imageUrl} alt="ảnh khách" className="rounded-lg max-h-40 border border-white/30 mb-1" />}
                 <span className="whitespace-pre-wrap break-words">{t.text}</span>
               </div>
             </div>
           ) : (
-            <div key={t.id} className="flex gap-2 items-start">
+            <div key={t.id} className="flex gap-2 items-start group">
               <div className="w-7 h-7 rounded-full bg-violet-100 flex items-center justify-center text-violet-600 shrink-0"><Bot className="w-4 h-4" /></div>
-              <div className="max-w-[88%] w-full space-y-1.5">
+              <div className="max-w-[88%] w-full space-y-1.5 relative">
+                <button onClick={() => deleteTurn(t.id)} title="Xóa câu này khỏi khung chat"
+                  className="absolute -top-1 right-0 opacity-0 group-hover:opacity-100 transition text-gray-300 hover:text-rose-500 z-10"><X className="w-3.5 h-3.5" /></button>
                 {t.preview && (
                   <div className="flex items-start gap-1.5 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-2 py-1">
                     <Eye className="w-3.5 h-3.5 mt-0.5 shrink-0" /> <span>Xem trước sau khi dạy — đây là ảnh &amp; lời Lulu sẽ dùng cho câu “{t.forText}”.</span>
@@ -1810,10 +1873,27 @@ function FixTestTab({
                 {t.result.priceImages.map((p, i) => (
                   <img key={`p${i}`} src={getImageSrc(p) ?? undefined} alt="bảng giá" onError={onBrokenSampleImg} className="max-w-[200px] rounded-lg border" />
                 ))}
-                {/* Câu trả lời */}
-                {(t.result.reply.length ? t.result.reply : [t.result.raw || "(Lulu không trả lời)"]).map((m, i) => (
-                  <div key={i} className="bg-gray-50 border rounded-2xl rounded-bl-sm px-3 py-2 text-sm whitespace-pre-wrap break-words">{m}</div>
-                ))}
+                {/* Câu trả lời — hé lộ từng bong bóng theo nhịp (human chat pacing) */}
+                {(() => {
+                  const all = t.result.reply.length ? t.result.reply : [t.result.raw || "(Lulu không trả lời)"];
+                  const rc = revealCounts[t.id];
+                  const shown = rc != null ? all.slice(0, rc) : all;
+                  const more = rc != null && rc < all.length;
+                  return (
+                    <>
+                      {shown.map((m, i) => (
+                        <div key={i} className="bg-gray-50 border rounded-2xl rounded-bl-sm px-3 py-2 text-sm whitespace-pre-wrap break-words">{m}</div>
+                      ))}
+                      {more && (
+                        <div className="bg-gray-50 border rounded-2xl rounded-bl-sm px-3 py-2 w-fit text-gray-400 flex items-center gap-1">
+                          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: "0ms" }} />
+                          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: "150ms" }} />
+                          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce" style={{ animationDelay: "300ms" }} />
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
                 {t.result.sampleNote && <p className="text-[11px] text-amber-600 italic">{t.result.sampleNote}</p>}
                 <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-400">
                   {t.result.detectedIntent && <span>intent: <b className="text-violet-600">{t.result.detectedIntent}</b></span>}
@@ -1824,12 +1904,18 @@ function FixTestTab({
                   {t.result.escalated && <span className="text-rose-600 font-medium">⚠ Sẽ chuyển người thật ({t.result.escalationReason})</span>}
                 </div>
                 {/* Báo lỗi / sửa phản hồi này (text & ảnh). Lượt XEM TRƯỚC thì không hiện (chỉ để xem). */}
-                {!t.preview && (t.fixed ? (
-                  <div className="text-emerald-700 text-xs font-medium flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Đã dạy vào bản nháp — xem ô “Xem trước” ngay dưới để kiểm tra.</div>
-                ) : fixingId === t.id ? (
+                {/* Mở panel sửa được kiểm TRƯỚC → câu đã dạy rồi vẫn bấm "Sửa lại" để dạy đè được. */}
+                {!t.preview && (fixingId === t.id ? (
                   <FixResponsePanel turn={t} onDraftChange={onDraftChange} onPreview={previewTaught}
                     markFixed={() => setTurns((p) => p.map((x) => (x.id === t.id ? { ...x, fixed: true } : x)))}
                     onClose={() => setFixingId(null)} showOk={showOk} showErr={showErr} />
+                ) : t.fixed ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-emerald-700 text-xs font-medium flex items-center gap-1"><Check className="w-3.5 h-3.5" /> Đã dạy vào bản nháp — xem ô “Xem trước” ngay dưới để kiểm tra.</span>
+                    <button onClick={() => setFixingId(t.id)} className="flex items-center gap-1.5 text-[12px] text-rose-600 border border-rose-200 px-2 py-1 rounded-lg hover:bg-rose-50">
+                      <Pencil className="w-3.5 h-3.5" /> Sửa lại
+                    </button>
+                  </div>
                 ) : (
                   <button onClick={() => setFixingId(t.id)} className="flex items-center gap-1.5 text-[12px] text-rose-600 border border-rose-200 px-2 py-1 rounded-lg hover:bg-rose-50">
                     <AlertTriangle className="w-3.5 h-3.5" /> Báo lỗi / Sửa phản hồi này
@@ -1846,12 +1932,12 @@ function FixTestTab({
           )}
         </div>
 
-        {/* Câu hỏi mẫu nhanh (điền vào ô nhập) */}
+        {/* Câu hỏi mẫu nhanh (điền vào ô nhập) — CUỘN NGANG 1 hàng để KHÔNG ăn chiều cao khung chat. */}
         {exampleChips.length > 0 && (
-          <div className="px-3 pt-2 flex flex-wrap gap-1.5">
+          <div className="px-3 pt-2 flex flex-nowrap gap-1.5 overflow-x-auto pb-1 [scrollbar-width:thin]">
             {exampleChips.map((tc) => (
               <button key={tc.id} onClick={() => setInput(tc.customerMessage)} disabled={sending}
-                className="text-[11px] bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded-full text-gray-600 disabled:opacity-50" title={tc.title}>{tc.customerMessage}</button>
+                className="shrink-0 whitespace-nowrap max-w-[220px] truncate text-[11px] bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded-full text-gray-600 disabled:opacity-50" title={tc.customerMessage}>{tc.customerMessage}</button>
             ))}
           </div>
         )}
@@ -1871,6 +1957,48 @@ function FixTestTab({
           </button>
         </div>
       </div>
+
+      {/* Câu Lulu đã được dạy trong bản nháp — xoá từng câu nếu lỡ dạy nhầm (không cần hủy cả nháp) */}
+      {draft && (
+        <div className="bg-white border rounded-xl">
+          <button onClick={() => { const open = !taughtOpen; setTaughtOpen(open); if (open) loadTaught(); }}
+            className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium text-gray-600 hover:bg-gray-50">
+            <span className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-violet-500" /> Câu Lulu đã được dạy trong bản nháp
+              {taught.length > 0 && <span className="text-[11px] bg-violet-100 text-violet-700 rounded-full px-2 py-0.5">{taught.length}</span>}
+            </span>
+            <ChevronDown className={`w-4 h-4 transition-transform ${taughtOpen ? "rotate-180" : ""}`} />
+          </button>
+          {taughtOpen && (
+            <div className="px-4 pb-4 space-y-2">
+              <p className="text-[11px] text-gray-400">Đây là những câu bạn đã dạy riêng cho bản nháp này. Lỡ dạy nhầm thì bấm <b>Xóa</b> — Lulu thật chỉ đổi sau khi <b>Áp dụng version</b>.</p>
+              {taughtLoading ? (
+                <p className="text-xs text-gray-400 flex items-center gap-1.5"><Loader2 className="w-3.5 h-3.5 animate-spin" /> Đang tải…</p>
+              ) : taught.length === 0 ? (
+                <p className="text-xs text-gray-400">Chưa dạy câu riêng nào cho bản nháp này.</p>
+              ) : taught.map((o) => (
+                <div key={o.id} className="flex items-start gap-2 border rounded-lg p-2.5 bg-gray-50/60">
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <p className="text-[12px] text-gray-700"><span className="text-gray-400">Khách hỏi:</span> <b className="break-words">{o.customerQuestion || "(không rõ)"}</b></p>
+                    {o.editedText && <p className="text-[12px] text-gray-600 break-words"><span className="text-gray-400">Lulu sẽ nói:</span> {o.editedText.length > 160 ? `${o.editedText.slice(0, 160)}…` : o.editedText}</p>}
+                    <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-gray-400">
+                      {o.responseMode === "exact_reply" && <span className="text-emerald-600 font-medium">Nói y chang câu admin</span>}
+                      {o.responseMode === "learn_from_this" && <span className="text-sky-600 font-medium">AI học theo câu admin</span>}
+                      {o.correctImageCount > 0 && <span>{o.correctImageCount} ảnh đã dạy</span>}
+                      {o.intent && <span>nhóm: {o.intent}</span>}
+                      {o.createdByName && <span>bởi {o.createdByName}</span>}
+                    </div>
+                  </div>
+                  <button onClick={() => deleteTaught(o.id)} disabled={deletingTaught === o.id}
+                    className="flex items-center gap-1 text-[11px] text-rose-600 border border-rose-200 px-2 py-1 rounded-lg hover:bg-rose-50 disabled:opacity-50 shrink-0">
+                    {deletingTaught === o.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />} Xóa
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Sửa tay nâng cao (ẩn mặc định): chỉ editor bộ luật + diff cho người rành kỹ thuật */}
       <div className="bg-white border rounded-xl">

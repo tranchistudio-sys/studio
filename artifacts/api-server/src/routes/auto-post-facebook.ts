@@ -46,10 +46,12 @@ void ensureAutoPostSchema();
 
 const router: IRouter = Router();
 
+// Mở AutoPost Facebook cho MỌI nhân viên đã đăng nhập (quyết định của chủ studio).
+// Vẫn yêu cầu đăng nhập; KHÔNG còn bắt buộc vai trò admin.
 async function requireAdmin(req: Request, res: Response): Promise<boolean> {
   const role = await getCallerRole(req.headers.authorization);
-  if (role !== "admin") {
-    res.status(403).json({ error: "Chỉ admin được phép" });
+  if (!role) {
+    res.status(401).json({ error: "Chưa đăng nhập" });
     return false;
   }
   return true;
@@ -346,6 +348,7 @@ const POST_SELECT = `
          p.source_type AS "sourceType", p.source_item_id AS "sourceItemId",
          p.ai_model AS "aiModel", p.vision_image_count AS "visionImageCount",
          p.used_sample_ids AS "usedSampleIds", p.footer_enabled AS "footerEnabled",
+         p.editing_until AS "editingUntil", p.auto_paused AS "autoPaused",
          p.created_at AS "createdAt", p.updated_at AS "updatedAt",
          cp.title AS "poolTitle"
     FROM autopost_posts p
@@ -592,19 +595,52 @@ router.patch("/autopost/posts/:id", async (req: Request, res: Response) => {
       params.push(idx);
       sets.push(`caption_recommended_index = $${params.length}`);
     }
+    // Đổi GIỜ ĐĂNG (nút "Dời lịch"). Bỏ qua nếu rỗng. `newSchedRef` = biểu thức SQL
+    // tham chiếu giờ đăng HIỆU LỰC (param mới) để tính lại status trong cùng UPDATE.
+    let newSchedRef: string | null = null;
+    if (body.scheduledAt !== undefined && body.scheduledAt !== null && String(body.scheduledAt).length > 0) {
+      const when = new Date(body.scheduledAt);
+      if (isNaN(when.getTime())) { res.status(400).json({ error: "scheduledAt không hợp lệ" }); return; }
+      params.push(when);
+      sets.push(`scheduled_at = $${params.length}`);
+      newSchedRef = `$${params.length}::timestamptz`;
+    }
+    // Sửa ẢNH (xoá/đổi thứ tự ảnh hiện có). Mảng URL; tính lại image_hash theo ảnh đầu.
+    if (Array.isArray(body.images)) {
+      const imgs = clampImages(
+        (body.images as unknown[]).map((x) => String(x)),
+        Math.min(body.images.length || 1, MAX_PHOTOS),
+      );
+      params.push(JSON.stringify(imgs));
+      sets.push(`images = $${params.length}::jsonb`);
+      params.push(imgs[0] ? sha1(imgs[0]) : null);
+      sets.push(`image_hash = $${params.length}`);
+    }
     if (sets.length === 0) {
       res.status(400).json({ error: "Không có trường nào để cập nhật" });
       return;
     }
+    // Lưu xong thì BỎ khoá "đang sửa" (editing_until) để cơ chế tự đăng chạy tiếp.
+    sets.push(`editing_until = NULL`);
+    // Tính lại status: bài 'review_pending' mà DỜI giờ ra ngoài cửa sổ (hoặc xoá giờ)
+    // → trả về 'pending_review' (rời đếm ngược; Sweep A sẽ đưa lại khi tới gần giờ).
+    let windowMin = 30;
+    try { windowMin = (await getAutopostConfig()).autoApproveAfterMinutes || 30; } catch { /* mặc định 30 */ }
+    params.push(windowMin);
+    const wIdx = params.length;
+    const schedRef = newSchedRef ?? "scheduled_at";
+    sets.push(
+      `status = CASE WHEN status = 'review_pending' AND (${schedRef} IS NULL OR ${schedRef} > now() + make_interval(mins => $${wIdx}::int)) THEN 'pending_review' ELSE status END`,
+    );
     params.push(Number(req.params.id));
-    // CHỈ cho sửa bài CHƯA duyệt — bài đã approved/scheduled phải qua /approve
-    // (không cho lách quy trình duyệt: spec mục 8.1).
+    // Cho sửa bài CHƯA duyệt (pending_review/draft_ai) HOẶC đang trong cửa sổ kiểm
+    // duyệt (review_pending). Bài đã approved/scheduled vẫn phải qua /approve.
     const r = await pool.query(
       `UPDATE autopost_posts SET ${sets.join(", ")}, updated_at = now()
-        WHERE id = $${params.length} AND status IN ('pending_review', 'draft_ai') RETURNING id`,
+        WHERE id = $${params.length} AND status IN ('pending_review', 'draft_ai', 'review_pending') RETURNING id, status`,
       params,
     );
-    if (!r.rows[0]) { res.status(409).json({ error: "Chỉ sửa được bài chưa duyệt (chờ duyệt/nháp)" }); return; }
+    if (!r.rows[0]) { res.status(409).json({ error: "Chỉ sửa được bài chưa duyệt / đang chờ tự đăng" }); return; }
     res.json(r.rows[0]);
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -638,7 +674,7 @@ router.post("/autopost/posts/:id/approve", async (req: Request, res: Response) =
               approved_at = now(), scheduled_at = $3, caption_hash = $4,
               footer_enabled = COALESCE($6, footer_enabled), updated_at = now()
         WHERE id = $5
-          AND status IN ('pending_review', 'draft_ai', 'approved', 'scheduled')
+          AND status IN ('pending_review', 'draft_ai', 'review_pending', 'approved', 'scheduled')
         RETURNING id, status`,
       [captionFinal, approver, when, sha1(captionFinal), Number(req.params.id), footerVal],
     );
@@ -652,16 +688,18 @@ router.post("/autopost/posts/:id/approve", async (req: Request, res: Response) =
   }
 });
 
-// POST /autopost/posts/:id/skip — bỏ qua bài.
+// POST /autopost/posts/:id/skip — bỏ qua / HUỶ bài. Có status-guard: KHÔNG huỷ
+// được bài đang đăng / đã đăng (chống đua: tránh trường hợp scheduler vừa claim
+// 'posting' thì lệnh huỷ vẫn ghi 'skipped' nhưng bài vẫn lên Facebook).
 router.post("/autopost/posts/:id/skip", async (req: Request, res: Response) => {
   if (!(await requireAdmin(req, res))) return;
   try {
     const r = await pool.query(
       `UPDATE autopost_posts SET status = 'skipped', updated_at = now()
-        WHERE id = $1 RETURNING id`,
+        WHERE id = $1 AND status NOT IN ('posting', 'posted') RETURNING id`,
       [Number(req.params.id)],
     );
-    if (!r.rows[0]) { res.status(404).json({ error: "Không tìm thấy bài" }); return; }
+    if (!r.rows[0]) { res.status(409).json({ error: "Không huỷ được — bài đang đăng hoặc đã đăng (hoặc không tồn tại)" }); return; }
     res.json(r.rows[0]);
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -693,6 +731,71 @@ router.post("/autopost/posts/:id/publish-now", async (req: Request, res: Respons
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
+});
+
+// ───────────────── CỬA SỔ KIỂM DUYỆT 30' (Review Countdown) ───────────────────
+
+// POST /autopost/posts/:id/lock-edit — admin bấm "Sửa": khoá auto-publish ~15 phút
+// (editing_until) để không bị tự đăng mất trong lúc đang chỉnh. Chỉ bài chưa duyệt
+// / đang chờ tự đăng. Trả editing_until để UI biết hạn khoá.
+router.post("/autopost/posts/:id/lock-edit", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const r = await pool.query(
+      `UPDATE autopost_posts
+          SET editing_until = now() + interval '15 minutes', updated_at = now()
+        WHERE id = $1 AND status IN ('pending_review', 'draft_ai', 'review_pending')
+        RETURNING id, editing_until AS "editingUntil"`,
+      [Number(req.params.id)],
+    );
+    if (!r.rows[0]) { res.status(409).json({ error: "Chỉ khoá sửa được bài chưa duyệt / đang chờ tự đăng" }); return; }
+    res.json(r.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// POST /autopost/posts/:id/pause — "Tạm ngưng tự đăng" cho riêng bài này. Nếu đang
+// 'review_pending' thì trả về 'pending_review' để RỜI đếm ngược (không tự đăng nữa).
+router.post("/autopost/posts/:id/pause", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const r = await pool.query(
+      `UPDATE autopost_posts
+          SET auto_paused = true,
+              status = CASE WHEN status = 'review_pending' THEN 'pending_review' ELSE status END,
+              updated_at = now()
+        WHERE id = $1 RETURNING id, status, auto_paused AS "autoPaused"`,
+      [Number(req.params.id)],
+    );
+    if (!r.rows[0]) { res.status(404).json({ error: "Không tìm thấy bài" }); return; }
+    res.json(r.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// POST /autopost/posts/:id/resume — bỏ tạm ngưng (cho phép tự đăng lại theo lịch).
+router.post("/autopost/posts/:id/resume", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const r = await pool.query(
+      `UPDATE autopost_posts SET auto_paused = false, updated_at = now()
+        WHERE id = $1 RETURNING id, status, auto_paused AS "autoPaused"`,
+      [Number(req.params.id)],
+    );
+    if (!r.rows[0]) { res.status(404).json({ error: "Không tìm thấy bài" }); return; }
+    res.json(r.rows[0]);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// GET /autopost/server-time — giờ server (ISO) để UI tính đếm ngược chuẩn, không
+// lệ thuộc đồng hồ máy client. Hiển thị theo Asia/Ho_Chi_Minh do FE format.
+router.get("/autopost/server-time", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
+  res.json({ now: new Date().toISOString() });
 });
 
 // ─────────────────────────────── SETTINGS ────────────────────────────────────
@@ -835,6 +938,14 @@ router.put("/autopost/config", async (req: Request, res: Response) => {
       if (typeof b[k] === "boolean") patch[k] = b[k];
     }
     await patchAutopostConfig(patch, approver);
+    // TẮT công tắc tự đăng → trả các bài đang đếm ngược ('review_pending') về
+    // 'pending_review' để KHÔNG bị kẹt (sweep dừng đụng review_pending khi tắt; mà
+    // /approve cũ thì không nhận). Tránh bài treo "đang đếm ngược" mà chẳng làm gì.
+    if (patch.autoApproveEnabled === false) {
+      await pool.query(
+        `UPDATE autopost_posts SET status = 'pending_review', updated_at = now() WHERE status = 'review_pending'`,
+      ).catch((e) => console.error("[AutoPost] demote review_pending khi tắt tự đăng lỗi:", e));
+    }
     res.json(await getAutopostConfig());
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -1223,7 +1334,7 @@ function drivePage(message: string, ok = false): string {
 // GET /autopost/drive/connect?token=<jwt>&redirectUri=<...> — bắt đầu OAuth (browser nav).
 router.get("/autopost/drive/connect", async (req: Request, res: Response) => {
   const role = await getCallerRole(`Bearer ${String(req.query.token ?? "")}`);
-  if (role !== "admin") { res.status(403).send(drivePage("Chỉ admin được phép kết nối Google Drive.")); return; }
+  if (!role) { res.status(403).send(drivePage("Vui lòng đăng nhập để kết nối Google Drive.")); return; }
   if (!getOAuthClientEnv()) {
     res.status(400).send(drivePage("Thiếu Client ID/Secret: đặt GOOGLE_DRIVE_CLIENT_ID/SECRET hoặc GOOGLE_CLIENT_ID/SECRET trong môi trường."));
     return;

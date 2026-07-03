@@ -3,12 +3,13 @@ import { useQuery, useMutation, useQueryClient, useInfiniteQuery, type QueryClie
 import {
   Images, Plus, Edit2, Trash2, Eye, EyeOff, FileText, Tag, FolderTree, Globe,
   ChevronRight, ChevronDown, ArrowLeft, Search,
-  X, ChevronLeft, Save, Loader2, Star, Video, Play, SlidersHorizontal,
+  X, ChevronLeft, Save, Loader2, Star, Video, Play, SlidersHorizontal, FolderInput, MoreHorizontal,
 } from "lucide-react";
 import { Button, Input } from "@/components/ui";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import {
   MultiImageUploader, LazyImage, SortableList, authHeaders, CMS_BASE,
-  GripVertical, uploadFileViaPresign, type UploadedImage,
+  GripVertical, uploadFileViaPresign, MoveCategoryDialog, type UploadedImage,
 } from "@/components/cms-shared";
 import { getImageSrc } from "@/lib/imageUtils";
 import { useToast } from "@/hooks/use-toast";
@@ -86,6 +87,7 @@ interface CatNodeHandlers {
   counts: Map<number, number>;
   onAddChild: (parentId: number) => void;
   onEdit: (cat: GalleryCat) => void;
+  onMove: (cat: GalleryCat) => void;
   onDelete: (cat: GalleryCat) => void;
   onReorder: (parentId: number | null, orderedIds: number[]) => void;
   effectiveIsAdmin: boolean;
@@ -96,7 +98,7 @@ interface CatNodeHandlers {
 function CatNode({ cat, depth, allCats, handlers }: {
   cat: GalleryCat; depth: number; allCats: GalleryCat[]; handlers: CatNodeHandlers;
 }) {
-  const { expanded, selectedId, onSelect, onToggle, counts, onAddChild, onEdit, onDelete, onReorder, effectiveIsAdmin,
+  const { expanded, selectedId, onSelect, onToggle, counts, onAddChild, onEdit, onMove, onDelete, onReorder, effectiveIsAdmin,
     selectMode, catSelectState, onToggleCatSelect } = handlers;
   const children = useMemo(
     () => allCats.filter(c => c.parentId === cat.id).sort((a, b) => a.sortOrder - b.sortOrder),
@@ -105,6 +107,15 @@ function CatNode({ cat, depth, allCats, handlers }: {
   const hasChildren = children.length > 0;
   const isOpen = expanded.has(cat.id);
   const isSelected = selectedId === cat.id;
+  // Menu thao tác cho MOBILE (không có hover) — mở bottom sheet. Trên desktop dùng
+  // các nút hiện khi hover. Nhờ vậy "Chuyển vào mục khác" (di dời cả mục mẹ) dùng được trên điện thoại.
+  const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
+  const ACTION_ITEMS = [
+    { icon: <Plus className="w-4 h-4 text-emerald-600" />, label: "Thêm mục con", fn: () => { onAddChild(cat.id); setMobileSheetOpen(false); }, danger: false },
+    { icon: <Edit2 className="w-4 h-4" />, label: "Đổi tên", fn: () => { onEdit(cat); setMobileSheetOpen(false); }, danger: false },
+    { icon: <FolderInput className="w-4 h-4 text-sky-600" />, label: "Chuyển vào mục khác", fn: () => { onMove(cat); setMobileSheetOpen(false); }, danger: false },
+    ...(effectiveIsAdmin ? [{ icon: <Trash2 className="w-4 h-4 text-destructive" />, label: "Xoá danh mục", fn: () => { onDelete(cat); setMobileSheetOpen(false); }, danger: true }] : []),
+  ];
   return (
     <div>
       <div
@@ -127,8 +138,16 @@ function CatNode({ cat, depth, allCats, handlers }: {
           </button>
         ) : <span className="w-4" />}
         <span className="text-sm truncate flex-1">{cat.name}</span>
-        <span className="text-[10px] text-muted-foreground tabular-nums opacity-100 group-hover:opacity-0 transition-opacity">{counts.get(cat.id) ?? 0}</span>
-        <div className="hidden group-hover:flex items-center gap-0.5">
+        <span className="text-[10px] text-muted-foreground tabular-nums opacity-100 md:group-hover:opacity-0 transition-opacity">{counts.get(cat.id) ?? 0}</span>
+        {/* MOBILE: nút "..." mở menu thao tác (desktop ẩn, dùng hover bên dưới) */}
+        <button
+          onClick={e => { e.stopPropagation(); setMobileSheetOpen(true); }}
+          className="flex-shrink-0 flex md:hidden w-9 h-9 items-center justify-center rounded hover:bg-muted"
+          aria-label="Thao tác danh mục"
+        >
+          <MoreHorizontal className="w-4 h-4 text-muted-foreground" />
+        </button>
+        <div className="hidden md:group-hover:flex items-center gap-0.5">
           <button
             onClick={e => { e.stopPropagation(); onAddChild(cat.id); }}
             className="w-5 h-5 flex items-center justify-center rounded hover:bg-emerald-100 text-emerald-600"
@@ -143,6 +162,13 @@ function CatNode({ cat, depth, allCats, handlers }: {
           >
             <Edit2 className="w-3 h-3" />
           </button>
+          <button
+            onClick={e => { e.stopPropagation(); onMove(cat); }}
+            className="w-5 h-5 flex items-center justify-center rounded hover:bg-sky-100 text-sky-600"
+            title="Chuyển vào mục khác (kèm album & mục con)"
+          >
+            <FolderInput className="w-3 h-3" />
+          </button>
           {effectiveIsAdmin && (
             <button
               onClick={e => { e.stopPropagation(); onDelete(cat); }}
@@ -154,6 +180,33 @@ function CatNode({ cat, depth, allCats, handlers }: {
           )}
         </div>
       </div>
+
+      {/* MOBILE: bottom sheet thao tác danh mục (gồm "Chuyển vào mục khác" cho cả mục mẹ) */}
+      <Sheet open={mobileSheetOpen} onOpenChange={setMobileSheetOpen}>
+        <SheetContent side="bottom" className="h-auto max-h-[70vh] rounded-t-2xl px-0 pb-6">
+          <SheetHeader className="px-4 pb-2 border-b">
+            <SheetTitle className="text-base">{cat.name}</SheetTitle>
+            <SheetDescription className="text-xs">
+              {counts.get(cat.id) ?? 0} album · {children.length} mục con
+            </SheetDescription>
+          </SheetHeader>
+          <div className="flex flex-col py-1">
+            {ACTION_ITEMS.map((action, i) => (
+              <button
+                key={i}
+                onClick={action.fn}
+                className={`flex items-center gap-3 px-4 py-3 text-sm hover:bg-muted transition-colors text-left ${
+                  action.danger ? "text-destructive" : "text-foreground"
+                }`}
+              >
+                {action.icon}
+                <span>{action.label}</span>
+              </button>
+            ))}
+          </div>
+        </SheetContent>
+      </Sheet>
+
       {hasChildren && isOpen && (
         <SortableList
           items={children}
@@ -308,7 +361,10 @@ export default function CmsGalleryPage() {
   function handleBulkDelete() {
     const n = bulk.selected.size;
     if (n === 0) return;
-    if (confirm(`Đưa ${n} album đã chọn vào thùng rác? (Danh mục KHÔNG bị xoá)`)) bulkDelete.mutate();
+    setConfirmCfg({
+      message: `Đưa ${n} album đã chọn vào thùng rác? (Danh mục KHÔNG bị xoá)`,
+      confirmText: "Xoá", danger: true, onConfirm: () => bulkDelete.mutate(),
+    });
   }
 
   const saveAlbum = useMutation({
@@ -382,13 +438,17 @@ export default function CmsGalleryPage() {
     onError: (e: Error) => alert(e.message),
   });
   const updateCat = useMutation({
-    mutationFn: (p: { id: number; name?: string }) => {
+    mutationFn: (p: { id: number; name?: string; parentId?: number | null }) => {
       const { id, ...body } = p;
       return fetch(`${CMS_BASE}/api/cms/categories/${id}`, {
         method: "PATCH", headers: authHeaders(), body: JSON.stringify(body),
       }).then(async r => { if (!r.ok) throw new Error((await r.json()).error ?? "Lỗi lưu"); });
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["cms-categories", "gallery"] }),
+    onSuccess: () => {
+      // Đổi parentId → cây + số đếm album đổi theo → refetch cả hai.
+      qc.invalidateQueries({ queryKey: ["cms-categories", "gallery"] });
+      qc.invalidateQueries({ queryKey: ["cms-albums"] });
+    },
     onError: (e: Error) => alert(e.message),
   });
   const deleteCat = useMutation({
@@ -411,26 +471,36 @@ export default function CmsGalleryPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["cms-categories", "gallery"] }),
   });
 
+  // Modal thay cho window.prompt/confirm (preview webview KHÔNG hỗ trợ prompt/confirm).
+  const [promptCfg, setPromptCfg] = useState<PromptCfg | null>(null);
+  const [confirmCfg, setConfirmCfg] = useState<ConfirmCfg | null>(null);
+  // Danh mục đang được "Chuyển vào mục khác" (đổi cha — album & mục con đi theo).
+  const [movingCat, setMovingCat] = useState<GalleryCat | null>(null);
+  function handleMoveCat(cat: GalleryCat) { setMovingCat(cat); }
   function handleAddRoot() {
-    const name = window.prompt("Tên danh mục gốc:");
-    if (name?.trim()) createCat.mutate({ name: name.trim(), parentId: null });
+    setPromptCfg({
+      title: "Thêm danh mục gốc", label: "Tên danh mục gốc:", confirmText: "Tạo",
+      onConfirm: (name) => createCat.mutate({ name, parentId: null }),
+    });
   }
   function handleAddChild(parentId: number) {
-    const name = window.prompt("Tên mục con:");
-    if (name?.trim()) createCat.mutate({ name: name.trim(), parentId });
+    setPromptCfg({
+      title: "Thêm mục con", label: "Tên mục con:", confirmText: "Tạo",
+      onConfirm: (name) => createCat.mutate({ name, parentId }),
+    });
   }
   function handleEditCat(cat: GalleryCat) {
-    const name = window.prompt("Đổi tên danh mục:", cat.name);
-    if (name && name.trim() && name.trim() !== cat.name) {
-      updateCat.mutate({ id: cat.id, name: name.trim() });
-    }
+    setPromptCfg({
+      title: "Đổi tên danh mục", label: "Tên danh mục:", defaultValue: cat.name, confirmText: "Lưu",
+      onConfirm: (name) => { if (name !== cat.name) updateCat.mutate({ id: cat.id, name }); },
+    });
   }
   function handleDeleteCat(cat: GalleryCat) {
     const n = countMap.get(cat.id) ?? 0;
     const msg = n > 0
       ? `Xoá "${cat.name}"? ${n} album thuộc nhánh này sẽ chuyển sang "Chưa phân loại".`
       : `Xoá danh mục "${cat.name}"?`;
-    if (confirm(msg)) deleteCat.mutate(cat.id);
+    setConfirmCfg({ message: msg, confirmText: "Xoá", danger: true, onConfirm: () => deleteCat.mutate(cat.id) });
   }
   function handleReorderCats(_parentId: number | null, orderedIds: number[]) {
     reorderCats.mutate(orderedIds);
@@ -524,6 +594,7 @@ export default function CmsGalleryPage() {
                       counts: countMap,
                       onAddChild: handleAddChild,
                       onEdit: handleEditCat,
+                      onMove: handleMoveCat,
                       onDelete: handleDeleteCat,
                       onReorder: handleReorderCats,
                       effectiveIsAdmin,
@@ -752,7 +823,10 @@ export default function CmsGalleryPage() {
                       </Button>
                       {effectiveIsAdmin && (
                         <Button size="sm" variant="ghost" className="px-2 text-destructive" onClick={() => {
-                          if (confirm(`Đưa album "${a.name}" vào thùng rác?`)) deleteAlbum.mutate(a.id);
+                          setConfirmCfg({
+                            message: `Đưa album "${a.name}" vào thùng rác?`,
+                            confirmText: "Xoá", danger: true, onConfirm: () => deleteAlbum.mutate(a.id),
+                          });
                         }}>
                           <Trash2 className="w-3.5 h-3.5" />
                         </Button>
@@ -796,6 +870,85 @@ export default function CmsGalleryPage() {
           onClose={() => setMoveOpen(false)}
         />
       )}
+      <PromptDialog cfg={promptCfg} onClose={() => setPromptCfg(null)} />
+      <ConfirmDialog cfg={confirmCfg} onClose={() => setConfirmCfg(null)} />
+      {movingCat && (
+        <MoveCategoryDialog
+          cat={movingCat}
+          cats={cats}
+          busy={updateCat.isPending}
+          onConfirm={(parentId) => {
+            if (parentId !== (movingCat.parentId ?? null)) updateCat.mutate({ id: movingCat.id, parentId });
+            setMovingCat(null);
+          }}
+          onClose={() => setMovingCat(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Dialog thay cho window.prompt / confirm ─────────────────────────────────
+// Preview webview (Vite runtime) KHÔNG hỗ trợ prompt()/confirm() → gọi là nổ
+// runtime-error. Hai modal nhỏ dưới đây thay thế, dùng đúng style modal sẵn có.
+type PromptCfg = {
+  title: string; label?: string; defaultValue?: string; confirmText?: string;
+  onConfirm: (value: string) => void;
+};
+function PromptDialog({ cfg, onClose }: { cfg: PromptCfg | null; onClose: () => void }) {
+  const [value, setValue] = useState("");
+  useEffect(() => { setValue(cfg?.defaultValue ?? ""); }, [cfg]);
+  if (!cfg) return null;
+  const submit = () => {
+    const v = value.trim();
+    if (!v) return;
+    cfg.onConfirm(v);
+    onClose();
+  };
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-background rounded-2xl shadow-xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
+        <div className="px-5 py-4 border-b flex items-center justify-between">
+          <h3 className="font-semibold">{cfg.title}</h3>
+          <button onClick={onClose} className="p-1 hover:bg-muted rounded"><X className="w-4 h-4" /></button>
+        </div>
+        <div className="p-5 space-y-2">
+          {cfg.label && <label className="text-sm font-medium">{cfg.label}</label>}
+          <Input
+            autoFocus
+            value={value}
+            onChange={e => setValue(e.target.value)}
+            onKeyDown={e => { if (e.key === "Enter") submit(); }}
+          />
+        </div>
+        <div className="px-5 py-4 border-t flex justify-end gap-2">
+          <Button variant="outline" onClick={onClose}>Huỷ</Button>
+          <Button onClick={submit} disabled={!value.trim()}>{cfg.confirmText ?? "Lưu"}</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type ConfirmCfg = {
+  message: string; confirmText?: string; danger?: boolean;
+  onConfirm: () => void;
+};
+function ConfirmDialog({ cfg, onClose }: { cfg: ConfirmCfg | null; onClose: () => void }) {
+  if (!cfg) return null;
+  const accept = () => { cfg.onConfirm(); onClose(); };
+  return (
+    <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-background rounded-2xl shadow-xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
+        <div className="p-5 space-y-1">
+          <h3 className="font-semibold">Xác nhận</h3>
+          <p className="text-sm text-muted-foreground whitespace-pre-line">{cfg.message}</p>
+        </div>
+        <div className="px-5 py-4 border-t flex justify-end gap-2">
+          <Button variant="outline" onClick={onClose}>Huỷ</Button>
+          <Button variant={cfg.danger ? "destructive" : "default"} onClick={accept}>{cfg.confirmText ?? "Đồng ý"}</Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1090,6 +1243,7 @@ function AlbumPhotosTab({
   const { data, fetchNextPage, hasNextPage, isFetching } = usePhotosPagination(album.id);
   const photos = useMemo(() => data?.pages.flatMap(p => p.items) ?? [], [data]);
   const [currentCover, setCurrentCover] = useState<string | null>(album.coverImageUrl);
+  const [confirmCfg, setConfirmCfg] = useState<ConfirmCfg | null>(null); // thay window.confirm
 
   const { data: caps } = useQuery<Capabilities>({
     queryKey: ["cms-capabilities"],
@@ -1238,7 +1392,7 @@ function AlbumPhotosTab({
                     </button>
                     {effectiveIsAdmin && (
                       <button
-                        onClick={() => { if (confirm("Đưa ảnh vào thùng rác?")) deletePhoto.mutate(p.id); }}
+                        onClick={() => setConfirmCfg({ message: "Đưa ảnh vào thùng rác?", confirmText: "Xoá", danger: true, onConfirm: () => deletePhoto.mutate(p.id) })}
                         className="bg-destructive text-destructive-foreground rounded p-1 hover:scale-110 transition-transform"
                       >
                         <Trash2 className="w-4 h-4" />
@@ -1259,6 +1413,7 @@ function AlbumPhotosTab({
           </Button>
         </div>
       )}
+      <ConfirmDialog cfg={confirmCfg} onClose={() => setConfirmCfg(null)} />
     </div>
   );
 }

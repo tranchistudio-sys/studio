@@ -102,16 +102,20 @@ export default function ContractDetailPage() {
     onError: (e: Error) => setActionErr(e.message),
   });
 
+  // Link gửi khách LUÔN theo origin frontend đang chạy (dev :5000, prod domain thật)
+  // — không tin PUBLIC_APP_URL của server để tránh copy nhầm origin API (401/sai cổng).
+  const fetchCustomerSignUrl = async (): Promise<string> => {
+    const r = await authFetch(`${BASE}/api/contracts/${contractId}/sign-link`, { method: "POST" });
+    if (!r.ok) throw new Error("Không tạo được link hợp đồng");
+    const data = await r.json();
+    return data.publicToken
+      ? `${window.location.origin}${BASE}/contract/${data.publicToken}`
+      : (data.signUrl as string);
+  };
+
   const copyLinkMutation = useMutation({
     mutationFn: async () => {
-      const r = await authFetch(`${BASE}/api/contracts/${contractId}/sign-link`, { method: "POST" });
-      if (!r.ok) throw new Error("Không tạo được link hợp đồng");
-      const data = await r.json();
-      // Link gửi khách LUÔN theo origin frontend đang chạy (dev :5000, prod domain thật)
-      // — không tin PUBLIC_APP_URL của server để tránh copy nhầm origin API (401/sai cổng).
-      const url = data.publicToken
-        ? `${window.location.origin}${BASE}/contract/${data.publicToken}`
-        : (data.signUrl as string);
+      const url = await fetchCustomerSignUrl();
       await navigator.clipboard.writeText(url);
       return url;
     },
@@ -121,6 +125,29 @@ export default function ContractDetailPage() {
     },
     onError: (e: Error) => setActionErr(e.message),
   });
+
+  const openCustomerPageMutation = useMutation({
+    mutationFn: fetchCustomerSignUrl,
+    onSuccess: (url) => {
+      const w = window.open(url, "_blank", "noopener");
+      if (!w) {
+        // Popup bị chặn (window.open sau await mất user gesture) — copy link làm phương án dự phòng.
+        navigator.clipboard.writeText(url).catch(() => {});
+        setActionErr("Trình duyệt chặn mở tab mới — link khách ký đã được sao chép, hãy dán vào tab mới.");
+      }
+    },
+    onError: (e: Error) => setActionErr(e.message),
+  });
+
+  // Token có sẵn trong payload → mở thẳng trong user gesture, không bị popup blocker.
+  const openCustomerPage = () => {
+    const token = payload?.internal?.publicToken;
+    if (token) {
+      window.open(`${window.location.origin}${BASE}/contract/${token}`, "_blank", "noopener");
+      return;
+    }
+    openCustomerPageMutation.mutate();
+  };
 
   const resignMutation = useMutation({
     mutationFn: async (enable: boolean) => {
@@ -265,6 +292,10 @@ export default function ContractDetailPage() {
               mode="internal"
               onSignStudio={(dataUrl) => signStudioMutation.mutate(dataUrl)}
               signingStudio={signStudioMutation.isPending}
+              onCopyCustomerLink={() => copyLinkMutation.mutate()}
+              onOpenCustomerLink={openCustomerPage}
+              customerLinkCopied={copied}
+              customerLinkBusy={copyLinkMutation.isPending || openCustomerPageMutation.isPending}
             />
           </div>
         </TabsContent>

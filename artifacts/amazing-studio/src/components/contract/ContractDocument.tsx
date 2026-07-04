@@ -22,6 +22,14 @@ type ContractDocumentProps = {
   /** public: ký Bên B — chỉ hiện pad khi CHƯA ký, hoặc admin đã bật yêu cầu ký lại */
   onSignCustomer?: (dataUrl: string, name: string, phone: string) => void;
   signingCustomer?: boolean;
+  /**
+   * internal: Bên B KHÔNG ký trực tiếp trong app — khách ký qua link public /contract/<token>.
+   * Truyền 2 callback này để ô Bên B (khi chưa ký) hiện hướng dẫn + nút copy/mở link khách ký.
+   */
+  onCopyCustomerLink?: () => void;
+  onOpenCustomerLink?: () => void;
+  customerLinkCopied?: boolean;
+  customerLinkBusy?: boolean;
 };
 
 function fmtDate(d: string | null | undefined, fallback = "—"): string {
@@ -46,6 +54,10 @@ export default function ContractDocument({
   signingStudio = false,
   onSignCustomer,
   signingCustomer = false,
+  onCopyCustomerLink,
+  onOpenCustomerLink,
+  customerLinkCopied = false,
+  customerLinkBusy = false,
 }: ContractDocumentProps) {
   const { contract, studio, customer, services, money, payments, signatures } = payload;
   const isMulti = services.length > 1;
@@ -514,6 +526,40 @@ export default function ContractDocument({
                   <div className="h-[70px] border-b mx-6 mt-3 mb-2" />
                   <div className="text-[11.5px] italic text-[#888]">(Ký, ghi rõ họ tên)</div>
                   <div className="text-xs text-[#666] mt-2.5">Ngày ___/___/______</div>
+                  {mode === "internal" && (onCopyCustomerLink || onOpenCustomerLink) ? (
+                    <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2.5 print:hidden">
+                      <div className="text-[11.5px] font-bold text-blue-800">
+                        💡 Khách ký qua link hợp đồng online
+                      </div>
+                      <div className="text-[11px] text-blue-700/80 mt-0.5">
+                        Gửi link cho khách — khách mở link, kéo xuống cuối và ký phần Bên B.
+                      </div>
+                      <div className="mt-2 flex items-center justify-center gap-2 flex-wrap">
+                        {onCopyCustomerLink ? (
+                          <button
+                            type="button"
+                            onClick={onCopyCustomerLink}
+                            disabled={customerLinkBusy}
+                            className="rounded-md border border-blue-300 bg-white px-2.5 py-1.5 text-[11.5px] font-semibold text-blue-800 hover:bg-blue-100 disabled:opacity-60"
+                            data-testid="btn-copy-customer-link"
+                          >
+                            {customerLinkCopied ? "✅ Đã sao chép!" : "🔗 Sao chép link khách ký"}
+                          </button>
+                        ) : null}
+                        {onOpenCustomerLink ? (
+                          <button
+                            type="button"
+                            onClick={onOpenCustomerLink}
+                            disabled={customerLinkBusy}
+                            className="rounded-md border border-blue-300 bg-white px-2.5 py-1.5 text-[11.5px] font-semibold text-blue-800 hover:bg-blue-100 disabled:opacity-60"
+                            data-testid="btn-open-customer-link"
+                          >
+                            ↗️ Mở trang khách ký
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
                 </>
               )}
             </div>

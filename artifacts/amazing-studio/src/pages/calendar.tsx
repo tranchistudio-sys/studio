@@ -5937,7 +5937,7 @@ function DayView({
                             <button
                               key={b.id}
                               onClick={e => { e.stopPropagation(); onEventClick(b); }}
-                              className={`w-full sm:flex-[1_1_160px] sm:min-w-[140px] sm:max-w-[min(100%,340px)] rounded-xl px-2 py-2 sm:px-2.5 text-left shadow-sm hover:shadow-md hover:bg-muted/30 transition-all border border-l-4 bg-card text-foreground touch-manipulation ${isHighlighted ? "ring-2 ring-offset-1 ring-primary animate-pulse" : isVip ? "ring-1 ring-amber-300/60" : ""}`}
+                              className={`w-full sm:flex-[1_1_250px] sm:min-w-[230px] sm:max-w-[min(100%,360px)] rounded-xl px-2 py-2 sm:px-2.5 text-left shadow-sm hover:shadow-md hover:bg-muted/30 transition-all border border-l-4 bg-card text-foreground touch-manipulation ${isHighlighted ? "ring-2 ring-offset-1 ring-primary animate-pulse" : isVip ? "ring-1 ring-amber-300/60" : ""}`}
                               style={{ borderLeftColor: staffDot }}
                             >
                               <div className="flex gap-2 items-start">

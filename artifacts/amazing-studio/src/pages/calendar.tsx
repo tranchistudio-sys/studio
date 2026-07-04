@@ -5941,12 +5941,12 @@ function DayView({
                               style={{ borderLeftColor: staffDot }}
                             >
                               <div className="flex gap-2 items-start">
-                                {/* Cột ngày/giờ — giao diện cũ */}
-                                <div className="flex flex-col items-center justify-start flex-shrink-0 w-[52px] pt-0.5 text-center leading-tight">
+                                {/* Cột ngày/giờ — khối nổi bật, canh giữa dọc card */}
+                                <div className="flex flex-col items-center justify-center self-stretch flex-shrink-0 w-[68px] px-1 py-1.5 rounded-lg bg-primary/5 border border-primary/15 text-center leading-tight">
                                   {dateLabel && (
-                                    <span className="text-[9px] font-bold text-muted-foreground tabular-nums">{dateLabel}</span>
+                                    <span className="text-[11px] font-extrabold text-foreground tabular-nums whitespace-nowrap">{dateLabel}</span>
                                   )}
-                                  <span className="text-sm sm:text-base font-black tabular-nums text-foreground">{timeLabelCard}</span>
+                                  <span className="text-lg sm:text-xl font-black tabular-nums text-primary leading-none mt-1">{timeLabelCard}</span>
                                 </div>
 
                                 {/* Avatar — luôn hiện */}

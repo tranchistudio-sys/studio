@@ -335,11 +335,11 @@ export default function ContractDocument({
               <div className="flex flex-wrap gap-2">
                 {allProofImages.map((url, i) => (
                   <a key={i} href={url} target="_blank" rel="noreferrer" className="block">
+                    {/* Không lazy: ảnh cọc là bằng chứng thanh toán, phải chắc chắn hiển thị cho khách */}
                     <img
                       src={url}
                       alt={`Ảnh xác nhận thanh toán ${i + 1}`}
                       className="h-24 w-24 object-cover rounded-lg border hover:opacity-85"
-                      loading="lazy"
                     />
                   </a>
                 ))}

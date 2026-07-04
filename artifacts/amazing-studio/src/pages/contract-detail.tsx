@@ -107,8 +107,13 @@ export default function ContractDetailPage() {
       const r = await authFetch(`${BASE}/api/contracts/${contractId}/sign-link`, { method: "POST" });
       if (!r.ok) throw new Error("Không tạo được link hợp đồng");
       const data = await r.json();
-      await navigator.clipboard.writeText(data.signUrl);
-      return data.signUrl as string;
+      // Link gửi khách LUÔN theo origin frontend đang chạy (dev :5000, prod domain thật)
+      // — không tin PUBLIC_APP_URL của server để tránh copy nhầm origin API (401/sai cổng).
+      const url = data.publicToken
+        ? `${window.location.origin}${BASE}/contract/${data.publicToken}`
+        : (data.signUrl as string);
+      await navigator.clipboard.writeText(url);
+      return url;
     },
     onSuccess: () => {
       setCopied(true);

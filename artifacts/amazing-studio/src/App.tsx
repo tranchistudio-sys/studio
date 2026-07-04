@@ -68,6 +68,7 @@ import PublicGalleryDetailPage from "@/pages/public/gallery-detail";
 import WeddingCardsLandingPage from "@/pages/public/wedding-cards-landing";
 import WeddingCardsCreatePage from "@/pages/public/wedding-cards-create";
 import WeddingCardViewPage from "@/pages/public/wedding-card-view";
+import PublicContractSignPage from "@/pages/public/contract-sign";
 import { StaffAuthProvider, useStaffAuth } from "@/contexts/StaffAuthContext";
 import { UploadQueueProvider } from "@/contexts/UploadQueueContext";
 import { Camera, Shirt } from "lucide-react";
@@ -94,6 +95,7 @@ const PUBLIC_ROUTES = [
   "/lien-he",
   "/thiep-cuoi-online",
   "/thiep-cuoi",
+  "/contract", // hợp đồng online cho khách (/contract/:token) — số ít, KHÔNG đụng /contracts nội bộ
   "/login",
 ];
 
@@ -215,6 +217,15 @@ function PublicRouter() {
     return (
       <Switch>
         <Route path="/thiep-cuoi/:slug" component={WeddingCardViewPage} />
+        <Route component={PublicNotFound} />
+      </Switch>
+    );
+  }
+  // Hợp đồng online cho khách — trang standalone sạch, không header/footer marketing
+  if (location.startsWith("/contract/")) {
+    return (
+      <Switch>
+        <Route path="/contract/:token" component={PublicContractSignPage} />
         <Route component={PublicNotFound} />
       </Switch>
     );

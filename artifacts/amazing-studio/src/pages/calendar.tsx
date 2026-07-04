@@ -5937,16 +5937,16 @@ function DayView({
                             <button
                               key={b.id}
                               onClick={e => { e.stopPropagation(); onEventClick(b); }}
-                              className={`w-full sm:flex-[1_1_160px] sm:min-w-[140px] sm:max-w-[min(100%,340px)] rounded-xl px-2 py-2 sm:px-2.5 text-left shadow-sm hover:shadow-md hover:bg-muted/30 transition-all border border-l-4 bg-card text-foreground touch-manipulation ${isHighlighted ? "ring-2 ring-offset-1 ring-primary animate-pulse" : isVip ? "ring-1 ring-amber-300/60" : ""}`}
+                              className={`w-full sm:flex-[1_1_250px] sm:min-w-[230px] sm:max-w-[min(100%,360px)] rounded-xl px-2 py-2 sm:px-2.5 text-left shadow-sm hover:shadow-md hover:bg-muted/30 transition-all border border-l-4 bg-card text-foreground touch-manipulation ${isHighlighted ? "ring-2 ring-offset-1 ring-primary animate-pulse" : isVip ? "ring-1 ring-amber-300/60" : ""}`}
                               style={{ borderLeftColor: staffDot }}
                             >
                               <div className="flex gap-2 items-start">
-                                {/* Cột ngày/giờ — giao diện cũ */}
-                                <div className="flex flex-col items-center justify-start flex-shrink-0 w-[52px] pt-0.5 text-center leading-tight">
+                                {/* Cột ngày/giờ — khối nổi bật, canh giữa dọc card */}
+                                <div className="flex flex-col items-center justify-center self-stretch flex-shrink-0 w-[68px] px-1 py-1.5 rounded-lg bg-primary/5 border border-primary/15 text-center leading-tight">
                                   {dateLabel && (
-                                    <span className="text-[9px] font-bold text-muted-foreground tabular-nums">{dateLabel}</span>
+                                    <span className="text-[11px] font-extrabold text-foreground tabular-nums whitespace-nowrap">{dateLabel}</span>
                                   )}
-                                  <span className="text-sm sm:text-base font-black tabular-nums text-foreground">{timeLabelCard}</span>
+                                  <span className="text-lg sm:text-xl font-black tabular-nums text-primary leading-none mt-1">{timeLabelCard}</span>
                                 </div>
 
                                 {/* Avatar — luôn hiện */}

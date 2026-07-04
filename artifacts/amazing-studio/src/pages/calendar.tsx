@@ -3581,150 +3581,22 @@ function ShowDetailPanel({
   };
 
   const handleViewInvoice = async () => {
+    // Mở trang hợp đồng/hóa đơn THỐNG NHẤT (không popup about:blank nữa).
+    // find-or-create phía server → không tạo trùng khi bấm nhanh nhiều lần.
     try {
-      // 1. Tìm hóa đơn theo bookingId trước
-      let contractId: number | null = null;
-
-      const byBookingRes = await authFetch(`${BASE}/api/contracts?bookingId=${booking.id}`);
-      const byBookingRows = byBookingRes.ok ? await byBookingRes.json() : [];
-      if (Array.isArray(byBookingRows) && byBookingRows.length > 0) {
-        contractId = byBookingRows[0].id;
+      const res = await authFetch(`${BASE}/api/contracts/find-or-create`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bookingId: booking.id }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error ?? "Không mở được hóa đơn");
       }
-
-      // 2. Nếu chưa có → tìm theo customerId
-      if (!contractId && booking.customerId) {
-        const byCustomerRes = await authFetch(`${BASE}/api/contracts?customerId=${booking.customerId}`);
-        const byCustomerRows = byCustomerRes.ok ? await byCustomerRes.json() : [];
-        if (Array.isArray(byCustomerRows) && byCustomerRows.length > 0) {
-          contractId = byCustomerRows[0].id;
-        }
-      }
-
-      // 3. Nếu vẫn không có → tự tạo mới từ dữ liệu booking
-      if (!contractId) {
-        if (!booking.customerId) {
-          alert("Show này chưa có khách hàng để tạo hóa đơn");
-          return;
-        }
-        const createRes = await authFetch(`${BASE}/api/contracts`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            bookingId: booking.id,
-            customerId: booking.customerId,
-            title: booking.packageType || booking.serviceCategory || "Dịch vụ chụp ảnh",
-            totalValue: (fullDetail ?? booking).totalAmount ?? 0,
-            status: "active",
-          }),
-        });
-        if (!createRes.ok) throw new Error("Không tạo được hóa đơn");
-        const created = await createRes.json();
-        contractId = created.id;
-        qc.invalidateQueries({ queryKey: ["contracts"] });
-      }
-
-      // 4. Tạo link ký + QR
-      const linkRes = await authFetch(`${BASE}/api/contracts/${contractId}/sign-link`, { method: "POST" });
-      if (!linkRes.ok) throw new Error("Không tạo được link ký");
-      const linkData = await linkRes.json();
-      const signUrl = linkData.signUrl as string;
-      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(signUrl)}`;
-      const contractRes = await authFetch(`${BASE}/api/contracts/${contractId}`);
-      const contractData = contractRes.ok ? await contractRes.json() : null;
-      const signatureInfo = contractData ? {
-        signatureImageUrl: contractData.signatureImageUrl ?? null,
-        signerName: contractData.signerName ?? null,
-        signerPhone: contractData.signerPhone ?? null,
-        signedAt: contractData.signedAt ?? null,
-      } : undefined;
-
-      // 5. Tạo HTML hóa đơn đầy đủ
-      const parentDiscount = Number(parentContract?.discountAmount ?? 0) || 0;
-      const parentPaid     = Number(parentContract?.paidAmount     ?? 0) || 0;
-      const parentTotal    = Number(parentContract?.totalAmount    ?? 0) || 0;
-      const bookingPaid    = paymentHistory.reduce((s, p) => s + (p.amount ?? 0), 0);
-      const bookingDiscount = Number((fullDetail ?? booking).discountAmount ?? 0) || 0;
-      const bookingTotal    = Number((fullDetail ?? booking).totalAmount    ?? 0) || 0;
-      const paymentSummary = parentContract
-        ? { totalAmount: parentTotal, paidAmount: parentPaid, discountAmount: parentDiscount, remainingAmount: Math.max(0, parentTotal - parentDiscount - parentPaid) }
-        : { totalAmount: bookingTotal, paidAmount: bookingPaid, discountAmount: bookingDiscount, remainingAmount: Math.max(0, bookingTotal - bookingDiscount - bookingPaid) };
-      const invoiceHtml = generateContractHTML(booking, siblings, allPackages, paymentSummary, false, paymentHistory, signatureInfo);
-
-      // 6. Mở popup với toolbar + iframe hóa đơn
-      const win = window.open("", "_blank", "width=1120,height=920");
-      if (!win) { alert("Trình duyệt đã chặn popup. Vui lòng cho phép popup từ trang này."); return; }
-
-      const escapedSignUrl = signUrl.replace(/'/g, "\\'");
-      win.document.write(`<!doctype html>
-<html lang="vi">
-<head>
-<meta charset="utf-8" />
-<title>Hóa đơn – ${booking.customerName ?? ""}</title>
-<style>
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:Arial,sans-serif;background:#f5f5f5;display:flex;flex-direction:column;height:100vh;overflow:hidden}
-  .toolbar{background:#222;color:#fff;padding:10px 18px;display:flex;align-items:center;gap:10px;flex-shrink:0;box-shadow:0 2px 8px rgba(0,0,0,.25)}
-  .title{flex:1;font-size:15px;font-weight:700}
-  .title span{font-size:12px;font-weight:400;opacity:.75;margin-left:8px}
-  .btn{border:0;border-radius:8px;padding:9px 15px;font-size:13px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
-  .btn-white{background:#fff;color:#222}
-  .btn-outline{background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.35)}
-  .btn:hover{opacity:.88}
-  .qr-bar{background:#fff;border-bottom:2px solid #ddd;padding:16px 22px;flex-shrink:0;display:none;gap:20px;align-items:flex-start;flex-wrap:wrap}
-  .qr-bar.open{display:flex}
-  .qr-bar img{width:170px;height:170px;border:2px solid #ddd;border-radius:12px;flex-shrink:0}
-  .qr-info{flex:1;min-width:200px}
-  .qr-info h3{color:#111;font-size:14px;font-weight:700;margin-bottom:8px}
-  .link-box{background:#f9f9f9;border:1px solid #ddd;border-radius:10px;padding:10px 14px;margin-bottom:8px}
-  .link-url{font-size:12px;color:#222;word-break:break-all;font-weight:600;margin:4px 0 10px}
-  .btn-copy{background:#222;color:#fff;border:0;border-radius:8px;padding:8px 13px;font-size:12px;font-weight:700;cursor:pointer}
-  .btn-open{background:#f0f0f0;color:#222;border:0;border-radius:8px;padding:8px 13px;font-size:12px;font-weight:700;cursor:pointer;margin-left:6px}
-  #copyMsg{color:#27ae60;font-size:11px;font-weight:700;margin-left:8px;display:none}
-  .iframe-wrap{flex:1;overflow:hidden}
-  iframe{width:100%;height:100%;border:0}
-</style>
-</head>
-<body>
-<div class="toolbar">
-  <div class="title">🧾 Hóa đơn <span>${booking.customerName ?? ""}</span></div>
-  <button class="btn btn-outline" onclick="toggleQR()">📤 Gửi link ký online</button>
-  <button class="btn btn-white" onclick="printInvoice()">🖨️ In hóa đơn</button>
-</div>
-<div class="qr-bar" id="qrBar">
-  <img src="${qrUrl}" alt="QR ký online" />
-  <div class="qr-info">
-    <h3>📱 Gửi link này cho khách để ký online</h3>
-    <div class="link-box">
-      <div style="font-size:10px;color:#aaa;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:2px">Link ký online</div>
-      <div class="link-url">${signUrl}</div>
-      <button class="btn-copy" onclick="copyLink()">📋 Sao chép link</button>
-      <button class="btn-open" onclick="window.open('${escapedSignUrl}','_blank')">✍️ Mở trang ký</button>
-      <span id="copyMsg">✓ Đã sao chép!</span>
-    </div>
-    <p style="font-size:11px;color:#aaa">Khách hàng quét QR hoặc mở link để ký tên và xác nhận hợp đồng. Sau khi ký, hệ thống tự cập nhật.</p>
-  </div>
-</div>
-<div class="iframe-wrap"><iframe id="invoiceFrame"></iframe></div>
-<script>
-  function printInvoice(){ document.getElementById('invoiceFrame').contentWindow.print(); }
-  function toggleQR(){ document.getElementById('qrBar').classList.toggle('open'); }
-  function copyLink(){
-    navigator.clipboard.writeText('${escapedSignUrl}').then(function(){
-      var m=document.getElementById('copyMsg'); m.style.display='inline';
-      setTimeout(function(){ m.style.display='none'; }, 2500);
-    });
-  }
-</script>
-</body></html>`);
-      win.document.close();
-
-      // Đổ nội dung hóa đơn vào iframe
-      const iframe = win.document.getElementById("invoiceFrame") as HTMLIFrameElement | null;
-      if (iframe?.contentDocument) {
-        iframe.contentDocument.open();
-        iframe.contentDocument.write(invoiceHtml);
-        iframe.contentDocument.close();
-      }
+      const { id, created } = await res.json();
+      if (created) qc.invalidateQueries({ queryKey: ["contracts"] });
+      // Cùng tab + kèm from/bookingId để nút "← Quay lại" mở lại đúng booking này.
+      setLocation(`/contracts/${id}?from=calendar&bookingId=${booking.id}`);
     } catch (err) {
       alert(err instanceof Error ? err.message : "Không mở được hóa đơn");
     }

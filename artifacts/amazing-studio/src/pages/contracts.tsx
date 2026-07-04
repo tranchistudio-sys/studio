@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useLocation } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { formatVND, formatDate } from "@/lib/utils";
 import { Button, Input, Select, Textarea, Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui";
@@ -7,8 +8,12 @@ import { DateInput } from "@/components/ui/date-input";
 import { Plus, Search, FileText, User, Calendar, CheckCircle2, Clock, AlertCircle, Trash2, Edit, Printer, ReceiptText, Send, Link2, Copy } from "lucide-react";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+function authHeaders(): Record<string, string> {
+  const token = localStorage.getItem("amazingStudioToken_v2");
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
 const fetchJson = (url: string, opts?: RequestInit) =>
-  fetch(`${BASE}${url}`, { headers: { "Content-Type": "application/json" }, ...opts }).then(r => r.json());
+  fetch(`${BASE}${url}`, { ...opts, headers: { "Content-Type": "application/json", ...authHeaders(), ...(opts?.headers as Record<string, string> ?? {}) } }).then(r => r.json());
 
 const STUDIO_INFO = {
   name: "Amazing Studio",
@@ -209,6 +214,7 @@ function printInvoice(contract: Contract) {
 
 export default function ContractsPage() {
   const qc = useQueryClient();
+  const [, setLocation] = useLocation();
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [isOpen, setIsOpen] = useState(false);
@@ -251,9 +257,9 @@ export default function ContractsPage() {
 
   const sendLinkMutation = useMutation({
     mutationFn: async (id: number) => {
-      const res = await fetch(`${BASE}/api/contracts/${id}/sign-link`, { method: "POST" });
-      if (!res.ok) throw new Error("Không tạo được link ký");
-      return res.json() as Promise<{ signUrl: string }>;
+      const res = await fetch(`${BASE}/api/contracts/${id}/sign-link`, { method: "POST", headers: authHeaders() });
+      if (!res.ok) throw new Error("Không tạo được link hợp đồng");
+      return res.json() as Promise<{ signUrl: string; publicToken?: string }>;
     },
   });
 
@@ -451,6 +457,14 @@ export default function ContractsPage() {
                 </div>
               </div>
 
+              {/* Trang hợp đồng thống nhất: xem đầy đủ + ký Bên A/B + lịch sử chỉnh sửa */}
+              <Button
+                className="w-full gap-2"
+                onClick={() => setLocation(`/contracts/${selected.id}?from=contracts`)}
+              >
+                <FileText className="w-4 h-4" /> Mở hợp đồng
+              </Button>
+
               <div className="grid grid-cols-2 gap-3 text-sm">
                 {selected.customerName && (
                   <div>
@@ -507,18 +521,22 @@ export default function ContractsPage() {
 
               {selected.customerName && (
                 <div className="p-3 bg-muted/30 rounded-xl border space-y-2">
-                  <p className="font-semibold text-xs text-muted-foreground">Ký số khách hàng</p>
+                  <p className="font-semibold text-xs text-muted-foreground">Hợp đồng online cho khách</p>
                   <Button
                     variant="secondary"
                     className="w-full gap-2"
                     onClick={async () => {
                       const data = await sendLinkMutation.mutateAsync(selected.id);
-                      await navigator.clipboard.writeText(data.signUrl);
-                      setSharedSignUrl(data.signUrl);
+                      // Link public LUÔN theo origin frontend đang chạy (không dùng origin API)
+                      const url = data.publicToken
+                        ? `${window.location.origin}${BASE}/contract/${data.publicToken}`
+                        : data.signUrl;
+                      await navigator.clipboard.writeText(url);
+                      setSharedSignUrl(url);
                     }}
                   >
                     <Send className="w-4 h-4" />
-                    Gửi / sao chép link ký
+                    Sao chép link hợp đồng online
                   </Button>
                   {sharedSignUrl && (
                     <a href={sharedSignUrl} target="_blank" rel="noreferrer" className="text-xs text-primary break-all inline-flex items-center gap-1">

@@ -413,7 +413,7 @@ const STATUS = {
   in_progress:      { label: "Đang chụp",          color: "bg-purple-100 text-purple-800 border-purple-300", dot: "bg-purple-500",  bar: "bg-purple-500 text-white" },
   completed:        { label: "Hoàn thành",         color: "bg-green-100 text-green-800 border-green-300",    dot: "bg-green-500",   bar: "bg-green-500 text-white" },
   cancelled:        { label: "Đã hủy",             color: "bg-gray-100 text-gray-500 border-gray-300",       dot: "bg-gray-400",    bar: "bg-gray-300 text-gray-600" },
-  temp_quote:       { label: "Báo giá tạm",        color: "bg-amber-100 text-amber-800 border-amber-400",    dot: "bg-amber-400",   bar: "bg-amber-400 text-amber-950" },
+  temp_quote:       { label: "Báo giá tạm",        color: "bg-purple-100 text-purple-800 border-purple-400", dot: "bg-purple-600",  bar: "bg-purple-600 text-white" },
 } as const;
 
 // ─── Staff color palette (màu theo nhân viên) ────────────────────────────────
@@ -483,7 +483,17 @@ function getStaffPaletteEntry(booking: { assignedStaff?: unknown }, allStaff: St
   return bookingId ? fallbackStaff(bookingId) : null;
 }
 
-function getStaffColors(booking: { assignedStaff?: unknown }, allStaff: Staff[]): { bar: string; card: string; dot: string } {
+// Màu TÍM cố định toàn hệ thống cho Báo giá tạm tính — không theo màu nhân viên,
+// không trùng màu show thường. Quy ước cả tiệm: nhìn lịch thấy tím = báo giá tạm.
+const TEMP_QUOTE_COLORS = {
+  bar: "bg-purple-600 text-white",
+  card: "bg-purple-100 text-purple-900 border-purple-400",
+  dot: "#9333ea", // tailwind purple-600
+};
+
+function getStaffColors(booking: { assignedStaff?: unknown; status?: string }, allStaff: Staff[]): { bar: string; card: string; dot: string } {
+  // Báo giá tạm tính: luôn tím, bất kể nhân viên — đổi status là màu đổi theo ngay.
+  if (booking.status === "temp_quote") return TEMP_QUOTE_COLORS;
   const staff = getStaffPaletteEntry(booking, allStaff);
   if (!staff) return STAFF_PALETTE_DEFAULT;
   if (staff.color) {
@@ -2568,6 +2578,7 @@ function ShowFormPanel({
                   <option value="in_progress">🟣 Đang thực hiện</option>
                   <option value="completed">🟢 Hoàn thành</option>
                   <option value="cancelled">⚫ Đã hủy</option>
+                  <option value="temp_quote">🧮 Báo giá tạm tính (màu tím)</option>
                 </select>
               </div>
             </div>
@@ -5930,7 +5941,7 @@ function DayView({
                             <button
                               key={b.id}
                               onClick={e => { e.stopPropagation(); onEventClick(b); }}
-                              className={`w-full sm:flex-[1_1_250px] sm:min-w-[230px] sm:max-w-[min(100%,360px)] rounded-xl px-2 py-2 sm:px-2.5 text-left shadow-sm hover:shadow-md hover:bg-muted/30 transition-all border border-l-4 bg-card text-foreground touch-manipulation ${isHighlighted ? "ring-2 ring-offset-1 ring-primary animate-pulse" : isVip ? "ring-1 ring-amber-300/60" : ""}`}
+                              className={`w-full sm:flex-[1_1_250px] sm:min-w-[230px] sm:max-w-[min(100%,360px)] rounded-xl px-2 py-2 sm:px-2.5 text-left shadow-sm hover:shadow-md transition-all border border-l-4 text-foreground touch-manipulation ${b.status === "temp_quote" ? "bg-purple-50 border-purple-300 hover:bg-purple-100/70" : "bg-card hover:bg-muted/30"} ${isHighlighted ? "ring-2 ring-offset-1 ring-primary animate-pulse" : isVip ? "ring-1 ring-amber-300/60" : ""}`}
                               style={{ borderLeftColor: staffDot }}
                             >
                               <div className="flex gap-2 items-start">
@@ -5968,7 +5979,7 @@ function DayView({
                                         </span>
                                       )}
                                       {b.status === "temp_quote" && (
-                                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-amber-400 text-amber-800 bg-amber-100 whitespace-nowrap">
+                                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-purple-400 text-purple-800 bg-purple-100 whitespace-nowrap">
                                           🧮 Báo giá tạm
                                         </span>
                                       )}

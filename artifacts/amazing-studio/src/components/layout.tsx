@@ -4,8 +4,8 @@ import { Link, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { SmartSearch } from "./SmartSearch";
 import { 
-  LayoutDashboard, CalendarDays, CheckSquare, Users, 
-  FileText, Shirt, Bot, Settings, Sparkles,
+  LayoutDashboard, CalendarDays, CheckSquare, Users,
+  Shirt, Bot, Settings, Sparkles,
   Moon, LogOut, Bell, Wallet, UserPlus, Menu,
   ClipboardList, TrendingUp, LayoutList, UserCog,
   CreditCard, Film, MessageSquare, ChevronDown, Shield, Eye,
@@ -62,9 +62,6 @@ const ALL_NAV_ITEMS = [
   { href: "/staff",           label: "Nhân sự",              icon: UserCog,         adminOnly: false },
   { href: "/tasks",           label: "Giao việc",            icon: CheckSquare,     adminOnly: false },
   { href: "/attendance",      label: "Chấm công",             icon: Timer,           adminOnly: false },
-
-  // Khác
-  { href: "/quotes",          label: "Báo giá tạm tính",     icon: FileText,        adminOnly: true  },
 ];
 
 // 📘 Nhóm Facebook & Sale (Lulu) — gom 1 cụm, có nút thu gọn, đặt CUỐI sidebar.

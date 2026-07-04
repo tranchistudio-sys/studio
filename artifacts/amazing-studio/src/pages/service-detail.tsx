@@ -302,13 +302,6 @@ export default function ServiceDetailPage() {
         >
           Tạo đơn hàng từ gói này
         </Button>
-        <Button
-          variant="outline"
-          className="flex-1 gap-2"
-          onClick={() => navigate("/quotes")}
-        >
-          Tạo báo giá từ gói này
-        </Button>
       </div>
 
       {/* Delete Confirm Dialog */}

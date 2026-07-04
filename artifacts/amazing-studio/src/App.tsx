@@ -9,7 +9,6 @@ import Dashboard from "@/pages/dashboard";
 import CalendarPage from "@/pages/calendar";
 import TasksPage from "@/pages/tasks";
 import CustomersPage from "@/pages/customers";
-import QuotesPage from "@/pages/quotes";
 import ServicesPage from "@/pages/services";
 import ServiceDetailPage from "@/pages/service-detail";
 import PricingPage from "@/pages/pricing";
@@ -97,7 +96,7 @@ const PUBLIC_ROUTES = [
 
 // Path prefixes that REQUIRE authentication. Anything else falls back to public 404.
 const INTERNAL_PREFIXES = [
-  "/dashboard", "/calendar", "/tasks", "/customers", "/quotes",
+  "/dashboard", "/calendar", "/tasks", "/customers",
   "/pricing", "/services", "/staff", "/accounting", "/ai-assistant", "/settings",
   "/bookings", "/payments", "/expenses", "/revenue", "/contracts", "/reports",
   "/my-profile", "/photoshop-jobs", "/attendance",
@@ -245,7 +244,6 @@ function InternalRouter() {
         <Route path="/calendar" component={CalendarPage} />
         <Route path="/tasks" component={TasksPage} />
         <Route path="/customers" component={CustomersPage} />
-        <Route path="/quotes" component={() => <AdminRoute component={QuotesPage} />} />
         <Route path="/pricing" component={PricingPage} />
         <Route path="/services/:id" component={ServiceDetailPage} />
         <Route path="/services" component={ServicesPage} />

@@ -25,6 +25,7 @@ import {
   LayoutList, Rows3, ZoomIn, ZoomOut, DollarSign, Receipt, Briefcase, TrendingDown,
   Coffee,
   Shirt,
+  Copy,
 } from "lucide-react";
 import {
   Dialog as UIDialog, DialogContent as UIDialogContent, DialogHeader as UIDialogHeader,
@@ -768,7 +769,7 @@ function lookupRate(staffId: number | null, role: string, taskKey: string, rates
   return 0;
 }
 
-function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRates, allCastRates, allStaff, onChange, onRemove, isAdmin, bookingId, serviceBookingId, onUploadStart, onUploadEnd }: {
+function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRates, allCastRates, allStaff, onChange, onRemove, isAdmin, bookingId, serviceBookingId, onUploadStart, onUploadEnd, hideConceptUpload }: {
   line: OrderLine;
   photographers: Staff[];
   makeupArtists: Staff[];
@@ -784,6 +785,8 @@ function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRa
   /** Báo cho form cha biết dòng này đang tải ảnh (để khoá nút Lưu, tránh mất ảnh). */
   onUploadStart?: () => void;
   onUploadEnd?: () => void;
+  /** Báo giá tạm tính: ẩn ô ảnh concept để không upload file lên storage khi chưa chắc thành show. */
+  hideConceptUpload?: boolean;
 }) {
   const [useCustom, setUseCustom] = useState(!line.serviceId && !line.serviceKey && !!line.serviceName);
   const [uploadProgress, setUploadProgress] = useState<{ current: number; total: number } | null>(null);
@@ -1155,7 +1158,7 @@ function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRa
             className="w-full text-xs border border-input rounded-lg px-2.5 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-primary/20 resize-none"
           />
         </div>
-        <div>
+        {!hideConceptUpload && <div>
           <p className="text-[10px] text-muted-foreground mb-1.5">🖼️ Ảnh concept ({(line.conceptImages ?? []).length})</p>
           {(line.conceptImages ?? []).length > 0 && (
             <div className="grid grid-cols-4 gap-1.5 mb-2">
@@ -1218,7 +1221,7 @@ function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRa
               void runConceptUpload(files);
             }}
           />
-        </div>
+        </div>}
       </div>
 
       {isAdmin && isPkg && line.price > 0 && (
@@ -1461,6 +1464,7 @@ function ShowFormPanel({
   // không POST/PUT customers/bookings/payments — không ghi gì vào DB.
   const [tempQuoteMode, setTempQuoteMode] = useState(false);
   const [quotePreviewVisible, setQuotePreviewVisible] = useState(false);
+  const { toast } = useToast();
   // ── Lưới an toàn upload ảnh ──────────────────────────────────────────────────
   // Đếm số ảnh đang tải ở các dòng dịch vụ (ảnh concept). Khi > 0 thì KHOÁ nút Lưu
   // để tránh bấm "Cập nhật/Lưu show" lúc ảnh chưa upload xong → mất ảnh (bug đã gặp).
@@ -1723,6 +1727,48 @@ function ShowFormPanel({
   const showActualPaid = isEdit && actualPaid > 0;
   const effectivePaid = showActualPaid ? actualPaid : depositNum;
   const remaining = Math.max(0, afterDiscount - effectivePaid);
+
+  // ── Báo giá tạm tính: dựng text gửi khách + chuyển thành show thật ─────────
+  const buildQuoteText = () => {
+    const fmtDate = (d?: string | null) => (d ? d.split("-").reverse().join("/") : "");
+    const out: string[] = ["Dạ em gửi mình báo giá tạm tính bên Amazing Studio ạ:"];
+    if (customerName.trim()) out.push(`Khách: ${customerName.trim()}`);
+    for (const sub of subDrafts) {
+      const when = [fmtDate(sub.shootDate), sub.shootTime].filter(Boolean).join(" · ");
+      for (const l of sub.items) {
+        if (!(l.serviceName || "").trim() && !(l.price || 0)) continue;
+        const lineSurch = (l.surcharges || []).reduce((s, sc) => s + (sc.amount || 0), 0);
+        const lineDeduct = (l.deductions || []).reduce((s, d) => s + (d.amount || 0), 0);
+        const lineTotal = Math.max(0, (l.price || 0) + lineSurch - lineDeduct);
+        out.push(`• ${(l.serviceName || "Dịch vụ").trim()}${when ? ` — ${when}` : ""}: ${formatVND(lineTotal)}`);
+      }
+      for (const a of cleanAdditionalServicesForSave(sub.additionalServices || [])) {
+        const aTotal = a.totalPrice || Math.round((a.qty || 0) * (a.unitPrice || 0));
+        out.push(`• ${(a.title || "").trim()}${(a.qty || 0) > 1 ? ` x${a.qty}` : ""}: ${formatVND(aTotal)}`);
+      }
+    }
+    out.push(`Tổng dịch vụ: ${formatVND(totalAmount)}`);
+    if (discountNum > 0) out.push(`Giảm giá: -${formatVND(discountNum)}`);
+    out.push(`TỔNG TẠM TÍNH: ${formatVND(afterDiscount)}`);
+    out.push("(*) Báo giá tạm tính, chưa phải hợp đồng chính thức — giá có thể thay đổi theo dịch vụ thực tế.");
+    return out.join("\n");
+  };
+  const copyQuoteText = () => {
+    const text = buildQuoteText();
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(
+        () => toast({ title: "Đã copy báo giá — dán gửi khách được luôn" }),
+        () => prompt("Copy báo giá:", text),
+      );
+    } else {
+      prompt("Copy báo giá:", text);
+    }
+  };
+  const convertToRealShow = () => {
+    setTempQuoteMode(false);
+    setQuotePreviewVisible(false);
+    toast({ title: "Đã chuyển về chế độ tạo show thật", description: 'Kiểm tra lại thông tin rồi bấm "Lưu & tạo show".' });
+  };
 
   const handleSelectCustomer = (c: Customer) => {
     matchedNameRef.current = c.name ?? "";
@@ -2595,6 +2641,7 @@ function ShowFormPanel({
                             onRemove={sub.items.length > 1 ? () => updateSubDraft(sub.id, { items: sub.items.filter(l => l.tempId !== line.tempId) }) : undefined}
                             onUploadStart={beginUpload}
                             onUploadEnd={endUpload}
+                            hideConceptUpload={tempQuoteMode}
                           />
                         ))}
                         <button
@@ -2875,9 +2922,20 @@ function ShowFormPanel({
           </div>
         )}
         {tempQuoteMode ? (
-          <Button onClick={() => setQuotePreviewVisible(true)} disabled={!extrasFormValidation.ok} className="w-full gap-2 h-11">
-            <Receipt className="w-4 h-4" /> Tính báo giá
-          </Button>
+          quotePreviewVisible ? (
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={copyQuoteText} className="flex-1 gap-2 h-11">
+                <Copy className="w-4 h-4" /> Copy báo giá gửi khách
+              </Button>
+              <Button onClick={convertToRealShow} className="flex-1 gap-2 h-11">
+                <CheckCircle2 className="w-4 h-4" /> Chuyển thành show thật
+              </Button>
+            </div>
+          ) : (
+            <Button onClick={() => setQuotePreviewVisible(true)} disabled={!extrasFormValidation.ok} className="w-full gap-2 h-11">
+              <Receipt className="w-4 h-4" /> Tính báo giá
+            </Button>
+          )
         ) : (
           <Button onClick={save} disabled={saving || isUploadingImages || !extrasFormValidation.ok} className="w-full gap-2 h-11">
             {saving

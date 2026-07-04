@@ -86,7 +86,7 @@ router.get("/payments/suggestions", async (req, res) => {
   try {
   const [bookingsResult, paymentsResult] = await Promise.all([
     pool.query(`${BOOKING_JOIN_SQL}
-      AND b.status NOT IN ('cancelled')
+      AND b.status NOT IN ('cancelled','temp_quote')
       ORDER BY b.created_at DESC
       LIMIT 200`),
     pool.query(`

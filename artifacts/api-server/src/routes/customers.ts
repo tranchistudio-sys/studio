@@ -91,7 +91,8 @@ router.get("/customers", async (req, res) => {
 
   const result = await Promise.all(
     customers.map(async (c) => {
-      const bookings = await db.select().from(bookingsTable).where(and(eq(bookingsTable.customerId, c.id as number), isNull(bookingsTable.deletedAt)));
+      const bookings = (await db.select().from(bookingsTable).where(and(eq(bookingsTable.customerId, c.id as number), isNull(bookingsTable.deletedAt))))
+        .filter((b) => b.status !== "temp_quote"); // báo giá tạm không tính vào công nợ/chi tiêu khách
       const bookingIds = bookings.map((b) => b.id);
       const totalPaid = allPayments
         .filter((p) => p.bookingId && bookingIds.includes(p.bookingId))

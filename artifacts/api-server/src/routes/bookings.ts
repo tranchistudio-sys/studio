@@ -157,6 +157,9 @@ const bookingFields = {
 router.get("/bookings", async (req, res) => {
   try {
   const status = req.query.status as string | undefined;
+  // Báo giá tạm (temp_quote) mặc định BỊ LOẠI khỏi mọi danh sách — chỉ trả về khi
+  // caller chủ động xin (lịch chụp truyền includeTempQuotes=1, hoặc filter status=temp_quote).
+  const includeTempQuotes = req.query.includeTempQuotes === "1" || status === "temp_quote";
   const customerId = req.query.customerId ? parseInt(req.query.customerId as string) : undefined;
   const parentId = req.query.parentId ? parseInt(req.query.parentId as string) : undefined;
   // Advanced filters (Task #173)
@@ -199,6 +202,7 @@ router.get("/bookings", async (req, res) => {
     .where(
       and(
         isNull(bookingsTable.deletedAt), // Thùng rác: ẩn booking đã xoá mềm khỏi danh sách active
+        includeTempQuotes ? undefined : ne(bookingsTable.status, "temp_quote"),
         status ? eq(bookingsTable.status, status) : undefined,
         customerId ? eq(bookingsTable.customerId, customerId) : undefined,
         parentId ? eq(bookingsTable.parentId, parentId) : undefined,
@@ -493,8 +497,15 @@ router.post("/bookings", async (req, res) => {
   const depPaidDateResolved = depositPaidDate
     || (depositPaidAt ? vnDateOf(depositPaidAt) : null);
 
+  // Báo giá tạm tính: status "temp_quote", mã BG riêng (không chiếm dãy DH),
+  // không tạo phiếu cọc, không tạo job hậu kỳ — chưa phải đơn thật.
+  const isTempQuote = req.body.isTempQuote === true;
+
   const count = await db.select().from(bookingsTable);
-  const orderCode = `DH${String(count.length + 1).padStart(4, "0")}`;
+  const bgCount = count.filter(b => (b.orderCode ?? "").startsWith("BG")).length;
+  const orderCode = isTempQuote
+    ? `BG${String(bgCount + 1).padStart(4, "0")}`
+    : `DH${String(count.length - bgCount + 1).padStart(4, "0")}`;
 
   // ── Multi-service contract: create parent + children atomically ──
   if (subServices && Array.isArray(subServices) && subServices.length > 0) {
@@ -512,7 +523,7 @@ router.post("/bookings", async (req, res) => {
         totalAmount: String(totalAmount || 0),
         depositAmount: String(depositAmount || 0),
         discountAmount: String(discountAmount || 0),
-        paidAmount: String(depositAmount || 0),
+        paidAmount: isTempQuote ? "0" : String(depositAmount || 0),
         items: [],
         surcharges: surcharges || [],
         deductions: [],
@@ -520,13 +531,14 @@ router.post("/bookings", async (req, res) => {
         internalNotes: internalNotes || null,
         assignedStaff: assignedStaff || {},
         isParentContract: true,
-        status: "confirmed",
+        status: isTempQuote ? "temp_quote" : "confirmed",
         createdByStaffId: callerId,
       })
       .returning();
 
     // 2. Create deposit payment for the parent contract
-    if (depositAmount && parseFloat(String(depositAmount)) > 0) {
+    // (báo giá tạm KHÔNG tạo phiếu thu — chưa có tiền thật)
+    if (!isTempQuote && depositAmount && parseFloat(String(depositAmount)) > 0) {
       await db.insert(paymentsTable).values({
         bookingId:     parent.id,
         amount:        String(depositAmount),
@@ -575,12 +587,12 @@ router.post("/bookings", async (req, res) => {
           parentId: parent.id,
           serviceLabel: sub.serviceLabel || null,
           isParentContract: false,
-          status: sub.status || "confirmed",
+          status: isTempQuote ? "temp_quote" : (sub.status || "confirmed"),
           createdByStaffId: callerId,
           additionalServices: childAdditionalServices,
         })
         .returning();
-      await maybeCreatePhotoshopJobForBooking(child.id).catch(() => {});
+      if (!isTempQuote) await maybeCreatePhotoshopJobForBooking(child.id).catch(() => {});
       children.push(child);
     }
 
@@ -592,7 +604,7 @@ router.post("/bookings", async (req, res) => {
       staffId: null,
       senderStaffId: callerId ?? null,
       type: "booking_new",
-      title: "Lịch mới (hợp đồng gộp)",
+      title: isTempQuote ? `Báo giá tạm ${parent.orderCode} (hợp đồng gộp)` : "Lịch mới (hợp đồng gộp)",
       message: `Khách ${customer.name} — ${parent.serviceLabel || "Chưa rõ dịch vụ"}`,
       targetModule: "calendar",
       targetId: String(parent.id),
@@ -648,7 +660,7 @@ router.post("/bookings", async (req, res) => {
       totalAmount: String(totalAmount),
       depositAmount: String(depositAmount || 0),
       discountAmount: String(discountAmount || 0),
-      paidAmount: String(depositAmount || 0),
+      paidAmount: isTempQuote ? "0" : String(depositAmount || 0),
       items: snapshotItems,
       surcharges: surcharges || [],
       deductions: isParentContract ? [] : sanitizeDeductions(deductions),
@@ -660,7 +672,7 @@ router.post("/bookings", async (req, res) => {
       isParentContract: isParentContract || false,
       includedRetouchedPhotosSnapshot: snapshotRetouched,
       servicePackageId: servicePackageId ? parseInt(String(servicePackageId)) : null,
-      status: "pending",
+      status: isTempQuote ? "temp_quote" : "pending",
       createdByStaffId: callerId,
       additionalServices: snapshotAdditionalServices,
     })
@@ -668,7 +680,8 @@ router.post("/bookings", async (req, res) => {
 
   const [customer] = await db.select().from(customersTable).where(eq(customersTable.id, customerId));
 
-  if (depositAmount && parseFloat(String(depositAmount)) > 0) {
+  // Báo giá tạm KHÔNG tạo phiếu thu — chưa có tiền thật
+  if (!isTempQuote && depositAmount && parseFloat(String(depositAmount)) > 0) {
     await db.insert(paymentsTable).values({
       bookingId:     booking.id,
       amount:        String(depositAmount),
@@ -690,15 +703,17 @@ router.post("/bookings", async (req, res) => {
     const [creator] = await db.select({ name: staffTable.name }).from(staffTable).where(eq(staffTable.id, callerId));
     if (creator?.name) creatorName = creator.name;
   }
-  await maybeCreatePhotoshopJobForBooking(booking.id).catch(err => console.warn("[bookings] maybeCreatePhotoshopJob POST failed:", err));
+  if (!isTempQuote) await maybeCreatePhotoshopJobForBooking(booking.id).catch(err => console.warn("[bookings] maybeCreatePhotoshopJob POST failed:", err));
 
   const orderCodeStr = booking.orderCode ? ` ${booking.orderCode}` : "";
   emitNotification({
     staffId: null,
     senderStaffId: callerId ?? null,
     type: "booking_new",
-    title: `Lịch chụp mới${orderCodeStr} — ${customer.name}`,
-    message: `${creatorName} vừa tạo đơn cho khách ${customer.name}${booking.serviceLabel ? ` — ${booking.serviceLabel}` : ""}${booking.shootDate ? ` (${booking.shootDate}${booking.shootTime ? " " + booking.shootTime : ""})` : ""}`,
+    title: isTempQuote
+      ? `Báo giá tạm${orderCodeStr} — ${customer.name}`
+      : `Lịch chụp mới${orderCodeStr} — ${customer.name}`,
+    message: `${creatorName} vừa tạo ${isTempQuote ? "báo giá tạm tính" : "đơn"} cho khách ${customer.name}${booking.serviceLabel ? ` — ${booking.serviceLabel}` : ""}${booking.shootDate ? ` (${booking.shootDate}${booking.shootTime ? " " + booking.shootTime : ""})` : ""}`,
     targetModule: "calendar",
     targetId: String(booking.id),
     bookingId: booking.id,

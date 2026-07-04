@@ -89,7 +89,7 @@ export async function loadAllData() {
   // Nguồn tiền chuẩn (chủ chốt): doanh thu = NET = giá gốc − giảm giá (không âm).
   // netAmount gắn sẵn vào từng booking để mọi route dùng CHUNG, hết cảnh chỗ gross chỗ net.
   const validBookings = bookings
-    .filter(b => !b.isParentContract && b.status !== "cancelled")
+    .filter(b => !b.isParentContract && b.status !== "cancelled" && b.status !== "temp_quote")
     .map(b => ({ ...b, netAmount: Math.max(0, money(b.totalAmount) - money(b.discountAmount)) }));
 
   // Task #363: kèm danh sách chi phí đã phân lớp + ngày để route nào cần lọc theo range chính xác (ngày/tuần)

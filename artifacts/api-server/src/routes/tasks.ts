@@ -93,7 +93,7 @@ router.get("/tasks/booking-view", async (req, res) => {
       JOIN customers c ON c.id = b.customer_id
       LEFT JOIN tasks t ON t.booking_id = b.id
       LEFT JOIN staff s ON s.id = t.assignee_id
-      WHERE b.status NOT IN ('cancelled')
+      WHERE b.status NOT IN ('cancelled','temp_quote')
         AND b.deleted_at IS NULL
         AND (b.parent_id IS NULL OR b.is_parent_contract = true)
         ${shootMonthWhere}

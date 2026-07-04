@@ -154,6 +154,7 @@ export type CountableBookingInput = {
 export function isRevenueCountable(b: CountableBookingInput): boolean {
   if (b.deletedAt != null) return false;
   if ((b.status ?? "") === "cancelled") return false;
+  if ((b.status ?? "") === "temp_quote") return false; // báo giá tạm — chưa phải đơn thật
   if (b.isParentContract === true) return false;
   return true;
 }

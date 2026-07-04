@@ -227,7 +227,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
       : "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300";
 
   return (
-    <div className="flex h-screen bg-background overflow-hidden">
+    <div className="flex h-screen bg-background overflow-hidden print:block print:h-auto print:overflow-visible">
       {/* Mobile overlay */}
       {isMobileOpen && (
         <div className="fixed inset-0 z-40 bg-black/50 lg:hidden backdrop-blur-sm"
@@ -236,7 +236,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
       {/* Sidebar */}
       <aside className={cn(
-        "fixed lg:static inset-y-0 left-0 z-50 w-72 bg-sidebar border-r border-sidebar-border flex flex-col transition-transform duration-300 ease-in-out transform lg:translate-x-0",
+        "print:hidden fixed lg:static inset-y-0 left-0 z-50 w-72 bg-sidebar border-r border-sidebar-border flex flex-col transition-transform duration-300 ease-in-out transform lg:translate-x-0",
         isMobileOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full"
       )}>
         {/* Logo */}
@@ -490,9 +490,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* Main Content */}
-      <main className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
+      <main className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden print:h-auto print:overflow-visible">
         {/* Header */}
-        <header className="h-16 flex-shrink-0 bg-background/80 backdrop-blur-md border-b border-border flex items-center justify-between px-4 sm:px-6 lg:px-8 z-10">
+        <header className="print:hidden h-16 flex-shrink-0 bg-background/80 backdrop-blur-md border-b border-border flex items-center justify-between px-4 sm:px-6 lg:px-8 z-10">
           <div className="flex items-center gap-3">
             <button className="lg:hidden p-2 text-muted-foreground hover:bg-muted rounded-lg"
               onClick={() => setIsMobileOpen(true)}>
@@ -660,8 +660,8 @@ export function Layout({ children }: { children: React.ReactNode }) {
             {children}
           </div>
         ) : (
-          <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
-            <div className="max-w-7xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500 ease-out">
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 print:overflow-visible print:p-0">
+            <div className="max-w-7xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500 ease-out print:max-w-none">
               {children}
             </div>
           </div>

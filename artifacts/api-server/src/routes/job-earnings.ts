@@ -106,7 +106,7 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
   const [booking] = await db.select().from(bookingsTable).where(eq(bookingsTable.id, bookingId));
   // Booking đã HỦY (cancelled) hoặc đã vào THÙNG RÁC (deleted_at) → KHÔNG tính lương
   // (pending earnings đã bị xóa ở trên).
-  if (!booking || booking.status === "cancelled" || booking.deletedAt != null) return;
+  if (!booking || booking.status === "cancelled" || booking.status === "temp_quote" || booking.deletedAt != null) return;
 
   const earnedDate = booking.shootDate;
   const d = new Date(earnedDate);

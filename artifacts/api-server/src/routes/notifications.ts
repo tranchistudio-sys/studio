@@ -397,7 +397,7 @@ export function startWeddingPrepReminder() {
         FROM bookings b
         JOIN customers c ON c.id = b.customer_id
         LEFT JOIN service_packages sp ON sp.id = b.service_package_id
-        WHERE b.status NOT IN ('cancelled')
+        WHERE b.status NOT IN ('cancelled','temp_quote')
           AND COALESCE(b.is_parent_contract, false) = false
           AND sp.service_type LIKE 'combo_%'
           AND b.shoot_date IS NOT NULL

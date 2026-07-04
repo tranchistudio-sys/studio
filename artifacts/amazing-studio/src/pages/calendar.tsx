@@ -413,6 +413,7 @@ const STATUS = {
   in_progress:      { label: "Đang chụp",          color: "bg-purple-100 text-purple-800 border-purple-300", dot: "bg-purple-500",  bar: "bg-purple-500 text-white" },
   completed:        { label: "Hoàn thành",         color: "bg-green-100 text-green-800 border-green-300",    dot: "bg-green-500",   bar: "bg-green-500 text-white" },
   cancelled:        { label: "Đã hủy",             color: "bg-gray-100 text-gray-500 border-gray-300",       dot: "bg-gray-400",    bar: "bg-gray-300 text-gray-600" },
+  temp_quote:       { label: "Báo giá tạm",        color: "bg-amber-100 text-amber-800 border-amber-400",    dot: "bg-amber-400",   bar: "bg-amber-400 text-amber-950" },
 } as const;
 
 // ─── Staff color palette (màu theo nhân viên) ────────────────────────────────
@@ -1463,7 +1464,6 @@ function ShowFormPanel({
   // Bật lên thì form chỉ dùng để TÍNH GIÁ cho khách xem: không gọi save(),
   // không POST/PUT customers/bookings/payments — không ghi gì vào DB.
   const [tempQuoteMode, setTempQuoteMode] = useState(false);
-  const [quotePreviewVisible, setQuotePreviewVisible] = useState(false);
   const { toast } = useToast();
   // ── Lưới an toàn upload ảnh ──────────────────────────────────────────────────
   // Đếm số ảnh đang tải ở các dòng dịch vụ (ảnh concept). Khi > 0 thì KHOÁ nút Lưu
@@ -1764,12 +1764,6 @@ function ShowFormPanel({
       prompt("Copy báo giá:", text);
     }
   };
-  const convertToRealShow = () => {
-    setTempQuoteMode(false);
-    setQuotePreviewVisible(false);
-    toast({ title: "Đã chuyển về chế độ tạo show thật", description: 'Kiểm tra lại thông tin rồi bấm "Lưu & tạo show".' });
-  };
-
   const handleSelectCustomer = (c: Customer) => {
     matchedNameRef.current = c.name ?? "";
     matchedPhoneRef.current = c.phone ?? "";
@@ -1916,9 +1910,6 @@ function ShowFormPanel({
   };
 
   const save = async () => {
-    // Lưới an toàn: đang ở chế độ báo giá tạm tính thì tuyệt đối không ghi DB
-    // (nút footer đã đổi handler, guard này chặn thêm mọi đường gọi khác).
-    if (tempQuoteMode) return;
     setError("");
     setProofWarning("");
     if (!customerName.trim()) { setError("Vui lòng nhập tên khách hàng"); return; }
@@ -2190,6 +2181,8 @@ function ShowFormPanel({
           notes: notes || null,
           location: location || null,
           subServices: subServicePayloads,
+          // Báo giá tạm tính: backend lưu status temp_quote + mã BG, không phiếu thu/hậu kỳ
+          isTempQuote: tempQuoteMode,
         };
 
         saved = await authFetch(`${BASE}/api/bookings`, {
@@ -2198,7 +2191,7 @@ function ShowFormPanel({
 
         // Upload ảnh cọc riêng sau khi booking tạo xong (tách luồng để không làm fail booking)
         let proofUploadFailed = false;
-        if (depositProofImages.length > 0 && depositNum > 0 && saved?.id) {
+        if (!tempQuoteMode && depositProofImages.length > 0 && depositNum > 0 && saved?.id) {
           try {
             const pmts = await authFetch(`${BASE}/api/payments?bookingId=${saved.id}`).then(r => r.ok ? r.json() : []).catch(() => []);
             const depPmt = Array.isArray(pmts) ? pmts.find((p: any) => p.paymentType === "deposit") : null;
@@ -2298,6 +2291,8 @@ function ShowFormPanel({
       };
       body.additionalServices = cleanAdditionalServicesForSave(subDrafts[0]?.additionalServices || []);
       body.servicePackageId = servicePackageId ?? null;
+      // Báo giá tạm tính (chỉ khi tạo mới): backend lưu status temp_quote + mã BG
+      if (!isEdit) body.isTempQuote = tempQuoteMode;
 
       if (isEdit && booking) {
         saved = await authFetch(`${BASE}/api/bookings/${booking.id}`, {
@@ -2317,7 +2312,7 @@ function ShowFormPanel({
 
       // Upload ảnh cọc riêng sau khi booking tạo xong (tách luồng, không làm fail booking)
       let singleProofUploadFailed = false;
-      if (!isEdit && depositProofImages.length > 0 && finalDeposit > 0 && saved?.id) {
+      if (!isEdit && !tempQuoteMode && depositProofImages.length > 0 && finalDeposit > 0 && saved?.id) {
         try {
           const pmts = await authFetch(`${BASE}/api/payments?bookingId=${saved.id}`).then(r => r.ok ? r.json() : []).catch(() => []);
           const depPmt = Array.isArray(pmts) ? pmts.find((p: any) => p.paymentType === "deposit") : null;
@@ -2397,7 +2392,7 @@ function ShowFormPanel({
             <Switch
               checked={tempQuoteMode}
               disabled={saving}
-              onCheckedChange={(checked) => { setTempQuoteMode(checked); setQuotePreviewVisible(false); }}
+              onCheckedChange={(checked) => setTempQuoteMode(checked)}
             />
           </label>
         )}
@@ -2426,7 +2421,7 @@ function ShowFormPanel({
           )}
           {tempQuoteMode && (
             <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-800 text-sm font-medium">
-              <Receipt className="w-4 h-4 flex-shrink-0 text-amber-500" /> Bản báo giá tạm tính — chưa phải hợp đồng
+              <Receipt className="w-4 h-4 flex-shrink-0 text-amber-500" /> Báo giá tạm tính — chưa phải hợp đồng chính thức
             </div>
           )}
 
@@ -2641,7 +2636,6 @@ function ShowFormPanel({
                             onRemove={sub.items.length > 1 ? () => updateSubDraft(sub.id, { items: sub.items.filter(l => l.tempId !== line.tempId) }) : undefined}
                             onUploadStart={beginUpload}
                             onUploadEnd={endUpload}
-                            hideConceptUpload={tempQuoteMode}
                           />
                         ))}
                         <button
@@ -2902,9 +2896,9 @@ function ShowFormPanel({
 
       {/* Footer */}
       <div className="px-4 py-3 border-t flex-shrink-0 bg-background/80 max-w-2xl mx-auto w-full space-y-3">
-        {tempQuoteMode && quotePreviewVisible && (
+        {tempQuoteMode && (
           <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 space-y-1.5 text-sm text-amber-900">
-            <p className="text-[11px] font-bold uppercase tracking-wider text-amber-700">Bản báo giá tạm tính — chưa phải hợp đồng</p>
+            <p className="text-[11px] font-bold uppercase tracking-wider text-amber-700">Báo giá tạm tính — chưa phải hợp đồng chính thức</p>
             <div className="flex justify-between">
               <span>Tổng dịch vụ:</span>
               <span className="font-semibold">{formatVND(totalAmount)}</span>
@@ -2922,20 +2916,19 @@ function ShowFormPanel({
           </div>
         )}
         {tempQuoteMode ? (
-          quotePreviewVisible ? (
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={copyQuoteText} className="flex-1 gap-2 h-11">
-                <Copy className="w-4 h-4" /> Copy báo giá gửi khách
-              </Button>
-              <Button onClick={convertToRealShow} className="flex-1 gap-2 h-11">
-                <CheckCircle2 className="w-4 h-4" /> Chuyển thành show thật
-              </Button>
-            </div>
-          ) : (
-            <Button onClick={() => setQuotePreviewVisible(true)} disabled={!extrasFormValidation.ok} className="w-full gap-2 h-11">
-              <Receipt className="w-4 h-4" /> Tính báo giá
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={copyQuoteText} className="flex-1 gap-2 h-11">
+              <Copy className="w-4 h-4" /> Copy báo giá gửi khách
             </Button>
-          )
+            <Button onClick={save} disabled={saving || isUploadingImages || !extrasFormValidation.ok} className="flex-1 gap-2 h-11 bg-amber-500 hover:bg-amber-600 text-white">
+              {saving
+                ? <><span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang lưu...</>
+                : isUploadingImages
+                  ? <><span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang tải ảnh…</>
+                  : <><Save className="w-4 h-4" /> Lưu báo giá tạm</>
+              }
+            </Button>
+          </div>
         ) : (
           <Button onClick={save} disabled={saving || isUploadingImages || !extrasFormValidation.ok} className="w-full gap-2 h-11">
             {saving
@@ -5974,6 +5967,11 @@ function DayView({
                                           HĐ gộp
                                         </span>
                                       )}
+                                      {b.status === "temp_quote" && (
+                                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-amber-400 text-amber-800 bg-amber-100 whitespace-nowrap">
+                                          🧮 Báo giá tạm
+                                        </span>
+                                      )}
                                     </div>
                                     {b.orderCode && (
                                       <span className="text-[9px] font-mono font-bold text-muted-foreground bg-muted px-1.5 py-0.5 rounded flex-shrink-0">
@@ -6419,7 +6417,9 @@ function CalendarPageInner() {
 
   const { data: bookings = [], isLoading } = useQuery<Booking[]>({
     queryKey: ["bookings"],
-    queryFn: () => authFetch(`${BASE}/api/bookings`).then(r => r.json()),
+    // Lịch chụp là nơi duy nhất chủ động xem cả báo giá tạm (hiện nhãn "Báo giá tạm" màu riêng);
+    // các trang khác gọi /api/bookings mặc định KHÔNG thấy temp_quote.
+    queryFn: () => authFetch(`${BASE}/api/bookings?includeTempQuotes=1`).then(r => r.json()),
     staleTime: 0,
   });
 

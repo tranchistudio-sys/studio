@@ -552,7 +552,7 @@ router.get("/photoshop-jobs/booking-view", async (req, res) => {
         ON pj.booking_id = b.id AND pj.is_active = true
       LEFT JOIN service_packages sp ON sp.id = b.service_package_id
       LEFT JOIN service_groups sg ON sg.id = sp.group_id
-      WHERE b.status NOT IN ('cancelled')
+      WHERE b.status NOT IN ('cancelled','temp_quote')
         AND b.deleted_at IS NULL
         AND COALESCE(b.is_parent_contract, false) = false
         AND (
@@ -887,7 +887,7 @@ router.get("/photoshop-jobs/deep-link", async (req, res) => {
       LEFT JOIN photoshop_jobs pj ON pj.booking_id = b.id AND pj.is_active = true
       LEFT JOIN service_packages sp ON sp.id = b.service_package_id
       LEFT JOIN service_groups sg ON sg.id = sp.group_id
-      WHERE b.status NOT IN ('cancelled')
+      WHERE b.status NOT IN ('cancelled','temp_quote')
         AND b.deleted_at IS NULL
         AND COALESCE(b.is_parent_contract, false) = false
         AND (b.id = $1 OR b.parent_id = $1)
@@ -1047,7 +1047,7 @@ router.get("/photoshop-jobs/my-stats", async (req, res) => {
     // Đơn tồn: booking đã qua ngày chụp, chưa xong
     const backlogQ = await pool.query(`
       SELECT COUNT(*) FROM bookings b
-      WHERE b.status NOT IN ('cancelled')
+      WHERE b.status NOT IN ('cancelled','temp_quote')
         AND b.deleted_at IS NULL
         AND b.shoot_date::date <= NOW()::date
         AND (b.parent_id IS NULL OR b.is_parent_contract = true)
@@ -1638,7 +1638,8 @@ router.delete("/photoshop-jobs/:id", async (req, res) => {
 
 export async function maybeCreatePhotoshopJobForBooking(bookingId: number): Promise<void> {
   const [bk] = await db.select().from(bookingsTable).where(eq(bookingsTable.id, bookingId));
-  if (!bk || bk.isParentContract) return;
+  // Báo giá tạm tính không vào hậu kỳ — chưa phải đơn thật
+  if (!bk || bk.isParentContract || bk.status === "temp_quote") return;
   const eligible = await bookingRequiresPostProduction({
     servicePackageId: bk.servicePackageId,
     items: bk.items,

@@ -23,11 +23,13 @@ type ContractDocumentProps = {
   onSignCustomer?: (dataUrl: string, name: string, phone: string) => void;
   signingCustomer?: boolean;
   /**
-   * internal: Bên B KHÔNG ký trực tiếp trong app — khách ký qua link public /contract/<token>.
-   * Truyền 2 callback này để ô Bên B (khi chưa ký) hiện hướng dẫn + nút copy/mở link khách ký.
+   * internal: Bên B ký qua link public /contract/<token> HOẶC ký tại tiệm (dialog ký sạch
+   * trên máy nhân viên). Truyền các callback này để ô Bên B (khi chưa ký) hiện hướng dẫn
+   * + nút copy/mở link khách ký + nút ký tại tiệm.
    */
   onCopyCustomerLink?: () => void;
   onOpenCustomerLink?: () => void;
+  onSignCustomerInPerson?: () => void;
   customerLinkCopied?: boolean;
   customerLinkBusy?: boolean;
 };
@@ -56,6 +58,7 @@ export default function ContractDocument({
   signingCustomer = false,
   onCopyCustomerLink,
   onOpenCustomerLink,
+  onSignCustomerInPerson,
   customerLinkCopied = false,
   customerLinkBusy = false,
 }: ContractDocumentProps) {
@@ -526,13 +529,14 @@ export default function ContractDocument({
                   <div className="h-[70px] border-b mx-6 mt-3 mb-2" />
                   <div className="text-[11.5px] italic text-[#888]">(Ký, ghi rõ họ tên)</div>
                   <div className="text-xs text-[#666] mt-2.5">Ngày ___/___/______</div>
-                  {mode === "internal" && (onCopyCustomerLink || onOpenCustomerLink) ? (
+                  {mode === "internal" && (onCopyCustomerLink || onOpenCustomerLink || onSignCustomerInPerson) ? (
                     <div className="mt-4 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2.5 print:hidden">
                       <div className="text-[11.5px] font-bold text-blue-800">
                         💡 Khách ký qua link hợp đồng online
                       </div>
                       <div className="text-[11px] text-blue-700/80 mt-0.5">
                         Gửi link cho khách — khách mở link, kéo xuống cuối và ký phần Bên B.
+                        {onSignCustomerInPerson ? " Khách đang ở tiệm? Bấm “Khách ký tại tiệm” để khách ký ngay trên máy này." : ""}
                       </div>
                       <div className="mt-2 flex items-center justify-center gap-2 flex-wrap">
                         {onCopyCustomerLink ? (
@@ -555,6 +559,17 @@ export default function ContractDocument({
                             data-testid="btn-open-customer-link"
                           >
                             ↗️ Mở trang khách ký
+                          </button>
+                        ) : null}
+                        {onSignCustomerInPerson ? (
+                          <button
+                            type="button"
+                            onClick={onSignCustomerInPerson}
+                            disabled={customerLinkBusy}
+                            className="rounded-md border border-emerald-400 bg-emerald-600 px-2.5 py-1.5 text-[11.5px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+                            data-testid="btn-sign-customer-in-person"
+                          >
+                            ✍️ Khách ký tại tiệm
                           </button>
                         ) : null}
                       </div>

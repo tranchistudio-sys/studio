@@ -18,6 +18,7 @@ import {
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { formatVND } from "@/lib/utils";
 import ContractDocument from "@/components/contract/ContractDocument";
+import SignaturePad from "@/components/contract/SignaturePad";
 import type { ContractPayload, ContractChangeLogRow } from "@/components/contract/contract-types";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -63,6 +64,9 @@ export default function ContractDetailPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [editForm, setEditForm] = useState({ title: "", totalValue: "", status: "", expiresAt: "", notes: "", content: "" });
   const [actionErr, setActionErr] = useState<string | null>(null);
+  const [signAtShopOpen, setSignAtShopOpen] = useState(false);
+  const [signAtShopForm, setSignAtShopForm] = useState({ name: "", phone: "" });
+  const [signAtShopErr, setSignAtShopErr] = useState<string | null>(null);
 
   const { data: payload, isLoading, error } = useQuery<ContractPayload>({
     queryKey: ["contract-document", contractId],
@@ -102,16 +106,21 @@ export default function ContractDetailPage() {
     onError: (e: Error) => setActionErr(e.message),
   });
 
-  // Link gửi khách LUÔN theo origin frontend đang chạy (dev :5000, prod domain thật)
-  // — không tin PUBLIC_APP_URL của server để tránh copy nhầm origin API (401/sai cổng).
-  const fetchCustomerSignUrl = async (): Promise<string> => {
+  // Token public: ưu tiên token có sẵn trong payload, thiếu thì sign-link find-or-create.
+  const fetchPublicToken = async (): Promise<string> => {
+    const existing = payload?.internal?.publicToken;
+    if (existing) return existing;
     const r = await authFetch(`${BASE}/api/contracts/${contractId}/sign-link`, { method: "POST" });
     if (!r.ok) throw new Error("Không tạo được link hợp đồng");
     const data = await r.json();
-    return data.publicToken
-      ? `${window.location.origin}${BASE}/contract/${data.publicToken}`
-      : (data.signUrl as string);
+    if (!data.publicToken) throw new Error("Không tạo được link hợp đồng");
+    return data.publicToken as string;
   };
+
+  // Link gửi khách LUÔN theo origin frontend đang chạy (dev :5000, prod domain thật)
+  // — không tin PUBLIC_APP_URL của server để tránh copy nhầm origin API (401/sai cổng).
+  const fetchCustomerSignUrl = async (): Promise<string> =>
+    `${window.location.origin}${BASE}/contract/${await fetchPublicToken()}`;
 
   const copyLinkMutation = useMutation({
     mutationFn: async () => {
@@ -147,6 +156,48 @@ export default function ContractDetailPage() {
       return;
     }
     openCustomerPageMutation.mutate();
+  };
+
+  // Ký tại tiệm: khách ký ngay trên máy nhân viên qua dialog ký sạch (không thấy nội dung
+  // nội bộ) — gửi qua ĐÚNG endpoint public by-token như khách tự ký online, nên validate,
+  // change-log và chặn ký lại đều đồng nhất giữa 2 đường.
+  const signAtShopMutation = useMutation({
+    mutationFn: async (v: { dataUrl: string; name: string; phone: string }) => {
+      const token = await fetchPublicToken();
+      const r = await fetch(`${BASE}/api/public/contracts/by-token/${encodeURIComponent(token)}/sign`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ signerName: v.name, signerPhone: v.phone, signatureData: v.dataUrl }),
+      });
+      if (!r.ok) {
+        const body = await r.json().catch(() => null);
+        throw new Error(body?.error ?? "Không lưu được chữ ký. Vui lòng thử lại.");
+      }
+    },
+    onSuccess: () => {
+      setSignAtShopOpen(false);
+      setSignAtShopErr(null);
+      invalidate();
+    },
+    onError: (e: Error) => setSignAtShopErr(e.message),
+  });
+
+  const openSignAtShop = () => {
+    setSignAtShopForm({
+      name: payload?.signatures.customer.name ?? payload?.customer.name ?? "",
+      phone: payload?.signatures.customer.phone ?? payload?.customer.phone ?? "",
+    });
+    setSignAtShopErr(null);
+    setSignAtShopOpen(true);
+  };
+
+  const handleSignAtShopConfirm = (dataUrl: string) => {
+    const name = signAtShopForm.name.trim();
+    const phone = signAtShopForm.phone.trim();
+    if (!name) { setSignAtShopErr("Vui lòng nhập họ tên người ký."); return; }
+    if (!phone) { setSignAtShopErr("Vui lòng nhập số điện thoại."); return; }
+    setSignAtShopErr(null);
+    signAtShopMutation.mutate({ dataUrl, name, phone });
   };
 
   const resignMutation = useMutation({
@@ -294,6 +345,7 @@ export default function ContractDetailPage() {
               signingStudio={signStudioMutation.isPending}
               onCopyCustomerLink={() => copyLinkMutation.mutate()}
               onOpenCustomerLink={openCustomerPage}
+              onSignCustomerInPerson={openSignAtShop}
               customerLinkCopied={copied}
               customerLinkBusy={copyLinkMutation.isPending || openCustomerPageMutation.isPending}
             />
@@ -391,6 +443,54 @@ export default function ContractDetailPage() {
           </div>
         </TabsContent>
       </Tabs>
+
+      {/* Dialog khách ký tại tiệm — chỉ chứa ô ký sạch, khách không thấy nội dung nội bộ */}
+      <Dialog open={signAtShopOpen} onOpenChange={setSignAtShopOpen}>
+        <DialogContent className="max-w-lg" data-testid="dialog-sign-at-shop">
+          <DialogHeader>
+            <DialogTitle>✍️ Khách ký tại tiệm — {payload.contract.contractCode}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="rounded-lg bg-blue-50 border border-blue-200 px-3 py-2 text-xs text-blue-800">
+              Đưa máy cho khách ký trực tiếp. Chữ ký được lưu y hệt như khách ký qua link online.
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground">Họ và tên người ký *</label>
+                <Input
+                  value={signAtShopForm.name}
+                  onChange={(e) => setSignAtShopForm(f => ({ ...f, name: e.target.value }))}
+                  placeholder="Nhập họ và tên đầy đủ"
+                  data-testid="input-sign-at-shop-name"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground">Số điện thoại *</label>
+                <Input
+                  type="tel"
+                  value={signAtShopForm.phone}
+                  onChange={(e) => setSignAtShopForm(f => ({ ...f, phone: e.target.value }))}
+                  placeholder="Nhập số điện thoại"
+                  data-testid="input-sign-at-shop-phone"
+                />
+              </div>
+            </div>
+            {signAtShopErr ? (
+              <div className="text-xs font-semibold text-destructive">{signAtShopErr}</div>
+            ) : null}
+            <SignaturePad
+              value={null}
+              label="Bên B – Khách hàng"
+              signerLine={signAtShopForm.name || payload.customer.name}
+              onConfirm={handleSignAtShopConfirm}
+              confirming={signAtShopMutation.isPending}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSignAtShopOpen(false)}>Đóng</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Dialog chỉnh sửa — admin */}
       <Dialog open={editOpen} onOpenChange={setEditOpen}>

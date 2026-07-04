@@ -34,6 +34,7 @@ import { useLocation, useSearch } from "wouter";
 import { Button, Input } from "@/components/ui";
 import { CurrencyInput } from "@/components/ui/currency-input";
 import { DateInput } from "@/components/ui/date-input";
+import { Switch } from "@/components/ui/switch";
 import { ServiceSearchBox } from "@/components/service-search-box";
 import { SurchargeEditor, type SurchargeItem } from "@/components/surcharge-editor";
 import { DeductionEditor, type DeductionItem } from "@/components/deduction-editor";
@@ -1455,6 +1456,11 @@ function ShowFormPanel({
   const [error, setError] = useState("");
   const [proofWarning, setProofWarning] = useState("");
   const [saving, setSaving] = useState(false);
+  // ── Báo giá tạm tính (chỉ khi tạo mới) ─────────────────────────────────────
+  // Bật lên thì form chỉ dùng để TÍNH GIÁ cho khách xem: không gọi save(),
+  // không POST/PUT customers/bookings/payments — không ghi gì vào DB.
+  const [tempQuoteMode, setTempQuoteMode] = useState(false);
+  const [quotePreviewVisible, setQuotePreviewVisible] = useState(false);
   // ── Lưới an toàn upload ảnh ──────────────────────────────────────────────────
   // Đếm số ảnh đang tải ở các dòng dịch vụ (ảnh concept). Khi > 0 thì KHOÁ nút Lưu
   // để tránh bấm "Cập nhật/Lưu show" lúc ảnh chưa upload xong → mất ảnh (bug đã gặp).
@@ -1864,6 +1870,9 @@ function ShowFormPanel({
   };
 
   const save = async () => {
+    // Lưới an toàn: đang ở chế độ báo giá tạm tính thì tuyệt đối không ghi DB
+    // (nút footer đã đổi handler, guard này chặn thêm mọi đường gọi khác).
+    if (tempQuoteMode) return;
     setError("");
     setProofWarning("");
     if (!customerName.trim()) { setError("Vui lòng nhập tên khách hàng"); return; }
@@ -2321,15 +2330,31 @@ function ShowFormPanel({
     <div className="flex flex-col h-full overflow-hidden bg-background">
       {/* Header */}
       <div className="flex items-center gap-3 px-4 py-3 border-b flex-shrink-0 bg-card">
-        <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-muted transition-colors flex-shrink-0">
+        <button
+          onClick={() => {
+            if (tempQuoteMode && !confirm("Báo giá tạm tính chưa được lưu. Bạn có chắc muốn thoát?")) return;
+            onClose();
+          }}
+          className="p-1.5 rounded-lg hover:bg-muted transition-colors flex-shrink-0"
+        >
           <ArrowLeft className="w-5 h-5" />
         </button>
         <div className="flex-1 min-w-0">
-          <p className="font-bold text-sm">{isEdit ? "✏️ Chỉnh sửa show" : "✨ Tạo show mới"}</p>
+          <p className="font-bold text-sm">{isEdit ? "✏️ Chỉnh sửa show" : tempQuoteMode ? "🧮 Tạo báo giá tạm tính" : "✨ Tạo show mới"}</p>
           <p className="text-xs text-muted-foreground mt-0.5 truncate">
             {format(shootDateObj, "EEEE, dd/MM/yyyy", { locale: vi })} · {subDrafts[0]?.shootTime ?? initialTime}
           </p>
         </div>
+        {!isEdit && (
+          <label className="flex items-center gap-2 flex-shrink-0 cursor-pointer select-none">
+            <span className={`text-xs font-medium ${tempQuoteMode ? "text-amber-600" : "text-muted-foreground"}`}>Báo giá tạm tính</span>
+            <Switch
+              checked={tempQuoteMode}
+              disabled={saving}
+              onCheckedChange={(checked) => { setTempQuoteMode(checked); setQuotePreviewVisible(false); }}
+            />
+          </label>
+        )}
         {isEdit && (isAdmin || (viewerId && booking?.createdByStaffId === viewerId)) && (
           <button
             onClick={() => { if (confirm("Xoá show này?")) deleteMutation.mutate(); }}
@@ -2351,6 +2376,11 @@ function ShowFormPanel({
           {proofWarning && (
             <div className="flex items-center gap-2 p-3 bg-yellow-50 border border-yellow-300 rounded-xl text-yellow-800 text-sm">
               <AlertCircle className="w-4 h-4 flex-shrink-0 text-yellow-500" /> {proofWarning}
+            </div>
+          )}
+          {tempQuoteMode && (
+            <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-800 text-sm font-medium">
+              <Receipt className="w-4 h-4 flex-shrink-0 text-amber-500" /> Bản báo giá tạm tính — chưa phải hợp đồng
             </div>
           )}
 
@@ -2824,15 +2854,40 @@ function ShowFormPanel({
       </div>
 
       {/* Footer */}
-      <div className="px-4 py-3 border-t flex-shrink-0 bg-background/80 max-w-2xl mx-auto w-full">
-        <Button onClick={save} disabled={saving || isUploadingImages || !extrasFormValidation.ok} className="w-full gap-2 h-11">
-          {saving
-            ? <><span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang lưu...</>
-            : isUploadingImages
-              ? <><span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang tải ảnh… (chờ tải xong để khỏi mất ảnh)</>
-              : <><Save className="w-4 h-4" /> {isEdit ? "Cập nhật show" : "Lưu & tạo show"}</>
-          }
-        </Button>
+      <div className="px-4 py-3 border-t flex-shrink-0 bg-background/80 max-w-2xl mx-auto w-full space-y-3">
+        {tempQuoteMode && quotePreviewVisible && (
+          <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 space-y-1.5 text-sm text-amber-900">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-amber-700">Bản báo giá tạm tính — chưa phải hợp đồng</p>
+            <div className="flex justify-between">
+              <span>Tổng dịch vụ:</span>
+              <span className="font-semibold">{formatVND(totalAmount)}</span>
+            </div>
+            {discountNum > 0 && (
+              <div className="flex justify-between">
+                <span>Giảm giá:</span>
+                <span>−{formatVND(discountNum)}</span>
+              </div>
+            )}
+            <div className="flex justify-between items-center border-t border-amber-300/60 pt-1.5">
+              <span className="font-semibold">Tổng tạm tính:</span>
+              <span className="font-bold text-base text-amber-700">{formatVND(afterDiscount)}</span>
+            </div>
+          </div>
+        )}
+        {tempQuoteMode ? (
+          <Button onClick={() => setQuotePreviewVisible(true)} disabled={!extrasFormValidation.ok} className="w-full gap-2 h-11">
+            <Receipt className="w-4 h-4" /> Tính báo giá
+          </Button>
+        ) : (
+          <Button onClick={save} disabled={saving || isUploadingImages || !extrasFormValidation.ok} className="w-full gap-2 h-11">
+            {saving
+              ? <><span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang lưu...</>
+              : isUploadingImages
+                ? <><span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Đang tải ảnh… (chờ tải xong để khỏi mất ảnh)</>
+                : <><Save className="w-4 h-4" /> {isEdit ? "Cập nhật show" : "Lưu & tạo show"}</>
+            }
+          </Button>
+        )}
       </div>
     </div>
   );

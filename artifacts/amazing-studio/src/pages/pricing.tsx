@@ -4,7 +4,7 @@ import { useLocation } from "wouter";
 import {
   Plus, Search, Edit2, Trash2, ChevronDown, ChevronRight,
   Package, Tag, Layers, X, Check, AlertCircle,
-  ShoppingCart, FileText, Eye, EyeOff, GripVertical,
+  ShoppingCart, Eye, EyeOff, GripVertical,
   Camera, BookOpen, MapPin, Star, Sparkles, Palette,
   Film, Heart, Printer, Zap, Pencil, Save, ChevronUp, ArrowUp, ArrowDown
 } from "lucide-react";
@@ -1166,13 +1166,6 @@ export default function PricingPage() {
               className="w-full gap-2"
             >
               <ShoppingCart className="w-4 h-4" /> Tạo đơn hàng từ gói này
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => navigate("/quotes")}
-              className="w-full gap-2"
-            >
-              <FileText className="w-4 h-4" /> Tạo báo giá từ gói này
             </Button>
             {effectiveIsAdmin && (
               <button

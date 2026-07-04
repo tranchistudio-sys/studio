@@ -6377,11 +6377,13 @@ function CalendarPageInner() {
     return m;
   }, [svcPackagesForMap, svcGroupsForMap]);
 
-  // Admin can recolor all staff (active + inactive); non-admin uses active-only list
+  // Admin can recolor all staff (active + inactive); non-admin uses active-only list.
+  // Dùng /api/staff/lite (id, name, roles, isActive, color) — KHÔNG kéo /api/staff full
+  // vì bản full chứa ảnh base64 ~2MB làm mobile khựng lúc mở lịch.
   const { data: allStaffForPicker = [] } = useQuery<Staff[]>({
     queryKey: ["all-staff-for-color-picker"],
-    queryFn: () => authFetch(`${BASE}/api/staff`).then(r => r.ok ? r.json() : []),
-    staleTime: 30_000,
+    queryFn: () => authFetch(`${BASE}/api/staff/lite`).then(r => r.ok ? r.json() : []),
+    staleTime: 5 * 60_000,
     enabled: rawIsAdmin,
   });
 

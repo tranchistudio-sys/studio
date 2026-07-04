@@ -50,6 +50,32 @@ router.get("/staff/assignable", async (req, res) => {
   })));
 });
 
+// GET /staff/lite — danh sách TOÀN BỘ staff (cả đã nghỉ) bản siêu nhẹ cho color picker
+// lịch chụp: không ảnh base64 (avatar/banner/coverImageUrl), không lương/nội bộ.
+// Select đúng 5 cột để Postgres không phải đọc các cột ảnh nặng.
+// Must be declared BEFORE /staff/:id to avoid route clash.
+router.get("/staff/lite", async (req, res) => {
+  const callerId = verifyToken(req.headers.authorization);
+  if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
+  const staff = await db
+    .select({
+      id: staffTable.id,
+      name: staffTable.name,
+      roles: staffTable.roles,
+      isActive: staffTable.isActive,
+      color: staffTable.color,
+    })
+    .from(staffTable)
+    .orderBy(staffTable.name);
+  res.json(staff.map(s => ({
+    id: s.id,
+    name: s.name,
+    roles: Array.isArray(s.roles) ? s.roles : (s.roles ? [s.roles] : []),
+    isActive: Boolean(s.isActive),
+    color: s.color ?? null,
+  })));
+});
+
 router.get("/staff", async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });

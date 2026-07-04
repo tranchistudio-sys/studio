@@ -1118,6 +1118,43 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
   } catch (err) {
     console.error("[migrations] golden_hour_campaigns:", err);
   }
+
+  // ── Hợp đồng online v2: link public bằng token + chữ ký Bên A + lịch sử sửa ────
+  // public_token: 1 hợp đồng = 1 link cố định (không dùng id thô). signed_snapshot:
+  // chụp các field quan trọng lúc khách ký để phát hiện "sửa sau khi ký" (CHỈ cảnh
+  // báo nội bộ). resign_requested_at: admin chủ động bật yêu cầu khách ký lại.
+  // contract_change_log: lịch sử chỉnh sửa NỘI BỘ (mirror booking_change_log).
+  try {
+    await pool.query(`ALTER TABLE contracts ADD COLUMN IF NOT EXISTS public_token text`);
+    await pool.query(
+      `CREATE UNIQUE INDEX IF NOT EXISTS contracts_public_token_unique ON contracts(public_token) WHERE public_token IS NOT NULL`,
+    );
+    await pool.query(`ALTER TABLE contracts ADD COLUMN IF NOT EXISTS studio_signature_image_url text`);
+    await pool.query(`ALTER TABLE contracts ADD COLUMN IF NOT EXISTS studio_signed_at timestamp`);
+    await pool.query(
+      `ALTER TABLE contracts ADD COLUMN IF NOT EXISTS studio_signed_by_id integer REFERENCES staff(id) ON DELETE SET NULL`,
+    );
+    await pool.query(`ALTER TABLE contracts ADD COLUMN IF NOT EXISTS signed_snapshot jsonb`);
+    await pool.query(`ALTER TABLE contracts ADD COLUMN IF NOT EXISTS resign_requested_at timestamp`);
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS contract_change_log (
+        id            serial PRIMARY KEY,
+        contract_id   integer NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+        field_changed text NOT NULL,
+        old_value     text,
+        new_value     text,
+        reason        text,
+        changed_by_id integer REFERENCES staff(id) ON DELETE SET NULL,
+        created_at    timestamp NOT NULL DEFAULT now()
+      )
+    `);
+    await pool.query(
+      `CREATE INDEX IF NOT EXISTS idx_contract_change_log_contract ON contract_change_log(contract_id, created_at DESC)`,
+    );
+    console.log("[migrations] contracts online-sign v2 OK");
+  } catch (err) {
+    console.error("[migrations] contracts online-sign v2:", err);
+  }
 }
 
 export default runMigrations;

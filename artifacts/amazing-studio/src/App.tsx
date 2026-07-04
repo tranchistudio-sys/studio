@@ -21,6 +21,7 @@ import SettingsPage from "@/pages/settings";
 import BookingsPage from "@/pages/bookings";
 import BookingsTrashPage from "@/pages/bookings/trash";
 import ContractsPage from "@/pages/contracts";
+import ContractDetailPage from "@/pages/contract-detail";
 import ReportsPage from "@/pages/reports";
 import PaymentsPage from "@/pages/payments";
 import ExpensesPage from "@/pages/expenses";
@@ -66,6 +67,7 @@ import PublicGalleryDetailPage from "@/pages/public/gallery-detail";
 import WeddingCardsLandingPage from "@/pages/public/wedding-cards-landing";
 import WeddingCardsCreatePage from "@/pages/public/wedding-cards-create";
 import WeddingCardViewPage from "@/pages/public/wedding-card-view";
+import PublicContractSignPage from "@/pages/public/contract-sign";
 import { StaffAuthProvider, useStaffAuth } from "@/contexts/StaffAuthContext";
 import { UploadQueueProvider } from "@/contexts/UploadQueueContext";
 import { Camera, Shirt } from "lucide-react";
@@ -92,6 +94,7 @@ const PUBLIC_ROUTES = [
   "/lien-he",
   "/thiep-cuoi-online",
   "/thiep-cuoi",
+  "/contract", // hợp đồng online cho khách (/contract/:token) — số ít, KHÔNG đụng /contracts nội bộ
   "/login",
 ];
 
@@ -217,6 +220,15 @@ function PublicRouter() {
       </Switch>
     );
   }
+  // Hợp đồng online cho khách — trang standalone sạch, không header/footer marketing
+  if (location.startsWith("/contract/")) {
+    return (
+      <Switch>
+        <Route path="/contract/:token" component={PublicContractSignPage} />
+        <Route component={PublicNotFound} />
+      </Switch>
+    );
+  }
 
   return (
     <PublicLayout>
@@ -259,6 +271,9 @@ function InternalRouter() {
         <Route path="/payments" component={PaymentsPage} />
         <Route path="/expenses" component={ExpensesPage} />
         <Route path="/revenue" component={() => <CmsAdminRoute component={RevenuePage} />} />
+        {/* /contracts/:id PHẢI đứng trước /contracts — wouter Switch match theo thứ tự.
+            Trang chi tiết mở cho mọi staff đăng nhập (ký Bên A, copy link); list vẫn admin-only. */}
+        <Route path="/contracts/:id" component={ContractDetailPage} />
         <Route path="/contracts" component={() => <AdminRoute component={ContractsPage} />} />
         <Route path="/reports" component={() => <AdminRoute component={ReportsPage} />} />
         <Route path="/my-profile" component={MyProfilePage} />

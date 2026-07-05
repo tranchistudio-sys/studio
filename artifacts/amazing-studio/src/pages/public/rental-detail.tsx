@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import PublicGalleryLightbox from "@/components/public/PublicGalleryLightbox";
 import { CMS_BASE } from "@/components/cms-shared";
-import { getImageSrc } from "@/lib/imageUtils";
+import { getCmsImageSrc } from "@/lib/imageUtils";
 import { playPublicSound } from "@/lib/feedback";
 import { formatVND } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -464,7 +464,7 @@ function ImageSlider({
         onClick={() => onZoom(idx)}
       >
         <img
-          src={getImageSrc(images[idx]) ?? images[idx]}
+          src={getCmsImageSrc(images[idx]) ?? images[idx]}
           alt={`Ảnh ${idx + 1}`}
           className="w-full h-full object-cover transition-transform duration-700 hover:scale-[1.03]"
           draggable={false}
@@ -523,7 +523,7 @@ function ImageSlider({
               }`}
               aria-label={`Xem ảnh ${i + 1}`}
             >
-              <img src={getImageSrc(src) ?? src} alt="" className="w-full h-full object-cover" />
+              <img src={getCmsImageSrc(src) ?? src} alt="" className="w-full h-full object-cover" />
             </button>
           ))}
         </div>
@@ -647,7 +647,7 @@ function RelatedProducts({
           <div className="aspect-[3/4] bg-neutral-100 overflow-hidden">
             {d.coverImageUrl ? (
               <img
-                src={getImageSrc(d.coverImageUrl) ?? d.coverImageUrl}
+                src={getCmsImageSrc(d.coverImageUrl) ?? d.coverImageUrl}
                 alt={d.name}
                 className="w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-300"
               />

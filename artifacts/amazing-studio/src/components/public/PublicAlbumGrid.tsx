@@ -48,6 +48,7 @@ export function PublicAlbumGrid({ images, isLoading }: Props) {
                   <LazyImage
                     src={img.url}
                     alt={img.albumName}
+                    cmsCache
                     className="concept-card-image w-full h-full object-cover"
                   />
                 </Link>

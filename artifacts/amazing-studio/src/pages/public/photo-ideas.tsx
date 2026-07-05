@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useCallback } from "react";
 import {
   Lightbulb, Lock, Loader2, ChevronLeft, Sparkles, Wrench, Camera,
 } from "lucide-react";
-import { getImageSrc } from "@/lib/imageUtils";
+import { getCmsImageSrc } from "@/lib/imageUtils";
 import { Tilt3D, STYLE_3D } from "@/components/public-3d";
 import PublicGalleryLightbox from "@/components/public/PublicGalleryLightbox";
 
@@ -215,7 +215,7 @@ function IdeaDetail({ idea, onBack }: { idea: PublicIdea; onBack: () => void }) 
               >
                 <div className="pi-shine absolute inset-0 z-10 pointer-events-none overflow-hidden rounded-xl" aria-hidden />
                 <img
-                  src={getImageSrc(src) ?? src}
+                  src={getCmsImageSrc(src) ?? src}
                   alt={`${idea.name} ${i + 1}`}
                   loading="lazy"
                   className="w-full h-full object-cover"
@@ -385,7 +385,7 @@ export default function PublicPhotoIdeasPage() {
                             <div className="pi-shine absolute inset-0 z-10 pointer-events-none overflow-hidden" aria-hidden />
                             {cover ? (
                               <img
-                                src={getImageSrc(cover) ?? cover}
+                                src={getCmsImageSrc(cover) ?? cover}
                                 alt={d.name}
                                 loading="lazy"
                                 className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"

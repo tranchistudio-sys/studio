@@ -90,6 +90,7 @@ export function PublicRentalTeaser({ categories, dresses, limit = 6 }: Props) {
                     <LazyImage
                       src={card.image}
                       alt={card.name}
+                      cmsCache
                       className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-[1.05]"
                     />
                   ) : (

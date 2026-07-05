@@ -239,7 +239,7 @@ export default function PublicGalleryPage() {
                           )}
                         >
                           {tab.cover ? (
-                            <LazyImage src={tab.cover} className="w-full h-full object-cover" />
+                            <LazyImage src={tab.cover} cmsCache className="w-full h-full object-cover" />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center">
                               <Camera
@@ -409,6 +409,7 @@ function GalleryAlbumCard({
               <LazyImage
                 src={album.coverImageUrl}
                 alt={album.name}
+                cmsCache
                 className="concept-card-image absolute inset-0 w-full h-full object-cover"
               />
               <div

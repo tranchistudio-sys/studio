@@ -542,7 +542,7 @@ export default function PublicRentalPage() {
                         )}
                       >
                         {tab.cover ? (
-                          <LazyImage src={tab.cover} className="w-full h-full object-cover" />
+                          <LazyImage src={tab.cover} cmsCache className="w-full h-full object-cover" />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center">
                             <Shirt
@@ -980,6 +980,7 @@ function RentalDressCard({
             <LazyImage
               src={d.coverImageUrl}
               alt={d.name}
+              cmsCache
               className="concept-card-image absolute inset-0 w-full h-full object-cover"
             />
             <div

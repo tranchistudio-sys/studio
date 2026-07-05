@@ -1543,7 +1543,9 @@ router.delete("/bookings/:parentId/remove-child/:childId", async (req, res) => {
   }
 });
 
-// ─── Thùng rác: XOÁ MỀM (soft-delete) — chuyển booking vào thùng rác (CHỈ admin) ──
+// ─── Thùng rác: XOÁ MỀM (soft-delete) — chuyển booking vào thùng rác ──
+// MỌI nhân viên đăng nhập được xoá mềm (nhập sai đơn tự xử lý được — deletedBy
+// ghi lại ai xoá). Quản lý thùng rác (xem/phục hồi/xoá vĩnh viễn) vẫn CHỈ admin.
 // KHÔNG hard-delete. Giữ nguyên dữ liệu con (lương/thu/chi/task) — chúng bị ẩn khỏi
 // hệ thống active qua filter deleted_at ở các query, và quay lại khi phục hồi.
 router.delete("/bookings/:id", async (req, res) => {
@@ -1551,9 +1553,6 @@ router.delete("/bookings/:id", async (req, res) => {
     const id = parseInt(req.params.id);
     const callerId = verifyToken(req.headers.authorization);
     if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
-    if ((await getCallerRole(req.headers.authorization)) !== "admin") {
-      return res.status(403).json({ error: "Chỉ admin được đưa booking vào thùng rác" });
-    }
 
     const [target] = await db.select({
       isParentContract: bookingsTable.isParentContract,

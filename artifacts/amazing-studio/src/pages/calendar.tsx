@@ -4230,7 +4230,9 @@ function ShowDetailPanel({
                                 <p className="text-[10px] font-bold text-foreground mb-1">Nội dung gói:</p>
                                 {/* Trình bày dễ đọc — giữ nguyên từng chữ: tiêu đề đậm, bullet thẳng hàng, câu gãy nối liền */}
                                 {parseDescriptionBlocks(svcPkgDetail.description).map((b, i) =>
-                                  b.type === "heading" ? (
+                                  b.type === "divider" ? (
+                                    <div key={i} className="border-t border-border/50 my-1.5" aria-hidden />
+                                  ) : b.type === "heading" ? (
                                     <p key={i} className="text-[11px] font-bold text-foreground pt-1 first:pt-0">{b.text}</p>
                                   ) : b.type === "bullet" ? (
                                     <p key={i} className="text-[11px] text-foreground leading-relaxed pl-3 -indent-3">{b.text}</p>

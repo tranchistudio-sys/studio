@@ -90,4 +90,45 @@ describe("parseDescriptionBlocks", () => {
     expect(parseDescriptionBlocks(null)).toEqual([]);
     expect(parseDescriptionBlocks(undefined)).toEqual([]);
   });
+
+  it("gói đối tác thật: bullet '*', dòng kẻ '———', dòng giá LUÔN đứng riêng nguyên văn", () => {
+    const partner =
+      "GÓI CHỤP CỔNG – GIÁ HỖ TRỢ ĐỐI TÁC\nGiá: 1.500.000đ\nDành riêng cho khách từ đối tác\n———\nBao gồm:\n* Chụp hình cổng cưới tại studio\n* 2 tấm cổng 60×90cm in lụa cao cấp\n* 10 hình bàn in lụa (không khung)\n———\nKhách tự chuẩn bị:\n* 2 saree\n* 2 vest";
+    expect(parseDescriptionBlocks(partner)).toEqual([
+      { type: "text", text: "GÓI CHỤP CỔNG – GIÁ HỖ TRỢ ĐỐI TÁC" },
+      { type: "text", text: "Giá: 1.500.000đ" },
+      { type: "text", text: "Dành riêng cho khách từ đối tác" },
+      { type: "divider", text: "———" },
+      { type: "heading", text: "Bao gồm:" },
+      { type: "bullet", text: "* Chụp hình cổng cưới tại studio" },
+      { type: "bullet", text: "* 2 tấm cổng 60×90cm in lụa cao cấp" },
+      { type: "bullet", text: "* 10 hình bàn in lụa (không khung)" },
+      { type: "divider", text: "———" },
+      { type: "heading", text: "Khách tự chuẩn bị:" },
+      { type: "bullet", text: "* 2 saree" },
+      { type: "bullet", text: "* 2 vest" },
+    ]);
+  });
+
+  it("nhận dạng đủ các kiểu dòng kẻ: ⸻ (1 ký tự), ———, ___, ---", () => {
+    for (const dv of ["⸻", "———", "___", "---", "⸺"]) {
+      expect(parseDescriptionBlocks(`A\n${dv}\nB`)).toEqual([
+        { type: "text", text: "A" },
+        { type: "divider", text: dv },
+        { type: "text", text: "B" },
+      ]);
+    }
+  });
+
+  it("ghi chú có phụ thu: giá +200.000đ / 500K / 4% không bị nối vào dòng khác", () => {
+    const notes = "Cọc 20% khi đặt lịch\nThanh toán 60% trong ngày chụp\nPhụ thu:\n• Video hậu trường +200.000đ\n• Makeup chú rể +500.000đ";
+    const blocks = parseDescriptionBlocks(notes);
+    expect(blocks).toEqual([
+      { type: "text", text: "Cọc 20% khi đặt lịch" },
+      { type: "text", text: "Thanh toán 60% trong ngày chụp" },
+      { type: "heading", text: "Phụ thu:" },
+      { type: "bullet", text: "• Video hậu trường +200.000đ" },
+      { type: "bullet", text: "• Makeup chú rể +500.000đ" },
+    ]);
+  });
 });

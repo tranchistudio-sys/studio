@@ -209,7 +209,9 @@ export default function ContractDocument({
                           // chỉ nhấn đậm tiêu đề, canh gạch đầu dòng, nối câu bị bẻ dòng cứng.
                           <div className="text-xs text-[#444] mt-1.5 space-y-0.5">
                             {parseDescriptionBlocks(item.description).map((b, bi) =>
-                              b.type === "heading" ? (
+                              b.type === "divider" ? (
+                                <div key={bi} className="border-t border-[#ddd] my-2" aria-hidden />
+                              ) : b.type === "heading" ? (
                                 <div key={bi} className="font-bold text-[#111] pt-1.5 first:pt-0">{b.text}</div>
                               ) : b.type === "bullet" ? (
                                 <div key={bi} className="pl-4 -indent-4 leading-relaxed">{b.text}</div>

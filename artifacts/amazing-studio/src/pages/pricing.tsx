@@ -13,7 +13,32 @@ import {
   previewFinalPrice, discountWindowStatus, statusLabel, discountBadgeText, discountSourceLabel,
   type DiscountResult, type DiscountWindowStatus,
 } from "@/lib/discount";
-import { reflowDescriptionLines } from "@/lib/package-description";
+import { parseDescriptionBlocks } from "@/lib/package-description";
+
+// ─── Hiển thị mô tả/ghi chú gói theo block dễ đọc — GIỮ NGUYÊN từng chữ ──────
+// Tiêu đề (dòng kết thúc ":") đậm, bullet (*/•) thẳng hàng, dòng kẻ "———" thành
+// đường phân cách gọn, dòng giá luôn đứng riêng. Thuần trình bày, không đổi nội dung.
+function DescriptionBlocksView({ text, size = "sm", tone = "default" }: { text: string; size?: "xs" | "sm"; tone?: "default" | "amber" }) {
+  const base = size === "xs" ? "text-[10px]" : "text-sm";
+  const bodyColor = tone === "amber" ? (size === "xs" ? "text-amber-700" : "text-amber-800 dark:text-amber-300") : "";
+  const headColor = tone === "amber" ? (size === "xs" ? "text-amber-900" : "text-amber-900 dark:text-amber-200") : "text-foreground";
+  const dividerColor = tone === "amber" ? "border-amber-300/60" : "border-border/60";
+  return (
+    <div className="space-y-0.5">
+      {parseDescriptionBlocks(text).map((b, i) =>
+        b.type === "divider" ? (
+          <div key={i} className={`border-t ${dividerColor} my-1.5`} aria-hidden />
+        ) : b.type === "heading" ? (
+          <p key={i} className={`${base} ${headColor} font-bold pt-1 first:pt-0`}>{b.text}</p>
+        ) : b.type === "bullet" ? (
+          <p key={i} className={`${base} ${bodyColor} leading-relaxed pl-3 -indent-3`}>{b.text}</p>
+        ) : (
+          <p key={i} className={`${base} ${bodyColor} leading-relaxed pt-0.5 first:pt-0`}>{b.text}</p>
+        ),
+      )}
+    </div>
+  );
+}
 import { Button, Input, Badge } from "@/components/ui";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { MultiImageUploader } from "@/components/cms-shared";
@@ -705,13 +730,12 @@ export default function PricingPage() {
                             {pkg.description && (
                               <div className="mt-2 bg-amber-50 rounded-lg px-2 py-1.5">
                                 <p className="text-[10px] font-semibold text-amber-800 mb-0.5">📋 Mô tả</p>
-                                <div className="space-y-0.5">
-                                  {reflowDescriptionLines(pkg.description).map((line, i) => (
-                                    <p key={i} className="text-[10px] text-amber-700 leading-relaxed">{line}</p>
-                                  ))}
-                                </div>
+                                <DescriptionBlocksView text={pkg.description} size="xs" tone="amber" />
                                 {pkg.notes && (
-                                  <p className="text-[10px] text-orange-700 mt-1 font-medium">⚠️ {pkg.notes}</p>
+                                  <div className="flex gap-1 mt-1 text-orange-700 font-medium">
+                                    <span className="text-[10px] flex-shrink-0">⚠️</span>
+                                    <DescriptionBlocksView text={pkg.notes} size="xs" tone="amber" />
+                                  </div>
                                 )}
                               </div>
                             )}
@@ -1027,7 +1051,7 @@ export default function PricingPage() {
                 />
               ) : (
                 selectedPkg.description
-                  ? <p className="text-sm">{selectedPkg.description}</p>
+                  ? <DescriptionBlocksView text={selectedPkg.description} />
                   : <p className="text-sm text-muted-foreground italic">Chưa có mô tả</p>
               )}
             </div>
@@ -1153,7 +1177,7 @@ export default function PricingPage() {
               ) : (
                 selectedPkg.notes
                   ? <div className="p-3 bg-amber-50 dark:bg-amber-950/20 rounded-xl border border-amber-200/50">
-                      <p className="text-sm text-amber-800 dark:text-amber-300">{selectedPkg.notes}</p>
+                      <DescriptionBlocksView text={selectedPkg.notes} tone="amber" />
                     </div>
                   : <p className="text-sm text-muted-foreground italic">Chưa có ghi chú</p>
               )}

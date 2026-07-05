@@ -1,5 +1,6 @@
 import express, { type Express } from "express";
 import cors from "cors";
+import compression from "compression";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
@@ -33,6 +34,17 @@ app.use(
   }),
 );
 app.use(cors());
+// Nén gzip mọi JSON trả về (payload lớn như /api/customers, /api/staff giảm ~5-10x trên mobile).
+// Bỏ qua SSE (text/event-stream ở ai.ts, ai-test.ts, notifications.ts) — nén sẽ buffer làm treo stream.
+app.use(
+  compression({
+    filter: (req, res) => {
+      const contentType = String(res.getHeader("Content-Type") || "");
+      if (contentType.includes("text/event-stream")) return false;
+      return compression.filter(req, res);
+    },
+  }),
+);
 app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({ extended: true, limit: "20mb" }));
 

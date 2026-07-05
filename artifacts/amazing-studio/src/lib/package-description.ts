@@ -71,7 +71,20 @@ export function firstDescriptionLine(description?: string | null): string {
 //  - Bullet giữ nguyên cả ký tự đầu dòng.
 // Thuần hiển thị — từng chữ giữ nguyên, chỉ khác cách xuống dòng/nhấn đậm.
 
-export type DescriptionBlock = { type: "heading" | "bullet" | "text"; text: string };
+export type DescriptionBlock = { type: "heading" | "bullet" | "text" | "divider"; text: string };
+
+// Bullet mở rộng cho block parser: dấu • cũ + "*" và "- " (bảng giá nhập bằng "*").
+const BLOCK_BULLET_RE = /^\s*(?:[•·‣▪●○]|\*|-\s)/;
+// Dòng kẻ phân cách gõ tay → block divider (đường kẻ gọn). Gồm: chuỗi -/_/= từ 3 ký tự,
+// hoặc dòng chỉ toàn em-dash các loại ("———", "⸻" three-em dash 1 ký tự, "⸺"...).
+const DIVIDER_RE = /^(?:[-–_=\s]{3,}|[—⸻⸺\s]+)$/;
+// Dòng kết thúc bằng con số/giá tiền ("Giá: 1.500.000đ", "500K", "+200.000đ", "4%")
+// → LUÔN đứng riêng một dòng, không bao giờ bị nối vào đoạn văn — bảo vệ dòng giá.
+const MONEY_END_RE = /\d[\d.,]*\s*(?:[đdkK%]|vn[đd])?\s*$/;
+// Không chứa chữ thường → kiểu dữ liệu IN HOA bị wrap cứng khi import cũ.
+// Chỉ nối 2 dòng thường liên tiếp khi CẢ HAI đều in hoa (câu bị bẻ giữa chừng);
+// dòng viết thường ("Cọc 20% khi đặt lịch"...) là dòng chủ ý — giữ nguyên từng dòng.
+const isAllCaps = (s: string) => !/\p{Ll}/u.test(s);
 
 export function parseDescriptionBlocks(description?: string | null): DescriptionBlock[] {
   if (!description) return [];
@@ -90,15 +103,25 @@ export function parseDescriptionBlocks(description?: string | null): Description
     const line = raw.trim();
     if (line === "") {
       flush();
-    } else if (BULLET_RE.test(line)) {
+    } else if (DIVIDER_RE.test(line)) {
+      flush();
+      out.push({ type: "divider", text: line });
+    } else if (BLOCK_BULLET_RE.test(line)) {
       flush();
       current = { type: "bullet", text: line };
     } else if (line.endsWith(":")) {
       flush();
       out.push({ type: "heading", text: line });
-    } else if (current) {
+    } else if (current?.type === "bullet") {
+      // dòng nối tiếp của một gạch đầu dòng bị wrap cứng
+      current.text = `${current.text} ${line}`;
+    } else if (MONEY_END_RE.test(line)) {
+      flush();
+      out.push({ type: "text", text: line });
+    } else if (current && isAllCaps(current.text) && isAllCaps(line)) {
       current.text = `${current.text} ${line}`;
     } else {
+      flush();
       current = { type: "text", text: line };
     }
   }

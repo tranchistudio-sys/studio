@@ -174,11 +174,13 @@ export function renderServiceBreakdownCardHTML({
     ? `<div style="padding:8px 16px;border-bottom:1px solid #eee;font-size:11px;color:#222;">
           <div style="font-weight:700;font-size:10px;color:#111;margin-bottom:4px;">Nội dung gói:</div>
           ${descBlocks.map(b =>
-            b.type === "heading"
-              ? `<div style="font-weight:700;color:#111;padding-top:5px;">${escapeHTML(b.text)}</div>`
-              : b.type === "bullet"
-                ? `<div style="padding-left:14px;text-indent:-14px;line-height:1.55;">${escapeHTML(b.text)}</div>`
-                : `<div style="line-height:1.55;padding-top:2px;">${escapeHTML(b.text)}</div>`,
+            b.type === "divider"
+              ? `<div style="border-top:1px solid #ddd;margin:7px 0;"></div>`
+              : b.type === "heading"
+                ? `<div style="font-weight:700;color:#111;padding-top:5px;">${escapeHTML(b.text)}</div>`
+                : b.type === "bullet"
+                  ? `<div style="padding-left:14px;text-indent:-14px;line-height:1.55;">${escapeHTML(b.text)}</div>`
+                  : `<div style="line-height:1.55;padding-top:2px;">${escapeHTML(b.text)}</div>`,
           ).join("")}
         </div>`
     : "";
@@ -221,7 +223,9 @@ export function ServiceBreakdownCard({
         <div className="px-3 py-1.5 border-b border-border/30 bg-gray-50/50 dark:bg-muted/10">
           <p className="text-[10px] font-bold text-muted-foreground mb-1">Nội dung gói:</p>
           {descBlocks.map((b, i) =>
-            b.type === "heading" ? (
+            b.type === "divider" ? (
+              <div key={i} className="border-t border-border/50 my-1.5" aria-hidden />
+            ) : b.type === "heading" ? (
               <p key={i} className="text-[11px] font-bold text-foreground pt-1 first:pt-0">{b.text}</p>
             ) : b.type === "bullet" ? (
               <p key={i} className="text-[11px] text-muted-foreground leading-relaxed pl-3 -indent-3">{b.text}</p>

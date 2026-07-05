@@ -167,16 +167,31 @@ export default function ContractDocument({
                   <div className="font-bold text-[#111]">
                     📋 {svc.serviceLabel || `Dịch vụ ${idx + 1}`}
                   </div>
-                  <div className="text-xs text-[#888] mt-0.5">
-                    {fmtDate(svc.shootDate)} · {svc.shootTime?.slice(0, 5) || "—"}
-                    {svc.location ? ` · ${svc.location}` : ""}
+                  {/* Ngày giờ chụp nổi bật — khách nhìn là thấy, không lộn ngày */}
+                  <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                    {svc.shootTime ? (
+                      <span className="inline-flex items-center gap-1 rounded-md bg-[#111] px-2 py-0.5 text-[13px] font-extrabold text-white tabular-nums">
+                        🕐 {svc.shootTime.slice(0, 5)}
+                      </span>
+                    ) : null}
+                    <span className="inline-flex items-center gap-1 rounded-md border border-[#111] bg-[#f7f7f7] px-2 py-0.5 text-[13px] font-extrabold text-[#111] tabular-nums">
+                      📅 {fmtDate(svc.shootDate)}
+                    </span>
+                    {svc.location ? <span className="text-xs text-[#888]">📍 {svc.location}</span> : null}
                   </div>
                 </div>
               ) : (
-                <div className="text-xs text-[#666] mb-2">
-                  📅 Ngày chụp: <strong>{fmtDate(svc.shootDate)}</strong>
-                  {svc.shootTime ? <> · 🕐 <strong>{svc.shootTime.slice(0, 5)}</strong></> : null}
-                  {svc.location ? <> · 📍 {svc.location}</> : null}
+                // Ngày giờ chụp nổi bật — khách nhìn là thấy, không lộn ngày
+                <div className="flex flex-wrap items-center gap-2 mb-3">
+                  {svc.shootTime ? (
+                    <span className="inline-flex items-center gap-1.5 rounded-lg bg-[#111] px-3 py-1.5 text-[15px] font-extrabold text-white tabular-nums">
+                      🕐 {svc.shootTime.slice(0, 5)}
+                    </span>
+                  ) : null}
+                  <span className="inline-flex items-center gap-1.5 rounded-lg border-2 border-[#111] bg-[#f7f7f7] px-3 py-1.5 text-[15px] font-extrabold text-[#111] tabular-nums">
+                    📅 Ngày chụp: {fmtDate(svc.shootDate)}
+                  </span>
+                  {svc.location ? <span className="text-xs text-[#666]">📍 {svc.location}</span> : null}
                 </div>
               )}
 

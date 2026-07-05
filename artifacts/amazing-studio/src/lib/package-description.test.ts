@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { reflowDescriptionLines, firstDescriptionLine } from "./package-description";
+import { reflowDescriptionLines, firstDescriptionLine, parseDescriptionBlocks } from "./package-description";
 
 describe("reflowDescriptionLines", () => {
   it("rejoins hard-wrapped continuation lines into their bullet (real SILVER data)", () => {
@@ -57,5 +57,37 @@ describe("reflowDescriptionLines", () => {
   it("firstDescriptionLine returns the first reflowed line", () => {
     expect(firstDescriptionLine("GÓI SILVER\n• A\nB")).toBe("GÓI SILVER");
     expect(firstDescriptionLine("")).toBe("");
+  });
+});
+
+describe("parseDescriptionBlocks", () => {
+  it("phân block gói LUXURY thật: tiêu đề đậm, đoạn văn nối liền, bullet giữ nguyên chữ", () => {
+    const luxury =
+      "GÓI LUXURY\n\nGÓI: PHIÊN BẢN CAO CẤP\nNHẤT, NƠI MỌI CHI TIẾT ĐỀU\nĐƯỢC ĐẦU TƯ TỈ MỈ\n\nBAO GỒM:\n• 2 SARE + 2 ÁO VEST\n• 1 PHOTO MASTER\n• MAKE UP MASTER\n\nSẢN PHẨM:\n• 2 HÌNH CỔNG 60X90CM\nMICA GƯƠNG CAO CẤP\n• 10 HÌNH KHUNG 15X21CM\nÉP GỖ CAO CẤP (CÓ KHUNG)\n• TẶNG TOÀN BỘ FILE GỐC";
+    expect(parseDescriptionBlocks(luxury)).toEqual([
+      { type: "text", text: "GÓI LUXURY" },
+      { type: "text", text: "GÓI: PHIÊN BẢN CAO CẤP NHẤT, NƠI MỌI CHI TIẾT ĐỀU ĐƯỢC ĐẦU TƯ TỈ MỈ" },
+      { type: "heading", text: "BAO GỒM:" },
+      { type: "bullet", text: "• 2 SARE + 2 ÁO VEST" },
+      { type: "bullet", text: "• 1 PHOTO MASTER" },
+      { type: "bullet", text: "• MAKE UP MASTER" },
+      { type: "heading", text: "SẢN PHẨM:" },
+      { type: "bullet", text: "• 2 HÌNH CỔNG 60X90CM MICA GƯƠNG CAO CẤP" },
+      { type: "bullet", text: "• 10 HÌNH KHUNG 15X21CM ÉP GỖ CAO CẤP (CÓ KHUNG)" },
+      { type: "bullet", text: "• TẶNG TOÀN BỘ FILE GỐC" },
+    ]);
+  });
+
+  it("không đổi một ký tự nào — ghép lại đủ nguyên văn từng từ", () => {
+    const src = "GÓI SILVER\n\nBAO GỒM:\n• 1 LẦN TRANG ĐIỂM\nTẠI STUDIO\n\n6tr";
+    const joined = parseDescriptionBlocks(src).map(b => b.text).join(" ");
+    const original = src.split(/\s+/).filter(Boolean).join(" ");
+    expect(joined.split(/\s+/).filter(Boolean).join(" ")).toBe(original);
+  });
+
+  it("handles empty / null", () => {
+    expect(parseDescriptionBlocks("")).toEqual([]);
+    expect(parseDescriptionBlocks(null)).toEqual([]);
+    expect(parseDescriptionBlocks(undefined)).toEqual([]);
   });
 });

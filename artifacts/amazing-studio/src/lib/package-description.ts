@@ -60,3 +60,48 @@ export function reflowDescriptionLines(description?: string | null): string[] {
 export function firstDescriptionLine(description?: string | null): string {
   return reflowDescriptionLines(description)[0] ?? "";
 }
+
+// ─── Parse description thành block có cấu trúc (hiển thị đẹp, KHÔNG đổi câu chữ) ──
+//
+// Nâng cấp từ reflowDescriptionLines: ngoài nối dòng gãy trong bullet, còn:
+//  - Dòng kết thúc bằng ":" (BAO GỒM:, SẢN PHẨM:...) → block "heading" (in đậm).
+//  - Các dòng thường LIÊN TIẾP (không bullet, không heading, không cách nhau
+//    bằng dòng trống) → nối thành 1 đoạn văn liền mạch — hết cảnh câu bị bẻ
+//    dòng cứng giữa chừng ("CAO CẤP / NHẤT, NƠI MỌI...").
+//  - Bullet giữ nguyên cả ký tự đầu dòng.
+// Thuần hiển thị — từng chữ giữ nguyên, chỉ khác cách xuống dòng/nhấn đậm.
+
+export type DescriptionBlock = { type: "heading" | "bullet" | "text"; text: string };
+
+export function parseDescriptionBlocks(description?: string | null): DescriptionBlock[] {
+  if (!description) return [];
+  const out: DescriptionBlock[] = [];
+  let current: DescriptionBlock | null = null;
+
+  const flush = () => {
+    if (current) {
+      const t = current.text.trim();
+      if (t) out.push({ ...current, text: t });
+      current = null;
+    }
+  };
+
+  for (const raw of description.split("\n")) {
+    const line = raw.trim();
+    if (line === "") {
+      flush();
+    } else if (BULLET_RE.test(line)) {
+      flush();
+      current = { type: "bullet", text: line };
+    } else if (line.endsWith(":")) {
+      flush();
+      out.push({ type: "heading", text: line });
+    } else if (current) {
+      current.text = `${current.text} ${line}`;
+    } else {
+      current = { type: "text", text: line };
+    }
+  }
+  flush();
+  return out;
+}

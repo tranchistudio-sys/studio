@@ -4108,8 +4108,13 @@ function ShowDetailPanel({
                                   {isCurrent && <span className="text-[9px] border border-blue-400 px-1.5 py-0.5 rounded font-bold text-foreground">Đang xem</span>}
                                 </div>
                                 {(svcShootDate || svcShootTime) && (
-                                  <div className="text-[10px] text-foreground mt-0.5">
-                                    📅 {svcShootDate}{svcShootTime ? ` • ${svcShootTime}` : ""}
+                                  <div className="flex items-baseline gap-1.5 mt-0.5">
+                                    {svcShootTime && (
+                                      <span className="text-base font-black text-primary tabular-nums leading-none">{svcShootTime}</span>
+                                    )}
+                                    {svcShootDate && (
+                                      <span className="text-[11px] font-semibold text-foreground tabular-nums">📅 {svcShootDate}</span>
+                                    )}
                                   </div>
                                 )}
                               </div>

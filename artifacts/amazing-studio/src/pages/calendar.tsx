@@ -41,7 +41,7 @@ import { SurchargeEditor, type SurchargeItem } from "@/components/surcharge-edit
 import { DeductionEditor, type DeductionItem } from "@/components/deduction-editor";
 import { StaffAssignmentEditor, type StaffAssignment, newStaffAssignment } from "@/components/staff-assignment-editor";
 import { castAmountFromResult, lookupCastByPkg, resolveCastAmount } from "@/lib/resolve-cast";
-import { reflowDescriptionLines, firstDescriptionLine } from "@/lib/package-description";
+import { reflowDescriptionLines, firstDescriptionLine, parseDescriptionBlocks } from "@/lib/package-description";
 import OutfitBookingSection, { type OutfitDraft } from "@/components/outfit-booking-section";
 import AdditionalServicesSection, { validateAdditionalServicesForm, type AdditionalServiceLine, newAdditionalServiceLine } from "@/components/additional-services-section";
 
@@ -4229,9 +4229,16 @@ function ShowDetailPanel({
                             {isCurrent && !svcCollapsed && svcPkgDetail.description && (
                               <div className="px-3 py-1.5 border-b border-border/30 bg-gray-50/50 dark:bg-muted/10">
                                 <p className="text-[10px] font-bold text-foreground mb-1">Nội dung gói:</p>
-                                {reflowDescriptionLines(svcPkgDetail.description).map((line, i) => (
-                                  <p key={i} className="text-[11px] text-foreground leading-relaxed">{line}</p>
-                                ))}
+                                {/* Trình bày dễ đọc — giữ nguyên từng chữ: tiêu đề đậm, bullet thẳng hàng, câu gãy nối liền */}
+                                {parseDescriptionBlocks(svcPkgDetail.description).map((b, i) =>
+                                  b.type === "heading" ? (
+                                    <p key={i} className="text-[11px] font-bold text-foreground pt-1 first:pt-0">{b.text}</p>
+                                  ) : b.type === "bullet" ? (
+                                    <p key={i} className="text-[11px] text-foreground leading-relaxed pl-3 -indent-3">{b.text}</p>
+                                  ) : (
+                                    <p key={i} className="text-[11px] text-foreground leading-relaxed pt-0.5 first:pt-0">{b.text}</p>
+                                  ),
+                                )}
                               </div>
                             )}
                             {isCurrent && !svcCollapsed && svcAddonNames.length > 0 && (

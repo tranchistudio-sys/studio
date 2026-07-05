@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { reflowDescriptionLines } from "@/lib/package-description";
+import { parseDescriptionBlocks } from "@/lib/package-description";
 
 export type ServiceSurcharge = { name?: string; label?: string; amount: number };
 export type ServiceDeduction = { label: string; amount: number };
@@ -169,11 +169,17 @@ export function renderServiceBreakdownCardHTML({
   hidePrice = false,
   ...priceProps
 }: ServiceBreakdownCardHTMLProps): string {
-  const descLines = reflowDescriptionLines(description);
-  const descHTML = descLines.length > 0
+  const descBlocks = parseDescriptionBlocks(description);
+  const descHTML = descBlocks.length > 0
     ? `<div style="padding:8px 16px;border-bottom:1px solid #eee;font-size:11px;color:#222;">
           <div style="font-weight:700;font-size:10px;color:#111;margin-bottom:4px;">Nội dung gói:</div>
-          ${descLines.map(l => escapeHTML(l)).join("<br/>")}
+          ${descBlocks.map(b =>
+            b.type === "heading"
+              ? `<div style="font-weight:700;color:#111;padding-top:5px;">${escapeHTML(b.text)}</div>`
+              : b.type === "bullet"
+                ? `<div style="padding-left:14px;text-indent:-14px;line-height:1.55;">${escapeHTML(b.text)}</div>`
+                : `<div style="line-height:1.55;padding-top:2px;">${escapeHTML(b.text)}</div>`,
+          ).join("")}
         </div>`
     : "";
   const subtitleHTML = subtitle
@@ -205,18 +211,24 @@ export function ServiceBreakdownCard({
   className = "",
 }: ServiceBreakdownCardProps) {
   const styles = VARIANTS[variant];
-  const descLines = reflowDescriptionLines(description);
+  const descBlocks = parseDescriptionBlocks(description);
   return (
     <div className={`rounded-lg border ${styles.border} overflow-hidden mb-2 last:mb-0 ${className}`}>
       <div className={`px-3 py-2 ${styles.headerBg}`}>
         <span className={`text-[11px] font-bold uppercase tracking-wide ${styles.title}`}>{title}</span>
       </div>
-      {descLines.length > 0 && (
+      {descBlocks.length > 0 && (
         <div className="px-3 py-1.5 border-b border-border/30 bg-gray-50/50 dark:bg-muted/10">
           <p className="text-[10px] font-bold text-muted-foreground mb-1">Nội dung gói:</p>
-          {descLines.map((line, i) => (
-            <p key={i} className="text-[11px] text-muted-foreground leading-relaxed">{line}</p>
-          ))}
+          {descBlocks.map((b, i) =>
+            b.type === "heading" ? (
+              <p key={i} className="text-[11px] font-bold text-foreground pt-1 first:pt-0">{b.text}</p>
+            ) : b.type === "bullet" ? (
+              <p key={i} className="text-[11px] text-muted-foreground leading-relaxed pl-3 -indent-3">{b.text}</p>
+            ) : (
+              <p key={i} className="text-[11px] text-muted-foreground leading-relaxed pt-0.5 first:pt-0">{b.text}</p>
+            ),
+          )}
         </div>
       )}
       {beforePrice}

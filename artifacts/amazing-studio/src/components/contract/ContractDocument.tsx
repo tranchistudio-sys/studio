@@ -10,6 +10,7 @@
  */
 import { useState } from "react";
 import { formatVND } from "@/lib/utils";
+import { parseDescriptionBlocks } from "@/lib/package-description";
 import SignaturePad from "./SignaturePad";
 import type { ContractPayload } from "./contract-types";
 
@@ -167,16 +168,31 @@ export default function ContractDocument({
                   <div className="font-bold text-[#111]">
                     📋 {svc.serviceLabel || `Dịch vụ ${idx + 1}`}
                   </div>
-                  <div className="text-xs text-[#888] mt-0.5">
-                    {fmtDate(svc.shootDate)} · {svc.shootTime?.slice(0, 5) || "—"}
-                    {svc.location ? ` · ${svc.location}` : ""}
+                  {/* Ngày giờ chụp nổi bật — khách nhìn là thấy, không lộn ngày */}
+                  <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
+                    {svc.shootTime ? (
+                      <span className="inline-flex items-center gap-1 rounded-md bg-[#111] px-2 py-0.5 text-[13px] font-extrabold text-white tabular-nums">
+                        🕐 {svc.shootTime.slice(0, 5)}
+                      </span>
+                    ) : null}
+                    <span className="inline-flex items-center gap-1 rounded-md border border-[#111] bg-[#f7f7f7] px-2 py-0.5 text-[13px] font-extrabold text-[#111] tabular-nums">
+                      📅 {fmtDate(svc.shootDate)}
+                    </span>
+                    {svc.location ? <span className="text-xs text-[#888]">📍 {svc.location}</span> : null}
                   </div>
                 </div>
               ) : (
-                <div className="text-xs text-[#666] mb-2">
-                  📅 Ngày chụp: <strong>{fmtDate(svc.shootDate)}</strong>
-                  {svc.shootTime ? <> · 🕐 <strong>{svc.shootTime.slice(0, 5)}</strong></> : null}
-                  {svc.location ? <> · 📍 {svc.location}</> : null}
+                // Ngày giờ chụp nổi bật — khách nhìn là thấy, không lộn ngày
+                <div className="flex flex-wrap items-center gap-2 mb-3">
+                  {svc.shootTime ? (
+                    <span className="inline-flex items-center gap-1.5 rounded-lg bg-[#111] px-3 py-1.5 text-[15px] font-extrabold text-white tabular-nums">
+                      🕐 {svc.shootTime.slice(0, 5)}
+                    </span>
+                  ) : null}
+                  <span className="inline-flex items-center gap-1.5 rounded-lg border-2 border-[#111] bg-[#f7f7f7] px-3 py-1.5 text-[15px] font-extrabold text-[#111] tabular-nums">
+                    📅 Ngày chụp: {fmtDate(svc.shootDate)}
+                  </span>
+                  {svc.location ? <span className="text-xs text-[#666]">📍 {svc.location}</span> : null}
                 </div>
               )}
 
@@ -189,7 +205,19 @@ export default function ContractDocument({
                       <div className="flex-1">
                         <div className="font-bold text-[15px] text-[#111]">{item.name}</div>
                         {item.description ? (
-                          <div className="text-xs text-[#666] italic mt-0.5 whitespace-pre-wrap">{item.description}</div>
+                          // Trình bày lại nội dung gói cho dễ đọc — GIỮ NGUYÊN từng chữ,
+                          // chỉ nhấn đậm tiêu đề, canh gạch đầu dòng, nối câu bị bẻ dòng cứng.
+                          <div className="text-xs text-[#444] mt-1.5 space-y-0.5">
+                            {parseDescriptionBlocks(item.description).map((b, bi) =>
+                              b.type === "heading" ? (
+                                <div key={bi} className="font-bold text-[#111] pt-1.5 first:pt-0">{b.text}</div>
+                              ) : b.type === "bullet" ? (
+                                <div key={bi} className="pl-4 -indent-4 leading-relaxed">{b.text}</div>
+                              ) : (
+                                <div key={bi} className="leading-relaxed pt-0.5 first:pt-0">{b.text}</div>
+                              ),
+                            )}
+                          </div>
                         ) : null}
                       </div>
                       <div className="font-extrabold text-[#111] whitespace-nowrap">{formatVND(item.price)}</div>

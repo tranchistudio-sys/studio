@@ -3,7 +3,7 @@ import { useParams, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, MessageCircle, User, Play, Camera } from "lucide-react";
 import { CMS_BASE } from "@/components/cms-shared";
-import { getImageSrc } from "@/lib/imageUtils";
+import { getCmsImageSrc } from "@/lib/imageUtils";
 import { Tilt3D, STYLE_3D } from "@/components/public-3d";
 import PublicGalleryLightbox from "@/components/public/PublicGalleryLightbox";
 
@@ -89,7 +89,7 @@ function MediaGrid({ items, albumName, onOpen }: {
             {isVideo(m) ? (
               <>
                 <video
-                  src={getImageSrc(m.imageUrl) ?? m.imageUrl}
+                  src={getCmsImageSrc(m.imageUrl) ?? m.imageUrl}
                   muted
                   playsInline
                   preload="metadata"
@@ -103,7 +103,7 @@ function MediaGrid({ items, albumName, onOpen }: {
               </>
             ) : (
               <img
-                src={getImageSrc(m.imageUrl) ?? m.imageUrl}
+                src={getCmsImageSrc(m.imageUrl) ?? m.imageUrl}
                 alt={m.caption ?? `${albumName} ${i + 1}`}
                 loading="lazy"
                 className="w-full h-full object-cover"

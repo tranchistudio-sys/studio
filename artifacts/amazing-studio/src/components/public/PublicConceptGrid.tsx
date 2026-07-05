@@ -60,6 +60,7 @@ export function PublicConceptGrid({ albums, limit = 8 }: Props) {
                   <LazyImage
                     src={album.coverImageUrl!}
                     alt={album.name}
+                    cmsCache
                     className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-[1.05]"
                   />
                   <div

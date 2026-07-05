@@ -20,3 +20,15 @@ export function getImageSrc(url: string | null | undefined): string | null {
 
   return u;
 }
+
+/**
+ * Ảnh CMS hiển thị trên WEBSITE PUBLIC (váy, áo dài, gallery, concept, sản phẩm).
+ * Đi route /api/storage/cms/objects/... — server trả Cache-Control public dài hạn
+ * để CDN/browser cache. CHỈ dùng cho ảnh public website; ảnh nhạy cảm (bằng chứng
+ * cọc, nội bộ) phải dùng getImageSrc như cũ.
+ */
+export function getCmsImageSrc(url: string | null | undefined): string | null {
+  const src = getImageSrc(url);
+  if (!src) return null;
+  return src.replace("/api/storage/objects/", "/api/storage/cms/objects/");
+}

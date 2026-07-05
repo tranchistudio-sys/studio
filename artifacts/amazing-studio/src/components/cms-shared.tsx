@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
 import { Upload, X, Image as ImageIcon, Loader2, GripVertical } from "lucide-react";
-import { getImageSrc } from "@/lib/imageUtils";
+import { getImageSrc, getCmsImageSrc } from "@/lib/imageUtils";
 import { API_BASE } from "@/lib/api-base";
 
 import { uploadQueueStore } from "@/lib/upload-queue/store";
@@ -166,12 +166,13 @@ export function MultiImageUploader({
 // LazyImage — IntersectionObserver, hiển thị skeleton khi tải
 // ═══════════════════════════════════════════════════════════════════════════
 export function LazyImage({
-  src, alt = "", className = "", placeholder,
-}: { src: string | null | undefined; alt?: string; className?: string; placeholder?: ReactNode }) {
+  src, alt = "", className = "", placeholder, cmsCache = false,
+}: { src: string | null | undefined; alt?: string; className?: string; placeholder?: ReactNode; cmsCache?: boolean }) {
   const ref = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const finalSrc = getImageSrc(src);
+  // cmsCache: ảnh public website → route cache dài hạn (xem getCmsImageSrc)
+  const finalSrc = cmsCache ? getCmsImageSrc(src) : getImageSrc(src);
   useEffect(() => {
     if (!ref.current || visible) return;
     const obs = new IntersectionObserver(entries => {

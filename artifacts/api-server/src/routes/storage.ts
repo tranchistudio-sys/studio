@@ -134,6 +134,60 @@ router.get("/storage/public-objects/*filePath", async (req: Request, res: Respon
 });
 
 /**
+ * GET /storage/cms/objects/*
+ *
+ * Ảnh CMS hiển thị trên WEBSITE PUBLIC (váy cưới, áo dài, gallery/album,
+ * concept, sản phẩm). File upload có tên UUID và không bao giờ ghi đè nội dung
+ * → cache public dài hạn để CDN + browser giữ ảnh, giảm hẳn tải server khi
+ * khách mở trang Cho thuê đồ. Ảnh nhạy cảm (bằng chứng cọc, nội bộ) KHÔNG đi
+ * route này — vẫn dùng /storage/objects với cache private ngắn như cũ.
+ */
+const CMS_PUBLIC_IMAGE_CACHE = "public, max-age=31536000, immutable";
+router.get("/storage/cms/objects/*path", async (req: Request, res: Response) => {
+  try {
+    const raw = req.params.path;
+    const wildcardPath = Array.isArray(raw) ? raw.join("/") : raw;
+    const objectPath = `/objects/${wildcardPath}`;
+
+    if (useLocalObjectStorage()) {
+      if (await localObjectExists(objectPath)) {
+        const local = await readLocalObject(objectPath);
+        if (local) {
+          res.setHeader("Content-Type", local.contentType);
+          res.setHeader("Cache-Control", CMS_PUBLIC_IMAGE_CACHE);
+          res.send(local.body);
+          return;
+        }
+      }
+      res.status(404).json({ error: "Object not found" });
+      return;
+    }
+
+    const objectFile = await objectStorageService.getObjectEntityFile(objectPath);
+    const response = await objectStorageService.downloadObject(objectFile);
+
+    res.status(response.status);
+    response.headers.forEach((value, key) => res.setHeader(key, value));
+    // Đè Cache-Control private mặc định của downloadObject — route này chỉ cho ảnh public website.
+    res.setHeader("Cache-Control", CMS_PUBLIC_IMAGE_CACHE);
+
+    if (response.body) {
+      const nodeStream = Readable.fromWeb(response.body as ReadableStream<Uint8Array>);
+      nodeStream.pipe(res);
+    } else {
+      res.end();
+    }
+  } catch (error) {
+    if (error instanceof ObjectNotFoundError) {
+      res.status(404).json({ error: "Object not found" });
+      return;
+    }
+    console.error("Error serving cms public object:", error);
+    res.status(500).json({ error: "Failed to serve object" });
+  }
+});
+
+/**
  * GET /storage/objects/*
  *
  * Serve object entities from PRIVATE_OBJECT_DIR.

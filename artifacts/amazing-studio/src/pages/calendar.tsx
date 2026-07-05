@@ -2406,9 +2406,9 @@ function ShowFormPanel({
             />
           </label>
         )}
-        {isEdit && (isAdmin || (viewerId && booking?.createdByStaffId === viewerId)) && (
+        {isEdit && (
           <button
-            onClick={() => { if (confirm("Xoá show này?")) deleteMutation.mutate(); }}
+            onClick={() => { if (confirm("Đưa show này vào thùng rác? Admin có thể phục hồi lại từ Thùng rác Booking.")) deleteMutation.mutate(); }}
             className="p-1.5 rounded-lg text-destructive/60 hover:text-destructive hover:bg-destructive/10 transition-colors flex-shrink-0"
           >
             <Trash2 className="w-4 h-4" />
@@ -3614,7 +3614,7 @@ function ShowDetailPanel({
       alert("Không xác định được show cần xoá.");
       return;
     }
-    if (!confirm("Xoá show này? Hành động không thể hoàn tác.")) return;
+    if (!confirm("Đưa show này vào thùng rác? Admin có thể phục hồi lại từ Thùng rác Booking.")) return;
     setDeleting(true);
     try {
       const res = await authFetch(`${BASE}/api/bookings/${booking.id}`, { method: "DELETE" });
@@ -3833,11 +3833,10 @@ function ShowDetailPanel({
         >
           <Pencil className="w-4 h-4" />
         </button>
-        {(isAdmin || (viewerId && booking.createdByStaffId === viewerId)) && (
-          <button onClick={handleDelete} disabled={deleting} className="p-1.5 rounded-lg text-destructive/50 hover:text-destructive hover:bg-destructive/10 transition-colors flex-shrink-0" title="Xoá show">
-            <Trash2 className="w-4 h-4" />
-          </button>
-        )}
+        {/* Xoá mềm (vào thùng rác) — mọi nhân viên được dùng; phục hồi vẫn chỉ admin */}
+        <button onClick={handleDelete} disabled={deleting} className="p-1.5 rounded-lg text-destructive/50 hover:text-destructive hover:bg-destructive/10 transition-colors flex-shrink-0" title="Xoá show">
+          <Trash2 className="w-4 h-4" />
+        </button>
       </div>
 
       {/* ── Body ── */}

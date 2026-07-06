@@ -120,15 +120,20 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
     serviceCategory?: string;
   }>;
 
+  // Dòng chỉ-giao-nhân-sự (chưa chốt gói: không serviceName/serviceId, giá 0)
+  // KHÔNG phải breakdown giá — loại khỏi các phép tính tiền để show "Chưa chốt
+  // dịch vụ" vẫn fallback về booking.totalAmount như khi items rỗng.
+  const pricedItems = items.filter(it => it.serviceName || it.serviceId || (it.price || 0) > 0);
+
   // Total of all items (or fall back to booking.totalAmount)
-  const bookingTotal = items.length > 0
-    ? items.reduce((sum, it) => sum + (it.price || 0), 0)
+  const bookingTotal = pricedItems.length > 0
+    ? pricedItems.reduce((sum, it) => sum + (it.price || 0), 0)
     : parseFloat(booking.totalAmount as string) || 0;
 
   // Commission base = total excluding beauty/makeup-only items (for Hoa's sale commission)
   const beautyKeywords = ["beauty", "makeup", "trang điểm", "làm đẹp"];
-  const commissionBase = items.length > 0
-    ? items.reduce((sum, it) => {
+  const commissionBase = pricedItems.length > 0
+    ? pricedItems.reduce((sum, it) => {
         const name = (it.serviceName || "").toLowerCase();
         const cat = (it.serviceCategory || "").toLowerCase();
         const isBeauty = beautyKeywords.some(k => name.includes(k) || cat.includes(k));

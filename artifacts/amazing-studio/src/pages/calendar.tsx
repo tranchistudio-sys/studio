@@ -1502,6 +1502,15 @@ function ShowFormPanel({
     assignedStaff: [],
     notes: "", conceptImages: [],
   });
+  // Dòng "có nhân sự thật": có entry đã chọn người (staffId hoặc tên). Entry
+  // placeholder rỗng (bấm "+ Thêm nhân sự" rồi bỏ dở) KHÔNG tính. Item legacy
+  // không có mảng assignedStaff thì xét photoId/makeupId; còn khi mảng tồn tại
+  // (kể cả rỗng do user gỡ hết người) thì KHÔNG xét photoId cũ còn sót — để gỡ
+  // phân công xong, dòng chưa chốt gói lại bị loại khỏi items như trước.
+  const lineHasStaff = (l: OrderLine): boolean =>
+    Array.isArray(l.assignedStaff)
+      ? l.assignedStaff.some(s => !!s.staffId || !!(s.staffName || "").trim())
+      : !!(l.photoId || l.makeupId);
   const makeSubDraft = (defaultDate: string, defaultTime: string): SubServiceDraft => {
     const rawItems: OrderLine[] = booking?.items?.length
       ? booking.items.map(i => ({ ...i, tempId: genId() }))
@@ -1990,8 +1999,13 @@ function ShowFormPanel({
     const normalizeItems = (items: typeof subDrafts[number]["items"]) => {
       const seen = new Set<string>();
       return items.filter(item => {
-        if (!(item.serviceName || item.serviceId)) return false;
-        const key = item.serviceKey || `svc-${item.serviceId ?? "custom"}-${item.serviceName ?? ""}`;
+        // Dòng chưa chốt gói nhưng ĐÃ giao nhân sự vẫn phải lưu — nếu lọc bỏ,
+        // phân công (Nhiếp ảnh/Makeup...) mất lặng lẽ, show kẹt "Chưa giao việc".
+        if (!(item.serviceName || item.serviceId || lineHasStaff(item))) return false;
+        const key = item.serviceKey
+          || (item.serviceName || item.serviceId
+            ? `svc-${item.serviceId ?? "custom"}-${item.serviceName ?? ""}`
+            : `line-${item.tempId}`);
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
@@ -2149,7 +2163,8 @@ function ShowFormPanel({
         }
 
         const subServicePayloads = subDrafts.map(sub => {
-          const validItems = sub.items.filter(l => l.serviceName || l.serviceId);
+          // Giữ cả dòng chưa chốt gói nhưng đã giao nhân sự (xem lineHasStaff)
+          const validItems = sub.items.filter(l => l.serviceName || l.serviceId || lineHasStaff(l));
           const subPackageTotal = calcSubPackageTotal(sub.items);
           const subExtrasTotal = calcSubExtrasTotal(sub.additionalServices || []);
           const subTotal = subPackageTotal + subExtrasTotal;
@@ -2239,6 +2254,11 @@ function ShowFormPanel({
       const effectiveShootDate = sub0.shootDate || shootDate;
       const validLines = sub0.items.filter(l => l.serviceName || l.serviceId);
       const hasServices = validLines.length > 0;
+      // Dòng đã giao nhân sự nhưng chưa chọn gói vẫn phải gửi lên server —
+      // trước đây bị lọc bỏ nên phân công mất lặng lẽ, show kẹt "Chưa giao việc".
+      // (hasServices/packageType vẫn tính theo validLines: chưa chọn gói thì
+      // show vẫn là "Chưa chốt dịch vụ", chỉ có nhân sự là được giữ lại.)
+      const linesToSave = sub0.items.filter(l => l.serviceName || l.serviceId || lineHasStaff(l));
 
       const packageType = hasServices
         ? (validLines.length === 1
@@ -2291,7 +2311,7 @@ function ShowFormPanel({
             ? (depositDate ? new Date(`${depositDate}T${depositTime || "00:00"}:00`).toISOString() : null)
             : undefined,
         discountAmount: discountNum,
-        items: hasServices ? validLines.map(({ tempId: _t, ...rest }) => rest) : [],
+        items: linesToSave.map(({ tempId: _t, ...rest }) => rest),
         surcharges: cleanedSurcharges,
         deductions: hasServices ? cleanedDeductions : [],
         // Only include assignedStaff in PUT when non-empty — sending [] would clear item-level photographer/makeup

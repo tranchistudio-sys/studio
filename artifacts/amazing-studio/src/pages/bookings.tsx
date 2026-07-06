@@ -1,5 +1,5 @@
 import { useMemo, useState, useCallback, useEffect, useRef } from "react";
-import { useSearch } from "wouter";
+import { useSearch, useLocation } from "wouter";
 import { paymentFeedback } from "@/lib/feedback";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { formatVND, formatDate } from "@/lib/utils";
@@ -83,11 +83,25 @@ type SimpleBooking = {
   id: number; orderCode: string; customerName: string; customerPhone: string | null; shootDate: string; shootTime?: string;
   serviceCategory: string; packageType: string; serviceLabel?: string | null; servicePackageId?: number | null;
   parentId?: number | null; isParentContract?: boolean | null;
+  // items: backend VẪN gửi trong list — khai báo để card hiện tên dịch vụ + search theo dịch vụ
+  items?: { serviceName?: string; serviceLabel?: string; name?: string; [key: string]: unknown }[] | null;
   status: string; totalAmount: number; paidAmount: number; remainingAmount: number; createdAt: string;
 };
 
+// Tên các dịch vụ trong đơn (từ items, bỏ trùng/rỗng) — fallback packageType.
+function bookingServiceNames(b: SimpleBooking): string[] {
+  const names = [...new Set(
+    (b.items ?? [])
+      .map(it => String(it.serviceName || it.serviceLabel || it.name || "").trim())
+      .filter(Boolean),
+  )];
+  if (names.length > 0) return names;
+  return b.packageType ? [b.packageType] : [];
+}
+
 export default function BookingsPage() {
   const qc = useQueryClient();
+  const [, setLocation] = useLocation(); // nút "Mở lịch chụp" → /calendar?bookingId=N
   const urlSearch = useSearch(); // query string hiện tại (reactive) — để deep-link ?bookingId mở đơn kể cả khi đang ở trang này
   const detailPanelRef = useRef<HTMLDivElement>(null); // cuộn tới ô chi tiết khi mở đơn từ deep-link
   const scrollPendingRef = useRef(false); // true = lần mở đơn này tới từ deep-link → cần cuộn tới ô chi tiết
@@ -267,7 +281,15 @@ export default function BookingsPage() {
   const filtered = useMemo(() => {
     const safeBookings = Array.isArray(bookings) ? bookings : [];
     return safeBookings.filter(b => {
-      const matchSearch = !search || b.customerName.toLowerCase().includes(search.toLowerCase()) || b.orderCode?.toLowerCase().includes(search.toLowerCase()) || (b.customerPhone ?? "").includes(search);
+      // Tìm theo: tên khách / mã đơn / SĐT / tên dịch vụ (packageType + serviceLabel + items[].serviceName)
+      const q = search.trim().toLowerCase();
+      const matchSearch = !q
+        || b.customerName.toLowerCase().includes(q)
+        || b.orderCode?.toLowerCase().includes(q)
+        || (b.customerPhone ?? "").includes(search.trim())
+        || (b.packageType ?? "").toLowerCase().includes(q)
+        || (b.serviceLabel ?? "").toLowerCase().includes(q)
+        || bookingServiceNames(b).some(n => n.toLowerCase().includes(q));
       const matchStatus = !statusFilter || b.status === statusFilter;
       if (!matchSearch || !matchStatus) return false;
       if (periodPreset === "all") return true;
@@ -411,7 +433,7 @@ export default function BookingsPage() {
             <div className="flex gap-2">
               <div className="relative flex-1">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <Input className="pl-9" placeholder="Tìm khách, mã đơn, SĐT..." value={search} onChange={e => setSearch(e.target.value)} />
+                <Input className="pl-9" placeholder="Tìm khách, mã đơn, SĐT, dịch vụ..." value={search} onChange={e => setSearch(e.target.value)} />
               </div>
               <Select value={statusFilter} onChange={e => setStatusFilter(e.target.value)} className="w-36">
                 <option value="">Tất cả trạng thái</option>
@@ -492,39 +514,85 @@ export default function BookingsPage() {
               {filtered.map(b => {
                 const s = STATUS_MAP[b.status] ?? STATUS_MAP.pending;
                 const pct = b.totalAmount > 0 ? (b.paidAmount / b.totalAmount) * 100 : 0;
+                const paidFull = b.remainingAmount === 0 && b.totalAmount > 0;
+                // Tối đa 2 dịch vụ chính, còn lại gom "+N dịch vụ khác"
+                const svcNames = bookingServiceNames(b);
+                const svcShown = svcNames.slice(0, 2);
+                const svcMore = svcNames.length - svcShown.length;
                 return (
                   <div
                     key={b.id}
                     onClick={() => { setSelectedId(b.id); setActiveTab("info"); }}
-                    className={`rounded-xl border p-4 cursor-pointer transition-all hover:shadow-md ${selectedId === b.id ? "border-primary bg-primary/5 shadow-sm" : "bg-card hover:border-primary/40"}`}
+                    className={`rounded-xl border cursor-pointer transition-all hover:shadow-md ${selectedId === b.id ? "border-primary bg-primary/5 shadow-sm" : "bg-card hover:border-primary/40"}`}
                   >
-                    <div className="flex items-start justify-between gap-2">
+                    {/* Vùng 1: Khách + mã đơn + trạng thái | Tổng đơn + còn nợ */}
+                    <div className="flex items-start justify-between gap-3 px-4 pt-3">
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          <span className="font-bold text-sm">{b.customerName}</span>
-                          <span className="text-xs text-muted-foreground">{b.orderCode}</span>
-                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${s.bg}`}>{s.label}</span>
+                          <span className="font-bold text-sm truncate max-w-[180px] sm:max-w-none">{b.customerName}</span>
+                          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border flex-shrink-0 ${s.bg}`}>{s.label}</span>
                         </div>
-                        <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1 flex-wrap">
-                          {b.customerPhone && <span className="flex items-center gap-1"><Phone className="w-3 h-3" />{b.customerPhone}</span>}
-                          <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{formatDate(b.shootDate)} {b.shootTime?.slice(0, 5)}</span>
-                          <span className="flex items-center gap-1"><Package2 className="w-3 h-3" />{b.packageType}</span>
-                        </div>
+                        <p className="text-[11px] font-mono text-muted-foreground mt-0.5">{b.orderCode}</p>
                       </div>
                       <div className="text-right flex-shrink-0">
-                        <p className="font-bold text-sm text-primary">{formatVND(b.totalAmount)}</p>
-                        {b.remainingAmount > 0 && <p className="text-[10px] text-red-600 font-medium">Còn: {formatVND(b.remainingAmount)}</p>}
-                        {b.remainingAmount === 0 && <p className="text-[10px] text-green-600 font-medium">Đã thanh toán đủ</p>}
+                        <p className="font-bold text-base text-primary leading-tight">{formatVND(b.totalAmount)}</p>
+                        {b.remainingAmount > 0 && <p className="text-[11px] text-red-600 font-semibold mt-0.5">Còn nợ: {formatVND(b.remainingAmount)}</p>}
+                        {paidFull && <p className="text-[11px] text-green-600 font-semibold mt-0.5">✓ Đã thanh toán đủ</p>}
                       </div>
                     </div>
-                    <div className="mt-2">
-                      <div className="flex justify-between text-[10px] text-muted-foreground mb-0.5">
-                        <span>Đã thu: {formatVND(b.paidAmount)}</span>
-                        <span>{Math.round(pct)}%</span>
+
+                    {/* Vùng 2: SĐT + ngày giờ chụp */}
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground px-4 mt-2">
+                      {b.customerPhone && (
+                        <span className="flex items-center gap-1.5"><Phone className="w-3.5 h-3.5 flex-shrink-0" />{b.customerPhone}</span>
+                      )}
+                      <span className="flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5 flex-shrink-0" />
+                        {b.shootDate ? <>{formatDate(b.shootDate)}{b.shootTime ? ` · ${b.shootTime.slice(0, 5)}` : ""}</> : "Chưa có ngày chụp"}
+                      </span>
+                    </div>
+
+                    {/* Vùng 3: Dịch vụ (tối đa 2 + "+N dịch vụ khác") */}
+                    {svcNames.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1.5 px-4 mt-2">
+                        <Package2 className="w-3.5 h-3.5 text-muted-foreground flex-shrink-0" />
+                        {svcShown.map(n => (
+                          <span key={n} className="text-[11px] font-medium px-2 py-0.5 rounded-full bg-muted text-foreground/80 max-w-[200px] truncate">{n}</span>
+                        ))}
+                        {svcMore > 0 && (
+                          <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-primary/10 text-primary">+{svcMore} dịch vụ khác</span>
+                        )}
                       </div>
-                      <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-                        <div className="h-full bg-primary rounded-full transition-all" style={{ width: `${Math.min(pct, 100)}%` }} />
+                    )}
+
+                    {/* Vùng 4: Đã thu + tiến độ + nút mở lịch */}
+                    <div className="flex items-end gap-3 px-4 pb-3 mt-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex justify-between text-[10px] mb-0.5">
+                          <span className="text-emerald-600 font-semibold">Đã thu: {formatVND(b.paidAmount)}</span>
+                          <span className="text-muted-foreground">{Math.round(pct)}%</span>
+                        </div>
+                        <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                          <div className={`h-full rounded-full transition-all ${paidFull ? "bg-green-500" : "bg-primary"}`} style={{ width: `${Math.min(pct, 100)}%` }} />
+                        </div>
                       </div>
+                      <button
+                        type="button"
+                        onClick={ev => {
+                          ev.stopPropagation();
+                          if (b.shootDate) setLocation(`/calendar?bookingId=${b.id}`);
+                        }}
+                        disabled={!b.shootDate}
+                        title={b.shootDate ? "Mở show này trên lịch chụp để sửa lịch / giao việc / giờ chụp" : "Chưa có ngày chụp"}
+                        className={`flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border transition-colors flex-shrink-0 ${
+                          b.shootDate
+                            ? "border-primary/40 text-primary hover:bg-primary/10"
+                            : "border-border text-muted-foreground/50 cursor-not-allowed"
+                        }`}
+                      >
+                        <CalendarDays className="w-3.5 h-3.5" />
+                        <span className="hidden sm:inline">Mở lịch chụp</span>
+                      </button>
                     </div>
                   </div>
                 );

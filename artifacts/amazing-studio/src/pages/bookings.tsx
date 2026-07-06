@@ -312,6 +312,9 @@ export default function BookingsPage() {
     [filtered, servicePackages, serviceGroups],
   );
 
+  // Thu gọn/mở rộng khối "Tổng hợp dịch vụ đã chốt" — nhớ lựa chọn qua localStorage
+  const [svcStatsOpen, setSvcStatsOpen] = useState(() => localStorage.getItem("bookings.svcStatsOpen") !== "0");
+
   const serviceGroupTotal = useMemo(
     () => serviceGroupStats.reduce((s, x) => s + x.count, 0),
     [serviceGroupStats],
@@ -392,36 +395,49 @@ export default function BookingsPage() {
       </div>
 
       <div className="rounded-xl border bg-card p-4">
-        <div className="flex items-center justify-between gap-2 mb-3">
-          <div>
+        {/* Header bấm được để thu gọn/mở rộng — trạng thái nhớ qua localStorage */}
+        <button
+          type="button"
+          onClick={() => setSvcStatsOpen(o => {
+            const v = !o;
+            localStorage.setItem("bookings.svcStatsOpen", v ? "1" : "0");
+            return v;
+          })}
+          className="w-full flex items-center justify-between gap-2 text-left"
+          title={svcStatsOpen ? "Thu gọn tổng hợp dịch vụ" : "Mở rộng tổng hợp dịch vụ"}
+        >
+          <div className="min-w-0">
             <p className="text-sm font-semibold uppercase tracking-wide">Tổng hợp dịch vụ đã chốt</p>
-            <p className="text-xs text-muted-foreground mt-0.5">
+            <p className="text-xs text-muted-foreground mt-0.5 truncate">
               {periodLabelForStats} · {serviceGroupTotal} đơn · theo nhóm dịch vụ (không tính gói giá)
             </p>
           </div>
-        </div>
-        {serviceGroupStats.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Chưa có đơn trong kỳ đang xem</p>
-        ) : (
-          <div className="space-y-3">
-            {serviceGroupStats.map((row, idx) => (
-              <div key={row.label}>
-                <div className="flex items-center justify-between gap-3 text-sm mb-1">
-                  <span className="font-medium truncate">
-                    {idx < 3 && <span className="text-muted-foreground mr-1.5">#{idx + 1}</span>}
-                    {row.label}
-                  </span>
-                  <span className="font-semibold tabular-nums flex-shrink-0">{row.count} đơn</span>
+          <ChevronRight className={`w-4 h-4 text-muted-foreground flex-shrink-0 transition-transform ${svcStatsOpen ? "rotate-90" : ""}`} />
+        </button>
+        {svcStatsOpen && (
+          serviceGroupStats.length === 0 ? (
+            <p className="text-sm text-muted-foreground mt-3">Chưa có đơn trong kỳ đang xem</p>
+          ) : (
+            <div className="space-y-3 mt-3">
+              {serviceGroupStats.map((row, idx) => (
+                <div key={row.label}>
+                  <div className="flex items-center justify-between gap-3 text-sm mb-1">
+                    <span className="font-medium truncate">
+                      {idx < 3 && <span className="text-muted-foreground mr-1.5">#{idx + 1}</span>}
+                      {row.label}
+                    </span>
+                    <span className="font-semibold tabular-nums flex-shrink-0">{row.count} đơn</span>
+                  </div>
+                  <div className="h-2 bg-muted rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-primary/80 rounded-full transition-all"
+                      style={{ width: `${Math.max(row.pct, row.count > 0 ? 8 : 0)}%` }}
+                    />
+                  </div>
                 </div>
-                <div className="h-2 bg-muted rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-primary/80 rounded-full transition-all"
-                    style={{ width: `${Math.max(row.pct, row.count > 0 ? 8 : 0)}%` }}
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )
         )}
       </div>
 

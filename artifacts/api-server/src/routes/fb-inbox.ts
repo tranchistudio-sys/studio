@@ -39,6 +39,7 @@ import multer from "multer";
 import { randomUUID } from "crypto";
 import { objectStorageClient, ObjectStorageService } from "../lib/objectStorage";
 import { getPublicBaseUrl } from "../lib/publicUrl";
+import { withStartupDdlLock } from "../lib/startup-ddl";
 
 const router: IRouter = Router();
 
@@ -78,7 +79,7 @@ async function ensureFbInboxTable() {
     ALTER TABLE fb_inbox_messages ADD COLUMN IF NOT EXISTS sent_by TEXT
   `);
 }
-ensureFbInboxTable().catch((err) => console.error("ensureFbInboxTable error:", err));
+withStartupDdlLock(ensureFbInboxTable).catch((err) => console.error("ensureFbInboxTable error:", err));
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 const _objectStorageService = new ObjectStorageService();

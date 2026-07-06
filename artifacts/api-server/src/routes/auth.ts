@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import { pool } from "@workspace/db";
 import bcrypt from "bcryptjs";
+import { withStartupDdlLock } from "../lib/startup-ddl";
 
 const router: IRouter = Router();
 
@@ -49,7 +50,7 @@ async function ensureAuthColumns() {
   }
   if (updates.length > 0) await Promise.all(updates);
 }
-ensureAuthColumns().catch(console.error);
+withStartupDdlLock(ensureAuthColumns).catch(console.error);
 
 const JWT_SECRET = process.env.SESSION_SECRET ?? "amazing-studio-secret-2025";
 

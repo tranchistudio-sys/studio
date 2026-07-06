@@ -10,6 +10,7 @@ import { eq, and } from "drizzle-orm";
 import { verifyToken } from "./auth";
 import { getPublicBaseUrl } from "../lib/publicUrl";
 import { computeOvertimeForMonth, type OvertimeLog } from "../lib/overtime";
+import { withStartupDdlLock } from "../lib/startup-ddl";
 import {
   getShowDayDatesForStaff,
   getShowDayDatesByStaffForMonth,
@@ -214,7 +215,7 @@ async function ensureAttendanceSchema() {
     }
   }
 }
-ensureAttendanceSchema().catch(err => console.error("[attendance] ensureSchema failed:", err));
+withStartupDdlLock(ensureAttendanceSchema).catch(err => console.error("[attendance] ensureSchema failed:", err));
 
 const router: IRouter = Router();
 

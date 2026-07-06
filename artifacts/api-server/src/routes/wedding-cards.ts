@@ -2,6 +2,7 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { randomBytes } from "node:crypto";
 import { pool } from "@workspace/db";
 import { getCallerRole } from "./auth";
+import { withStartupDdlLock } from "../lib/startup-ddl";
 
 const router: IRouter = Router();
 
@@ -158,7 +159,7 @@ async function ensureWeddingSchema() {
     client.release();
   }
 }
-ensureWeddingSchema().catch(err => console.error("[wedding-cards] ensureSchema failed:", err));
+withStartupDdlLock(ensureWeddingSchema).catch(err => console.error("[wedding-cards] ensureSchema failed:", err));
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 // Mở quản lý mẫu Thiệp cưới cho MỌI nhân viên đã đăng nhập (quyết định của chủ studio).

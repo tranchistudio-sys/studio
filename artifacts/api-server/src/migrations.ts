@@ -1,6 +1,7 @@
 import { pool } from "@workspace/db";
+import { withStartupDdlLock } from "./lib/startup-ddl";
 
-async function runMigrations() {
+async function runMigrationsUnlocked() {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -1155,6 +1156,13 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
   } catch (err) {
     console.error("[migrations] contracts online-sign v2:", err);
   }
+}
+
+async function runMigrations() {
+  // Toàn bộ DDL startup (migrations này + các ensure*Schema trong routes/) đi qua
+  // withStartupDdlLock: tắt được bằng SKIP_STARTUP_MIGRATIONS=1 khi deploy, và
+  // tuần tự hoá giữa các instance Autoscale để hết "deadlock detected" lúc Promote.
+  await withStartupDdlLock(runMigrationsUnlocked);
 }
 
 export default runMigrations;

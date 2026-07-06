@@ -240,8 +240,8 @@ function assignedDeclaresSale(assigned: unknown): boolean {
 function extractStaffEntries(
   assignedRaw: unknown, itemsRaw: unknown, staffId: number,
   createdByStaffId?: number | null
-): Array<{ role: string; taskKey: string; castAmount: number }> {
-  const out: Array<{ role: string; taskKey: string; castAmount: number }> = [];
+): Array<{ role: string; taskKey: string; castAmount: number; manual?: boolean }> {
+  const out: Array<{ role: string; taskKey: string; castAmount: number; manual?: boolean }> = [];
   const assigned = parseJsonb(assignedRaw);
   const items = parseJsonb(itemsRaw) as Array<Record<string, unknown>> | null;
 
@@ -257,7 +257,7 @@ function extractStaffEntries(
         const cast = typeof castRaw === "number" ? castRaw
           : typeof castRaw === "string" ? parseFloat(castRaw) || 0
           : 0;
-        out.push({ role, taskKey, castAmount: cast });
+        out.push({ role, taskKey, castAmount: cast, manual: entry.castSource === "manual" });
       }
     } else if (typeof assigned === "object") {
       const a = assigned as Record<string, unknown>;
@@ -291,7 +291,7 @@ function extractStaffEntries(
           const cast = typeof castRaw === "number" ? castRaw
             : typeof castRaw === "string" ? parseFloat(castRaw) || 0
             : 0;
-          out.push({ role, taskKey, castAmount: cast });
+          out.push({ role, taskKey, castAmount: cast, manual: s.castSource === "manual" });
         }
       }
       if (String(it.photoId ?? "") === String(staffId) && !out.find(e => e.role === "photographer")) {
@@ -314,7 +314,14 @@ function extractStaffEntries(
     out.push({ role: "sale", taskKey: "mac_dinh", castAmount: 0 });
   }
 
-  return out;
+  // Dedup theo role lấy entry ĐẦU TIÊN → đẩy GIÁ TAY (items) lên trước để nó
+  // thắng entry cũ ở top-level assigned_staff (vd đã lưu ở Giao việc). Stable:
+  // chỉ đổi vị trí manual, giữ nguyên thứ tự tương đối còn lại.
+  const manualFirst = [
+    ...out.filter(e => e.manual),
+    ...out.filter(e => !e.manual),
+  ];
+  return manualFirst;
 }
 
 async function countApprovedLeaveDays(staffId: number, month: number, year: number): Promise<number> {

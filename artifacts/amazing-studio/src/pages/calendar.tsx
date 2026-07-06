@@ -877,7 +877,8 @@ function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRa
     if (!line.assignedStaff?.length) return;
     let changed = false;
     const next = line.assignedStaff.map(s => {
-      if (!s.staffId || !s.role) return s;
+      // Giá tay (castSource='manual'): admin đã gõ đè — không auto-resolve đè lại.
+      if (!s.staffId || !s.role || s.castSource === "manual") return s;
       const result = resolveCastAmount(
         s.staffId, s.role, line.baseJobType || "mac_dinh", packageId,
         allCastRates, staffRatesForResolve,
@@ -1087,6 +1088,7 @@ function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRa
         baseJobType={line.baseJobType}
         bookingId={bookingId ?? null}
         serviceBookingId={serviceBookingId ?? null}
+        canManualPrice={isAdmin}
       />
 
       {/* Phí phát sinh — Surcharges per package */}

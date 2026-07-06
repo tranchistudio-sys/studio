@@ -119,13 +119,44 @@ function assignmentKey(staffId: number, role: string): string {
   return `${staffId}:${normalizeRoleForCast(role)}`;
 }
 
-/** Resolve cast from DB, dedupe staffId+role, log corrections. */
+// Giá tay CHỈ áp cho photographer/makeup — đúng bài toán "gói nhiều thợ ảnh",
+// và là 2 role duy nhất mà cả đường lương persist (job-earnings) lẫn realtime
+// (salary-estimate) đều chi trả theo item. Role khác gõ tay sẽ lệch giữa các
+// màn hình nên KHÔNG cho manual (server ép resolve lại).
+const MANUAL_ALLOWED_ROLES = new Set(["photographer", "makeup"]);
+
+/** Build map giá tay ĐANG LƯU trong DB: key `staffId:role` → amount. Dùng để
+ *  non-admin lưu lại booking (sửa giờ/ghi chú) KHÔNG làm mất giá tay admin đã
+ *  chốt: entry manual trùng khớp DB thì được giữ; chỉ giá tay MỚI/ĐỔI mới bị chặn. */
+export function buildPrevManualMap(oldItems: unknown): Map<string, number> {
+  const m = new Map<string, number>();
+  if (!Array.isArray(oldItems)) return m;
+  for (const it of oldItems as Record<string, unknown>[]) {
+    const sa = Array.isArray(it.assignedStaff) ? (it.assignedStaff as StaffAssignmentCastInput[]) : [];
+    for (const s of sa) {
+      if (!s?.staffId || !s?.role || s.castSource !== "manual") continue;
+      const amt = typeof s.castAmount === "number" ? s.castAmount : parseFloat(String(s.castAmount ?? 0));
+      if (Number.isFinite(amt) && amt > 0) m.set(assignmentKey(s.staffId, s.role), amt);
+    }
+  }
+  return m;
+}
+
+/** Resolve cast from DB, dedupe staffId+role, log corrections.
+ *  opts.allowManual: caller là admin → entry castSource='manual' (giá tay) được
+ *  GIỮ NGUYÊN thay vì ghi đè bằng bảng cast.
+ *  opts.prevManual: map giá tay đang lưu (buildPrevManualMap) — dùng khi caller
+ *  KHÔNG phải admin: entry manual trùng giá đang lưu vẫn được giữ (không bị xoá
+ *  khi nhân viên sửa giờ chụp), nhưng giá manual MỚI/ĐỔI thì resolve lại (chặn bơm).
+ *  Ngoài 2 trường hợp trên, mọi giá vẫn resolve theo bảng cast như cũ. */
 export async function normalizeItemsAssignedStaffCast(
   rawItems: unknown,
   bookingPackageId?: number | null,
+  opts?: { allowManual?: boolean; prevManual?: Map<string, number> },
 ): Promise<unknown[]> {
   if (!Array.isArray(rawItems)) return [];
   const seenPerItem = new Map<number, Set<string>>();
+  const prevManual = opts?.prevManual;
 
   return Promise.all(
     (rawItems as Record<string, unknown>[]).map(async (item, itemIdx) => {
@@ -151,6 +182,25 @@ export async function normalizeItemsAssignedStaffCast(
           continue;
         }
         seen.add(key);
+
+        const canonRole = normalizeRoleForCast(raw.role);
+        // Giá tay: giữ khi (a) admin gõ đè, HOẶC (b) non-admin nhưng trùng đúng
+        // giá tay đang lưu trong DB. Chỉ áp cho photographer/makeup.
+        const manualAmt = typeof raw.castAmount === "number" ? raw.castAmount : parseFloat(String(raw.castAmount ?? 0));
+        const isManualReq = raw.castSource === "manual" && Number.isFinite(manualAmt) && manualAmt > 0 && MANUAL_ALLOWED_ROLES.has(canonRole);
+        const matchesPrev = prevManual?.get(key) != null && Math.abs((prevManual.get(key) as number) - manualAmt) < 0.01;
+        if (isManualReq && (opts?.allowManual || matchesPrev)) {
+          console.info("[cast-resolve] manual price kept", {
+            staffId: raw.staffId,
+            staffName: raw.staffName,
+            role: canonRole,
+            packageId,
+            manualCastAmount: manualAmt,
+            via: opts?.allowManual ? "admin" : "prev-match",
+          });
+          normalized.push({ ...raw, role: canonRole, castAmount: manualAmt, castSource: "manual" });
+          continue;
+        }
 
         const resolved = await resolveStaffCastAmount({
           staffId: raw.staffId,

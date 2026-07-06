@@ -6,7 +6,7 @@ import { isCollectedPayment, money } from "../lib/booking-money";
 import { verifyToken, getCallerRole } from "./auth";
 import { computeBookingEarnings } from "./job-earnings";
 import { emitNotification } from "./notifications";
-import { normalizeItemsAssignedStaffCast } from "../lib/resolve-staff-cast";
+import { normalizeItemsAssignedStaffCast, buildPrevManualMap } from "../lib/resolve-staff-cast";
 import { maybeCreatePhotoshopJobForBooking } from "./photoshop-jobs";
 import { bookingRequiresPostProduction } from "../lib/post-production-eligibility";
 import {
@@ -83,7 +83,7 @@ type StaffAssignmentLike = { role?: string; staffId?: number; staffName?: string
 async function normalizeBookingItemsCast(
   rawItems: unknown,
   bookingPackageId?: number | null,
-  opts?: { allowManual?: boolean },
+  opts?: { allowManual?: boolean; prevManual?: Map<string, number> },
 ): Promise<unknown[]> {
   const normalized = await normalizeItemsAssignedStaffCast(rawItems, bookingPackageId, opts);
   return normalizeItemStaff(normalized);
@@ -999,8 +999,11 @@ router.put("/bookings/:id", async (req, res) => {
     delete updateData.totalAmount;
   }
   const callerId = verifyToken(req.headers.authorization) || null;
-  // Giá tay (castSource='manual') chỉ được giữ khi người lưu là admin.
+  // Giá tay (castSource='manual') chỉ được TẠO/ĐỔI khi người lưu là admin.
+  // prevManual = giá tay đang lưu → non-admin lưu lại (sửa giờ) vẫn giữ được,
+  // chỉ giá tay MỚI/ĐỔI mới bị chặn (chống bơm lương + chống mất giá lặng lẽ).
   const allowManual = (await getCallerRole(req.headers.authorization)) === "admin";
+  const prevManual = buildPrevManualMap(oldBooking.items);
 
   // Task #55: enforce deductions = [] for parent contracts (always, regardless of body)
   if (oldBooking.isParentContract) {
@@ -1073,7 +1076,7 @@ router.put("/bookings/:id", async (req, res) => {
       servicePackageId !== undefined
         ? (servicePackageId ? parseInt(String(servicePackageId)) : null)
         : undefined;
-    const castNormalized = await normalizeBookingItemsCast(items, pkgIdForCast ?? null, { allowManual });
+    const castNormalized = await normalizeBookingItemsCast(items, pkgIdForCast ?? null, { allowManual, prevManual });
     updateData.items = (castNormalized as Record<string, unknown>[]).map(syncItemLegacyFields);
   }
   // Case B (legacy): only top-level assignedStaff provided, no items — write-back
@@ -1114,10 +1117,15 @@ router.put("/bookings/:id", async (req, res) => {
         result.assignedStaff = itemStaff;
       }
 
-      return syncItemLegacyFields(result);
+      return result;
     });
 
-    updateData.items = mergedItems;
+    // BẢO MẬT: Case B cũng phải qua normalize (allowManual/prevManual) — nếu không,
+    // nhân viên thường gửi assignedStaff (không kèm items) sẽ bơm được castAmount
+    // 'manual' tuỳ ý vào items[].assignedStaff → thành lương thật. syncItemLegacyFields
+    // chạy SAU normalize để photoName/photoId khớp assignedStaff đã chuẩn hoá.
+    const mergedNormalized = await normalizeBookingItemsCast(mergedItems, null, { allowManual, prevManual });
+    updateData.items = (mergedNormalized as Record<string, unknown>[]).map(syncItemLegacyFields);
   }
 
   // Run all changes in a single DB transaction: deposit payment upsert + booking update + recalculate
@@ -1253,6 +1261,11 @@ router.put("/bookings/:id", async (req, res) => {
 
     if (status === "completed" && oldStatus !== "completed") {
       computeBookingEarnings(id).catch(err => console.error("Earnings compute error:", err));
+    } else if (oldStatus === "completed" && items !== undefined) {
+      // Show ĐÃ hoàn thành mà admin sửa lại nhân sự/giá tay → tính lại lương chốt
+      // (computeBookingEarnings chỉ xoá + tạo lại earning status 'pending', không
+      // đụng earning đã 'paid') để tiền chốt khớp con số mới trên form + lịch sử.
+      computeBookingEarnings(id).catch(err => console.error("Earnings recompute error:", err));
     }
 
     // Re-read full booking + customer (outside transaction is fine — data is committed)
@@ -1331,22 +1344,25 @@ router.put("/bookings/:id", async (req, res) => {
     // Giá tay: ghi lịch sử khi admin đổi lương tay của nhân sự (minh bạch tiền bạc)
     if (items !== undefined) {
       type CastEntry = { name: string; amount: number; manual: boolean };
+      const normRole = (r: string) => { const x = (r || "").toLowerCase().trim(); return x === "photo" ? "photographer" : x; };
       const collectCast = (its: unknown): Map<string, CastEntry> => {
         const m = new Map<string, CastEntry>();
         if (!Array.isArray(its)) return m;
-        for (const it of its as Record<string, unknown>[]) {
+        (its as Record<string, unknown>[]).forEach((it, itemIdx) => {
           const sa = Array.isArray(it.assignedStaff)
             ? (it.assignedStaff as { staffId?: number; staffName?: string; role?: string; castAmount?: unknown; castSource?: string }[])
             : [];
           for (const s of sa) {
             if (!s?.staffId || !s?.role) continue;
-            m.set(`${s.staffId}:${(s.role || "").toLowerCase()}`, {
+            // Key gồm itemIdx: 1 người đứng 2 dòng dịch vụ không đè log của nhau;
+            // role normalize 'photo'→'photographer' để items cũ/mới không lệch key.
+            m.set(`${itemIdx}:${s.staffId}:${normRole(s.role)}`, {
               name: (s.staffName || "").trim() || `NV#${s.staffId}`,
               amount: parseFloat(String(s.castAmount ?? 0)) || 0,
               manual: s.castSource === "manual",
             });
           }
-        }
+        });
         return m;
       };
       const oldCast = collectCast(oldBooking.items);
@@ -1475,6 +1491,11 @@ router.post("/bookings/:parentId/add-child", async (req, res) => {
     if (!parent.isParentContract) return res.status(400).json({ error: "Booking này không phải hợp đồng multi-service" });
 
     const { customerId, serviceLabel, shootDate, shootTime, items, totalAmount, surcharges, deductions, notes, assignedStaff, servicePackageId, location, additionalServices } = req.body;
+    // BẢO MẬT: giá tay chỉ giữ khi admin; dịch vụ con mới không có DB cũ nên
+    // không có prevManual → non-admin gửi manual đều bị resolve về bảng cast.
+    const allowManual = (await getCallerRole(req.headers.authorization)) === "admin";
+    const childPkgId = servicePackageId ? parseInt(String(servicePackageId)) : null;
+    const normalizedChildItems = await normalizeBookingItemsCast(items || [], childPkgId, { allowManual });
     // Dịch vụ con mới kế thừa khách của hợp đồng cha, trừ khi FE gửi customerId hợp lệ (đổi khách).
     const cidNum = parseInt(String(customerId));
     const childCustomerId = Number.isInteger(cidNum) && cidNum > 0 ? cidNum : parent.customerId;
@@ -1504,7 +1525,7 @@ router.post("/bookings/:parentId/add-child", async (req, res) => {
       depositAmount: "0",
       discountAmount: "0",
       paidAmount: "0",
-      items: items || [],
+      items: normalizedChildItems,
       surcharges: surcharges || [],
       deductions: sanitizeDeductions(deductions),
       notes: notes || null,

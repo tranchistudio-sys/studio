@@ -183,8 +183,16 @@ export function StaffAssignmentEditor({
   const [editingPriceFor, setEditingPriceFor] = useState<string | null>(null);
   const [priceDraft, setPriceDraft] = useState("");
 
+  // Giá tay CHỈ cho photographer/makeup — 2 role duy nhất mà lương chốt + lương
+  // realtime đều chi theo dòng. Role khác gõ tay sẽ lệch giữa các màn hình.
+  const canManualForRole = (role: string) => {
+    const r = (role || "").toLowerCase();
+    return r === "photographer" || r === "photo" || r === "makeup";
+  };
+
   const openPriceEditor = (item: StaffAssignment) => {
-    if (!canManualPrice || !item.staffId || !item.role) return;
+    if (!canManualPrice || !item.staffId || !item.role || !canManualForRole(item.role)) return;
+    if (item.castSource === "pending") return; // đang resolve — đợi xong mới cho gõ (tránh race)
     setPriceDraft(item.castAmount > 0 ? item.castAmount.toLocaleString("vi-VN") : "");
     setEditingPriceFor(item.id);
   };
@@ -192,6 +200,8 @@ export function StaffAssignmentEditor({
   const commitManualPrice = (item: StaffAssignment) => {
     setEditingPriceFor(null);
     if (!item.staffId || !item.role) return;
+    // Vô hiệu hoá mọi resolve đang bay để response về trễ không đè giá tay vừa gõ.
+    resolveSeq.current++;
     const amt = parseFloat(priceDraft.replace(/\./g, "").replace(/,/g, ""));
     if (!isFinite(amt) || amt <= 0) {
       // Xoá/để trống giá tay → quay về giá theo bảng cast
@@ -440,23 +450,25 @@ export function StaffAssignmentEditor({
                           <X className="w-3.5 h-3.5" />
                         </button>
                       </span>
-                    ) : (
+                    ) : (() => {
+                      const canPrice = canManualPrice && !!item.staffId && !!item.role && canManualForRole(item.role);
+                      return (
                       <span
                         className={cn(
                           "text-xs font-semibold text-amber-600 w-24 text-right",
-                          canManualPrice && item.staffId && item.role &&
-                            "cursor-pointer underline decoration-dotted underline-offset-2 hover:text-amber-700",
+                          canPrice && "cursor-pointer underline decoration-dotted underline-offset-2 hover:text-amber-700",
                         )}
                         title={
                           (item.castSource === "none" ? "Chưa có giá cast" : item.castSource === "manual" ? "Giá nhập tay" : item.castSource) +
-                          (canManualPrice && item.staffId && item.role ? " — bấm để nhập giá tay" : "")
+                          (canPrice ? " — bấm để nhập giá tay" : "")
                         }
                         onClick={() => openPriceEditor(item)}
                       >
                         {item.castSource === "pending" ? "…" : item.castAmount > 0 ? fmtVND(item.castAmount) : "Chưa có giá"}
                       </span>
-                    )}
-                    {canManualPrice && !!item.staffId && !!item.role && editingPriceFor !== item.id && (
+                      );
+                    })()}
+                    {canManualPrice && !!item.staffId && !!item.role && canManualForRole(item.role) && editingPriceFor !== item.id && (
                       <button
                         type="button"
                         onClick={() => openPriceEditor(item)}

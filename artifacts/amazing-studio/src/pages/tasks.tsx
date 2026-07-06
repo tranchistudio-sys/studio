@@ -10,6 +10,7 @@ import {
 import { formatDate } from "@/lib/utils";
 import { StaffAssignmentEditor, type StaffAssignment } from "@/components/staff-assignment-editor";
 import { useToast } from "@/hooks/use-toast";
+import { useStaffAuth } from "@/contexts/StaffAuthContext";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 const TOKEN_KEY = "amazingStudioToken_v2";
@@ -118,6 +119,7 @@ function BookingCard({
   onSaved: () => void;
 }) {
   const { toast } = useToast();
+  const { effectiveIsAdmin } = useStaffAuth();
   const serverStaff = booking.assigned_staff ?? [];
   const [localStaff, setLocalStaff] = useState<StaffAssignment[]>(() => serverStaff);
   const [saving, setSaving] = useState(false);
@@ -222,6 +224,7 @@ function BookingCard({
           packageId={booking.service_package_id ?? null}
           baseJobType="mac_dinh"
           bookingId={booking.booking_id}
+          canManualPrice={effectiveIsAdmin}
         />
       </div>
 

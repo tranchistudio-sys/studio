@@ -118,6 +118,7 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
     photoId?: number | null; photoTask?: string;
     makeupId?: number | null; makeupTask?: string;
     serviceCategory?: string;
+    assignedStaff?: Array<{ staffId?: number; role?: string; castAmount?: unknown; castSource?: string }>;
   }>;
 
   // Dòng chỉ-giao-nhân-sự (chưa chốt gói: không serviceName/serviceId, giá 0)
@@ -180,13 +181,48 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
       serviceId = await findServiceIdByName(item.serviceName);
     }
 
-    if (item.photoId) {
+    // ── Ưu tiên 1: nhân sự gắn trên dòng (items[].assignedStaff) ─────────────
+    // Trả đủ MỌI photographer/makeup trong dòng (trước đây chỉ người đầu tiên
+    // được sync vào photoId là có lương → gói 2 photo mất lương người thứ 2).
+    //  • GIÁ TAY (castSource='manual'): dùng THẲNG castAmount đã chốt → khớp
+    //    con số hiển thị trên form + trang lương realtime, không đổi khi bảng
+    //    cast thay đổi sau này.
+    //  • Nguồn khác (bảng cast/đầu việc): vẫn resolveEarning như trước để giữ
+    //    đúng logic per_photo × số ảnh, %, service_job_splits (không snapshot phẳng).
+    const itemStaff = Array.isArray(item.assignedStaff) ? item.assignedStaff : [];
+    const paidViaAssigned = new Set<string>();
+    for (const sa of itemStaff) {
+      if (!sa?.staffId || !sa?.role) continue;
+      const roleRaw = String(sa.role).toLowerCase();
+      const role = roleRaw === "photo" ? "photographer" : roleRaw;
+      if (role !== "photographer" && role !== "makeup") continue;
+      const taskKey = (role === "photographer" ? item.photoTask : item.makeupTask) || "mac_dinh";
+      const snapAmt = parseFloat(String(sa.castAmount ?? 0)) || 0;
+      // Tin castAmount đã chốt khi nguồn là 'manual' (giá tay) hoặc 'staff_pricing'
+      // (cast theo GÓI = số tiền TỔNG, khớp đúng snapshot trang lương realtime).
+      // Nguồn 'staff_rate' có thể là đơn giá per_photo → phải resolveEarning để
+      // nhân số ảnh, không dùng snapshot phẳng.
+      const trustSnapshot = snapAmt > 0 && (sa.castSource === "manual" || sa.castSource === "staff_pricing");
+      if (trustSnapshot) {
+        addEarning(sa.staffId, role, taskKey, lineName, snapAmt);
+        paidViaAssigned.add(`${sa.staffId}-${role}`);
+      } else {
+        const found = await resolveEarning(sa.staffId, role, taskKey, serviceId, item.price || bookingTotal, photoCount);
+        if (found) {
+          addEarning(sa.staffId, role, taskKey, lineName, found.rate);
+          paidViaAssigned.add(`${sa.staffId}-${role}`);
+        }
+      }
+    }
+
+    // ── Legacy fallback: item cũ không có assignedStaff → photoId/makeupId ──
+    if (item.photoId && !paidViaAssigned.has(`${item.photoId}-photographer`)) {
       const taskKey = item.photoTask || "mac_dinh";
       const found = await resolveEarning(item.photoId, "photographer", taskKey, serviceId, item.price || bookingTotal, photoCount);
       if (found) addEarning(item.photoId, "photographer", taskKey, lineName, found.rate);
     }
 
-    if (item.makeupId) {
+    if (item.makeupId && !paidViaAssigned.has(`${item.makeupId}-makeup`)) {
       const taskKey = item.makeupTask || "mac_dinh";
       const found = await resolveEarning(item.makeupId, "makeup", taskKey, serviceId, item.price || bookingTotal, photoCount);
       if (found) addEarning(item.makeupId, "makeup", taskKey, lineName, found.rate);

@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect, Component, Fragment } from "react";
 import { useToast } from "@/hooks/use-toast";
 import { orderCreatedFeedback } from "@/lib/feedback";
-import type { ReactNode, ErrorInfo } from "react";
+import type { ReactNode, ErrorInfo, TouchEvent as ReactTouchEvent } from "react";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -6426,8 +6426,6 @@ function getStoredZoom(): number {
 }
 
 function CalendarPageInner() {
-  const [monthDensity] = useDensity();
-  const isMonthComfort = monthDensity === "comfortable";
   const [zoomLevel, setZoomLevel] = useState<number>(getStoredZoom);
   const zoomIn = () => setZoomLevel(z => {
     const n = Math.min(ZOOM_MAX, Math.round((z + ZOOM_STEP) * 10) / 10);
@@ -6443,6 +6441,25 @@ function CalendarPageInner() {
     setZoomLevel(ZOOM_DEFAULT);
     try { localStorage.setItem(ZOOM_KEY, String(ZOOM_DEFAULT)); } catch { /* */ }
   };
+  // ── Bù chiều cao cho transform:scale của lưới tháng (UI-only, không đụng
+  // logic lịch). transform KHÔNG đổi layout height → zoom < 1 để lại khoảng
+  // trắng cao (1−z)×H dưới lưới. Đo natural height qua ResizeObserver
+  // (offsetHeight không bị transform ảnh hưởng → không loop) rồi bù
+  // margin-bottom = −H×(1−z) để chiều cao layout khớp chiều cao NHÌN THẤY:
+  // lưới cần bao nhiêu chiếm bấy nhiêu, nội dung nhiều thì tự giãn/cuộn.
+  // Dùng callback ref vì container unmount khi chuyển week/day/form view.
+  const [monthGridNaturalH, setMonthGridNaturalH] = useState<number | null>(null);
+  const monthGridRO = useRef<ResizeObserver | null>(null);
+  const monthGridZoomRef = useCallback((el: HTMLDivElement | null) => {
+    monthGridRO.current?.disconnect();
+    monthGridRO.current = null;
+    if (el && typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(() => setMonthGridNaturalH(el.offsetHeight));
+      ro.observe(el);
+      monthGridRO.current = ro;
+      setMonthGridNaturalH(el.offsetHeight);
+    }
+  }, []);
   const [calView, setCalView] = useState<CalView>("month");
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(new Date());
@@ -6814,6 +6831,32 @@ function CalendarPageInner() {
 
   const prevMonth = () => setCurrentDate(subMonths(currentDate, 1));
   const nextMonth = () => setCurrentDate(addMonths(currentDate, 1));
+
+  // ── Vuốt ngang đổi tháng trên lưới tháng (CHỈ mobile <640px, kiểu Google
+  // Calendar). Swipe từng bị tắt vì chạm nhẹ cũng đổi tháng → bật lại với
+  // ngưỡng chống vuốt nhầm: |dx| > 50px VÀ |dx| > |dy|×1.5 (đang cuộn dọc
+  // thì KHÔNG đổi tháng). Tap vào show card không đủ 50px nên không trigger;
+  // dialog/form render qua portal (ngoài container) nên không lọt vào đây.
+  const monthSwipeStart = useRef<{ x: number; y: number } | null>(null);
+  const onMonthTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
+    monthSwipeStart.current = e.touches.length === 1
+      ? { x: e.touches[0].clientX, y: e.touches[0].clientY }
+      : null;
+  };
+  const onMonthTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
+    if (e.touches.length > 1) monthSwipeStart.current = null; // pinch → huỷ swipe
+  };
+  const onMonthTouchEnd = (e: ReactTouchEvent<HTMLDivElement>) => {
+    const start = monthSwipeStart.current;
+    monthSwipeStart.current = null;
+    if (!start || window.innerWidth >= 640) return; // desktop/tablet: giữ nguyên
+    const t = e.changedTouches[0];
+    if (!t) return;
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    if (Math.abs(dx) <= 50 || Math.abs(dx) <= Math.abs(dy) * 1.5) return;
+    if (dx > 0) prevMonth(); else nextMonth();
+  };
   const prevDay = () => { const d = subDays(selectedDate, 1); setSelectedDate(d); setCurrentDate(d); setHighlightedBookingId(null); };
   const nextDay = () => { const d = addDays(selectedDate, 1); setSelectedDate(d); setCurrentDate(d); setHighlightedBookingId(null); };
 
@@ -7056,8 +7099,8 @@ function CalendarPageInner() {
         </div>
       </div>
 
-      {/* Calendar card — swipe-to-change-month đã TẮT (user request):
-          mobile vuốt/chạm dễ trigger nhầm. Đổi tháng chỉ qua nút ◀ ▶ ở header. */}
+      {/* Calendar card — mobile: bảng lịch khoá ngang (fit khung, chỉ cuộn dọc),
+          vuốt ngang = chuyển tháng (có ngưỡng chống vuốt nhầm — xem onMonthTouch*). */}
       <div
         className="bg-card rounded-2xl border shadow-sm overflow-hidden flex flex-col"
         style={{ maxHeight: "calc(100svh - 160px)" }}
@@ -7097,27 +7140,37 @@ function CalendarPageInner() {
           </div>
         </div>
 
-        {/* Lưới tháng — single scroll container để header thứ + cells luôn align
-            khi scroll ngang. Trên mobile bật "Thoáng" → cho phép scroll ngang
-            để ô đủ chỗ hiện đầy đủ thông tin show, nhưng VẪN giữ bố cục
-            lịch tháng 7 cột.
-            Zoom: dùng CSS `zoom` property — reflow tự nhiên (font, padding,
-            kích thước ô đều scale) mà không cần fix layout như transform. */}
+        {/* Lưới tháng — single scroll container để header thứ + cells luôn align.
+            Mobile (<640px): khoá scroll ngang kiểu Google Calendar — bảng lịch
+            luôn fit khung 7 cột, CHỈ cuộn dọc (overflow-x-hidden + touch-action
+            pan-y); vuốt ngang = chuyển tháng (onMonthTouch*). Đồng thời chặn
+            bug WebKit tính scrollable overflow theo width layout (100/zoom%)
+            TRƯỚC transform scale → trước đây kéo ngang ra khoảng trắng.
+            Desktop/tablet (≥sm): overflow-auto như cũ, không đổi hành vi. */}
         <div
-          className={`overflow-auto flex-1 min-h-0`}
+          className="overflow-y-auto overflow-x-hidden overscroll-x-none touch-pan-y touch-pinch-zoom sm:overflow-auto sm:overscroll-x-auto sm:touch-auto flex-1 min-h-0"
+          onTouchStart={onMonthTouchStart}
+          onTouchMove={onMonthTouchMove}
+          onTouchEnd={onMonthTouchEnd}
         >
           {/* Scale toàn bộ nội dung (CHỮ + ô + cột + padding) đồng đều bằng
               transform: scale — đảm bảo text shrink/grow cùng layout trên cả
               iOS Safari (CSS `zoom` không scale font ổn định ở 1 số browser).
-              Width = 100/z% để nội dung scale-down vẫn lấp đầy chiều ngang;
-              khi zoom > 1 sẽ scroll ngang tự nhiên. */}
+              Width = 100/z% để nội dung scale-down vẫn lấp đầy chiều ngang.
+              min-w-[600px] mobile (chế độ Thoáng) đã BỎ: bảng lịch phải fit
+              chiều ngang màn hình, 7 cột chia đều — text dài đã có
+              truncate/break-words trong MonthDayCell. */}
           <div
+            ref={monthGridZoomRef}
             style={{
               transform: `scale(${zoomLevel})`,
               transformOrigin: "0 0",
               width: `${100 / zoomLevel}%`,
+              // Bù phần chiều cao layout dư ra do scale (xem monthGridZoomRef).
+              marginBottom: monthGridNaturalH != null
+                ? -(monthGridNaturalH * (1 - zoomLevel))
+                : undefined,
             }}
-            className={isMonthComfort ? "min-w-[600px] sm:min-w-0" : ""}
           >
             {/* Day-of-week headers (sticky top — luôn nhìn thấy thứ khi cuộn) */}
             <div className="grid grid-cols-7 border-b border-border/50 sticky top-0 bg-card z-10">

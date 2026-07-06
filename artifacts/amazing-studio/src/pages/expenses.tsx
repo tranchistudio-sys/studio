@@ -113,6 +113,15 @@ type Stats = {
   total: number; totalCount: number;
 };
 
+type MonthlySummary = {
+  month: number; year: number;
+  total: number; count: number;
+  costClass: string | null;
+  byCostClass: { costClass: string; amount: number; count: number }[];
+  byCategory: { category: string; amount: number; count: number }[];
+  topExpenses: { id: number; description: string; category: string; amount: number; expenseDate: string; costClass: string }[];
+};
+
 const EMPTY_FORM = {
   category: "Chi khác",
   costClass: "operating",
@@ -142,6 +151,8 @@ export default function ExpensesPage() {
   const [form, setForm] = useState({ ...EMPTY_FORM });
   const [dateRange, setDateRange] = useState("");
   const [filterCostClass, setFilterCostClass] = useState("");
+  // Tổng kết chi tiêu theo tháng — mặc định tháng hiện tại (YYYY-MM theo VN tz).
+  const [summaryMonth, setSummaryMonth] = useState(() => nowVnLocalParts().date.slice(0, 7));
   const [customCategory, setCustomCategory] = useState("");
   const [showCustomCat, setShowCustomCat] = useState(false);
   const [uploadingReceipt, setUploadingReceipt] = useState(false);
@@ -237,6 +248,20 @@ export default function ExpensesPage() {
   const { data: stats } = useQuery<Stats>({
     queryKey: ["expense-stats"],
     queryFn: () => fetch(`${BASE}/api/expenses/stats`, { headers: authHeaders }).then(r => r.json()),
+    refetchInterval: 30000,
+  });
+
+  // Tổng kết theo tháng — aggregate TOÀN BỘ phiếu trong tháng (không phải data page).
+  // Đổi theo tháng đang chọn + bộ lọc "loại CP" hiện tại (filterCostClass).
+  const [sumYear, sumMonth] = summaryMonth.split("-").map(Number);
+  const { data: monthly } = useQuery<MonthlySummary>({
+    queryKey: ["expense-monthly-summary", summaryMonth, filterCostClass],
+    queryFn: () => {
+      const p = new URLSearchParams({ month: String(sumMonth), year: String(sumYear) });
+      if (filterCostClass) p.set("costClass", filterCostClass);
+      return fetch(`${BASE}/api/expenses/monthly-summary?${p}`, { headers: authHeaders }).then(r => r.json());
+    },
+    enabled: !!sumYear && !!sumMonth,
     refetchInterval: 30000,
   });
 
@@ -537,6 +562,127 @@ export default function ExpensesPage() {
           className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-colors border ${viewMine ? "bg-red-600 text-white border-red-600" : "bg-background border-border text-muted-foreground hover:text-foreground"}`}>
           {viewMine ? "✓ Của tôi" : "Của tôi"}
         </button>
+      </div>
+
+      {/* ── Tổng kết chi tiêu theo tháng ─────────────────────────────────── */}
+      <div className="px-4 sm:px-6 pt-4">
+        <div className="rounded-2xl border border-border bg-card p-4 sm:p-5">
+          {/* Header: tiêu đề + chọn tháng */}
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <div className="flex items-center gap-2 min-w-0">
+              <div className="w-8 h-8 rounded-xl bg-red-100 dark:bg-red-900/20 flex items-center justify-center flex-shrink-0">
+                <TrendingDown className="w-4 h-4 text-red-500" />
+              </div>
+              <h2 className="font-bold text-sm sm:text-base truncate">Tổng kết chi tiêu theo tháng</h2>
+            </div>
+            <input
+              type="month"
+              value={summaryMonth}
+              onChange={e => setSummaryMonth(e.target.value)}
+              className="text-xs sm:text-sm border border-border rounded-xl px-3 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-red-300"
+              title="Chọn tháng để xem tổng kết"
+            />
+          </div>
+
+          {(() => {
+            const monthLabel = `${String(sumMonth).padStart(2, "0")}/${sumYear}`;
+            const activeMeta = filterCostClass ? costClassMeta(filterCostClass) : null;
+            const total = monthly?.total ?? 0;
+            const count = monthly?.count ?? 0;
+
+            // Câu tổng lớn: đổi theo bộ lọc loại CP
+            const headline = activeMeta
+              ? `${activeMeta.label} tháng ${monthLabel}`
+              : `Tổng chi tháng ${monthLabel}`;
+
+            const byCat = monthly?.byCategory ?? [];
+            const maxCat = byCat.reduce((m, c) => Math.max(m, c.amount), 0) || 1;
+
+            return (
+              <div className="space-y-4">
+                {/* Câu tổng */}
+                <div className="rounded-xl bg-red-50 dark:bg-red-950/20 border border-red-100 dark:border-red-900/40 px-4 py-3">
+                  <p className="text-xs text-muted-foreground">{headline}</p>
+                  <p className="text-2xl font-black text-red-600 mt-0.5">{vnd(total)}</p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">{count} phiếu chi</p>
+                </div>
+
+                {/* Chế độ "Tất cả loại CP": breakdown theo TỪNG loại CP */}
+                {!filterCostClass ? (
+                  (monthly?.byCostClass?.length ?? 0) === 0 ? (
+                    <p className="text-sm text-muted-foreground text-center py-2">Tháng này chưa có phiếu chi nào.</p>
+                  ) : (
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Theo loại chi phí</p>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                        {monthly!.byCostClass.map(c => {
+                          const meta = costClassMeta(c.costClass);
+                          return (
+                            <button
+                              key={c.costClass}
+                              type="button"
+                              onClick={() => setFilterCostClass(c.costClass)}
+                              className="text-left rounded-xl border border-border bg-background hover:border-red-300 transition-colors p-2.5"
+                              title={`Bấm để lọc riêng ${meta?.label ?? c.costClass}`}
+                            >
+                              <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full ${meta?.color ?? "bg-muted text-muted-foreground"}`}>
+                                {meta?.short ?? c.costClass}
+                              </span>
+                              <p className="text-sm font-bold text-foreground mt-1.5">{vnd(c.amount)}</p>
+                              <p className="text-[10px] text-muted-foreground">{c.count} phiếu</p>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )
+                ) : (
+                  /* Chế độ 1 loại CP: breakdown theo nhóm + top khoản chi */
+                  <div className="space-y-4">
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Theo nhóm / danh mục</p>
+                      {byCat.length === 0 ? (
+                        <p className="text-sm text-muted-foreground py-1">Không có phiếu chi loại này trong tháng.</p>
+                      ) : (
+                        <div className="space-y-1.5">
+                          {byCat.map(c => (
+                            <div key={c.category} className="space-y-0.5">
+                              <div className="flex items-baseline justify-between gap-2 text-sm">
+                                <span className="truncate">
+                                  <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full mr-1.5 ${catColor(c.category)}`}>{c.category}</span>
+                                  <span className="text-[10px] text-muted-foreground">{c.count} phiếu</span>
+                                </span>
+                                <span className="font-bold text-foreground flex-shrink-0">{vnd(c.amount)}</span>
+                              </div>
+                              <div className="h-1.5 rounded-full bg-muted overflow-hidden">
+                                <div className="h-full rounded-full bg-red-400" style={{ width: `${Math.max(4, (c.amount / maxCat) * 100)}%` }} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {(monthly?.topExpenses?.length ?? 0) > 0 && (
+                      <div>
+                        <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground mb-2">Top khoản chi lớn nhất</p>
+                        <div className="space-y-1.5">
+                          {monthly!.topExpenses.map((t, i) => (
+                            <div key={t.id} className="flex items-center gap-2 text-sm">
+                              <span className="w-5 h-5 rounded-full bg-muted text-muted-foreground text-[10px] font-bold flex items-center justify-center flex-shrink-0">{i + 1}</span>
+                              <span className="flex-1 min-w-0 truncate">{t.description || t.category || "—"}</span>
+                              <span className="font-bold text-red-600 flex-shrink-0">{vnd(t.amount)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </div>
       </div>
 
       {/* Expense list */}

@@ -9,6 +9,8 @@ import {
   isPersonalClass,
   filterExpensesForCaller,
   matchesCostClass,
+  effectiveCostClass,
+  ALLOWED_COST_CLASSES,
 } from "../lib/expense-permissions";
 
 const router: IRouter = Router();
@@ -195,6 +197,82 @@ router.get("/expenses/stats", async (req, res) => {
     monthCount: monthRows.length,
     total: sum(rows),
     totalCount: rows.length,
+  });
+});
+
+// ── Tổng kết chi tiêu theo THÁNG ──────────────────────────────────────────────
+// GET /expenses/monthly-summary?month=7&year=2026[&costClass=personal]
+// Aggregate TOÀN BỘ phiếu trong tháng (KHÔNG dựa dữ liệu page đang hiển thị).
+// Quyền: dùng chung filterExpensesForCaller → nhân viên chỉ thấy phiếu của mình,
+// không thấy Cá nhân. costClass suy mặc định theo effectiveCostClass (phiếu cũ).
+router.get("/expenses/monthly-summary", async (req, res) => {
+  const callerId = verifyToken(req.headers.authorization);
+  if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
+
+  const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
+  const caller = callerR.rows[0] as Record<string, unknown> | undefined;
+  const isAdmin = !!(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin"))));
+
+  const now = new Date();
+  const month = parseInt(String(req.query.month ?? "")) || (now.getMonth() + 1);
+  const year = parseInt(String(req.query.year ?? "")) || now.getFullYear();
+  if (month < 1 || month > 12) return res.status(400).json({ error: "Tháng không hợp lệ" });
+  const ym = `${year}-${String(month).padStart(2, "0")}`;
+
+  const costClassFilterRaw = req.query.costClass as string | undefined;
+  const costClassFilter = isAllowedCostClass(costClassFilterRaw) ? costClassFilterRaw : undefined;
+
+  // Load tất cả → lọc quyền → lọc tháng (giữ nguyên pattern list/stats hiện có).
+  const allRows = await db.select().from(expensesTable);
+  const permitted = filterExpensesForCaller(allRows, { isAdmin, callerId });
+  const monthRows = permitted.filter(e => (e.expenseDate ?? "").startsWith(ym));
+
+  const amt = (e: { amount: string }) => parseFloat(e.amount) || 0;
+
+  // Tổng theo TỪNG loại CP (dùng cho khi chọn "Tất cả loại CP")
+  const byCostClass = (ALLOWED_COST_CLASSES as readonly string[]).map(cc => {
+    const rows = monthRows.filter(e => effectiveCostClass(e) === cc);
+    return { costClass: cc, amount: rows.reduce((s, e) => s + amt(e), 0), count: rows.length };
+  }).filter(x => x.count > 0);
+
+  // Tập được chọn: cả tháng (nếu "Tất cả loại CP") hoặc riêng 1 loại CP
+  const scoped = costClassFilter
+    ? monthRows.filter(e => matchesCostClass(e, costClassFilter))
+    : monthRows;
+
+  // Breakdown theo nhóm/danh mục trong tập được chọn
+  const catMap = new Map<string, { amount: number; count: number }>();
+  for (const e of scoped) {
+    const cat = (e.category || "Chi khác").trim() || "Chi khác";
+    const cur = catMap.get(cat) ?? { amount: 0, count: 0 };
+    cur.amount += amt(e); cur.count += 1;
+    catMap.set(cat, cur);
+  }
+  const byCategory = [...catMap.entries()]
+    .map(([category, v]) => ({ category, amount: v.amount, count: v.count }))
+    .sort((a, b) => b.amount - a.amount);
+
+  // Top 5 khoản chi lớn nhất trong tập được chọn
+  const topExpenses = [...scoped]
+    .sort((a, b) => amt(b) - amt(a))
+    .slice(0, 5)
+    .map(e => ({
+      id: e.id,
+      description: e.description,
+      category: e.category,
+      amount: amt(e),
+      expenseDate: e.expenseDate,
+      costClass: effectiveCostClass(e),
+    }));
+
+  res.json({
+    month, year,
+    total: scoped.reduce((s, e) => s + amt(e), 0),
+    count: scoped.length,
+    costClass: costClassFilter ?? null,
+    byCostClass,
+    byCategory,
+    topExpenses,
   });
 });
 

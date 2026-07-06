@@ -141,7 +141,6 @@ export default function ExpensesPage() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState({ ...EMPTY_FORM });
   const [dateRange, setDateRange] = useState("");
-  const [filterCategory, setFilterCategory] = useState("");
   const [filterCostClass, setFilterCostClass] = useState("");
   const [customCategory, setCustomCategory] = useState("");
   const [showCustomCat, setShowCustomCat] = useState(false);
@@ -155,11 +154,10 @@ export default function ExpensesPage() {
   const authHeaders = { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) };
 
   const { data: expenses = [], isLoading } = useQuery<Expense[]>({
-    queryKey: ["expenses", dateRange, filterCategory, viewMine],
+    queryKey: ["expenses", dateRange, viewMine],
     queryFn: () => {
       const p = new URLSearchParams();
       if (dateRange) p.set("dateRange", dateRange);
-      if (filterCategory) p.set("category", filterCategory);
       if (viewMine) p.set("mine", "1");
       return fetch(`${BASE}/api/expenses?${p}`, { headers: authHeaders }).then(r => r.json());
     },
@@ -524,14 +522,6 @@ export default function ExpensesPage() {
             </button>
           ))}
         </div>
-
-        <select
-          value={filterCategory}
-          onChange={e => setFilterCategory(e.target.value)}
-          className="text-xs border border-border rounded-xl px-3 py-1.5 bg-background focus:outline-none focus:ring-1 focus:ring-red-300">
-          <option value="">Tất cả nhóm</option>
-          {allCategories.map(c => <option key={c} value={c}>{c}</option>)}
-        </select>
 
         <select
           value={filterCostClass}

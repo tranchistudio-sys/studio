@@ -1,4 +1,4 @@
-import { Check, Plus, Trash2, X } from "lucide-react";
+import { Check, Pencil, Plus, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
@@ -455,6 +455,17 @@ export function StaffAssignmentEditor({
                       >
                         {item.castSource === "pending" ? "…" : item.castAmount > 0 ? fmtVND(item.castAmount) : "Chưa có giá"}
                       </span>
+                    )}
+                    {canManualPrice && !!item.staffId && !!item.role && editingPriceFor !== item.id && (
+                      <button
+                        type="button"
+                        onClick={() => openPriceEditor(item)}
+                        aria-label="Nhập giá tay"
+                        title="Nhập giá tay cho nhân sự này (đè giá bảng cast)"
+                        className="p-1 text-violet-500 hover:bg-violet-50 hover:text-violet-700 rounded-md transition-colors flex-shrink-0"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
                     )}
                     {item.castSource === "manual" && editingPriceFor !== item.id && (
                       <span

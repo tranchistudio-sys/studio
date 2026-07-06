@@ -119,10 +119,14 @@ function assignmentKey(staffId: number, role: string): string {
   return `${staffId}:${normalizeRoleForCast(role)}`;
 }
 
-/** Resolve cast from DB, dedupe staffId+role, log corrections. */
+/** Resolve cast from DB, dedupe staffId+role, log corrections.
+ *  opts.allowManual: caller là admin → entry castSource='manual' (giá tay) được
+ *  GIỮ NGUYÊN thay vì ghi đè bằng bảng cast. Không phải admin → mọi giá gửi lên
+ *  vẫn bị resolve lại như cũ (nhân viên không tự sửa được lương mình). */
 export async function normalizeItemsAssignedStaffCast(
   rawItems: unknown,
   bookingPackageId?: number | null,
+  opts?: { allowManual?: boolean },
 ): Promise<unknown[]> {
   if (!Array.isArray(rawItems)) return [];
   const seenPerItem = new Map<number, Set<string>>();
@@ -151,6 +155,20 @@ export async function normalizeItemsAssignedStaffCast(
           continue;
         }
         seen.add(key);
+
+        // Giá tay: admin chủ động gõ đè trên form → tôn trọng, không resolve đè.
+        const manualAmt = typeof raw.castAmount === "number" ? raw.castAmount : parseFloat(String(raw.castAmount ?? 0));
+        if (opts?.allowManual && raw.castSource === "manual" && Number.isFinite(manualAmt) && manualAmt > 0) {
+          console.info("[cast-resolve] manual price kept", {
+            staffId: raw.staffId,
+            staffName: raw.staffName,
+            role: normalizeRoleForCast(raw.role),
+            packageId,
+            manualCastAmount: manualAmt,
+          });
+          normalized.push({ ...raw, role: normalizeRoleForCast(raw.role), castAmount: manualAmt, castSource: "manual" });
+          continue;
+        }
 
         const resolved = await resolveStaffCastAmount({
           staffId: raw.staffId,

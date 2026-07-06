@@ -83,8 +83,9 @@ type StaffAssignmentLike = { role?: string; staffId?: number; staffName?: string
 async function normalizeBookingItemsCast(
   rawItems: unknown,
   bookingPackageId?: number | null,
+  opts?: { allowManual?: boolean },
 ): Promise<unknown[]> {
-  const normalized = await normalizeItemsAssignedStaffCast(rawItems, bookingPackageId);
+  const normalized = await normalizeItemsAssignedStaffCast(rawItems, bookingPackageId, opts);
   return normalizeItemStaff(normalized);
 }
 
@@ -472,6 +473,8 @@ router.get("/bookings/trash", async (req, res) => {
 router.post("/bookings", async (req, res) => {
   try {
   const callerId = verifyToken(req.headers.authorization) || null;
+  // Giá tay (castSource='manual') chỉ được giữ khi người lưu là admin.
+  const allowManual = (await getCallerRole(req.headers.authorization)) === "admin";
   const {
     customerId, shootDate, shootTime, serviceCategory, packageType, location,
     totalAmount, depositAmount, discountAmount, items, surcharges, notes, internalNotes,
@@ -578,7 +581,7 @@ router.post("/bookings", async (req, res) => {
           depositAmount: "0",
           discountAmount: "0",
           paidAmount: "0",
-          items: await normalizeBookingItemsCast(sub.items || [], null),
+          items: await normalizeBookingItemsCast(sub.items || [], null, { allowManual }),
           surcharges: sub.surcharges || [],
           deductions: sanitizeDeductions(sub.deductions),
           notes: sub.notes || null,
@@ -640,7 +643,7 @@ router.post("/bookings", async (req, res) => {
   }
 
   const pkgIdForCast = servicePackageId ? parseInt(String(servicePackageId)) : null;
-  snapshotItems = await normalizeBookingItemsCast(snapshotItems, pkgIdForCast);
+  snapshotItems = await normalizeBookingItemsCast(snapshotItems, pkgIdForCast, { allowManual });
 
   let snapshotAdditionalServices: AdditionalServiceLine[] = [];
   if (additionalServices !== undefined) {
@@ -996,6 +999,8 @@ router.put("/bookings/:id", async (req, res) => {
     delete updateData.totalAmount;
   }
   const callerId = verifyToken(req.headers.authorization) || null;
+  // Giá tay (castSource='manual') chỉ được giữ khi người lưu là admin.
+  const allowManual = (await getCallerRole(req.headers.authorization)) === "admin";
 
   // Task #55: enforce deductions = [] for parent contracts (always, regardless of body)
   if (oldBooking.isParentContract) {
@@ -1068,7 +1073,7 @@ router.put("/bookings/:id", async (req, res) => {
       servicePackageId !== undefined
         ? (servicePackageId ? parseInt(String(servicePackageId)) : null)
         : undefined;
-    const castNormalized = await normalizeBookingItemsCast(items, pkgIdForCast ?? null);
+    const castNormalized = await normalizeBookingItemsCast(items, pkgIdForCast ?? null, { allowManual });
     updateData.items = (castNormalized as Record<string, unknown>[]).map(syncItemLegacyFields);
   }
   // Case B (legacy): only top-level assignedStaff provided, no items — write-back
@@ -1321,6 +1326,51 @@ router.put("/bookings/:id", async (req, res) => {
       const newMakeup = extractStaffByRole(newItems, "makeup");
       if (oldPhoto !== newPhoto) changes.push({ field: "photographer", label: "nhiếp ảnh", oldDisplay: oldPhoto || "(chưa có)", newDisplay: newPhoto || "(chưa có)" });
       if (oldMakeup !== newMakeup) changes.push({ field: "makeup", label: "makeup", oldDisplay: oldMakeup || "(chưa có)", newDisplay: newMakeup || "(chưa có)" });
+    }
+
+    // Giá tay: ghi lịch sử khi admin đổi lương tay của nhân sự (minh bạch tiền bạc)
+    if (items !== undefined) {
+      type CastEntry = { name: string; amount: number; manual: boolean };
+      const collectCast = (its: unknown): Map<string, CastEntry> => {
+        const m = new Map<string, CastEntry>();
+        if (!Array.isArray(its)) return m;
+        for (const it of its as Record<string, unknown>[]) {
+          const sa = Array.isArray(it.assignedStaff)
+            ? (it.assignedStaff as { staffId?: number; staffName?: string; role?: string; castAmount?: unknown; castSource?: string }[])
+            : [];
+          for (const s of sa) {
+            if (!s?.staffId || !s?.role) continue;
+            m.set(`${s.staffId}:${(s.role || "").toLowerCase()}`, {
+              name: (s.staffName || "").trim() || `NV#${s.staffId}`,
+              amount: parseFloat(String(s.castAmount ?? 0)) || 0,
+              manual: s.castSource === "manual",
+            });
+          }
+        }
+        return m;
+      };
+      const oldCast = collectCast(oldBooking.items);
+      const newCast = collectCast(newItems);
+      for (const [key, nv] of newCast) {
+        const ov = oldCast.get(key);
+        // Log khi: entry mới là giá tay và khác giá trước đó, hoặc bỏ giá tay quay về bảng cast.
+        const wasManual = ov?.manual ?? false;
+        if (nv.manual && (!ov || Math.abs(ov.amount - nv.amount) > 0.01)) {
+          changes.push({
+            field: `manual_cast_${key}`,
+            label: `giá tay ${nv.name}`,
+            oldDisplay: ov ? fmtVND(ov.amount) : "(chưa có)",
+            newDisplay: fmtVND(nv.amount),
+          });
+        } else if (!nv.manual && wasManual) {
+          changes.push({
+            field: `manual_cast_${key}`,
+            label: `giá tay ${nv.name}`,
+            oldDisplay: `${fmtVND(ov!.amount)} (tay)`,
+            newDisplay: `${fmtVND(nv.amount)} (theo bảng cast)`,
+          });
+        }
+      }
     }
 
     // Ghi vào booking_change_log

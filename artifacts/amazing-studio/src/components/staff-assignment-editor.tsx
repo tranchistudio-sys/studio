@@ -1,4 +1,4 @@
-import { Plus, Trash2, X } from "lucide-react";
+import { Check, Plus, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
@@ -73,6 +73,9 @@ interface StaffAssignmentEditorProps {
   bookingId?: number | null;          // booking id for allowance scope (null = no allowance UI)
   serviceBookingId?: number | null;   // optional child service-booking id; can be null
   allowances?: AllowanceRow[];        // pre-filtered list for this booking (or all rows)
+  /** Cho phép bấm vào ô giá để nhập GIÁ TAY (đè bảng cast). CHỈ bật cho admin —
+   *  server cũng tự chặn nếu người lưu không phải admin. */
+  canManualPrice?: boolean;
 }
 
 export function StaffAssignmentEditor({
@@ -87,6 +90,7 @@ export function StaffAssignmentEditor({
   bookingId = null,
   serviceBookingId = null,
   allowances = [],
+  canManualPrice = false,
 }: StaffAssignmentEditorProps) {
   const [dupError, setDupError] = useState<string | null>(null);
   // Re-resolve cast when packageId / baseJobType loads after staff was picked first.
@@ -94,7 +98,8 @@ export function StaffAssignmentEditor({
     if (!value.length) return;
     let changed = false;
     const next = value.map(item => {
-      if (!item.staffId || !item.role) return item;
+      // Giá tay: admin đã chủ động gõ — không cho auto-resolve đè lại.
+      if (!item.staffId || !item.role || item.castSource === "manual") return item;
       const result = resolveCastAmount(item.staffId, item.role, baseJobType, packageId, allCastRates, allStaffRates);
       const amt = castAmountFromResult(result);
       if (amt === (item.castAmount ?? 0) && result.source === (item.castSource ?? result.source)) return item;
@@ -172,6 +177,28 @@ export function StaffAssignmentEditor({
 
   const update = (id: string, patch: Partial<StaffAssignment>) => {
     onChange(value.map(item => item.id === id ? { ...item, ...patch } : item));
+  };
+
+  // ── Giá tay: bấm vào ô giá để gõ đè (chỉ khi canManualPrice) ──────────────
+  const [editingPriceFor, setEditingPriceFor] = useState<string | null>(null);
+  const [priceDraft, setPriceDraft] = useState("");
+
+  const openPriceEditor = (item: StaffAssignment) => {
+    if (!canManualPrice || !item.staffId || !item.role) return;
+    setPriceDraft(item.castAmount > 0 ? item.castAmount.toLocaleString("vi-VN") : "");
+    setEditingPriceFor(item.id);
+  };
+
+  const commitManualPrice = (item: StaffAssignment) => {
+    setEditingPriceFor(null);
+    if (!item.staffId || !item.role) return;
+    const amt = parseFloat(priceDraft.replace(/\./g, "").replace(/,/g, ""));
+    if (!isFinite(amt) || amt <= 0) {
+      // Xoá/để trống giá tay → quay về giá theo bảng cast
+      void fetchAndApplyCast(item.id, item.staffId, item.staffName, item.role);
+      return;
+    }
+    update(item.id, { castAmount: amt, castSource: "manual" });
   };
 
   const remove = (id: string) => {
@@ -380,9 +407,63 @@ export function StaffAssignmentEditor({
 
                   {/* Cost + Allowance "+" + Delete */}
                   <div className="flex items-center gap-1 ml-auto flex-shrink-0">
-                    <span className="text-xs font-semibold text-amber-600 w-24 text-right" title={item.castSource === "none" ? "Chưa có giá cast" : item.castSource}>
-                      {item.castSource === "pending" ? "…" : item.castAmount > 0 ? fmtVND(item.castAmount) : "Chưa có giá"}
-                    </span>
+                    {canManualPrice && editingPriceFor === item.id ? (
+                      <span className="flex items-center gap-0.5">
+                        <input
+                          autoFocus
+                          type="text"
+                          inputMode="numeric"
+                          className="h-7 w-24 border border-violet-300 rounded-lg px-2 text-xs text-right bg-background focus:outline-none focus:ring-1 focus:ring-violet-400"
+                          placeholder="Giá tay..."
+                          value={priceDraft}
+                          onChange={e => setPriceDraft(fmtThousands(e.target.value))}
+                          onKeyDown={e => {
+                            if (e.key === "Enter") { e.preventDefault(); commitManualPrice(item); }
+                            if (e.key === "Escape") setEditingPriceFor(null);
+                          }}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => commitManualPrice(item)}
+                          aria-label="Lưu giá tay"
+                          title="Lưu giá tay (để trống = quay về giá bảng cast)"
+                          className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-md flex-shrink-0"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditingPriceFor(null)}
+                          aria-label="Huỷ nhập giá"
+                          className="p-1 text-muted-foreground hover:bg-muted rounded-md flex-shrink-0"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </span>
+                    ) : (
+                      <span
+                        className={cn(
+                          "text-xs font-semibold text-amber-600 w-24 text-right",
+                          canManualPrice && item.staffId && item.role &&
+                            "cursor-pointer underline decoration-dotted underline-offset-2 hover:text-amber-700",
+                        )}
+                        title={
+                          (item.castSource === "none" ? "Chưa có giá cast" : item.castSource === "manual" ? "Giá nhập tay" : item.castSource) +
+                          (canManualPrice && item.staffId && item.role ? " — bấm để nhập giá tay" : "")
+                        }
+                        onClick={() => openPriceEditor(item)}
+                      >
+                        {item.castSource === "pending" ? "…" : item.castAmount > 0 ? fmtVND(item.castAmount) : "Chưa có giá"}
+                      </span>
+                    )}
+                    {item.castSource === "manual" && editingPriceFor !== item.id && (
+                      <span
+                        className="text-[9px] font-bold px-1 py-0.5 rounded bg-violet-100 text-violet-700 flex-shrink-0"
+                        title="Giá nhập tay — không theo bảng cast. Bấm vào giá để sửa; xoá trống để quay về bảng cast."
+                      >
+                        ✍️ tay
+                      </span>
+                    )}
                     {bookingId != null && (
                       <button
                         type="button"

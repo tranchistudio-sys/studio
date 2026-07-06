@@ -759,6 +759,17 @@ export default function BookingsPage() {
                         )}
 
                         <div className="flex gap-2 pt-2 border-t flex-wrap">
+                          {/* Nhảy sang lịch chụp đúng show này (deep-link ?bookingId sẵn có của calendar) */}
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="gap-1.5 border-primary/40 text-primary hover:bg-primary/10 disabled:opacity-50 disabled:cursor-not-allowed"
+                            disabled={!detail.shootDate}
+                            title={detail.shootDate ? "Mở show này trên lịch chụp để sửa lịch / giao việc / giờ chụp" : "Chưa có ngày chụp"}
+                            onClick={() => { if (detail.shootDate) setLocation(`/calendar?bookingId=${detail.id}`); }}
+                          >
+                            <CalendarDays className="w-3.5 h-3.5" /> Mở lịch chụp
+                          </Button>
                           <Button variant="outline" size="sm" className="gap-1.5" onClick={() => { setShowReschedule(true); setRescheduleForm({ newDate: detail.shootDate, newTime: detail.shootTime || "", reason: "" }); }}>
                             <CalendarDays className="w-3.5 h-3.5" /> Đổi lịch
                           </Button>

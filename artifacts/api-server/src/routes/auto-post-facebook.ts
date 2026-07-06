@@ -29,6 +29,7 @@ import { pickRelevantSamples, getSamplesByIds, buildStyleBlock, ocrImageToText, 
 import { persistImageBuffer } from "../lib/autopost-storage";
 import { getBrandFooter, buildFooterText } from "../lib/autopost-brand";
 import { listSignatures, getDefaultSignatureContent } from "../lib/autopost-signature";
+import { withStartupDdlLock } from "../lib/startup-ddl";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AutoPost Facebook (Amazing Studio) — admin router (Task 5).
@@ -42,7 +43,7 @@ import { listSignatures, getDefaultSignatureContent } from "../lib/autopost-sign
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Đảm bảo schema tồn tại (fire-and-forget; hàm tự log lỗi, không throw).
-void ensureAutoPostSchema();
+void withStartupDdlLock(ensureAutoPostSchema);
 
 const router: IRouter = Router();
 

@@ -3,6 +3,7 @@ import { db, pool } from "@workspace/db";
 import { customersTable, bookingsTable, paymentsTable } from "@workspace/db/schema";
 import { eq, desc, and, isNull } from "drizzle-orm";
 import { verifyToken } from "./auth";
+import { withStartupDdlLock } from "../lib/startup-ddl";
 
 const router: IRouter = Router();
 
@@ -57,7 +58,7 @@ async function ensureCustomerPhoneUnique() {
     throw err;
   });
 }
-ensureCustomerPhoneUnique().catch(console.error);
+withStartupDdlLock(ensureCustomerPhoneUnique).catch(console.error);
 
 router.get("/customers", async (req, res) => {
   try {

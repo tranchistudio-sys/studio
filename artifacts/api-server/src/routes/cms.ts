@@ -8,6 +8,7 @@ import { eq, and, isNull, isNotNull, asc, desc, sql } from "drizzle-orm";
 import { verifyToken, getCallerRole } from "./auth";
 import { resolveDiscount } from "../lib/pricing-discount";
 import { clearSaleContextCache } from "../lib/sale-context";
+import { withStartupDdlLock } from "../lib/startup-ddl";
 
 const router: IRouter = Router();
 
@@ -261,7 +262,7 @@ async function ensureCmsSchema() {
     client.release();
   }
 }
-ensureCmsSchema().catch(err => console.error("[cms] ensureSchema failed:", err));
+withStartupDdlLock(ensureCmsSchema).catch(err => console.error("[cms] ensureSchema failed:", err));
 
 // ─── Permission helpers ─────────────────────────────────────────────────────
 async function requireAuth(req: Request, res: Response): Promise<"admin" | "staff" | null> {

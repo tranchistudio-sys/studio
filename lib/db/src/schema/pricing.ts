@@ -1,4 +1,4 @@
-import { pgTable, serial, text, timestamp, numeric, integer, boolean } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, timestamp, numeric, integer, boolean, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -53,6 +53,13 @@ export const servicePackagesTable = pgTable("service_packages", {
   addons: text("addons"),
   products: text("products"),
   serviceType: text("service_type"),
+  // Danh sách staff slot của gói: [{slotKey, label, baseRole}] — vd gói 2 photo:
+  // [{slotKey:'traditional_photo', label:'Photo truyền thống', baseRole:'photographer'},
+  //  {slotKey:'reportage_photo',  label:'Photo phóng sự',     baseRole:'photographer'}].
+  // Gói CHỈ định nghĩa slot cần giao việc — KHÔNG chứa lương mặc định (lương luôn
+  // tra bảng cast riêng của nhân viên theo staffId+role+packageId+slotKey).
+  // NULL/[] = gói thường, không bung slot, chạy y như trước.
+  staffSlots: jsonb("staff_slots"),
   photoCount: integer("photo_count").notNull().default(1),
   includesMakeup: integer("includes_makeup").notNull().default(1),
   includedRetouchedPhotos: integer("included_retouched_photos").notNull().default(0),

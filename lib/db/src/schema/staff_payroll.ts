@@ -106,13 +106,17 @@ export type InsertJobEarning = z.infer<typeof insertJobEarningSchema>;
 export type JobEarning = typeof staffJobEarningsTable.$inferSelect;
 
 // ─── Staff cast rates per package ─────────────────────────────────────────────
-// Cast là chi phí biến đổi theo: nhân viên + vai trò + gói dịch vụ
-// key: staffId + role + packageId → 1 mức cast duy nhất
+// Cast là chi phí biến đổi theo: nhân viên + vai trò + gói dịch vụ (+ slot nếu gói có)
+// key: staffId + role + packageId + slotKey → 1 mức cast duy nhất
 export const staffCastRatesTable = pgTable("staff_cast_rates", {
   id: serial("id").primaryKey(),
   staffId: integer("staff_id").notNull().references(() => staffTable.id, { onDelete: "cascade" }),
   role: text("role").notNull(), // photographer | makeup | photoshop | ...
   packageId: integer("package_id").notNull().references(() => servicePackagesTable.id, { onDelete: "cascade" }),
+  // Slot nhân sự trong gói (vd gói 2 photo: 'traditional_photo' | 'reportage_photo')
+  // để 1 gói chứa được 2 mức cast khác nhau cùng role. NULL = cast cấp role như
+  // trước giờ — toàn bộ dữ liệu cũ giữ nguyên nghĩa, resolve không slot vẫn ra dòng NULL.
+  slotKey: text("slot_key"),
   amount: numeric("amount", { precision: 12, scale: 2 }), // null = chưa nhập. Với rateType='percent' lưu giá trị % (vd 5 = 5%).
   rateType: text("rate_type").notNull().default("fixed"), // 'fixed' = VND cố định; 'percent' = % doanh thu (sale)
   createdAt: timestamp("created_at").defaultNow().notNull(),

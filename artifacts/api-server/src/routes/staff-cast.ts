@@ -1,7 +1,7 @@
 import { Router, type IRouter, type Request, type Response, type NextFunction } from "express";
 import { db, pool } from "@workspace/db";
 import { staffCastRatesTable } from "@workspace/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, isNull } from "drizzle-orm";
 import { verifyToken } from "./auth";
 import { resolveStaffCastAmount } from "../lib/resolve-staff-cast";
 
@@ -24,9 +24,17 @@ const fmt = (r: typeof staffCastRatesTable.$inferSelect) => ({
   staffId: r.staffId,
   role: r.role,
   packageId: r.packageId,
+  slotKey: r.slotKey ?? null, // null = cast cấp role (dữ liệu cũ / gói không slot)
   amount: r.amount !== null ? parseFloat(r.amount as string) : null,
   rateType: r.rateType ?? "fixed",
 });
+
+// slotKey từ client: chuỗi rỗng/undefined → null (cast cấp role).
+const normSlotKey = (v: unknown): string | null => {
+  if (typeof v !== "string") return null;
+  const s = v.trim();
+  return s.length > 0 ? s : null;
+};
 
 // Sale role bắt buộc rate_type='percent' (hoa hồng %), các role khác mặc định 'fixed' (VND).
 function normalizeRateType(role: string, rateType?: string): "fixed" | "percent" {
@@ -50,6 +58,7 @@ router.get("/staff-cast/resolve", async (req, res) => {
   const packageId = packageIdRaw ? parseInt(packageIdRaw) : null;
   const taskKey = (req.query.taskKey as string) || "mac_dinh";
   const staffName = (req.query.staffName as string) || undefined;
+  const slotKey = normSlotKey(req.query.slotKey);
 
   const resolved = await resolveStaffCastAmount({
     staffId,
@@ -57,6 +66,7 @@ router.get("/staff-cast/resolve", async (req, res) => {
     packageId: packageId && !Number.isNaN(packageId) ? packageId : null,
     taskKey,
     staffName,
+    slotKey,
   });
 
   console.info("[cast-resolve]", {
@@ -65,6 +75,7 @@ router.get("/staff-cast/resolve", async (req, res) => {
     role: resolved.role,
     packageId: resolved.packageId,
     taskKey: resolved.taskKey,
+    slotKey: resolved.slotKey,
     resolvedCastAmount: resolved.amount,
     source: resolved.source,
   });
@@ -97,11 +108,13 @@ router.get("/staff-cast", async (req, res) => {
 });
 
 // POST /staff-cast/upsert — upsert single cast rate (admin only)
+// Key upsert: (staffId, role, packageId, slotKey) — slotKey null = cast cấp role như cũ.
 router.post("/staff-cast/upsert", requireAdmin, async (req, res) => {
   const { staffId, role, packageId, amount, rateType } = req.body;
   if (!staffId || !role || !packageId) {
     return res.status(400).json({ error: "Thiếu staffId, role hoặc packageId" });
   }
+  const slotKey = normSlotKey(req.body.slotKey);
 
   const existing = await db
     .select()
@@ -110,6 +123,7 @@ router.post("/staff-cast/upsert", requireAdmin, async (req, res) => {
       eq(staffCastRatesTable.staffId, staffId),
       eq(staffCastRatesTable.role, role),
       eq(staffCastRatesTable.packageId, packageId),
+      slotKey ? eq(staffCastRatesTable.slotKey, slotKey) : isNull(staffCastRatesTable.slotKey),
     ));
 
   const amountVal = amount !== null && amount !== undefined && amount !== "" ? String(amount) : null;
@@ -125,7 +139,7 @@ router.post("/staff-cast/upsert", requireAdmin, async (req, res) => {
   } else {
     const [c] = await db
       .insert(staffCastRatesTable)
-      .values({ staffId, role, packageId, amount: amountVal, rateType: rt })
+      .values({ staffId, role, packageId, slotKey, amount: amountVal, rateType: rt })
       .returning();
     return res.status(201).json(fmt(c));
   }
@@ -136,7 +150,7 @@ router.post("/staff-cast/bulk", requireAdmin, async (req, res) => {
   const { staffId, role, rates, rateType: bodyRateType } = req.body as {
     staffId: number;
     role: string;
-    rates: Array<{ packageId: number; amount: number | null; rateType?: string }>;
+    rates: Array<{ packageId: number; amount: number | null; rateType?: string; slotKey?: string | null }>;
     rateType?: string;
   };
 
@@ -147,6 +161,7 @@ router.post("/staff-cast/bulk", requireAdmin, async (req, res) => {
   const results = [];
   for (const r of rates) {
     const { packageId, amount, rateType } = r;
+    const slotKey = normSlotKey(r.slotKey);
     const existing = await db
       .select()
       .from(staffCastRatesTable)
@@ -154,6 +169,7 @@ router.post("/staff-cast/bulk", requireAdmin, async (req, res) => {
         eq(staffCastRatesTable.staffId, staffId),
         eq(staffCastRatesTable.role, role),
         eq(staffCastRatesTable.packageId, packageId),
+        slotKey ? eq(staffCastRatesTable.slotKey, slotKey) : isNull(staffCastRatesTable.slotKey),
       ));
 
     const amountVal = amount !== null && amount !== undefined && String(amount) !== "" ? String(amount) : null;
@@ -169,7 +185,7 @@ router.post("/staff-cast/bulk", requireAdmin, async (req, res) => {
     } else {
       const [c] = await db
         .insert(staffCastRatesTable)
-        .values({ staffId, role, packageId, amount: amountVal, rateType: rt })
+        .values({ staffId, role, packageId, slotKey, amount: amountVal, rateType: rt })
         .returning();
       results.push(fmt(c));
     }

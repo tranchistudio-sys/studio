@@ -10,6 +10,11 @@ import { PublicReveal, PublicRevealItem } from "@/components/public/PublicReveal
 import { playPublicSound } from "@/lib/feedback";
 import { getGalleryDescendantIds } from "@/hooks/use-public-cms";
 import { GoldenHourBadge, ghDiscounted } from "@/lib/golden-hour";
+import {
+  saveRentalListScroll,
+  readRentalListScroll,
+  clearRentalListScroll,
+} from "@/lib/rental-scroll-state";
 
 const OUTFIT_LABEL_TO_KEY_PUB: Array<[string, OutfitTagKey]> = [
   ["hang moi 100", "HANG_MOI_100"],
@@ -417,6 +422,96 @@ export default function PublicRentalPage() {
 
   const shownDresses = sortedDresses.slice(0, visibleCount);
   const loading = catsLoading || dressesLoading;
+
+  // Khôi phục vị trí cuộn khi khách bấm Back từ trang chi tiết về đúng danh sách này.
+  // Giữ tham chiếu mới nhất để rAF-loop (chạy 1 lần khi mount) đọc mà không bị stale closure.
+  const restoreScrollRef = useRef({ loading, sortedDresses, visibleCount });
+  restoreScrollRef.current = { loading, sortedDresses, visibleCount };
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const saved = readRentalListScroll();
+    if (!saved) return; // Vào trực tiếp từ menu/nav → không có state → lên đầu trang như bình thường.
+
+    // Ngăn trình duyệt tự "restore scroll" (lên đầu/loạn) trong lúc SPA remount còn rỗng;
+    // ta tự khôi phục chính xác. Trả lại giá trị cũ khi rời trang.
+    const prevScrollRestoration =
+      typeof window.history.scrollRestoration === "string"
+        ? window.history.scrollRestoration
+        : null;
+    if (prevScrollRestoration !== null) {
+      try {
+        window.history.scrollRestoration = "manual";
+      } catch {
+        /* một số trình duyệt cấm ghi — bỏ qua */
+      }
+    }
+
+    let cancelled = false;
+    let rafId = 0;
+    let timerId = 0;
+    let bumped = false;
+    const startedAt = Date.now();
+    const DEADLINE_MS = 2000; // cố gắng tối đa ~2s rồi dừng, tránh giật lặp vô hạn.
+
+    const attempt = () => {
+      if (cancelled) return;
+      const { loading: isLoading, sortedDresses: list, visibleCount: shown } =
+        restoreScrollRef.current;
+      const urlMatches =
+        window.location.pathname + window.location.search === saved.listUrl;
+
+      // Chỉ restore khi đúng ngữ cảnh: URL khớp + data xong + deep-link (category/sort/q) đã áp + có sản phẩm.
+      if (urlMatches && !isLoading && didDeepLink.current && list.length > 0) {
+        // Sản phẩm vừa bấm có thể nằm ngoài trang đầu (infinite scroll) → mở rộng để card được render.
+        if (!bumped) {
+          const idx = list.findIndex((d) => d.id === saved.productId);
+          if (idx >= 0 && idx >= shown) {
+            setVisibleCount(
+              Math.min(list.length, Math.ceil((idx + 1) / PAGE_SIZE) * PAGE_SIZE),
+            );
+          }
+          bumped = true;
+        }
+        const el = document.querySelector<HTMLElement>(
+          `[data-product-id="${saved.productId}"]`,
+        );
+        if (el) {
+          el.scrollIntoView({ block: "center" });
+          clearRentalListScroll(); // one-shot: đã dùng xong.
+          return;
+        }
+      }
+
+      if (Date.now() - startedAt > DEADLINE_MS) {
+        // Hết giờ: nếu đúng danh sách thì fallback về vị trí cuộn đã lưu (card không còn trong list).
+        // Nếu URL không khớp (ngữ cảnh khác) thì để nguyên state cho lần Back đúng URL sau.
+        if (urlMatches) {
+          window.scrollTo(0, saved.scrollY);
+          clearRentalListScroll();
+        }
+        return;
+      }
+      timerId = window.setTimeout(() => {
+        rafId = requestAnimationFrame(attempt);
+      }, 100);
+    };
+
+    rafId = requestAnimationFrame(attempt);
+    return () => {
+      cancelled = true;
+      if (rafId) cancelAnimationFrame(rafId);
+      if (timerId) clearTimeout(timerId);
+      if (prevScrollRestoration !== null) {
+        try {
+          window.history.scrollRestoration = prevScrollRestoration;
+        } catch {
+          /* ignore */
+        }
+      }
+    };
+  }, []);
+
   const hasChipFilter =
     selectedSizes.size > 0 ||
     selectedWeights.size > 0 ||
@@ -719,7 +814,11 @@ export default function PublicRentalPage() {
                       <RentalDressCard
                         dress={d}
                         onNavigate={() => {
-                          if (d.slug) { playPublicSound("public_product_card_opened"); setLocation(`/san-pham/${d.slug}`); }
+                          if (d.slug) {
+                            saveRentalListScroll(d.id); // lưu vị trí danh sách để Back về đúng chỗ
+                            playPublicSound("public_product_card_opened");
+                            setLocation(`/san-pham/${d.slug}`);
+                          }
                         }}
                       />
                     </PublicRevealItem>
@@ -958,6 +1057,7 @@ function RentalDressCard({
 
   return (
     <article
+      data-product-id={d.id}
       role={d.slug ? "link" : undefined}
       tabIndex={d.slug ? 0 : undefined}
       onClick={d.slug ? onNavigate : undefined}

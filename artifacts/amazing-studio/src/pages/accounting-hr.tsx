@@ -84,6 +84,42 @@ export default function AccountingHrPage() {
     enabled: !!detailPayrollId,
   });
 
+  // ── Ứng lương (nghiệp vụ Lương — KHÔNG phải Chấm công, KHÔNG phải Thưởng/Phạt) ──
+  const _today = `${_now0.getFullYear()}-${String(_now0.getMonth() + 1).padStart(2, "0")}-${String(_now0.getDate()).padStart(2, "0")}`;
+  const [showAdvanceForm, setShowAdvanceForm] = useState(false);
+  const [advForm, setAdvForm] = useState({ staffId: "", date: _today, amount: "", reason: "" });
+  const { data: advances = [] } = useQuery<any[]>({
+    queryKey: ["salary-advances", genMonth],
+    queryFn: () => fetchArray(`/api/payrolls/advances?month=${genMonth}`),
+    enabled: effectiveIsAdmin,
+  });
+  const createAdvance = useMutation({
+    mutationFn: async (data: Record<string, unknown>) => {
+      const r = await fetch(`${BASE}/api/payrolls/advance`, {
+        method: "POST", headers: { "Content-Type": "application/json", ...getAuthHeaders() },
+        body: JSON.stringify(data),
+      });
+      if (!r.ok) { const b = await r.json().catch(() => null); throw new Error(b?.error || `Lỗi ứng lương (${r.status})`); }
+      return r.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["payrolls"] });
+      qc.invalidateQueries({ queryKey: ["salary-advances"] });
+      setShowAdvanceForm(false);
+      setAdvForm({ staffId: "", date: _today, amount: "", reason: "" });
+    },
+    onError: (e: any) => alert(e.message || "Không lưu được khoản ứng"),
+  });
+  const deleteAdvance = useMutation({
+    mutationFn: async (id: number) => {
+      const r = await fetch(`${BASE}/api/payrolls/advance/${id}`, { method: "DELETE", headers: getAuthHeaders() });
+      if (!r.ok) { const b = await r.json().catch(() => null); throw new Error(b?.error || `Lỗi xoá (${r.status})`); }
+      return r.json();
+    },
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ["payrolls"] }); qc.invalidateQueries({ queryKey: ["salary-advances"] }); },
+    onError: (e: any) => alert(e.message || "Không xoá được khoản ứng"),
+  });
+
   const createExpense = useMutation({
     mutationFn: (data: Record<string, unknown>) => fetchJson("/api/expenses", { method: "POST", body: JSON.stringify(data) }),
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["expenses"] }); setShowExpenseForm(false); setExpForm({ description: "", amount: "", category: "other", type: "fixed", expenseDate: "", paymentMethod: "cash", bookingId: "", notes: "" }); },
@@ -310,10 +346,54 @@ export default function AccountingHrPage() {
                 <p className="text-xl font-bold text-yellow-600">{pendingPayrolls.length} phiếu</p>
               </div>
             </div>
-            <Button onClick={() => setShowPayrollForm(true)} className="gap-1.5">
-              <Plus className="w-4 h-4" /> Tạo phiếu lương
-            </Button>
+            <div className="flex gap-2">
+              {effectiveIsAdmin && (
+                <Button variant="outline" onClick={() => setShowAdvanceForm(v => {
+                  const next = !v;
+                  // Mở form: mặc định ngày ứng THUỘC tháng đang xem (genMonth) để khoản ứng vào đúng
+                  // bảng lương tháng đó — nếu genMonth là tháng hiện tại thì lấy hôm nay, ngược lại lấy ngày 01.
+                  if (next) setAdvForm({ staffId: "", date: _today.slice(0, 7) === genMonth ? _today : `${genMonth}-01`, amount: "", reason: "" });
+                  return next;
+                })} className="gap-1.5 border-orange-300 text-orange-700 hover:bg-orange-50">
+                  <Wallet className="w-4 h-4" /> Ứng lương
+                </Button>
+              )}
+              <Button onClick={() => setShowPayrollForm(true)} className="gap-1.5">
+                <Plus className="w-4 h-4" /> Tạo phiếu lương
+              </Button>
+            </div>
           </div>
+
+          {showAdvanceForm && effectiveIsAdmin && (
+            <div className="rounded-xl border bg-orange-50/50 border-orange-200 p-4 space-y-3">
+              <h4 className="font-semibold text-sm flex items-center gap-1.5"><Wallet className="w-4 h-4 text-orange-600" /> Ứng lương cho nhân viên</h4>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-medium text-muted-foreground">Nhân viên *</label>
+                  <Select value={advForm.staffId} onChange={e => setAdvForm(f => ({ ...f, staffId: e.target.value }))}>
+                    <option value="">-- Chọn nhân viên --</option>
+                    {staff.map((s: any) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </Select>
+                </div>
+                <div><label className="text-xs font-medium text-muted-foreground">Ngày ứng *</label><DateInput value={advForm.date} onChange={v => setAdvForm(f => ({ ...f, date: v }))} /></div>
+                <div><label className="text-xs font-medium text-muted-foreground">Số tiền ứng *</label><CurrencyInput placeholder="0" value={advForm.amount} onChange={raw => setAdvForm(f => ({ ...f, amount: raw }))} /></div>
+                <div><label className="text-xs font-medium text-muted-foreground">Ghi chú</label><Input placeholder="VD: Ứng lương" value={advForm.reason} onChange={e => setAdvForm(f => ({ ...f, reason: e.target.value }))} /></div>
+              </div>
+              <p className="text-[11px] text-muted-foreground">Khoản ứng sẽ hiện ở cột <b>Ứng</b> của bảng lương tháng tương ứng và tự trừ vào lương thực nhận (không tính là phạt, không tính là chi phí mới).</p>
+              {advForm.date && advForm.date.slice(0, 7) !== genMonth && (
+                <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                  ⚠ Ngày ứng thuộc <b>tháng {parseInt(advForm.date.slice(5, 7))}/{advForm.date.slice(0, 4)}</b>, khác tháng đang xem ({(() => { const [yy, mm] = genMonth.split("-"); return `tháng ${parseInt(mm)}/${yy}`; })()}). Khoản ứng sẽ vào bảng lương <b>theo ngày đã chọn</b> và không hiện trong danh sách tháng đang xem.
+                </p>
+              )}
+              <div className="flex gap-2">
+                <Button onClick={() => createAdvance.mutate({ staffId: parseInt(advForm.staffId), date: advForm.date, amount: parseFloat(advForm.amount || "0"), reason: advForm.reason })}
+                  disabled={!advForm.staffId || !advForm.date || !advForm.amount || createAdvance.isPending}>
+                  {createAdvance.isPending ? "Đang lưu..." : "Lưu ứng lương"}
+                </Button>
+                <Button variant="outline" onClick={() => setShowAdvanceForm(false)}>Hủy</Button>
+              </div>
+            </div>
+          )}
 
           {showPayrollForm && (
             <div className="rounded-xl border bg-muted/20 p-4 space-y-3">
@@ -394,6 +474,39 @@ export default function AccountingHrPage() {
                     </Button>
                   );
                 })}
+              </div>
+            </div>
+          )}
+
+          {effectiveIsAdmin && advances.length > 0 && (
+            <div className="rounded-xl border border-orange-200 bg-orange-50/30 overflow-hidden">
+              <div className="px-4 py-2.5 border-b border-orange-200 flex items-center gap-2">
+                <Wallet className="w-4 h-4 text-orange-600" />
+                <span className="font-semibold text-sm">
+                  Khoản ứng lương — {(() => { const [yy, mm] = genMonth.split("-"); return `Tháng ${parseInt(mm)}/${yy}`; })()}
+                </span>
+                <span className="ml-auto text-xs text-orange-700 font-medium">
+                  Tổng ứng: {formatVND(advances.reduce((s: number, a: any) => s + Number(a.amount || 0), 0))}
+                </span>
+              </div>
+              <div className="divide-y divide-orange-100">
+                {advances.map((a: any) => (
+                  <div key={a.id} className="flex items-center justify-between px-4 py-2.5 text-sm">
+                    <div className="min-w-0">
+                      <p className="font-medium truncate">
+                        {a.staffName} · <span className="text-orange-700">−{formatVND(Number(a.amount))}</span>
+                      </p>
+                      <p className="text-xs text-muted-foreground truncate">{a.reason || "Ứng lương"}</p>
+                    </div>
+                    <button
+                      onClick={() => { if (confirm("Xoá khoản ứng này? Bảng lương tháng sẽ được cập nhật lại.")) deleteAdvance.mutate(a.id); }}
+                      className="text-red-500 hover:text-red-700 p-1 flex-shrink-0"
+                      title="Xoá khoản ứng"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                ))}
               </div>
             </div>
           )}

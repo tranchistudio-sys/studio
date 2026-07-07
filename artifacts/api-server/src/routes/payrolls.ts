@@ -59,6 +59,52 @@ async function countApprovedLeaveDays(staffId: number, month: number, year: numb
   return { used, capped: Math.min(used, cap), cap };
 }
 
+// ─── Ứng lương (salary advance) ──────────────────────────────────────────────
+// Ứng lương thuộc NGHIỆP VỤ LƯƠNG (không phải chấm công, không phải thưởng/phạt).
+// Lưu ở attendance_adjustments type='advance' (category='salary_advance') vì đó CHÍNH LÀ
+// nguồn mà /payrolls/generate đã đọc để cộng vào cột "Ứng" — tận dụng sẵn, KHÔNG đổi schema,
+// KHÔNG đổi công thức. Helper dưới đồng bộ lại cột "Ứng" + netSalary cho phiếu lương draft
+// (nếu đã tồn tại) mỗi khi thêm/xoá khoản ứng; KHÔNG đụng phiếu đã 'paid'.
+async function recomputeMonthAdvance(
+  staffId: number, month: number, year: number,
+): Promise<{ synced: boolean; advance: number; payrollStatus: string | null }> {
+  const ym = `${year}-${String(month).padStart(2, "0")}`;
+  const sumR = await pool.query(
+    `SELECT COALESCE(SUM(amount::numeric), 0) AS total FROM attendance_adjustments
+     WHERE staff_id = $1 AND type = 'advance' AND to_char(date::timestamp, 'YYYY-MM') = $2`,
+    [staffId, ym],
+  );
+  const advance = parseFloat(String((sumR.rows[0] as { total: string }).total)) || 0;
+  const [pr] = await db.select().from(payrollsTable).where(and(
+    eq(payrollsTable.staffId, staffId),
+    eq(payrollsTable.month, month),
+    eq(payrollsTable.year, year),
+  ));
+  if (!pr) return { synced: false, advance, payrollStatus: null };
+  if (pr.status === "paid") return { synced: false, advance, payrollStatus: "paid" };
+
+  // Recompute netSalary GIỮ NGUYÊN mọi chiều khác, chỉ đổi advance (mirror logic PUT /payrolls/:id).
+  const base = parseFloat(String(pr.baseSalary ?? 0)) || 0;
+  const showBonus = parseFloat(String(pr.showBonus ?? 0)) || 0;
+  const commission = parseFloat(String(pr.commission ?? 0)) || 0;
+  const bonus = parseFloat(String(pr.bonus ?? 0)) || 0;
+  const deductions = parseFloat(String(pr.deductions ?? 0)) || 0;
+  const itemsObj = (pr.items ?? {}) as Record<string, unknown>;
+  const otObj = (itemsObj.overtime ?? {}) as { pay?: unknown };
+  const otPay = parseFloat(String(otObj.pay ?? 0)) || 0;
+  const netSalary = base + showBonus + commission + bonus + otPay - deductions - advance;
+  const newItems: Record<string, unknown> = { ...itemsObj, advance };
+  if (newItems.breakdown && typeof newItems.breakdown === "object") {
+    newItems.breakdown = { ...(newItems.breakdown as Record<string, unknown>), advance };
+  }
+  await db.update(payrollsTable).set({
+    advance: String(advance),
+    items: newItems,
+    netSalary: String(netSalary),
+  }).where(eq(payrollsTable.id, pr.id));
+  return { synced: true, advance, payrollStatus: pr.status };
+}
+
 router.get("/payrolls", async (req, res) => {
   const { verifyToken } = await import("./auth");
   const callerId = verifyToken(req.headers.authorization);
@@ -132,6 +178,93 @@ router.post("/payrolls", async (req, res) => {
     .returning();
   const [staff] = await db.select().from(staffTable).where(eq(staffTable.id, staffId));
   res.status(201).json(fmt({ ...payroll, staffName: staff.name, staffRole: staff.role }));
+});
+
+// ─── Ứng lương: danh sách khoản ứng trong tháng (module Lương) ───────────────
+// Đặt TRƯỚC các route /payrolls/:id để "advances" không bị nuốt làm :id.
+router.get("/payrolls/advances", async (req, res) => {
+  const caller = await getCaller(req);
+  if (!caller) return res.status(401).json({ error: "Chưa đăng nhập" });
+  if (!caller.isAdmin) return res.status(403).json({ error: "Chỉ admin xem được khoản ứng" });
+  const month = String(req.query.month ?? "");
+  if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ error: "Thiếu tham số month (YYYY-MM)" });
+  const params: unknown[] = [month];
+  let sql =
+    `SELECT a.id, a.staff_id AS "staffId", s.name AS "staffName", a.date, a.amount, a.reason,
+            a.created_at AS "createdAt", c.name AS "createdByName"
+       FROM attendance_adjustments a
+       JOIN staff s ON s.id = a.staff_id
+       LEFT JOIN staff c ON c.id = a.created_by
+      WHERE a.type = 'advance' AND to_char(a.date::timestamp, 'YYYY-MM') = $1`;
+  if (req.query.staffId) { params.push(parseInt(String(req.query.staffId))); sql += ` AND a.staff_id = $${params.length}`; }
+  sql += ` ORDER BY a.date DESC, a.id DESC`;
+  const r = await pool.query(sql, params);
+  res.json(r.rows.map((row: Record<string, unknown>) => ({ ...row, amount: parseFloat(String(row.amount)) })));
+});
+
+// ─── Ứng lương: tạo khoản ứng cho nhân viên ─────────────────────────────────
+router.post("/payrolls/advance", async (req, res) => {
+  const caller = await getCaller(req);
+  if (!caller) return res.status(401).json({ error: "Chưa đăng nhập" });
+  if (!caller.isAdmin) return res.status(403).json({ error: "Chỉ admin được ứng lương" });
+  const staffId = parseInt(String(req.body?.staffId));
+  const date = String(req.body?.date ?? "");
+  const amount = parseFloat(String(req.body?.amount));
+  let reason = String(req.body?.reason ?? "").trim();
+  if (!staffId || !/^\d{4}-\d{2}-\d{2}$/.test(date) || !(amount > 0)) {
+    return res.status(400).json({ error: "Thiếu/không hợp lệ: nhân viên, ngày (YYYY-MM-DD) hoặc số tiền" });
+  }
+  const [staff] = await db.select().from(staffTable).where(eq(staffTable.id, staffId));
+  if (!staff) return res.status(404).json({ error: "Không tìm thấy nhân viên" });
+  const [y, m, d] = date.split("-");
+  // Chặn ứng vào tháng đã CHỐT LƯƠNG ('paid'): phiếu lương bất biến nên khoản ứng sẽ
+  // KHÔNG được trừ (rò tiền) và cũng không xoá được → phải chặn ngay (đối xứng với DELETE).
+  const [prPaid] = await db.select().from(payrollsTable).where(and(
+    eq(payrollsTable.staffId, staffId), eq(payrollsTable.month, parseInt(m)), eq(payrollsTable.year, parseInt(y)),
+  ));
+  if (prPaid && prPaid.status === "paid") {
+    return res.status(400).json({ error: "Bảng lương tháng này đã trả — không thể ứng thêm cho tháng đã chốt." });
+  }
+  if (!reason) reason = `Ứng lương ngày ${d}/${m}/${y}`;
+  const ins = await pool.query(
+    `INSERT INTO attendance_adjustments (staff_id, date, type, category, amount, reason, created_by)
+     VALUES ($1, $2, 'advance', 'salary_advance', $3, $4, $5) RETURNING *`,
+    [staffId, date, String(Math.abs(amount)), reason, caller.id],
+  );
+  const sync = await recomputeMonthAdvance(staffId, parseInt(m), parseInt(y));
+  res.status(201).json({
+    adjustment: { ...ins.rows[0], amount: parseFloat(String((ins.rows[0] as { amount: string }).amount)), staffName: staff.name },
+    payrollSynced: sync.synced,
+    payrollStatus: sync.payrollStatus,
+    monthAdvanceTotal: sync.advance,
+  });
+});
+
+// ─── Ứng lương: xoá khoản ứng (đồng bộ lại phiếu lương chưa 'paid') ──────────
+router.delete("/payrolls/advance/:id", async (req, res) => {
+  const caller = await getCaller(req);
+  if (!caller) return res.status(401).json({ error: "Chưa đăng nhập" });
+  if (!caller.isAdmin) return res.status(403).json({ error: "Chỉ admin được xoá khoản ứng" });
+  const id = parseInt(req.params.id);
+  if (isNaN(id)) return res.status(400).json({ error: "ID không hợp lệ" });
+  const r = await pool.query(
+    `SELECT staff_id AS "staffId",
+            to_char(date::timestamp, 'YYYY') AS y, to_char(date::timestamp, 'MM') AS m
+       FROM attendance_adjustments WHERE id = $1 AND type = 'advance'`,
+    [id],
+  );
+  if (r.rows.length === 0) return res.status(404).json({ error: "Không tìm thấy khoản ứng" });
+  const row = r.rows[0] as { staffId: number; y: string; m: string };
+  const month = parseInt(row.m), year = parseInt(row.y);
+  const [pr] = await db.select().from(payrollsTable).where(and(
+    eq(payrollsTable.staffId, row.staffId), eq(payrollsTable.month, month), eq(payrollsTable.year, year),
+  ));
+  if (pr && pr.status === "paid") {
+    return res.status(400).json({ error: "Bảng lương tháng này đã trả — không thể xoá khoản ứng." });
+  }
+  await pool.query(`DELETE FROM attendance_adjustments WHERE id = $1`, [id]);
+  const sync = await recomputeMonthAdvance(row.staffId, month, year);
+  res.json({ ok: true, payrollSynced: sync.synced, monthAdvanceTotal: sync.advance });
 });
 
 // ─── POST /payrolls/generate ─────────────────────────────────────────────────

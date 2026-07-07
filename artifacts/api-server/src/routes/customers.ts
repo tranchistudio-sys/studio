@@ -4,7 +4,7 @@ import { customersTable, bookingsTable, paymentsTable } from "@workspace/db/sche
 import { eq, desc, and, isNull } from "drizzle-orm";
 import { verifyToken } from "./auth";
 import { withStartupDdlLock } from "../lib/startup-ddl";
-import { computeCustomerAggregate, isDebtCountableBooking } from "../lib/customer-aggregate";
+import { computeCustomerAggregate, customerVisibleBookings } from "../lib/customer-aggregate";
 
 const router: IRouter = Router();
 
@@ -93,10 +93,10 @@ router.get("/customers", async (req, res) => {
 
   const result = await Promise.all(
     customers.map(async (c) => {
-      const bookings = (await db.select().from(bookingsTable).where(and(eq(bookingsTable.customerId, c.id as number), isNull(bookingsTable.deletedAt))))
-        .filter((b) => b.status !== "temp_quote"); // báo giá tạm không tính vào công nợ/chi tiêu khách
-      // Gộp số liệu qua helper: bỏ đơn CHA tổng khỏi công nợ/số show (chống cộng trùng cha-con),
-      // vẫn cộng phiếu thu ghi ở đơn cha vào "đã thu".
+      // Lấy TOÀN BỘ đơn của khách (kể cả đã xóa mềm) — helper tự lọc: bỏ đơn trong thùng rác,
+      // đơn hủy, báo giá tạm, đơn CHA tổng (chống cộng trùng cha-con) và con mồ côi của cha đã xóa;
+      // "đã thu" chỉ cộng phiếu thu còn hiệu lực trên đơn còn sống (kể cả đơn cha còn sống).
+      const bookings = await db.select().from(bookingsTable).where(eq(bookingsTable.customerId, c.id as number));
       const { totalBookings, totalPaid, totalDebt } = computeCustomerAggregate(bookings, allPayments);
       return { ...c, totalBookings, totalPaid, totalDebt };
     })
@@ -166,14 +166,15 @@ router.get("/customers/:id", async (req, res) => {
   const id = parseInt(req.params.id);
   const [customer] = await db.select().from(customersTable).where(eq(customersTable.id, id));
   if (!customer) return res.status(404).json({ error: "Không tìm thấy khách hàng" });
-  const bookings = await db.select().from(bookingsTable).where(and(eq(bookingsTable.customerId, id), isNull(bookingsTable.deletedAt)));
+  // Lấy TOÀN BỘ đơn của khách (kể cả đã xóa mềm) — cần đơn cha đã xóa trong danh sách
+  // để helper nhận diện con mồ côi; helper tự lọc toàn bộ (xem customer-aggregate.ts).
+  const bookings = await db.select().from(bookingsTable).where(eq(bookingsTable.customerId, id));
   const allPayments = await db.select().from(paymentsTable);
-  // Gộp số liệu qua helper (chống cộng trùng cha-con): phải truyền CẢ đơn cha để cộng
-  // đúng phiếu thu ghi ở đơn cha, nhưng công nợ/số show chỉ đếm đơn con + đơn lẻ.
   const { totalBookings, totalPaid, totalDebt } = computeCustomerAggregate(bookings, allPayments);
-  // Lịch sử show: bỏ dòng đơn CHA tổng (là bản gộp trùng của các dịch vụ con) để không
-  // hiển thị dòng tổng trùng; các dịch vụ con + đơn lẻ vẫn giữ nguyên → không mất lịch sử.
-  const historyBookings = bookings.filter(isDebtCountableBooking);
+  // Lịch sử show: chỉ các đơn còn hiệu lực (đơn con + đơn lẻ) — bỏ đơn cha tổng (bản gộp
+  // trùng của dịch vụ con), đơn trong thùng rác, đơn hủy, báo giá tạm. Dịch vụ con còn
+  // hiệu lực vẫn giữ nguyên → không mất lịch sử; audit xóa/sửa vẫn nằm ở chi tiết đơn.
+  const historyBookings = customerVisibleBookings(bookings);
   res.json({ ...customer, totalBookings, totalPaid, totalDebt, bookings: historyBookings });
   } catch (err) {
     console.error("GET /customers/:id error:", err);

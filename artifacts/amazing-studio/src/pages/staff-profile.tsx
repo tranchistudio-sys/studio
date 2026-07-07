@@ -12,7 +12,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import {
   ArrowLeft, Phone, Mail, Calendar, Briefcase, Star,
   CheckCircle2, Clock, XCircle, PlayCircle, Banknote, TrendingUp,
-  FileText, Plus, ChevronRight, Lock, Pencil, AlertCircle,
+  FileText, Plus, ChevronRight, ChevronDown, Lock, Pencil, AlertCircle,
   CalendarOff, ClipboardList, Shield, Camera, ImageUp, Trash2, X,
 } from "lucide-react";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
@@ -287,6 +287,14 @@ export default function StaffProfilePage() {
   const vnNow = () => { const d = new Date(); return { month: d.getMonth() + 1, year: d.getFullYear() }; };
   const [salaryMonth, setSalaryMonth] = useState(vnNow().month);
   const [salaryYear, setSalaryYear] = useState(vnNow().year);
+
+  // Thu gọn/sổ ra từng khu vực hồ sơ (UI-only, không đổi logic).
+  // Mặc định: khu quan trọng MỞ (Chi tiết lương, Công việc, Đơn xin nghỉ),
+  // khu phụ/dài GỌN (Chấm công, Lịch sử job, Bảng cast, Ghi chú nội bộ).
+  const [secOpen, setSecOpen] = useState<Record<string, boolean>>({
+    chiTiet: true, congViec: true, chamCong: false, lichSuJob: false, donNghi: true, cast: false, notes: false,
+  });
+  const toggleSec = (k: string) => setSecOpen(s => ({ ...s, [k]: !s[k] }));
 
   const { data: profile, isLoading, error } = useQuery<ProfileData>({
     queryKey: ["staff-profile", staffId, salaryMonth, salaryYear],
@@ -691,9 +699,10 @@ export default function StaffProfilePage() {
           </div>
         </button>
 
-        {/* Body */}
+        {/* Body — mobile: xếp dọc căn giữa (avatar → tên → badge → liên hệ) cho chữ
+            không bị ép cột hẹp; desktop (sm+) giữ layout 2 cột như cũ. */}
         <div className="px-4 sm:px-5 pb-5">
-          <div className="flex items-start gap-3 sm:gap-5">
+          <div className="flex flex-col items-center sm:flex-row sm:items-start gap-3 sm:gap-5">
 
             {/* ── Avatar column ─────────────────────────────────────────── */}
             <div className="relative flex-shrink-0 -mt-20 sm:-mt-24">
@@ -764,7 +773,7 @@ export default function StaffProfilePage() {
               {canEdit && profileMenuOpen && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setProfileMenuOpen(false)} />
-                  <div className="absolute left-full ml-3 top-0 z-50 bg-popover border border-border rounded-xl shadow-xl p-1 min-w-[160px] animate-in fade-in-0 zoom-in-95 duration-100">
+                  <div className="absolute left-1/2 -translate-x-1/2 top-full mt-2 sm:left-full sm:translate-x-0 sm:ml-3 sm:top-0 sm:mt-0 z-50 bg-popover border border-border rounded-xl shadow-xl p-1 min-w-[160px] animate-in fade-in-0 zoom-in-95 duration-100">
                     {avatarUrl && (
                       <button
                         className="w-full flex items-center gap-2.5 px-3 py-2 text-sm rounded-lg hover:bg-muted transition-colors text-left"
@@ -813,8 +822,8 @@ export default function StaffProfilePage() {
               onChange={handleCoverFileChange}
             />
 
-            {/* ── Info column ───────────────────────────────────────────── */}
-            <div className="flex-1 min-w-0 pt-3 sm:pt-4">
+            {/* ── Info column — mobile: full-width căn giữa; sm+: cột trái như cũ ── */}
+            <div className="flex-1 min-w-0 pt-1 sm:pt-4 w-full text-center sm:text-left">
               {/* Error messages */}
               {(avatarError || coverError) && (
                 <div className="mb-3 p-2.5 bg-red-50 border border-red-200 rounded-lg">
@@ -822,17 +831,17 @@ export default function StaffProfilePage() {
                   {coverError && <p className="text-xs text-red-700 font-medium">{coverError}</p>}
                 </div>
               )}
-              
-              {/* Name + status badge */}
-              <div className="flex items-start justify-between gap-2">
+
+              {/* Name + status badge — mobile: tên 1 dòng giữa, badge ngay dưới */}
+              <div className="flex flex-col items-center gap-1.5 sm:flex-row sm:items-start sm:justify-between sm:gap-2">
                 <h1 className="text-xl sm:text-2xl font-bold tracking-tight leading-tight">{staff.name}</h1>
-                <span className={cn("text-xs px-2.5 py-1 rounded-full font-semibold shrink-0 mt-0.5", statusCfg.cls)}>
+                <span className={cn("text-xs px-2.5 py-1 rounded-full font-semibold shrink-0 sm:mt-0.5", statusCfg.cls)}>
                   {statusCfg.label}
                 </span>
               </div>
 
               {/* Role badges */}
-              <div className="flex flex-wrap gap-1.5 mt-2">
+              <div className="flex flex-wrap gap-1.5 mt-2 justify-center sm:justify-start">
                 {rolesDisplay.map(r => (
                   <span key={r} className="text-xs px-2.5 py-1 rounded-full bg-primary/10 text-primary font-medium">
                     {ROLE_ICONS[r] || "•"} {ROLE_LABELS[r] || r}
@@ -842,22 +851,22 @@ export default function StaffProfilePage() {
 
               {/* Contact info */}
               <div className="space-y-1.5 mt-3">
-                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                <div className="flex items-center gap-1.5 text-sm text-muted-foreground justify-center sm:justify-start">
                   <Phone className="w-3.5 h-3.5 flex-shrink-0" />
                   <span className="truncate">{staff.phone || "—"}</span>
                 </div>
                 {staff.email && (
-                  <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                  <div className="flex items-center gap-1.5 text-sm text-muted-foreground justify-center sm:justify-start">
                     <Mail className="w-3.5 h-3.5 flex-shrink-0" />
                     <span className="truncate">{staff.email}</span>
                   </div>
                 )}
-                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                <div className="flex items-center gap-1.5 text-sm text-muted-foreground justify-center sm:justify-start">
                   <Briefcase className="w-3.5 h-3.5 flex-shrink-0" />
                   <span>{staff.staffType === "official" ? "Nhân viên chính thức" : "Freelancer / CTV"}</span>
                 </div>
                 {staff.joinDate && (
-                  <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                  <div className="flex items-center gap-1.5 text-sm text-muted-foreground justify-center sm:justify-start">
                     <Calendar className="w-3.5 h-3.5 flex-shrink-0" />
                     <span>Vào làm {fmtDate(staff.joinDate)}</span>
                   </div>
@@ -866,7 +875,7 @@ export default function StaffProfilePage() {
 
               {/* Upload hint */}
               {canEdit && (
-                <p className="text-[10px] text-muted-foreground mt-3 flex items-center gap-1">
+                <p className="text-[10px] text-muted-foreground mt-3 flex items-center gap-1 justify-center sm:justify-start">
                   <Camera size={10} />
                   {avatarUrl ? "Bấm ảnh để đổi hoặc xem" : "Bấm ảnh để thêm avatar"}
                 </p>
@@ -890,58 +899,7 @@ export default function StaffProfilePage() {
         </div>
       </section>
 
-      {/* ── B. CÔNG VIỆC THÁNG NÀY ─────────────────────────────────────── */}
-      <section className="bg-card border border-border rounded-2xl p-4 space-y-3">
-        <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-          <ClipboardList className="w-3.5 h-3.5" /> Công việc tháng này
-        </p>
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <StatCard
-            label="Tổng job" value={monthStats.total} icon={<ClipboardList className="w-4 h-4" />}
-            color="blue" active={activeFilter === "all"}
-            onClick={() => setActiveFilter(activeFilter === "all" ? null : "all")}
-          />
-          <StatCard
-            label="Hoàn thành" value={monthStats.completed} icon={<CheckCircle2 className="w-4 h-4" />}
-            color="green" active={activeFilter === "completed"}
-            onClick={() => setActiveFilter(activeFilter === "completed" ? null : "completed")}
-          />
-          <StatCard
-            label="Chờ xử lý" value={monthStats.pending} icon={<Clock className="w-4 h-4" />}
-            color="amber" active={activeFilter === "pending"}
-            onClick={() => setActiveFilter(activeFilter === "pending" ? null : "pending")}
-          />
-          {monthStats.inProgress > 0 && (
-            <StatCard
-              label="Đang làm" value={monthStats.inProgress} icon={<PlayCircle className="w-4 h-4" />}
-              color="violet" active={activeFilter === "in_progress"}
-              onClick={() => setActiveFilter(activeFilter === "in_progress" ? null : "in_progress")}
-            />
-          )}
-          {monthStats.cancelled > 0 && (
-            <StatCard
-              label="Đã hủy" value={monthStats.cancelled} icon={<XCircle className="w-4 h-4" />}
-              color="red" active={activeFilter === "cancelled"}
-              onClick={() => setActiveFilter(activeFilter === "cancelled" ? null : "cancelled")}
-            />
-          )}
-        </div>
-
-        {/* Filtered job list */}
-        {activeFilter && (
-          <div className="space-y-2 mt-2">
-            <p className="text-xs font-medium text-muted-foreground">
-              {filteredJobs.length} job {activeFilter === "all" ? "" : `– ${activeFilter === "completed" ? "Hoàn thành" : activeFilter === "pending" ? "Chờ xử lý" : activeFilter === "in_progress" ? "Đang làm" : "Đã hủy"}`}
-            </p>
-            {filteredJobs.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-4">Không có job nào</p>
-            ) : filteredJobs.map(job => (
-              <JobRow key={job.id} job={job} onClick={() => setJobDetailId(job.id)} />
-            ))}
-          </div>
-        )}
-      </section>
-
+      {/* ── LƯƠNG (ưu tiên hàng đầu): panel + chi tiết ngay dưới ───────── */}
       <StaffSalaryPanel
         staffId={staffId}
         isAdmin={isAdmin}
@@ -953,25 +911,28 @@ export default function StaffProfilePage() {
       />
 
       {/* ── C. TIỀN LƯƠNG THÁNG NÀY ────────────────────────────────────── */}
-      <section className="bg-card border border-border rounded-2xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
+      <section id="salary-detail" className="bg-card border border-border rounded-2xl p-4 space-y-3 scroll-mt-4">
+        <button type="button" onClick={() => toggleSec("chiTiet")} className="w-full flex items-center justify-between text-left">
           <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
             <Banknote className="w-3.5 h-3.5" /> Chi tiết lương tháng {String(salaryMonth).padStart(2, "0")}/{salaryYear}
           </p>
-          {earnings.estimate && (
-            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-              earnings.estimate.source === "paid_payroll"
-                ? "bg-emerald-100 text-emerald-700"
-                : earnings.estimate.source === "draft_payroll"
-                  ? "bg-amber-100 text-amber-700"
-                  : "bg-blue-100 text-blue-700"
-            }`}>
-              {earnings.estimate.source === "paid_payroll" ? "Đã chốt" : "Tạm tính"}
-            </span>
-          )}
-        </div>
+          <span className="flex items-center gap-2">
+            {earnings.estimate && (
+              <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                earnings.estimate.source === "paid_payroll"
+                  ? "bg-emerald-100 text-emerald-700"
+                  : earnings.estimate.source === "draft_payroll"
+                    ? "bg-amber-100 text-amber-700"
+                    : "bg-blue-100 text-blue-700"
+              }`}>
+                {earnings.estimate.source === "paid_payroll" ? "Đã chốt" : "Tạm tính"}
+              </span>
+            )}
+            <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform flex-shrink-0 ${secOpen.chiTiet ? "rotate-180" : ""}`} />
+          </span>
+        </button>
 
-        {earnings.estimate ? (
+        {secOpen.chiTiet && (earnings.estimate ? (
           <>
             <div className="bg-gradient-to-r from-primary/5 to-primary/10 rounded-xl p-4 border border-primary/20 space-y-2">
               <div className="flex justify-between text-sm">
@@ -1214,10 +1175,10 @@ export default function StaffProfilePage() {
           </>
         ) : (
           <p className="text-sm text-muted-foreground text-center py-2">Không tính được tạm tính</p>
-        )}
+        ))}
 
         {/* Lịch sử earnings đã ghi nhận (cho payroll/audit) */}
-        {earnings.records.length > 0 && (
+        {secOpen.chiTiet && earnings.records.length > 0 && (
           <div className="space-y-1.5 pt-3 border-t border-border">
             <p className="text-xs text-muted-foreground font-medium">Lương đã ghi nhận theo job (payroll):</p>
             {earnings.records.map(e => (
@@ -1233,18 +1194,81 @@ export default function StaffProfilePage() {
         )}
       </section>
 
+      {/* ── B. CÔNG VIỆC THÁNG NÀY (sau khu Lương — lương ưu tiên hơn) ── */}
+      <section className="bg-card border border-border rounded-2xl p-4 space-y-3">
+        <button type="button" onClick={() => toggleSec("congViec")} className="w-full flex items-center justify-between text-left">
+          <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+            <ClipboardList className="w-3.5 h-3.5" /> Công việc tháng này
+          </p>
+          <span className="flex items-center gap-2">
+            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-muted text-muted-foreground">{monthStats.total} job</span>
+            <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform flex-shrink-0 ${secOpen.congViec ? "rotate-180" : ""}`} />
+          </span>
+        </button>
+        {secOpen.congViec && (<>
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+          <StatCard
+            label="Tổng job" value={monthStats.total} icon={<ClipboardList className="w-4 h-4" />}
+            color="blue" active={activeFilter === "all"}
+            onClick={() => setActiveFilter(activeFilter === "all" ? null : "all")}
+          />
+          <StatCard
+            label="Hoàn thành" value={monthStats.completed} icon={<CheckCircle2 className="w-4 h-4" />}
+            color="green" active={activeFilter === "completed"}
+            onClick={() => setActiveFilter(activeFilter === "completed" ? null : "completed")}
+          />
+          <StatCard
+            label="Chờ xử lý" value={monthStats.pending} icon={<Clock className="w-4 h-4" />}
+            color="amber" active={activeFilter === "pending"}
+            onClick={() => setActiveFilter(activeFilter === "pending" ? null : "pending")}
+          />
+          {monthStats.inProgress > 0 && (
+            <StatCard
+              label="Đang làm" value={monthStats.inProgress} icon={<PlayCircle className="w-4 h-4" />}
+              color="violet" active={activeFilter === "in_progress"}
+              onClick={() => setActiveFilter(activeFilter === "in_progress" ? null : "in_progress")}
+            />
+          )}
+          {monthStats.cancelled > 0 && (
+            <StatCard
+              label="Đã hủy" value={monthStats.cancelled} icon={<XCircle className="w-4 h-4" />}
+              color="red" active={activeFilter === "cancelled"}
+              onClick={() => setActiveFilter(activeFilter === "cancelled" ? null : "cancelled")}
+            />
+          )}
+        </div>
+
+        {/* Filtered job list */}
+        {activeFilter && (
+          <div className="space-y-2 mt-2">
+            <p className="text-xs font-medium text-muted-foreground">
+              {filteredJobs.length} job {activeFilter === "all" ? "" : `– ${activeFilter === "completed" ? "Hoàn thành" : activeFilter === "pending" ? "Chờ xử lý" : activeFilter === "in_progress" ? "Đang làm" : "Đã hủy"}`}
+            </p>
+            {filteredJobs.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-4">Không có job nào</p>
+            ) : filteredJobs.map(job => (
+              <JobRow key={job.id} job={job} onClick={() => setJobDetailId(job.id)} />
+            ))}
+          </div>
+        )}
+        </>)}
+      </section>
+
       {/* ── D. CHẤM CÔNG THÁNG NÀY ─────────────────────────────────────── */}
       <StaffAttendanceBlock staffId={staffId} isAdmin={isAdmin} />
 
       {/* ── E. LỊCH SỬ CÔNG VIỆC ────────────────────────────────────────── */}
       <section className="bg-card border border-border rounded-2xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
+        <button type="button" onClick={() => toggleSec("lichSuJob")} className="w-full flex items-center justify-between text-left">
           <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
             <FileText className="w-3.5 h-3.5" /> Lịch sử công việc
           </p>
-          <span className="text-xs text-muted-foreground">{jobHistory.length} job</span>
-        </div>
-        {jobHistory.length === 0 ? (
+          <span className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">{jobHistory.length} job</span>
+            <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform flex-shrink-0 ${secOpen.lichSuJob ? "rotate-180" : ""}`} />
+          </span>
+        </button>
+        {secOpen.lichSuJob && (jobHistory.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-4">Chưa có job nào</p>
         ) : (
           <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
@@ -1252,23 +1276,26 @@ export default function StaffProfilePage() {
               <JobRow key={job.id} job={job} onClick={() => setJobDetailId(job.id)} />
             ))}
           </div>
-        )}
+        ))}
       </section>
 
       {/* ── F. ĐƠN XIN NGHỈ ─────────────────────────────────────────────── */}
       <section className="bg-card border border-border rounded-2xl p-4 space-y-3">
-        <div className="flex items-center justify-between">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-            <CalendarOff className="w-3.5 h-3.5" /> Đơn xin nghỉ
-          </p>
+        <div className="flex items-center justify-between gap-2">
+          <button type="button" onClick={() => toggleSec("donNghi")} className="flex-1 flex items-center gap-1.5 text-left min-w-0">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              <CalendarOff className="w-3.5 h-3.5" /> Đơn xin nghỉ
+            </p>
+            <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform flex-shrink-0 ${secOpen.donNghi ? "rotate-180" : ""}`} />
+          </button>
           <button
             onClick={() => setLeaveSheet(true)}
-            className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary font-medium hover:bg-primary/20 transition-colors"
+            className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-primary/10 text-primary font-medium hover:bg-primary/20 transition-colors flex-shrink-0"
           >
             <Plus className="w-3.5 h-3.5" /> Tạo đơn
           </button>
         </div>
-        {leaveThisMonth && (
+        {secOpen.donNghi && leaveThisMonth && (
           <div className="rounded-xl border bg-amber-50 border-amber-200 p-3 text-sm">
             Nghỉ phép tháng này: <strong>{leaveThisMonth.used}/{leaveThisMonth.cap} ngày</strong>
             {leaveThisMonth.used > leaveThisMonth.cap && (
@@ -1276,7 +1303,7 @@ export default function StaffProfilePage() {
             )}
           </div>
         )}
-        {leaveRequests.length === 0 ? (
+        {secOpen.donNghi && (leaveRequests.length === 0 ? (
           <p className="text-sm text-muted-foreground text-center py-4">Chưa có đơn xin nghỉ nào</p>
         ) : (
           <div className="space-y-2.5">
@@ -1309,23 +1336,26 @@ export default function StaffProfilePage() {
               </div>
             ))}
           </div>
-        )}
+        ))}
       </section>
 
       {/* ── G. BẢNG GIÁ CÁ NHÂN ────────────────────────────────────────── */}
       <section className="bg-card border border-border rounded-2xl p-4 space-y-4">
         <div className="flex items-center justify-between">
-          <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-            <TrendingUp className="w-3.5 h-3.5" /> Bảng cast chính thức
-          </p>
+          <button type="button" onClick={() => toggleSec("cast")} className="flex-1 flex items-center gap-1.5 text-left min-w-0">
+            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+              <TrendingUp className="w-3.5 h-3.5" /> Bảng cast chính thức
+            </p>
+            <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform flex-shrink-0 ${secOpen.cast ? "rotate-180" : ""}`} />
+          </button>
           <button
             onClick={() => setCastSheet(true)}
-            className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 font-medium hover:bg-emerald-100 transition-colors"
+            className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 font-medium hover:bg-emerald-100 transition-colors flex-shrink-0"
           >
             <Pencil className="w-3.5 h-3.5" /> {isAdmin ? "Chỉnh sửa" : "Xem chi tiết"}
           </button>
         </div>
-        {(() => {
+        {secOpen.cast && (() => {
           // Cast rates per-package (new system: staff_cast_rates × service_packages)
           const castByRole = castRates.reduce((acc, c) => {
             if (!acc[c.role]) acc[c.role] = new Map();
@@ -1589,23 +1619,26 @@ export default function StaffProfilePage() {
       {/* ── H. GHI CHÚ NỘI BỘ (Admin only) ────────────────────────────── */}
       {isAdmin && (
         <section className="bg-card border border-border rounded-2xl p-4 space-y-3">
-          <div className="flex items-center justify-between">
-            <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-              <Shield className="w-3.5 h-3.5 text-violet-500" />
-              <span className="text-violet-600">Ghi chú nội bộ</span>
-              <span className="text-[9px] bg-violet-100 text-violet-600 px-1.5 py-0.5 rounded font-bold">ADMIN</span>
-            </p>
+          <div className="flex items-center justify-between gap-2">
+            <button type="button" onClick={() => toggleSec("notes")} className="flex-1 flex items-center gap-1.5 text-left min-w-0">
+              <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+                <Shield className="w-3.5 h-3.5 text-violet-500" />
+                <span className="text-violet-600">Ghi chú nội bộ</span>
+                <span className="text-[9px] bg-violet-100 text-violet-600 px-1.5 py-0.5 rounded font-bold">ADMIN</span>
+              </p>
+              <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform flex-shrink-0 ${secOpen.notes ? "rotate-180" : ""}`} />
+            </button>
             <button
               onClick={() => {
                 setNotesForm(internalNotes ?? {});
                 setNotesSheet(true);
               }}
-              className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-violet-50 text-violet-700 font-medium hover:bg-violet-100 transition-colors"
+              className="flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-violet-50 text-violet-700 font-medium hover:bg-violet-100 transition-colors flex-shrink-0"
             >
               <Pencil className="w-3.5 h-3.5" /> Chỉnh sửa
             </button>
           </div>
-          {internalNotes ? (
+          {secOpen.notes && (internalNotes ? (
             <div className="space-y-3">
               {internalNotes.skillsStrong && (
                 <NoteBlock label="Kỹ năng mạnh" value={internalNotes.skillsStrong} />
@@ -1629,7 +1662,7 @@ export default function StaffProfilePage() {
             </div>
           ) : (
             <p className="text-sm text-muted-foreground text-center py-4">Chưa có ghi chú nội bộ nào</p>
-          )}
+          ))}
         </section>
       )}
 
@@ -2074,6 +2107,8 @@ type StaffAttSummary = {
 
 function StaffAttendanceBlock({ staffId, isAdmin }: { staffId: number; isAdmin?: boolean }) {
   const month = new Date(Date.now() + 7 * 3600 * 1000).toISOString().slice(0, 7);
+  // Thu gọn mặc định (khu phụ) — bấm tiêu đề để sổ ra.
+  const [open, setOpen] = useState(false);
   const { data, isLoading } = useQuery<StaffAttSummary>({
     queryKey: ["staff-att-summary", staffId, month],
     queryFn: () => fetchJson(`/api/attendance/staff-summary?staffId=${staffId}&month=${month}`),
@@ -2081,10 +2116,13 @@ function StaffAttendanceBlock({ staffId, isAdmin }: { staffId: number; isAdmin?:
   });
   return (
     <section className="bg-card border border-border rounded-2xl p-4 space-y-3">
-      <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
-        <Clock className="w-3.5 h-3.5" /> Chấm công tháng này ({month})
-      </p>
-      {isLoading || !data ? (
+      <button type="button" onClick={() => setOpen(v => !v)} className="w-full flex items-center justify-between text-left">
+        <p className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5">
+          <Clock className="w-3.5 h-3.5" /> Chấm công tháng này ({month})
+        </p>
+        <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform flex-shrink-0 ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (isLoading || !data ? (
         <p className="text-sm text-muted-foreground text-center py-4">Đang tải…</p>
       ) : (
         <>
@@ -2125,13 +2163,14 @@ function StaffAttendanceBlock({ staffId, isAdmin }: { staffId: number; isAdmin?:
               )}
             </div>
           )}
-          {isAdmin && data.adjustments && data.adjustments.length > 0 && (
+          {/* Ứng lương (type='advance') thuộc khu Lương — không hiển thị trong Chấm công */}
+          {isAdmin && data.adjustments && data.adjustments.filter(a => a.type !== "advance").length > 0 && (
             <div className="pt-2 border-t border-border">
               <p className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1.5">
-                Điều chỉnh tháng này ({data.adjustments.length}) <span className="text-[9px] text-violet-600">[admin]</span>
+                Điều chỉnh tháng này ({data.adjustments.filter(a => a.type !== "advance").length}) <span className="text-[9px] text-violet-600">[admin]</span>
               </p>
               <ul className="space-y-1 max-h-40 overflow-y-auto">
-                {data.adjustments.map(adj => {
+                {data.adjustments.filter(a => a.type !== "advance").map(adj => {
                   const isBonus = adj.type === "bonus";
                   const isWaiver = adj.category === "waiver";
                   return (
@@ -2154,7 +2193,7 @@ function StaffAttendanceBlock({ staffId, isAdmin }: { staffId: number; isAdmin?:
             </div>
           )}
         </>
-      )}
+      ))}
     </section>
   );
 }

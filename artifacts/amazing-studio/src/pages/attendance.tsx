@@ -1997,11 +1997,13 @@ export default function AttendancePage() {
   // Static QR URL - không phụ thuộc API
   const staticQrUrl = `/attendance/check-in`;
 
-  const { data: adminAdjustments = [] } = useQuery<{ id: number; type: string; category?: string | null; amount: number; reason: string | null; date: string; created_by_name?: string | null }[]>({
+  const { data: adminAdjustmentsRaw = [] } = useQuery<{ id: number; type: string; category?: string | null; amount: number; reason: string | null; date: string; created_by_name?: string | null }[]>({
     queryKey: ["attendance-adjustments-admin", adjViewStaffId, month],
     queryFn: () => fetchAuth(`/api/attendance/adjustments?staffId=${adjViewStaffId}&month=${month}`),
     enabled: canEditAttendance && !!adjViewStaffId,
   });
+  // Ứng lương (type='advance') thuộc module Lương, KHÔNG hiển thị trong danh sách điều chỉnh Chấm công.
+  const adminAdjustments = adminAdjustmentsRaw.filter(a => a.type !== "advance");
 
   // ── Admin override / waiver dialog state ────────────────────────────────────
   const [adminViewMode, setAdminViewMode] = useState<"table" | "timeline">("table");

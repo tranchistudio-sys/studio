@@ -751,9 +751,17 @@ export async function computeMonthEstimate(
     penalty = Number(itemsAny.penalty ?? 0) || 0;
     source = "draft_payroll";
     payrollId = payroll.id;
+  } else {
+    // realtime (chưa có phiếu draft): bonus/penalty vẫn = 0 như cũ (chỉ generate mới chốt).
+    // NHƯNG khoản ỨNG LƯƠNG đã ghi thì hiển thị + trừ NGAY để "Tổng thực nhận" đúng — đồng nhất
+    // với generate và finalize-payment (cả hai đều tự đọc advance từ attendance_adjustments).
+    const advR = await pool.query(
+      `SELECT COALESCE(SUM(amount::numeric), 0) AS total FROM attendance_adjustments
+       WHERE staff_id = $1 AND type = 'advance' AND to_char(date::timestamp, 'YYYY-MM') = $2`,
+      [staffId, `${year}-${String(month).padStart(2, "0")}`],
+    );
+    advance = parseFloat(String((advR.rows[0] as { total: string }).total)) || 0;
   }
-  // realtime (no payroll) → bonus/penalty/advance = 0; KHÔNG infer từ
-  // attendance_adjustments (chỉ payroll/generate mới đọc adjustments).
 
   const cap = 2;
   const leaveUsed = await countApprovedLeaveDays(staffId, month, year);

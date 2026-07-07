@@ -503,7 +503,9 @@ export default function CustomersPage() {
                   <div className="bg-white/60 dark:bg-black/10 rounded-xl p-2 text-center">
                     <p className="text-[10px] text-muted-foreground">Đã trả</p>
                     <p className="font-bold text-sm text-green-600">
-                      {formatVND(customerDetail.bookings?.reduce((s, b) => s + (b.paidAmount || 0), 0) ?? 0)}
+                      {/* Dùng totalPaid từ BE (nguồn phiếu thu chuẩn): đơn cha tổng — nơi ghi
+                          tiền cọc/thu của hợp đồng nhiều dịch vụ — đã bị loại khỏi mảng bookings. */}
+                      {formatVND(customerDetail.totalPaid ?? 0)}
                     </p>
                   </div>
                   <div className="bg-white/60 dark:bg-black/10 rounded-xl p-2 text-center">

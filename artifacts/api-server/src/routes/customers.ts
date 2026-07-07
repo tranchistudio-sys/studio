@@ -4,6 +4,7 @@ import { customersTable, bookingsTable, paymentsTable } from "@workspace/db/sche
 import { eq, desc, and, isNull } from "drizzle-orm";
 import { verifyToken } from "./auth";
 import { withStartupDdlLock } from "../lib/startup-ddl";
+import { computeCustomerAggregate, isDebtCountableBooking } from "../lib/customer-aggregate";
 
 const router: IRouter = Router();
 
@@ -94,13 +95,10 @@ router.get("/customers", async (req, res) => {
     customers.map(async (c) => {
       const bookings = (await db.select().from(bookingsTable).where(and(eq(bookingsTable.customerId, c.id as number), isNull(bookingsTable.deletedAt))))
         .filter((b) => b.status !== "temp_quote"); // báo giá tạm không tính vào công nợ/chi tiêu khách
-      const bookingIds = bookings.map((b) => b.id);
-      const totalPaid = allPayments
-        .filter((p) => p.bookingId && bookingIds.includes(p.bookingId))
-        .reduce((s, p) => s + parseFloat(p.amount), 0);
-      const totalOwed = bookings.reduce((s, b) => s + parseFloat(b.totalAmount), 0);
-      const totalDebt = Math.max(0, totalOwed - totalPaid);
-      return { ...c, totalBookings: bookings.length, totalPaid, totalDebt };
+      // Gộp số liệu qua helper: bỏ đơn CHA tổng khỏi công nợ/số show (chống cộng trùng cha-con),
+      // vẫn cộng phiếu thu ghi ở đơn cha vào "đã thu".
+      const { totalBookings, totalPaid, totalDebt } = computeCustomerAggregate(bookings, allPayments);
+      return { ...c, totalBookings, totalPaid, totalDebt };
     })
   );
 
@@ -170,11 +168,13 @@ router.get("/customers/:id", async (req, res) => {
   if (!customer) return res.status(404).json({ error: "Không tìm thấy khách hàng" });
   const bookings = await db.select().from(bookingsTable).where(and(eq(bookingsTable.customerId, id), isNull(bookingsTable.deletedAt)));
   const allPayments = await db.select().from(paymentsTable);
-  const bookingIds = bookings.map((b) => b.id);
-  const totalPaid = allPayments.filter(p => p.bookingId && bookingIds.includes(p.bookingId)).reduce((s, p) => s + parseFloat(p.amount), 0);
-  const totalOwed = bookings.reduce((s, b) => s + parseFloat(b.totalAmount), 0);
-  const totalDebt = Math.max(0, totalOwed - totalPaid);
-  res.json({ ...customer, totalBookings: bookings.length, totalPaid, totalDebt, bookings });
+  // Gộp số liệu qua helper (chống cộng trùng cha-con): phải truyền CẢ đơn cha để cộng
+  // đúng phiếu thu ghi ở đơn cha, nhưng công nợ/số show chỉ đếm đơn con + đơn lẻ.
+  const { totalBookings, totalPaid, totalDebt } = computeCustomerAggregate(bookings, allPayments);
+  // Lịch sử show: bỏ dòng đơn CHA tổng (là bản gộp trùng của các dịch vụ con) để không
+  // hiển thị dòng tổng trùng; các dịch vụ con + đơn lẻ vẫn giữ nguyên → không mất lịch sử.
+  const historyBookings = bookings.filter(isDebtCountableBooking);
+  res.json({ ...customer, totalBookings, totalPaid, totalDebt, bookings: historyBookings });
   } catch (err) {
     console.error("GET /customers/:id error:", err);
     res.status(500).json({ error: "Lỗi hệ thống" });

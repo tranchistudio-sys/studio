@@ -22,6 +22,7 @@
  *  - Bảng audit (booking_change_log / lịch sử xóa dịch vụ) KHÔNG BAO GIỜ là nguồn tính tiền.
  */
 import { money, isCollectedPayment, type MoneyPaymentInput } from "./booking-money";
+import { parentIdsWithActiveChild, isEmptyParentContract } from "./parent-contract";
 
 export interface AggBooking {
   id: number;
@@ -128,8 +129,15 @@ export function computeCustomerAggregate(
 
   // Đã thu: phiếu thu gắn vào đơn còn sống (kể cả đơn cha còn sống). Đơn đã xóa/hủy/tạm
   // bị loại khỏi tập id ⇒ tiền của đơn đã xóa không còn được giữ lại trong hồ sơ khách.
+  // PR D (read-layer): loại thêm CHA RỖNG/ZOMBIE (hợp đồng cha không còn dịch vụ con hiệu lực) —
+  // cọc treo ở cha rỗng KHÔNG tính vào "Đã trả" active. Suy ra từ dữ liệu con hiện tại, KHÔNG
+  // cần cha đổi status. Cọc vẫn còn nguyên trong DB (chờ xử lý), chỉ không cộng vào tổng active.
+  const activeParentIds = parentIdsWithActiveChild(allBookings);
   const liveIds = new Set(
-    allBookings.filter((b) => isLiveForCustomer(b, parentById)).map((b) => b.id),
+    allBookings
+      .filter((b) => isLiveForCustomer(b, parentById))
+      .filter((b) => !isEmptyParentContract(b, activeParentIds))
+      .map((b) => b.id),
   );
   const totalPaid = payments.reduce(
     (s, p) =>

@@ -1,6 +1,7 @@
 import { db } from "@workspace/db";
 import { bookingsTable, expensesTable, tasksTable, paymentsTable, fixedCostsTable } from "@workspace/db/schema";
 import { money, filterRevenueCountable } from "../../lib/booking-money";
+import { parentIdsWithActiveChild, isEmptyParentContract } from "../../lib/parent-contract";
 
 export async function loadAllData() {
   const [bookings, tasks, expenses, payments] = await Promise.all([
@@ -123,11 +124,19 @@ export async function loadAllData() {
     .filter(r => r.active)
     .reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
 
+  // PR D (read-layer): cọc/thu nằm ở CHA RỖNG/ZOMBIE (hợp đồng cha không còn dịch vụ con hiệu lực)
+  // KHÔNG tính vào doanh thu/dòng tiền active — suy ra từ dữ liệu con, không cần cha đổi status.
+  const activeParentIds = parentIdsWithActiveChild(bookings); // tính 1 lần (tránh O(n²))
+  const zombieParentIds = new Set(
+    bookings.filter(b => isEmptyParentContract(b, activeParentIds)).map(b => b.id),
+  );
+
   // Task #397: loại phiếu đã huỷ (voided) + phiếu HOÀN TIỀN (refund — lưu DƯƠNG, KHÔNG phải
   // tiền thu) khỏi MỌI tính toán doanh thu/dòng tiền. Vá lỗi daily-cashflow cộng nhầm refund.
   // (Giữ ad_hoc vì đó là khoản thu thật của kỳ, chỉ không gắn vào 1 booking.)
   const activePayments = payments.filter(
-    p => (p.status ?? 'active') !== 'voided' && (p.paymentType ?? '') !== 'refund',
+    p => (p.status ?? 'active') !== 'voided' && (p.paymentType ?? '') !== 'refund'
+      && !(p.bookingId != null && zombieParentIds.has(p.bookingId)), // loại cọc của cha rỗng
   );
 
   return { validBookings, castByBooking, directExpByBooking, directExpByDate, operatingExpByDate, depreciationByDate, interestByDate, payments: activePayments, classifiedExpenses, fixedCostPerMonth };

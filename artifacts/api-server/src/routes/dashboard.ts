@@ -7,6 +7,11 @@ import {
 import { eq, and, gte, lte, count, sum, ne, sql, isNull } from "drizzle-orm";
 import { getCallerRole } from "./auth";
 import { revenueCountableSql } from "../lib/booking-money";
+import { paymentNotOnEmptyParentSql } from "../lib/parent-contract";
+
+// PR D (read-layer): loại phiếu cọc nằm ở CHA RỖNG/ZOMBIE (hợp đồng cha hết dịch vụ con hiệu lực)
+// khỏi các tổng "đã thu" active — dùng cho query tiền cash-basis của dashboard.
+const paymentNotOnEmptyParentCond = sql.raw(paymentNotOnEmptyParentSql("payments"));
 
 // Điều kiện "đơn tính doanh thu" dùng CHUNG cho mọi query dashboard (drizzle sql.raw
 // + pool.query thô) — đồng bộ với booking-money.isRevenueCountable + revenue/data.ts.
@@ -365,6 +370,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
         FROM payments
         WHERE payment_type != 'refund'
           AND COALESCE(status, 'active') != 'voided'
+          AND ${paymentNotOnEmptyParentSql("payments")}
           AND COALESCE(paid_date, (paid_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date::text) >= $1
           AND COALESCE(paid_date, (paid_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::date::text) < $2
       `, [startDate, nextMonthStart]);
@@ -530,6 +536,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
           lte(paymentsTable.paidAt, end),
           ne(paymentsTable.paymentType, "refund"),
           sql`COALESCE(${paymentsTable.status}, 'active') != 'voided'`,
+          paymentNotOnEmptyParentCond, // PR D: bỏ cọc của cha rỗng khỏi "đã thu"
         ),
       );
 
@@ -828,6 +835,7 @@ router.get("/dashboard/simple", async (req, res): Promise<void> => {
           AND paid_at < ($2::date + INTERVAL '1 day')
           AND payment_type != 'refund'
           AND COALESCE(status, 'active') != 'voided'
+          AND ${paymentNotOnEmptyParentSql("payments")}
       `, [from, to]),
       pool.query(`
         SELECT COALESCE(SUM(amount::numeric), 0) AS total

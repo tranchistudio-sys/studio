@@ -296,4 +296,32 @@ describe("computeCustomerAggregate — loại dữ liệu đã xóa/hủy (PR #6
     expect(agg.totalPaid).toBe(1000000); // cọc ở cha còn sống vẫn tính
     expect(agg.totalDebt).toBe(4000000); // 5tr − 1tr
   });
+
+  it("PR D read-layer: CHA RỖNG/ZOMBIE (còn sống nhưng hết con hiệu lực) → cọc KHÔNG tính Đã trả", () => {
+    // Ca KH029 id=66: cha 'confirmed' (KHÔNG bị đổi status), con đã xoá/hủy hết → cha rỗng.
+    // Cọc 1tr ở cha rỗng là "tiền chờ xử lý", không cộng vào Đã trả active của khách.
+    const bookings: AggBooking[] = [
+      { id: 66, totalAmount: 5900000, isParentContract: true, status: "confirmed" }, // cha rỗng, KHÔNG cancelled
+      { id: 67, totalAmount: 3000000, parentId: 66, status: "cancelled" }, // con đã hủy
+    ];
+    const payments: AggPayment[] = [{ bookingId: 66, amount: 1000000, paymentType: "deposit" }];
+    const agg = computeCustomerAggregate(bookings, payments);
+    expect(agg.totalOwed).toBe(0); // không con hiệu lực → không phải thu
+    expect(agg.totalPaid).toBe(0); // cọc treo ở cha RỖNG KHÔNG tính (không cần cha đổi status)
+    expect(agg.totalDebt).toBe(0);
+  });
+
+  it("PR D read-layer: thêm/khôi phục 1 con hiệu lực → cha hết rỗng, cọc tính lại NGAY (không cần đổi status)", () => {
+    // Đối chứng đảo chiều: cùng cha 66 nhưng giờ có 1 con confirmed → cha KHÔNG còn rỗng.
+    const bookings: AggBooking[] = [
+      { id: 66, totalAmount: 5900000, isParentContract: true, status: "confirmed" },
+      { id: 67, totalAmount: 3000000, parentId: 66, status: "cancelled" },
+      { id: 68, totalAmount: 4000000, parentId: 66, status: "confirmed" }, // con sống trở lại
+    ];
+    const payments: AggPayment[] = [{ bookingId: 66, amount: 1000000, paymentType: "deposit" }];
+    const agg = computeCustomerAggregate(bookings, payments);
+    expect(agg.totalBookings).toBe(1); // con 68
+    expect(agg.totalPaid).toBe(1000000); // cọc ở cha (giờ không rỗng) tính lại
+    expect(agg.totalDebt).toBe(3000000); // 4tr − 1tr
+  });
 });

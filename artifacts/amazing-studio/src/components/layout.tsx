@@ -36,9 +36,6 @@ function getTimeAgo(dateStr: string): string {
 
 // ─── Navigation Items ──────────────────────────────────────────────────────────
 const ALL_NAV_ITEMS = [
-  { href: "/dashboard",       label: "Tổng quan",           icon: LayoutDashboard, adminOnly: true  },
-  { href: "/my-profile",      label: "Hồ sơ của tôi",       icon: User,            adminOnly: false },
-
   // 🔥 Nhóm dùng hàng ngày — flow kiếm tiền: Lịch → Tiền → Chi → Hậu kỳ
   { href: "/calendar",        label: "Lịch chụp",            icon: CalendarDays,    adminOnly: false },
   { href: "/payments",        label: "Thu tiền",             icon: CreditCard,      adminOnly: false },
@@ -59,6 +56,9 @@ const ALL_NAV_ITEMS = [
   // { href: "/ai-sale-scripts",   label: "Kịch bản Sale AI",   icon: Sparkles,         adminOnly: false },
   // { href: "/ai-test",           label: "Phòng test AI",       icon: FlaskConical,     adminOnly: false },
   { href: "/pricing",         label: "Dịch vụ & Bảng giá",  icon: LayoutList,      adminOnly: false },
+  // ⬇️ Chuyển "Tổng quan" + "Hồ sơ của tôi" xuống gần nhóm Nhân sự (chỉ đổi thứ tự UI, giữ route/logic).
+  { href: "/dashboard",       label: "Tổng quan",           icon: LayoutDashboard, adminOnly: true  },
+  { href: "/my-profile",      label: "Hồ sơ của tôi",       icon: User,            adminOnly: false },
   { href: "/staff",           label: "Nhân sự",              icon: UserCog,         adminOnly: false },
   { href: "/tasks",           label: "Giao việc",            icon: CheckSquare,     adminOnly: false },
   { href: "/attendance",      label: "Chấm công",             icon: Timer,           adminOnly: false },

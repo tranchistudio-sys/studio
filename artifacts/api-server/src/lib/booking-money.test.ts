@@ -12,6 +12,7 @@ import {
   buildParentContractMap,
   filterRevenueCountable,
   revenueCountableSql,
+  liveBookingSql,
   type CountableBookingInput,
   type MoneyPaymentInput,
 } from "./booking-money";
@@ -254,5 +255,30 @@ describe("revenueCountableSql — điều kiện SQL đồng bộ với predicat
   });
   it("nhận alias tùy biến", () => {
     expect(revenueCountableSql("b")).toContain("b.parent_id");
+  });
+  it("VẪN loại đơn CHA tổng (regression PR #66 — dashboard/doanh thu đếm con thay cha)", () => {
+    expect(revenueCountableSql("b")).toContain("b.is_parent_contract = false");
+  });
+});
+
+describe("liveBookingSql — đơn còn hiệu lực GIỮ đơn cha (ngữ cảnh tiền ghi ở cha: payments)", () => {
+  it("loại thùng rác / hủy / báo giá tạm / con mồ côi", () => {
+    const sql = liveBookingSql();
+    expect(sql).toContain("bookings.deleted_at IS NULL");
+    expect(sql).toContain("NOT IN ('cancelled', 'temp_quote')");
+    expect(sql).toContain("NOT EXISTS"); // con mồ côi (cha đã chết)
+    expect(sql).toContain("parent_chk.id = bookings.parent_id");
+  });
+  it("KHÔNG loại đơn CHA tổng — khác revenueCountableSql (tiền cọc/thu ghi ở đơn cha)", () => {
+    expect(liveBookingSql("b")).not.toContain("is_parent_contract");
+  });
+  it("dùng CHUNG định nghĩa con mồ côi với revenueCountableSql", () => {
+    // Cùng mệnh đề NOT EXISTS ⇒ một nguồn chân lý cho 'cha đã chết'.
+    const orphan = "parent_chk.deleted_at IS NOT NULL";
+    expect(liveBookingSql("b")).toContain(orphan);
+    expect(revenueCountableSql("b")).toContain(orphan);
+  });
+  it("nhận alias tùy biến", () => {
+    expect(liveBookingSql("b")).toContain("b.deleted_at IS NULL");
   });
 });

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from "react";
+import { useSearch } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { formatVND, formatDate } from "@/lib/utils";
@@ -162,9 +163,12 @@ export default function CustomersPage() {
     enabled: !!selectedId,
   });
 
-  // Deep-link từ Lịch chụp: /customers?customerId=N → tự động mở hồ sơ khách
+  // Deep-link: /customers?customerId=N (từ Lịch chụp hoặc ô tìm nhanh ở header) → mở hồ sơ khách.
+  // Reactive theo query string (useSearch) ⇒ hoạt động KỂ CẢ khi đang ở sẵn /customers (component
+  // không remount nên useEffect deps [] sẽ bỏ sót — giống cách calendar.tsx xử lý ?bookingId).
+  const routeSearch = useSearch();
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(routeSearch || window.location.search);
     const cid = params.get("customerId");
     if (!cid) return;
     try {
@@ -174,8 +178,7 @@ export default function CustomersPage() {
     } catch { /* ignore */ }
     const id = Number(cid);
     if (Number.isFinite(id) && id > 0) setSelectedId(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [routeSearch]);
 
   // ── Mutations ─────────────────────────────────────────────────────────────────
   const createMutation = useMutation({

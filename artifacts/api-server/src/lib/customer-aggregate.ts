@@ -43,6 +43,9 @@ export interface AggPayment extends MoneyPaymentInput {
 export interface CustomerAggregate {
   /** Số show = số đơn tính công nợ (đơn con + đơn lẻ còn hiệu lực). */
   totalBookings: number;
+  /** Tổng phải thu = tổng total_amount các đơn còn hiệu lực (đơn con + đơn lẻ, KHÔNG gồm
+   *  đơn cha tổng để tránh cộng trùng). Dùng để đối chiếu: totalOwed − totalPaid = totalDebt. */
+  totalOwed: number;
   /** Đã thu (phiếu thu còn hiệu lực trên các đơn còn hiệu lực của khách). */
   totalPaid: number;
   /** Còn nợ = max(0, tổng phải thu − đã thu). */
@@ -137,5 +140,5 @@ export function computeCustomerAggregate(
   );
 
   const totalDebt = Math.max(0, totalOwed - totalPaid);
-  return { totalBookings: countable.length, totalPaid, totalDebt };
+  return { totalBookings: countable.length, totalOwed, totalPaid, totalDebt };
 }

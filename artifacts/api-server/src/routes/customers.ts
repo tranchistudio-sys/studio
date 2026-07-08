@@ -97,8 +97,8 @@ router.get("/customers", async (req, res) => {
       // đơn hủy, báo giá tạm, đơn CHA tổng (chống cộng trùng cha-con) và con mồ côi của cha đã xóa;
       // "đã thu" chỉ cộng phiếu thu còn hiệu lực trên đơn còn sống (kể cả đơn cha còn sống).
       const bookings = await db.select().from(bookingsTable).where(eq(bookingsTable.customerId, c.id as number));
-      const { totalBookings, totalPaid, totalDebt } = computeCustomerAggregate(bookings, allPayments);
-      return { ...c, totalBookings, totalPaid, totalDebt };
+      const { totalBookings, totalOwed, totalPaid, totalDebt } = computeCustomerAggregate(bookings, allPayments);
+      return { ...c, totalBookings, totalOwed, totalPaid, totalDebt };
     })
   );
 
@@ -170,12 +170,12 @@ router.get("/customers/:id", async (req, res) => {
   // để helper nhận diện con mồ côi; helper tự lọc toàn bộ (xem customer-aggregate.ts).
   const bookings = await db.select().from(bookingsTable).where(eq(bookingsTable.customerId, id));
   const allPayments = await db.select().from(paymentsTable);
-  const { totalBookings, totalPaid, totalDebt } = computeCustomerAggregate(bookings, allPayments);
+  const { totalBookings, totalOwed, totalPaid, totalDebt } = computeCustomerAggregate(bookings, allPayments);
   // Lịch sử show: chỉ các đơn còn hiệu lực (đơn con + đơn lẻ) — bỏ đơn cha tổng (bản gộp
   // trùng của dịch vụ con), đơn trong thùng rác, đơn hủy, báo giá tạm. Dịch vụ con còn
   // hiệu lực vẫn giữ nguyên → không mất lịch sử; audit xóa/sửa vẫn nằm ở chi tiết đơn.
   const historyBookings = customerVisibleBookings(bookings);
-  res.json({ ...customer, totalBookings, totalPaid, totalDebt, bookings: historyBookings });
+  res.json({ ...customer, totalBookings, totalOwed, totalPaid, totalDebt, bookings: historyBookings });
   } catch (err) {
     console.error("GET /customers/:id error:", err);
     res.status(500).json({ error: "Lỗi hệ thống" });

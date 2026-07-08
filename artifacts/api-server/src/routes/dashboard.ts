@@ -6,6 +6,12 @@ import {
 } from "@workspace/db/schema";
 import { eq, and, gte, lte, count, sum, ne, sql, isNull } from "drizzle-orm";
 import { getCallerRole } from "./auth";
+import { revenueCountableSql } from "../lib/booking-money";
+
+// Điều kiện "đơn tính doanh thu" dùng CHUNG cho mọi query dashboard (drizzle sql.raw
+// + pool.query thô) — đồng bộ với booking-money.isRevenueCountable + revenue/data.ts.
+// Loại: thùng rác, hủy, báo giá tạm, đơn CHA tổng (đếm con), con mồ côi (cha đã chết).
+const countableBookingCond = sql.raw(revenueCountableSql("bookings"));
 
 const router: IRouter = Router();
 
@@ -17,7 +23,8 @@ router.get("/dashboard/stats", async (_req, res) => {
   const today = now.toISOString().slice(0, 10);
 
   const [totalCustomers] = await db.select({ count: count() }).from(customersTable);
-  const [totalBookings] = await db.select({ count: count() }).from(bookingsTable).where(isNull(bookingsTable.deletedAt));
+  // Tổng đơn = đơn CÒN HIỆU LỰC (loại thùng rác/hủy/báo giá tạm/đơn cha/con mồ côi).
+  const [totalBookings] = await db.select({ count: count() }).from(bookingsTable).where(countableBookingCond);
   const [bookingsThisMonth] = await db.select({ count: count() }).from(bookingsTable)
     .where(and(isNull(bookingsTable.deletedAt), gte(bookingsTable.shootDate, startOfMonth), lte(bookingsTable.shootDate, endOfMonth)));
   const [pendingBookings] = await db.select({ count: count() }).from(bookingsTable).where(and(isNull(bookingsTable.deletedAt), eq(bookingsTable.status, "pending")));
@@ -53,13 +60,8 @@ router.get("/dashboard/stats", async (_req, res) => {
     ));
   const revenueThisMonth = allPayments.reduce((s, p) => s + parseFloat(p.amount), 0);
 
-  const allBookings = await db.select().from(bookingsTable).where(
-    and(
-      isNull(bookingsTable.deletedAt),
-      eq(bookingsTable.isParentContract, false),
-      ne(bookingsTable.status, "cancelled"),
-    ),
-  );
+  // Công nợ tổng: chỉ đơn CÒN HIỆU LỰC (loại thùng rác/hủy/báo giá tạm/đơn cha/con mồ côi).
+  const allBookings = await db.select().from(bookingsTable).where(countableBookingCond);
   const allPaymentsAll = await db.select().from(paymentsTable);
   const totalOwed = allBookings.reduce((s, b) => s + parseFloat(b.totalAmount), 0);
   const totalPaidAll = allPaymentsAll
@@ -333,7 +335,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
       const endOfMonth = new Date(Number(yr), Number(mo), 0).toISOString().slice(0, 10);
       const today = new Date().toISOString().slice(0, 10);
 
-      // All non-cancelled, non-parent bookings in that shoot month
+      // Đơn CÒN HIỆU LỰC trong tháng chụp (loại thùng rác/hủy/báo giá tạm/đơn cha/con mồ côi)
       const bkResult = await pool.query(`
         SELECT b.id, b.order_code, b.shoot_date, b.status, b.service_category, b.package_type,
                b.service_label, b.total_amount, b.discount_amount, b.paid_amount,
@@ -341,9 +343,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
         FROM bookings b
         JOIN customers c ON c.id = b.customer_id
         WHERE b.shoot_date >= $1 AND b.shoot_date <= $2
-          AND b.status != 'cancelled'
-          AND b.is_parent_contract = false
-          AND b.deleted_at IS NULL
+          AND ${revenueCountableSql("b")}
         ORDER BY b.shoot_date
       `, [startDate, endOfMonth]);
 
@@ -449,11 +449,9 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
       .from(bookingsTable)
       .where(
         and(
-          isNull(bookingsTable.deletedAt),
           gte(bookingsTable.createdAt, start),
           lte(bookingsTable.createdAt, end),
-          eq(bookingsTable.isParentContract, false),
-          ne(bookingsTable.status, "cancelled"),
+          countableBookingCond,
         ),
       );
 
@@ -474,13 +472,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
         createdAt: bookingsTable.createdAt,
       })
       .from(bookingsTable)
-      .where(
-        and(
-          isNull(bookingsTable.deletedAt),
-          eq(bookingsTable.isParentContract, false),
-          ne(bookingsTable.status, "cancelled"),
-        ),
-      );
+      .where(countableBookingCond);
 
     // ── 2b. ALL non-cancelled bookings (incl. parent contracts) — for service lookup
     // Payments may be recorded against parent contract bookings (isParentContract=true),
@@ -518,13 +510,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
       })
       .from(bookingsTable)
       .leftJoin(customersTable, eq(bookingsTable.customerId, customersTable.id))
-      .where(
-        and(
-          isNull(bookingsTable.deletedAt),
-          eq(bookingsTable.isParentContract, false),
-          ne(bookingsTable.status, "cancelled"),
-        ),
-      );
+      .where(countableBookingCond);
 
     // ── 4. Payments in period (by paidAt) — for "đã thu" KPI ─────────────
     const paymentsInPeriod: PaymentRow[] = await db
@@ -576,10 +562,8 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
       .from(bookingsTable)
       .innerJoin(customersTable, eq(bookingsTable.customerId, customersTable.id))
       .where(and(
-        isNull(bookingsTable.deletedAt),
         gte(bookingsTable.shootDate, today),
-        ne(bookingsTable.status, "cancelled"),
-        eq(bookingsTable.isParentContract, false),
+        countableBookingCond,
       ))
       .orderBy(bookingsTable.shootDate)
       .limit(5);
@@ -852,9 +836,7 @@ router.get("/dashboard/simple", async (req, res): Promise<void> => {
       pool.query(`
         SELECT COALESCE(SUM(GREATEST(0, total_amount - COALESCE(discount_amount, 0) - COALESCE(paid_amount, 0))), 0) AS total
         FROM bookings
-        WHERE status != 'cancelled'
-          AND is_parent_contract = false
-          AND deleted_at IS NULL
+        WHERE ${revenueCountableSql("bookings")}
       `),
       pool.query(`
         SELECT COALESCE(SUM(amount::numeric), 0) AS total

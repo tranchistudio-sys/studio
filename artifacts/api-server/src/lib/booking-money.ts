@@ -140,21 +140,98 @@ export function commissionForStaff(
 }
 
 // ─── Lọc booking được tính vào DOANH THU / tổng hợp ──────────────────────────
+// Đồng bộ với customer-aggregate.isCustomerCountableBooking + revenue/data.ts +
+// dashboard.ts. Một nguồn chân lý cho câu hỏi "đơn này có phải doanh thu thật không".
 export type CountableBookingInput = {
+  /** id đơn — cần cho buildParentContractMap để tra con mồ côi. */
+  id?: number;
   status?: string | null;
   isParentContract?: boolean | null;
+  /** id đơn CHA nếu là dịch vụ con của hợp đồng nhiều dịch vụ. */
+  parentId?: number | null;
   deletedAt?: unknown; // != null ⇒ đã vào thùng rác
 };
 
 /**
+ * Dòng đơn TỰ THÂN còn hiệu lực: không thùng rác, không hủy, không báo giá tạm.
+ * (Chưa xét quan hệ cha-con — xem isRevenueCountable cho con mồ côi.)
+ */
+export function isSelfLiveBooking(b: CountableBookingInput): boolean {
+  if (b.deletedAt != null) return false;
+  const st = b.status ?? "";
+  if (st === "cancelled") return false; // đơn đã hủy — không phải doanh thu hiện tại
+  if (st === "temp_quote") return false; // báo giá tạm — chưa phải đơn thật
+  return true;
+}
+
+/**
  * Booking có được tính vào doanh thu/báo cáo tổng không.
  * Bỏ: đơn trong thùng rác (deletedAt != null), đơn đã hủy (status='cancelled'),
- * và đơn CHA tổng (đếm các đơn con thay vì cha → tránh đếm trùng).
+ * báo giá tạm (temp_quote), đơn CHA tổng (đếm các đơn con thay vì cha → tránh đếm
+ * trùng), và con MỒ CÔI của hợp đồng cha đã chết (cha xóa/hủy/báo giá tạm).
+ *
+ * Con mồ côi: hủy đơn CHA qua trang Đơn hàng KHÔNG cascade status xuống con (chỉ
+ * thùng rác mới cascade deletedAt), nên phải tra trạng thái cha ở đây — nếu không
+ * con vẫn cộng doanh thu dù cả hợp đồng đã bị hủy.
+ *
+ * @param parentById  map id→đơn cha (từ buildParentContractMap). Bỏ qua ⇒ KHÔNG xét
+ *                    con mồ côi (tương thích ngược với caller cũ truyền 1 tham số).
  */
-export function isRevenueCountable(b: CountableBookingInput): boolean {
-  if (b.deletedAt != null) return false;
-  if ((b.status ?? "") === "cancelled") return false;
-  if ((b.status ?? "") === "temp_quote") return false; // báo giá tạm — chưa phải đơn thật
+export function isRevenueCountable(
+  b: CountableBookingInput,
+  parentById?: ReadonlyMap<number, CountableBookingInput>,
+): boolean {
+  if (!isSelfLiveBooking(b)) return false;
   if (b.isParentContract === true) return false;
+  if (parentById && b.parentId != null) {
+    const parent = parentById.get(b.parentId);
+    // Cha không có trong map (đã purge/khác tập dữ liệu) ⇒ coi như còn sống, KHÔNG
+    // tự ý loại doanh thu của con.
+    if (parent && !isSelfLiveBooking(parent)) return false;
+  }
   return true;
+}
+
+/** Map id đơn CHA tổng → đơn cha, để tra trạng thái cha khi lọc con mồ côi. */
+export function buildParentContractMap<T extends CountableBookingInput>(
+  bookings: readonly T[],
+): Map<number, T> {
+  const map = new Map<number, T>();
+  for (const b of bookings) {
+    if (b.isParentContract === true && b.id != null) map.set(b.id, b);
+  }
+  return map;
+}
+
+/**
+ * Lọc danh sách đơn CHỈ giữ đơn tính doanh thu (tự dựng parent map để loại con mồ côi).
+ * @param bookings TOÀN BỘ đơn của tập cần tính (KỂ CẢ đơn cha/hủy/báo giá tạm) — cần
+ *                 đơn cha trong danh sách để nhận diện con mồ côi. Hàm tự lọc hết.
+ */
+export function filterRevenueCountable<T extends CountableBookingInput>(
+  bookings: readonly T[],
+): T[] {
+  const parentById = buildParentContractMap(bookings);
+  return bookings.filter((b) => isRevenueCountable(b, parentById));
+}
+
+/**
+ * Điều kiện SQL "đơn được tính doanh thu" — ĐỒNG BỘ với isRevenueCountable() ở trên,
+ * dùng cho query THÔ (pool.query / drizzle sql.raw) không gọi được predicate JS.
+ * Loại: thùng rác, hủy, báo giá tạm, đơn CHA tổng, con mồ côi (cha chết/hủy/báo giá tạm).
+ * Chuỗi hằng, KHÔNG chèn dữ liệu người dùng ⇒ an toàn với sql.raw / template.
+ *
+ * @param alias bí danh bảng bookings trong câu lệnh (mặc định "bookings").
+ */
+export function revenueCountableSql(alias = "bookings"): string {
+  const a = alias;
+  return `${a}.deleted_at IS NULL
+    AND ${a}.is_parent_contract = false
+    AND COALESCE(${a}.status, '') NOT IN ('cancelled', 'temp_quote')
+    AND (${a}.parent_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM bookings parent_chk
+      WHERE parent_chk.id = ${a}.parent_id
+        AND (parent_chk.deleted_at IS NOT NULL
+             OR COALESCE(parent_chk.status, '') IN ('cancelled', 'temp_quote'))
+    ))`;
 }

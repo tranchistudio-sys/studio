@@ -1,7 +1,7 @@
 import { db } from "@workspace/db";
 import { isNull } from "drizzle-orm";
 import { bookingsTable, expensesTable, tasksTable, paymentsTable, fixedCostsTable } from "@workspace/db/schema";
-import { money } from "../../lib/booking-money";
+import { money, filterRevenueCountable } from "../../lib/booking-money";
 
 export async function loadAllData() {
   const [bookings, tasks, expenses, payments] = await Promise.all([
@@ -88,8 +88,9 @@ export async function loadAllData() {
 
   // Nguồn tiền chuẩn (chủ chốt): doanh thu = NET = giá gốc − giảm giá (không âm).
   // netAmount gắn sẵn vào từng booking để mọi route dùng CHUNG, hết cảnh chỗ gross chỗ net.
-  const validBookings = bookings
-    .filter(b => !b.isParentContract && b.status !== "cancelled" && b.status !== "temp_quote")
+  // filterRevenueCountable: loại đơn cha tổng + hủy + báo giá tạm + con MỒ CÔI của hợp đồng
+  // cha đã chết (cha hủy/báo giá tạm — thùng rác đã bị loại ở query deletedAt IS NULL trên).
+  const validBookings = filterRevenueCountable(bookings)
     .map(b => ({ ...b, netAmount: Math.max(0, money(b.totalAmount) - money(b.discountAmount)) }));
 
   // Task #363: kèm danh sách chi phí đã phân lớp + ngày để route nào cần lọc theo range chính xác (ngày/tuần)

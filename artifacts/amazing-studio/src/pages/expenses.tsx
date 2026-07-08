@@ -10,6 +10,7 @@ import {
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { CurrencyInput } from "@/components/ui/currency-input";
 import { DateInput } from "@/components/ui/date-input";
+import { OpenCalendarButton } from "@/components/OpenCalendarButton";
 import { getImageSrc } from "@/lib/imageUtils";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -1176,7 +1177,9 @@ export default function ExpensesPage() {
                   <div className="text-[11px] text-muted-foreground">
                     <span className="font-medium">Lý do chi:</span> {viewDetail.description}
                   </div>
-                  <div className="flex justify-end">
+                  <div className="flex flex-wrap justify-end gap-2">
+                    {/* Mở đúng show trên lịch chụp — bk null (đơn xóa cứng) ⇒ disable "Không còn lịch chụp" */}
+                    <OpenCalendarButton bookingId={viewDetail.bookingId} shootDate={bk?.shootDate} requireShootDate />
                     <button
                       type="button"
                       onClick={() => { setViewDetail(null); setLocation(`/bookings?bookingId=${viewDetail.bookingId}`); }}

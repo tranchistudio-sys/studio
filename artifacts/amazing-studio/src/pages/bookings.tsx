@@ -4,6 +4,7 @@ import { paymentFeedback } from "@/lib/feedback";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { formatVND, formatDate } from "@/lib/utils";
 import { getImageSrc } from "@/lib/imageUtils";
+import { OpenCalendarButton } from "@/components/OpenCalendarButton";
 import { ConceptImage } from "@/components/ConceptImage";
 import { Button, Input, Select, Textarea, Badge, Card, CardContent, Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui";
 import { DateInput } from "@/components/ui/date-input";
@@ -592,23 +593,7 @@ export default function BookingsPage() {
                           <div className={`h-full rounded-full transition-all ${paidFull ? "bg-green-500" : "bg-primary"}`} style={{ width: `${Math.min(pct, 100)}%` }} />
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={ev => {
-                          ev.stopPropagation();
-                          if (b.shootDate) setLocation(`/calendar?bookingId=${b.id}`);
-                        }}
-                        disabled={!b.shootDate}
-                        title={b.shootDate ? "Mở show này trên lịch chụp để sửa lịch / giao việc / giờ chụp" : "Chưa có ngày chụp"}
-                        className={`flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1.5 rounded-lg border transition-colors flex-shrink-0 ${
-                          b.shootDate
-                            ? "border-primary/40 text-primary hover:bg-primary/10"
-                            : "border-border text-muted-foreground/50 cursor-not-allowed"
-                        }`}
-                      >
-                        <CalendarDays className="w-3.5 h-3.5" />
-                        <span className="hidden sm:inline">Mở lịch chụp</span>
-                      </button>
+                      <OpenCalendarButton bookingId={b.id} shootDate={b.shootDate} requireShootDate />
                     </div>
                   </div>
                 );

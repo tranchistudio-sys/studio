@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { formatVND, formatDate } from "@/lib/utils";
+import { OpenCalendarButton } from "@/components/OpenCalendarButton";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { Button, Input, Select, Textarea, Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui";
 import {
@@ -578,6 +579,8 @@ export default function CustomersPage() {
                               <div className="flex flex-col items-end gap-0.5 ml-2">
                                 <span className="font-bold text-xs text-primary">{formatVND(b.totalAmount)}</span>
                                 <span className={`text-[9px] font-medium ${st.color}`}>{st.label}</span>
+                                {/* Mở đúng show này trên lịch chụp (panel hẹp → nút icon) */}
+                                <OpenCalendarButton bookingId={b.id} shootDate={b.shootDate} requireShootDate iconOnly className="mt-0.5 px-1.5 py-1" />
                               </div>
                             </div>
                           </div>

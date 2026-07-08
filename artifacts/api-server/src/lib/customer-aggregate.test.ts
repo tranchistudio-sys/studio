@@ -48,8 +48,10 @@ describe("computeCustomerAggregate — chống cộng trùng cha-con (PR #65 cas
     const agg = computeCustomerAggregate(bookings, payments);
 
     expect(agg.totalBookings).toBe(3); // 3 dịch vụ, không đếm đơn cha
+    expect(agg.totalOwed).toBe(11900000); // tổng phải thu = tổng dịch vụ con, KHÔNG cộng đơn cha
     expect(agg.totalPaid).toBe(1500000); // phiếu thu ở đơn cha vẫn được cộng
     expect(agg.totalDebt).toBe(10400000); // 11.9tr − 1.5tr, KHÔNG phải 22.3tr
+    expect(agg.totalOwed - agg.totalPaid).toBe(agg.totalDebt); // đối chiếu: Tổng − Đã trả = Còn nợ
   });
 
   it("BUG cũ nếu cộng cả cha lẫn con: tổng phải thu là 23.8tr — helper mới trả 11.9tr", () => {
@@ -105,12 +107,14 @@ describe("computeCustomerAggregate — chống cộng trùng cha-con (PR #65 cas
   it("đã thu vượt phải thu → còn nợ không âm (clamp 0)", () => {
     const bookings: AggBooking[] = [{ id: 1, totalAmount: 2000000 }];
     const agg = computeCustomerAggregate(bookings, [{ bookingId: 1, amount: 3000000 }]);
-    expect(agg.totalDebt).toBe(0);
+    expect(agg.totalOwed).toBe(2000000); // tổng phải thu KHÔNG bị clamp, giữ nguyên giá trị show
+    expect(agg.totalPaid).toBe(3000000);
+    expect(agg.totalDebt).toBe(0); // chỉ Còn nợ mới clamp về 0
   });
 
   it("khách không có đơn → tất cả bằng 0", () => {
     const agg = computeCustomerAggregate([], []);
-    expect(agg).toEqual({ totalBookings: 0, totalPaid: 0, totalDebt: 0 });
+    expect(agg).toEqual({ totalBookings: 0, totalOwed: 0, totalPaid: 0, totalDebt: 0 });
   });
 });
 
@@ -221,7 +225,7 @@ describe("computeCustomerAggregate — loại dữ liệu đã xóa/hủy (PR #6
 
     // Đang trong thùng rác: không show, không nợ, không giữ tiền.
     const before = computeCustomerAggregate(trashed, payments);
-    expect(before).toEqual({ totalBookings: 0, totalPaid: 0, totalDebt: 0 });
+    expect(before).toEqual({ totalBookings: 0, totalOwed: 0, totalPaid: 0, totalDebt: 0 });
 
     // Sau restore (backend set deletedAt = null cho cả cha lẫn con):
     const restored = trashed.map((b) => ({ ...b, deletedAt: null }));
@@ -259,7 +263,7 @@ describe("computeCustomerAggregate — loại dữ liệu đã xóa/hủy (PR #6
       { id: 3, totalAmount: 3000000, parentId: 1, status: "temp_quote" },
     ];
     const agg = computeCustomerAggregate(bookings, []);
-    expect(agg).toEqual({ totalBookings: 0, totalPaid: 0, totalDebt: 0 });
+    expect(agg).toEqual({ totalBookings: 0, totalOwed: 0, totalPaid: 0, totalDebt: 0 });
     expect(customerVisibleBookings(bookings)).toEqual([]);
   });
 

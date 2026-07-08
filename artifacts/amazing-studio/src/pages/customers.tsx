@@ -100,7 +100,7 @@ type Customer = {
   id: number; customCode: string; name: string; phone: string | null; email?: string;
   address?: string; gender?: string; facebook?: string; zalo?: string;
   source?: string; tags?: string; notes?: string; createdAt: string;
-  avatar?: string; totalBookings?: number; totalPaid?: number; totalDebt?: number;
+  avatar?: string; totalBookings?: number; totalOwed?: number; totalPaid?: number; totalDebt?: number;
   customerRank?: string;
 };
 
@@ -495,10 +495,16 @@ export default function CustomersPage() {
                     </button>
                   </div>
                 </div>
-                <div className="grid grid-cols-3 gap-2 mt-4">
+                <div className="grid grid-cols-2 gap-2 mt-4">
                   <div className="bg-white/60 dark:bg-black/10 rounded-xl p-2 text-center">
                     <p className="text-[10px] text-muted-foreground">Số show</p>
                     <p className="font-bold text-sm">{customerDetail.bookings?.length ?? 0}</p>
+                  </div>
+                  <div className="bg-white/60 dark:bg-black/10 rounded-xl p-2 text-center">
+                    {/* Tổng phải thu = tổng giá trị các show còn hiệu lực (đơn con + đơn lẻ, KHÔNG
+                        gồm đơn cha tổng để tránh cộng trùng). Để đối chiếu: Tổng phải thu − Đã trả = Còn nợ. */}
+                    <p className="text-[10px] text-muted-foreground">Tổng phải thu</p>
+                    <p className="font-bold text-sm">{formatVND(customerDetail.totalOwed ?? 0)}</p>
                   </div>
                   <div className="bg-white/60 dark:bg-black/10 rounded-xl p-2 text-center">
                     <p className="text-[10px] text-muted-foreground">Đã trả</p>

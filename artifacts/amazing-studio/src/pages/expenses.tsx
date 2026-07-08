@@ -844,14 +844,18 @@ export default function ExpensesPage() {
                       <div className="text-[11px] text-muted-foreground">Khoản chi này sẽ trừ vào lợi nhuận của show</div>
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setForm(f => ({ ...f, bookingId: null, costClass: f.costClass === "direct" ? "operating" : f.costClass }))}
-                    className="text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/30 flex-shrink-0"
-                    title="Bỏ liên kết với show"
-                  >
-                    Bỏ
-                  </button>
+                  <div className="flex items-center gap-1 flex-shrink-0">
+                    {/* Mở đúng show trên lịch chụp (bổ sung #70: modal tạo/sửa phiếu chi) — gate theo id, calendar tự nhảy ngày */}
+                    <OpenCalendarButton bookingId={form.bookingId} className="px-2 py-1" />
+                    <button
+                      type="button"
+                      onClick={() => setForm(f => ({ ...f, bookingId: null, costClass: f.costClass === "direct" ? "operating" : f.costClass }))}
+                      className="text-xs text-muted-foreground hover:text-foreground px-2 py-1 rounded-lg hover:bg-amber-100 dark:hover:bg-amber-900/30 flex-shrink-0"
+                      title="Bỏ liên kết với show"
+                    >
+                      Bỏ
+                    </button>
+                  </div>
                 </div>
               )}
 

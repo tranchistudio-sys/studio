@@ -46,7 +46,7 @@ interface Service {
 const SPLIT_ROLES = [
   { key: "photographer", label: "Nhiếp ảnh",  icon: "📷", color: "bg-blue-50 text-blue-700 border-blue-200" },
   { key: "makeup",       label: "Trang điểm", icon: "💄", color: "bg-pink-50 text-pink-700 border-pink-200" },
-  { key: "sale",         label: "Kinh doanh",  icon: "💼", color: "bg-green-50 text-green-700 border-green-200" },
+  { key: "sale",         label: "Sale",  icon: "💼", color: "bg-green-50 text-green-700 border-green-200" },
   { key: "photoshop",    label: "Chỉnh sửa",  icon: "🖥️", color: "bg-purple-50 text-purple-700 border-purple-200" },
   { key: "assistant",    label: "Hỗ trợ",     icon: "🤝", color: "bg-gray-50 text-gray-700 border-gray-200" },
 ];

@@ -8,6 +8,11 @@ import {
   computeBookingMoney,
   commissionForStaff,
   isRevenueCountable,
+  isSelfLiveBooking,
+  buildParentContractMap,
+  filterRevenueCountable,
+  revenueCountableSql,
+  type CountableBookingInput,
   type MoneyPaymentInput,
 } from "./booking-money";
 
@@ -157,5 +162,97 @@ describe("isRevenueCountable — lọc đơn không tính doanh thu", () => {
   });
   it("đơn con (parent contract = false) vẫn được tính", () => {
     expect(isRevenueCountable({ status: "pending", isParentContract: false })).toBe(true);
+  });
+  it("bỏ đơn BÁO GIÁ TẠM (temp_quote)", () => {
+    expect(isRevenueCountable({ status: "temp_quote" })).toBe(false);
+  });
+});
+
+describe("isSelfLiveBooking — đơn tự thân còn hiệu lực", () => {
+  it("đơn thường còn sống", () => {
+    expect(isSelfLiveBooking({ status: "completed" })).toBe(true);
+    expect(isSelfLiveBooking({ status: "pending" })).toBe(true);
+  });
+  it("chết khi thùng rác / hủy / báo giá tạm", () => {
+    expect(isSelfLiveBooking({ status: "completed", deletedAt: "2026-06-20" })).toBe(false);
+    expect(isSelfLiveBooking({ status: "cancelled" })).toBe(false);
+    expect(isSelfLiveBooking({ status: "temp_quote" })).toBe(false);
+  });
+  it("KHÔNG loại đơn CHA ở tầng self-live (chỉ isRevenueCountable mới loại cha)", () => {
+    expect(isSelfLiveBooking({ status: "pending", isParentContract: true })).toBe(true);
+  });
+});
+
+describe("isRevenueCountable — CON MỒ CÔI của hợp đồng cha đã chết", () => {
+  const parent = (over: Partial<CountableBookingInput>): CountableBookingInput => ({
+    id: 1, isParentContract: true, status: "confirmed", ...over,
+  });
+  const child = (over: Partial<CountableBookingInput> = {}): CountableBookingInput => ({
+    id: 2, isParentContract: false, parentId: 1, status: "confirmed", ...over,
+  });
+
+  it("con còn tính khi cha còn sống", () => {
+    const map = buildParentContractMap([parent({})]);
+    expect(isRevenueCountable(child(), map)).toBe(true);
+  });
+  it("bỏ con khi cha đã HỦY (cancel cha KHÔNG cascade xuống con)", () => {
+    const map = buildParentContractMap([parent({ status: "cancelled" })]);
+    expect(isRevenueCountable(child(), map)).toBe(false);
+  });
+  it("bỏ con khi cha là BÁO GIÁ TẠM", () => {
+    const map = buildParentContractMap([parent({ status: "temp_quote" })]);
+    expect(isRevenueCountable(child(), map)).toBe(false);
+  });
+  it("bỏ con khi cha đã vào THÙNG RÁC", () => {
+    const map = buildParentContractMap([parent({ deletedAt: "2026-06-20" })]);
+    expect(isRevenueCountable(child(), map)).toBe(false);
+  });
+  it("KHÔNG loại con khi cha không có trong map (không tự ý bỏ tiền khách)", () => {
+    expect(isRevenueCountable(child(), new Map())).toBe(true);
+  });
+  it("không truyền parentById ⇒ tương thích ngược, không xét cha", () => {
+    expect(isRevenueCountable(child())).toBe(true);
+  });
+});
+
+describe("filterRevenueCountable — lọc cả cụm trong 1 lần", () => {
+  it("giữ con sống + đơn lẻ, bỏ cha/hủy/tạm/con mồ côi", () => {
+    const rows: CountableBookingInput[] = [
+      { id: 1, isParentContract: true, status: "confirmed" },        // cha sống → bỏ (đếm con)
+      { id: 2, parentId: 1, status: "confirmed" },                   // con sống → GIỮ
+      { id: 3, parentId: 1, status: "confirmed" },                   // con sống → GIỮ
+      { id: 10, isParentContract: true, status: "cancelled" },       // cha hủy → bỏ
+      { id: 11, parentId: 10, status: "confirmed" },                 // con mồ côi → bỏ
+      { id: 20, status: "temp_quote" },                              // báo giá tạm → bỏ
+      { id: 21, status: "cancelled" },                               // đơn hủy → bỏ
+      { id: 22, status: "completed", deletedAt: "2026-01-01" },      // thùng rác → bỏ
+      { id: 30, status: "confirmed" },                               // đơn lẻ sống → GIỮ
+    ];
+    const kept = filterRevenueCountable(rows).map(b => b.id).sort((a, b) => (a! - b!));
+    expect(kept).toEqual([2, 3, 30]);
+  });
+  it("bỏ con mồ côi khi cha ở THÙNG RÁC (parent deletedAt) — cần nạp cả đơn xóa vào tập", () => {
+    // revenue/data.ts nạp CẢ đơn đã xóa để map cha đầy đủ; con của cha bị trash phải bị loại
+    // (khớp dashboard revenueCountableSql NOT EXISTS + customer-aggregate PR #65).
+    const rows: CountableBookingInput[] = [
+      { id: 40, isParentContract: true, status: "confirmed", deletedAt: "2026-01-01" }, // cha trash → bỏ
+      { id: 41, parentId: 40, status: "confirmed" },  // con sống nhưng cha trash → mồ côi → bỏ
+      { id: 42, status: "confirmed", deletedAt: "2026-01-01" }, // đơn lẻ trash → bỏ
+      { id: 43, status: "confirmed" },                // đơn lẻ sống → GIỮ
+    ];
+    expect(filterRevenueCountable(rows).map(b => b.id)).toEqual([43]);
+  });
+});
+
+describe("revenueCountableSql — điều kiện SQL đồng bộ với predicate JS", () => {
+  it("mặc định alias 'bookings' + loại đủ 5 trạng thái", () => {
+    const sql = revenueCountableSql();
+    expect(sql).toContain("bookings.deleted_at IS NULL");
+    expect(sql).toContain("bookings.is_parent_contract = false");
+    expect(sql).toContain("NOT IN ('cancelled', 'temp_quote')");
+    expect(sql).toContain("NOT EXISTS"); // con mồ côi
+  });
+  it("nhận alias tùy biến", () => {
+    expect(revenueCountableSql("b")).toContain("b.parent_id");
   });
 });

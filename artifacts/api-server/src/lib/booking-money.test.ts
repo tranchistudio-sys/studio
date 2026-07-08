@@ -231,6 +231,17 @@ describe("filterRevenueCountable — lọc cả cụm trong 1 lần", () => {
     const kept = filterRevenueCountable(rows).map(b => b.id).sort((a, b) => (a! - b!));
     expect(kept).toEqual([2, 3, 30]);
   });
+  it("bỏ con mồ côi khi cha ở THÙNG RÁC (parent deletedAt) — cần nạp cả đơn xóa vào tập", () => {
+    // revenue/data.ts nạp CẢ đơn đã xóa để map cha đầy đủ; con của cha bị trash phải bị loại
+    // (khớp dashboard revenueCountableSql NOT EXISTS + customer-aggregate PR #65).
+    const rows: CountableBookingInput[] = [
+      { id: 40, isParentContract: true, status: "confirmed", deletedAt: "2026-01-01" }, // cha trash → bỏ
+      { id: 41, parentId: 40, status: "confirmed" },  // con sống nhưng cha trash → mồ côi → bỏ
+      { id: 42, status: "confirmed", deletedAt: "2026-01-01" }, // đơn lẻ trash → bỏ
+      { id: 43, status: "confirmed" },                // đơn lẻ sống → GIỮ
+    ];
+    expect(filterRevenueCountable(rows).map(b => b.id)).toEqual([43]);
+  });
 });
 
 describe("revenueCountableSql — điều kiện SQL đồng bộ với predicate JS", () => {

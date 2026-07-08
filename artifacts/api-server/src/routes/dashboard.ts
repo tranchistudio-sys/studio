@@ -25,11 +25,13 @@ router.get("/dashboard/stats", async (_req, res) => {
   const [totalCustomers] = await db.select({ count: count() }).from(customersTable);
   // Tổng đơn = đơn CÒN HIỆU LỰC (loại thùng rác/hủy/báo giá tạm/đơn cha/con mồ côi).
   const [totalBookings] = await db.select({ count: count() }).from(bookingsTable).where(countableBookingCond);
+  // Các count còn lại cũng dùng countableBookingCond để là tập con nhất quán của tổng đơn
+  // (không để confirmed/completed > tổng đơn khi có đơn cha tổng / con mồ côi / báo giá tạm).
   const [bookingsThisMonth] = await db.select({ count: count() }).from(bookingsTable)
-    .where(and(isNull(bookingsTable.deletedAt), gte(bookingsTable.shootDate, startOfMonth), lte(bookingsTable.shootDate, endOfMonth)));
-  const [pendingBookings] = await db.select({ count: count() }).from(bookingsTable).where(and(isNull(bookingsTable.deletedAt), eq(bookingsTable.status, "pending")));
-  const [confirmedBookings] = await db.select({ count: count() }).from(bookingsTable).where(and(isNull(bookingsTable.deletedAt), eq(bookingsTable.status, "confirmed")));
-  const [completedBookings] = await db.select({ count: count() }).from(bookingsTable).where(and(isNull(bookingsTable.deletedAt), eq(bookingsTable.status, "completed")));
+    .where(and(countableBookingCond, gte(bookingsTable.shootDate, startOfMonth), lte(bookingsTable.shootDate, endOfMonth)));
+  const [pendingBookings] = await db.select({ count: count() }).from(bookingsTable).where(and(countableBookingCond, eq(bookingsTable.status, "pending")));
+  const [confirmedBookings] = await db.select({ count: count() }).from(bookingsTable).where(and(countableBookingCond, eq(bookingsTable.status, "confirmed")));
+  const [completedBookings] = await db.select({ count: count() }).from(bookingsTable).where(and(countableBookingCond, eq(bookingsTable.status, "completed")));
 
   const [totalDresses] = await db.select({ count: count() }).from(dressesTable);
   const [availableDresses] = await db.select({ count: count() }).from(dressesTable).where(eq(dressesTable.isAvailable, true));

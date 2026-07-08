@@ -1,5 +1,4 @@
 import { db } from "@workspace/db";
-import { isNull } from "drizzle-orm";
 import { bookingsTable, expensesTable, tasksTable, paymentsTable, fixedCostsTable } from "@workspace/db/schema";
 import { money, filterRevenueCountable } from "../../lib/booking-money";
 
@@ -17,7 +16,12 @@ export async function loadAllData() {
       serviceCategory: bookingsTable.serviceCategory,
       assignedStaff: bookingsTable.assignedStaff,
       createdAt: bookingsTable.createdAt,
-    }).from(bookingsTable).where(isNull(bookingsTable.deletedAt)), // Thùng rác: loại booking đã xoá khỏi MỌI báo cáo + lương
+      deletedAt: bookingsTable.deletedAt,
+      // Cố ý KHÔNG lọc deletedAt ở query: cần cả đơn CHA đã vào thùng rác trong tập để
+      // filterRevenueCountable nhận diện CON MỒ CÔI của cha đã xóa (giống customer-aggregate
+      // PR #65 + dashboard revenueCountableSql). filterRevenueCountable tự loại đơn đã xóa
+      // (isSelfLiveBooking đọc deletedAt) khỏi validBookings ⇒ báo cáo/lương vẫn không tính rác.
+    }).from(bookingsTable),
     db.select({
       id: tasksTable.id,
       bookingId: tasksTable.bookingId,
@@ -88,8 +92,9 @@ export async function loadAllData() {
 
   // Nguồn tiền chuẩn (chủ chốt): doanh thu = NET = giá gốc − giảm giá (không âm).
   // netAmount gắn sẵn vào từng booking để mọi route dùng CHUNG, hết cảnh chỗ gross chỗ net.
-  // filterRevenueCountable: loại đơn cha tổng + hủy + báo giá tạm + con MỒ CÔI của hợp đồng
-  // cha đã chết (cha hủy/báo giá tạm — thùng rác đã bị loại ở query deletedAt IS NULL trên).
+  // filterRevenueCountable: loại đơn đã xóa (thùng rác) + đơn cha tổng + hủy + báo giá tạm
+  // + con MỒ CÔI của hợp đồng cha đã CHẾT (xóa/hủy/báo giá tạm). Vì query trên nạp CẢ đơn đã
+  // xóa nên map cha đầy đủ ⇒ con của cha bị trash cũng bị loại (khớp dashboard + customer PR #65).
   const validBookings = filterRevenueCountable(bookings)
     .map(b => ({ ...b, netAmount: Math.max(0, money(b.totalAmount) - money(b.discountAmount)) }));
 

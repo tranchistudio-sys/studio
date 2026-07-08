@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getImageSrc } from "@/lib/imageUtils";
+import { OpenCalendarButton } from "@/components/OpenCalendarButton";
 import { CurrencyInput } from "@/components/ui/currency-input";
 import { DateInput } from "@/components/ui/date-input";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
@@ -720,6 +721,10 @@ function PaymentRow({
             <span className="mt-0.5 text-[9px] px-2 py-0.5 rounded-full bg-muted text-muted-foreground font-medium whitespace-nowrap" title="Phiếu này chưa gắn với đơn hàng">
               Không có đơn
             </span>
+          )}
+          {/* Mở đúng show này trên lịch chụp (ad_hoc/không booking → tự ẩn) */}
+          {!isAdHoc && (
+            <OpenCalendarButton bookingId={p.bookingId} shootDate={p.shootDate} requireShootDate className="mt-0.5 px-2 py-1" />
           )}
         </div>
         {(() => {
@@ -2121,6 +2126,8 @@ export default function PaymentsPage() {
               {selectedBooking?.packageType && (
                 <span className="text-xs text-muted-foreground truncate">{selectedBooking.packageType}</span>
               )}
+              {/* Mở đúng show trên lịch chụp — gate bằng id (shootDate ở panel này không đáng tin) */}
+              <OpenCalendarButton bookingId={selectedBooking?.id} className="px-2 py-1" />
             </div>
           </div>
 

@@ -12,6 +12,7 @@ import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { getImageSrc } from "@/lib/imageUtils";
 import { ConceptImage } from "@/components/ConceptImage";
 import { DateInput } from "@/components/ui/date-input";
+import { OpenCalendarButton } from "@/components/OpenCalendarButton";
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
 const token = () => localStorage.getItem("amazingStudioToken_v2");
@@ -1507,6 +1508,8 @@ function BookingCard({ row, onClick, isAdmin }: { row: BookingEditRow; onClick: 
         ) : (
           <span className="text-xs text-muted-foreground">📁 Chỉ chỉnh ảnh — gói này không cần in</span>
         )}
+        {/* Mở đúng show này trên lịch chụp (BE đã lọc đơn xóa/hủy → luôn mở được) */}
+        <OpenCalendarButton bookingId={row.booking_id} shootDate={row.shoot_date} requireShootDate className="ml-auto" />
       </div>
     </div>
   );

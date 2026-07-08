@@ -4,6 +4,8 @@ import { paymentsTable, bookingsTable, customersTable, staffTable } from "@works
 import { eq, desc, and, ne, sql } from "drizzle-orm";
 import { emitNotification } from "./notifications";
 import { verifyToken, getCallerRole } from "./auth";
+import { liveBookingSql, revenueCountableSql } from "../lib/booking-money";
+import { notEmptyParentSql } from "../lib/parent-contract";
 
 const router: IRouter = Router();
 
@@ -56,6 +58,8 @@ function fmtBookingRow(row: any) {
 // - Booking đơn lẻ (parent_id IS NULL AND is_parent_contract = false)
 // - Booking cha đa dịch vụ (is_parent_contract = true)
 // → KHÔNG lấy booking con (parent_id IS NOT NULL) vì chúng chỉ là lịch chụp
+// liveBookingSql: loại luôn thùng rác / hủy / báo giá tạm ngay ở base (giữ đơn cha vì tiền
+// ghi ở cha). Caller không cần lặp lại điều kiện trạng thái.
 const BOOKING_JOIN_SQL = `
   SELECT
     b.id,
@@ -78,7 +82,8 @@ const BOOKING_JOIN_SQL = `
   FROM bookings b
   LEFT JOIN customers c ON b.customer_id = c.id
   WHERE b.parent_id IS NULL
-    AND b.deleted_at IS NULL
+    AND ${liveBookingSql("b")}
+    AND ${notEmptyParentSql("b")}
 `;
 
 // GET /payments/suggestions — gợi ý thông minh khi mở ô tìm kiếm (chưa nhập)
@@ -86,7 +91,6 @@ router.get("/payments/suggestions", async (req, res) => {
   try {
   const [bookingsResult, paymentsResult] = await Promise.all([
     pool.query(`${BOOKING_JOIN_SQL}
-      AND b.status NOT IN ('cancelled','temp_quote')
       ORDER BY b.created_at DESC
       LIMIT 200`),
     pool.query(`
@@ -208,7 +212,7 @@ router.get("/payments/recent", async (req, res) => {
     LEFT JOIN bookings b ON p.booking_id = b.id
     LEFT JOIN customers c ON b.customer_id = c.id
     WHERE p.payment_type IN ('payment', 'deposit', 'ad_hoc')
-      AND (p.booking_id IS NULL OR b.deleted_at IS NULL)
+      AND (p.booking_id IS NULL OR (${liveBookingSql("b")} AND ${notEmptyParentSql("b")}))
       AND ${dateFilter}
     ORDER BY p.paid_at DESC, p.id DESC
     LIMIT $1`;
@@ -222,6 +226,9 @@ router.get("/payments/recent", async (req, res) => {
        FROM payments p
        WHERE p.payment_type IN ('payment', 'deposit', 'ad_hoc')
          AND COALESCE(p.status, 'active') != 'voided'
+         AND (p.booking_id IS NULL OR EXISTS (
+           SELECT 1 FROM bookings b WHERE b.id = p.booking_id AND (${liveBookingSql("b")}) AND ${notEmptyParentSql("b")}
+         ))
          AND ${dateFilter}`
     ),
   ]);
@@ -291,7 +298,6 @@ router.get("/payments/search", async (req, res) => {
        OR c.phone ILIKE $2
        OR b.order_code ILIKE $3
      )
-     AND b.status != 'cancelled'
      ORDER BY b.created_at DESC
      LIMIT 20`,
     [pct, pct, pct]
@@ -427,13 +433,16 @@ router.post("/payments/sync-deposits", async (_req, res) => {
     created: 0, removed: 0, updated: 0, recalculated: 0,
   };
 
-  // Lấy tất cả bookings có depositAmount > 0, không phải child booking
+  // Lấy tất cả bookings có depositAmount > 0, không phải child booking, và CÒN HIỆU LỰC
+  // (không thùng rác/hủy/báo giá tạm) — tránh tạo phiếu cọc "ma" cho đơn đã chết.
   const bookingsWithDeposit = await pool.query(`
     SELECT id, deposit_amount::numeric AS deposit_amount, total_amount::numeric AS total_amount,
            order_code, shoot_date, status
     FROM bookings
     WHERE deposit_amount::numeric > 0
       AND parent_id IS NULL
+      AND ${liveBookingSql("bookings")}
+      AND ${notEmptyParentSql("bookings")}
     ORDER BY id
   `);
 
@@ -665,8 +674,7 @@ router.get("/payments/monthly-list", async (req, res) => {
         FROM bookings b
         JOIN customers c ON c.id = b.customer_id
         WHERE b.shoot_date >= $1 AND b.shoot_date < $2
-          AND b.status != 'cancelled'
-          AND b.is_parent_contract = false
+          AND ${revenueCountableSql("b")}
         ORDER BY latest_paid_at DESC NULLS LAST, b.shoot_date ASC, b.id ASC
       `, [startDate, nextMonthStart]);
       bookingRows = r.rows;
@@ -697,11 +705,14 @@ router.get("/payments/monthly-list", async (req, res) => {
                   AND p.paid_at >= $1 AND p.paid_at < $2) AS latest_paid_at
         FROM bookings b
         JOIN customers c ON c.id = b.customer_id
-        WHERE EXISTS (
-          SELECT 1 FROM payments p2
-          WHERE p2.booking_id = b.id AND p2.payment_type != 'refund'
-            AND p2.paid_at >= $1 AND p2.paid_at < $2
-        )
+        WHERE ${liveBookingSql("b")}
+          AND ${notEmptyParentSql("b")}
+          AND EXISTS (
+            SELECT 1 FROM payments p2
+            WHERE p2.booking_id = b.id AND p2.payment_type != 'refund'
+              AND COALESCE(p2.status, 'active') != 'voided'
+              AND p2.paid_at >= $1 AND p2.paid_at < $2
+          )
         ORDER BY latest_paid_at DESC NULLS LAST, b.shoot_date ASC, b.id ASC
       `, [startDate, nextMonthStart]);
       bookingRows = r.rows;
@@ -874,7 +885,8 @@ router.get("/payments/export", async (req, res) => {
       FROM bookings b
       JOIN customers c ON c.id = b.customer_id
       WHERE b.parent_id IS NULL
-        AND b.status != 'cancelled'
+        AND ${liveBookingSql("b")}
+        AND ${notEmptyParentSql("b")}
         ${dateClause}
         ${statusClause}
       ORDER BY b.shoot_date ASC, b.id ASC

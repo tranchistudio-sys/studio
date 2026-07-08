@@ -216,10 +216,42 @@ export function filterRevenueCountable<T extends CountableBookingInput>(
 }
 
 /**
- * Điều kiện SQL "đơn được tính doanh thu" — ĐỒNG BỘ với isRevenueCountable() ở trên,
- * dùng cho query THÔ (pool.query / drizzle sql.raw) không gọi được predicate JS.
- * Loại: thùng rác, hủy, báo giá tạm, đơn CHA tổng, con mồ côi (cha chết/hủy/báo giá tạm).
+ * Điều kiện con KHÔNG mồ côi: là đơn lẻ/cha (parent_id NULL) HOẶC cha còn sống
+ * (không thùng rác/hủy/báo giá tạm). Tách riêng để liveBookingSql + revenueCountableSql
+ * dùng CHUNG một định nghĩa "cha đã chết" — một nguồn chân lý.
+ */
+function notOrphanSqlFragment(a: string): string {
+  return `(${a}.parent_id IS NULL OR NOT EXISTS (
+      SELECT 1 FROM bookings parent_chk
+      WHERE parent_chk.id = ${a}.parent_id
+        AND (parent_chk.deleted_at IS NOT NULL
+             OR COALESCE(parent_chk.status, '') IN ('cancelled', 'temp_quote'))
+    ))`;
+}
+
+/**
+ * Điều kiện SQL "đơn CÒN HIỆU LỰC" (self-live + KHÔNG mồ côi), KHÔNG loại đơn CHA tổng.
+ * Dùng cho ngữ cảnh tiền GHI Ở ĐƠN CHA: phiếu thu / cọc / đã thu / công nợ theo đơn —
+ * đơn CHA đa dịch vụ là dòng mang tiền nên PHẢI giữ (payments ghi ở cha, xem booking-money
+ * docstring + customer-aggregate PR #65). Muốn loại cha để ĐẾM DOANH THU theo con thì dùng
+ * revenueCountableSql. Đồng bộ với isSelfLiveBooking (JS).
+ * Loại: thùng rác (deleted_at), hủy (cancelled), báo giá tạm (temp_quote), con mồ côi.
  * Chuỗi hằng, KHÔNG chèn dữ liệu người dùng ⇒ an toàn với sql.raw / template.
+ *
+ * @param alias bí danh bảng bookings trong câu lệnh (mặc định "bookings").
+ */
+export function liveBookingSql(alias = "bookings"): string {
+  const a = alias;
+  return `${a}.deleted_at IS NULL
+    AND COALESCE(${a}.status, '') NOT IN ('cancelled', 'temp_quote')
+    AND ${notOrphanSqlFragment(a)}`;
+}
+
+/**
+ * Điều kiện SQL "đơn được tính DOANH THU" = còn hiệu lực + loại đơn CHA tổng (đếm con thay
+ * cha, tránh cộng trùng). ĐỒNG BỘ với isRevenueCountable() ở trên; dùng cho query THÔ
+ * (pool.query / drizzle sql.raw) không gọi được predicate JS.
+ * Loại: thùng rác, hủy, báo giá tạm, đơn CHA tổng, con mồ côi (cha chết/hủy/báo giá tạm).
  *
  * @param alias bí danh bảng bookings trong câu lệnh (mặc định "bookings").
  */
@@ -228,10 +260,5 @@ export function revenueCountableSql(alias = "bookings"): string {
   return `${a}.deleted_at IS NULL
     AND ${a}.is_parent_contract = false
     AND COALESCE(${a}.status, '') NOT IN ('cancelled', 'temp_quote')
-    AND (${a}.parent_id IS NULL OR NOT EXISTS (
-      SELECT 1 FROM bookings parent_chk
-      WHERE parent_chk.id = ${a}.parent_id
-        AND (parent_chk.deleted_at IS NOT NULL
-             OR COALESCE(parent_chk.status, '') IN ('cancelled', 'temp_quote'))
-    ))`;
+    AND ${notOrphanSqlFragment(a)}`;
 }

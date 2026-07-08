@@ -5,6 +5,7 @@ import { eq, desc, and, ne, sql } from "drizzle-orm";
 import { emitNotification } from "./notifications";
 import { verifyToken, getCallerRole } from "./auth";
 import { liveBookingSql, revenueCountableSql } from "../lib/booking-money";
+import { notEmptyParentSql } from "../lib/parent-contract";
 
 const router: IRouter = Router();
 
@@ -82,6 +83,7 @@ const BOOKING_JOIN_SQL = `
   LEFT JOIN customers c ON b.customer_id = c.id
   WHERE b.parent_id IS NULL
     AND ${liveBookingSql("b")}
+    AND ${notEmptyParentSql("b")}
 `;
 
 // GET /payments/suggestions — gợi ý thông minh khi mở ô tìm kiếm (chưa nhập)
@@ -210,7 +212,7 @@ router.get("/payments/recent", async (req, res) => {
     LEFT JOIN bookings b ON p.booking_id = b.id
     LEFT JOIN customers c ON b.customer_id = c.id
     WHERE p.payment_type IN ('payment', 'deposit', 'ad_hoc')
-      AND (p.booking_id IS NULL OR (${liveBookingSql("b")}))
+      AND (p.booking_id IS NULL OR (${liveBookingSql("b")} AND ${notEmptyParentSql("b")}))
       AND ${dateFilter}
     ORDER BY p.paid_at DESC, p.id DESC
     LIMIT $1`;
@@ -225,7 +227,7 @@ router.get("/payments/recent", async (req, res) => {
        WHERE p.payment_type IN ('payment', 'deposit', 'ad_hoc')
          AND COALESCE(p.status, 'active') != 'voided'
          AND (p.booking_id IS NULL OR EXISTS (
-           SELECT 1 FROM bookings b WHERE b.id = p.booking_id AND (${liveBookingSql("b")})
+           SELECT 1 FROM bookings b WHERE b.id = p.booking_id AND (${liveBookingSql("b")}) AND ${notEmptyParentSql("b")}
          ))
          AND ${dateFilter}`
     ),
@@ -440,6 +442,7 @@ router.post("/payments/sync-deposits", async (_req, res) => {
     WHERE deposit_amount::numeric > 0
       AND parent_id IS NULL
       AND ${liveBookingSql("bookings")}
+      AND ${notEmptyParentSql("bookings")}
     ORDER BY id
   `);
 
@@ -703,6 +706,7 @@ router.get("/payments/monthly-list", async (req, res) => {
         FROM bookings b
         JOIN customers c ON c.id = b.customer_id
         WHERE ${liveBookingSql("b")}
+          AND ${notEmptyParentSql("b")}
           AND EXISTS (
             SELECT 1 FROM payments p2
             WHERE p2.booking_id = b.id AND p2.payment_type != 'refund'
@@ -882,6 +886,7 @@ router.get("/payments/export", async (req, res) => {
       JOIN customers c ON c.id = b.customer_id
       WHERE b.parent_id IS NULL
         AND ${liveBookingSql("b")}
+        AND ${notEmptyParentSql("b")}
         ${dateClause}
         ${statusClause}
       ORDER BY b.shoot_date ASC, b.id ASC

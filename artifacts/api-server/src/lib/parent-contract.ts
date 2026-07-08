@@ -85,3 +85,19 @@ export function paymentNotOnEmptyParentSql(p = "payments"): string {
       )
   ))`;
 }
+
+/**
+ * Điều kiện SQL "booking KHÔNG phải CHA RỖNG": hoặc không phải đơn cha, HOẶC là đơn cha còn ≥1
+ * dịch vụ con CÒN HIỆU LỰC. Ghép với liveBookingSql (vốn GIỮ đơn cha để tính cọc) nhằm LOẠI cha
+ * rỗng/zombie khỏi báo cáo tiền active — dùng cho query LỌC BOOKING (payments/monthly/export).
+ * "Con còn hiệu lực" = deleted_at IS NULL + status NOT IN (cancelled, temp_quote) — khớp isSelfLiveBooking.
+ * @param alias bí danh bảng bookings trong câu lệnh (mặc định "bookings").
+ */
+export function notEmptyParentSql(alias = "bookings"): string {
+  const a = alias;
+  return `(NOT ${a}.is_parent_contract OR EXISTS (
+    SELECT 1 FROM bookings ac WHERE ac.parent_id = ${a}.id
+      AND ac.deleted_at IS NULL
+      AND COALESCE(ac.status, '') NOT IN ('cancelled', 'temp_quote')
+  ))`;
+}

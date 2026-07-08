@@ -4,8 +4,29 @@ import {
   hasActiveChildren,
   isEmptyParentContract,
   isActiveBusinessBooking,
+  notEmptyParentSql,
+  paymentNotOnEmptyParentSql,
   type BookingLike,
 } from "./parent-contract";
+
+describe("notEmptyParentSql / paymentNotOnEmptyParentSql — SQL loại cha rỗng", () => {
+  it("notEmptyParentSql: giữ đơn không-phải-cha, và cha CÒN con hiệu lực", () => {
+    const s = notEmptyParentSql("b");
+    expect(s).toContain("NOT b.is_parent_contract");
+    expect(s).toContain("EXISTS"); // cha phải còn con hiệu lực
+    expect(s).toContain("ac.parent_id = b.id");
+    expect(s).toContain("NOT IN ('cancelled', 'temp_quote')");
+  });
+  it("paymentNotOnEmptyParentSql: loại phiếu ở cha rỗng, giữ ad_hoc/đơn thường", () => {
+    const s = paymentNotOnEmptyParentSql("payments");
+    expect(s).toContain("payments.booking_id IS NOT NULL");
+    expect(s).toContain("zp.is_parent_contract = true");
+    expect(s).toContain("NOT EXISTS");
+  });
+  it("nhận alias tùy biến", () => {
+    expect(notEmptyParentSql("bookings")).toContain("bookings.is_parent_contract");
+  });
+});
 
 // Cụm mẫu: cha 100 còn con sống; cha 200 rỗng (con đã hủy/thùng rác); đơn lẻ 300.
 const sample: BookingLike[] = [

@@ -65,6 +65,8 @@ export type OutfitDraft = {
   status: "reserved" | "picked_up" | "returned" | "cancelled";
   note?: string;
   dbId?: number | null;
+  /** Váy data cũ còn gắn ở booking CHA — hiển thị tạm ở Dịch vụ 1, lưu xong move về child. */
+  fromParent?: boolean;
 };
 
 type DressOption = {

@@ -43,6 +43,7 @@ import { StaffAssignmentEditor, type StaffAssignment, newStaffAssignment } from 
 import { castAmountFromResult, lookupCastByPkg, resolveCastAmount } from "@/lib/resolve-cast";
 import { reflowDescriptionLines, firstDescriptionLine, parseDescriptionBlocks } from "@/lib/package-description";
 import OutfitBookingSection, { type OutfitDraft } from "@/components/outfit-booking-section";
+import { splitOutfitsBySub, planOutfitSync, mapDressRowToDraft, dedupeParentOutfits, moveOutfitsOnSubRemove } from "@/lib/outfit-per-service";
 import AdditionalServicesSection, { validateAdditionalServicesForm, type AdditionalServiceLine, newAdditionalServiceLine } from "@/components/additional-services-section";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -507,39 +508,37 @@ function getStaffColors(booking: { assignedStaff?: unknown; status?: string }, a
 function genId() { return Math.random().toString(36).slice(2); }
 
 // ─── Helper: sync booking-dresses after booking save ───────────────────────────
+// Per-booking (mỗi DỊCH VỤ sync với CHILD booking id của nó — không còn dồn hết vào cha).
+// Draft mang dbId của booking KHÁC (váy legacy đang nằm ở CHA) ⇒ planOutfitSync xếp vào
+// toInsert ⇒ POST row MỚI dưới booking này; row cũ ở cha được dọn khi sync cha với [] (move).
 async function syncOutfitDrafts(bookingId: number, drafts: OutfitDraft[]) {
   const existing = await authFetch(`${BASE}/api/bookings/${bookingId}/dresses`).then(r => r.ok ? r.json() : []).catch(() => []);
-  const existingIds = new Set<number>();
-  for (const row of existing) { if (row?.id) existingIds.add(row.id); }
-  const keepIds = new Set<number>();
-  for (const d of drafts) {
-    if (d.dbId && existingIds.has(d.dbId)) {
-      keepIds.add(d.dbId);
-      // update
-      await authFetch(`${BASE}/api/booking-dresses/${d.dbId}`, {
-        method: "PUT", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pickupDate: d.pickupDate, returnDate: d.returnDate, status: d.status, note: d.note, rentalPrice: d.rentalPrice }),
-      });
-    } else {
-      // create
-      const res = await authFetch(`${BASE}/api/booking-dresses`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          bookingId, dressId: d.dressId, outfitCode: d.outfitCode, outfitName: d.outfitName,
-          outfitImage: d.outfitImage, category: d.category, size: d.size, rentalPrice: d.rentalPrice,
-          pickupDate: d.pickupDate, returnDate: d.returnDate, status: d.status, note: d.note,
-        }),
-      });
-      if (res.ok) {
-        const saved = await res.json().catch(() => null);
-        if (saved?.id) keepIds.add(saved.id);
-      }
-    }
+  const existingIds: number[] = [];
+  for (const row of existing) { if (row?.id) existingIds.push(row.id); }
+  const { toUpdate, toInsert, deleteIds } = planOutfitSync(existingIds, drafts);
+  // MỌI request phải res.ok — lỗi là THROW ngay để handleSave abort TRƯỚC bước dọn cha.
+  // (Nếu insert bản copy dưới con fail mà vẫn dọn cha ⇒ MẤT váy vĩnh viễn — review finding #1.)
+  for (const d of toUpdate) {
+    const r = await authFetch(`${BASE}/api/booking-dresses/${d.dbId}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pickupDate: d.pickupDate, returnDate: d.returnDate, status: d.status, note: d.note, rentalPrice: d.rentalPrice }),
+    });
+    if (!r.ok) throw new Error(`Lỗi lưu trang phục ${d.outfitCode}`);
   }
-  for (const ex of existing) {
-    if (ex?.id && !keepIds.has(ex.id)) {
-      await authFetch(`${BASE}/api/booking-dresses/${ex.id}`, { method: "DELETE" });
-    }
+  for (const d of toInsert) {
+    const r = await authFetch(`${BASE}/api/booking-dresses`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        bookingId, dressId: d.dressId, outfitCode: d.outfitCode, outfitName: d.outfitName,
+        outfitImage: d.outfitImage, category: d.category, size: d.size, rentalPrice: d.rentalPrice,
+        pickupDate: d.pickupDate, returnDate: d.returnDate, status: d.status, note: d.note,
+      }),
+    });
+    if (!r.ok) throw new Error(`Lỗi lưu trang phục ${d.outfitCode}`);
+  }
+  for (const id of deleteIds) {
+    const r = await authFetch(`${BASE}/api/booking-dresses/${id}`, { method: "DELETE" });
+    if (!r.ok) throw new Error("Lỗi gỡ trang phục cũ");
   }
 }
 
@@ -1427,32 +1426,46 @@ function ShowFormPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isEdit, booking?.id]);
 
-  // Load existing booking-dresses when editing
+  // Load existing booking-dresses when editing — THEO TỪNG DỊCH VỤ.
+  // Đơn nhiều dịch vụ: váy của child booking nào về đúng dịch vụ đó. DATA CŨ (váy còn gắn ở
+  // booking CHA vì bug dùng chung trước đây): dồn tạm vào Dịch vụ 1 để KHÔNG mất data — admin
+  // phân bổ lại rồi bấm Cập nhật là váy được lưu vào đúng child (cha được dọn khi lưu).
   useEffect(() => {
-    if (!booking?.id) { setOutfitDrafts([]); return; }
+    if (!booking?.id) { setOutfitsBySub({}); setOutfitsLoaded(true); return; } // đơn MỚI: không có gì để load
     let cancelled = false;
-    authFetch(`${BASE}/api/bookings/${booking.id}/dresses`)
-      .then(r => r.ok ? r.json() : [])
-      .then((rows: unknown) => {
-        if (cancelled || !Array.isArray(rows)) return;
-        setOutfitDrafts(rows.map((r: Record<string, unknown>) => ({
-          tempId: Math.random().toString(36).slice(2),
-          dressId: Number(r.dress_id),
-          outfitCode: String(r.outfit_code),
-          outfitName: String(r.outfit_name),
-          outfitImage: (r.outfit_image as string) || null,
-          category: (r.category as string) || null,
-          size: (r.size as string) || null,
-          rentalPrice: Number(r.rental_price) || 0,
-          pickupDate: String(r.pickup_date),
-          returnDate: String(r.return_date),
-          status: String(r.status) as OutfitDraft["status"],
-          note: (r.note as string) || "",
-          dbId: Number(r.id) || null,
-        })));
-      })
-      .catch(() => { if (!cancelled) setOutfitDrafts([]); });
+    setOutfitsLoaded(false);
+    (async () => {
+      try {
+        const genTempId = () => Math.random().toString(36).slice(2);
+        const fetchDrafts = async (bid: number): Promise<OutfitDraft[]> => {
+          const r = await authFetch(`${BASE}/api/bookings/${bid}/dresses`);
+          if (!r.ok) throw new Error(`Lỗi tải trang phục booking ${bid}`);
+          const rows = await r.json();
+          return Array.isArray(rows)
+            ? rows.map((row: Record<string, unknown>) => mapDressRowToDraft(row, genTempId) as OutfitDraft)
+            : [];
+        };
+        const subs = subDrafts.map(s => ({ key: s.id, siblingId: s.siblingId ?? null }));
+        const rawParent = await fetchDrafts(booking.id);
+        const bySibling: Record<number, OutfitDraft[]> = {};
+        for (const s of subs) {
+          if (s.siblingId != null) bySibling[s.siblingId] = await fetchDrafts(s.siblingId);
+        }
+        if (cancelled) return;
+        // Váy cha (data cũ): bỏ bản trùng đã copy dở xuống child DV1 (retry) + đánh dấu fromParent
+        // để khi user xoá card thì váy legacy được chuyển card, không bị dọn mất.
+        const firstChild = subs[0]?.siblingId != null ? (bySibling[subs[0].siblingId] ?? []) : [];
+        const parentOutfits = dedupeParentOutfits(rawParent, firstChild).map(d => ({ ...d, fromParent: true }));
+        const { bySubKey } = splitOutfitsBySub(subs, bySibling, parentOutfits);
+        setOutfitsBySub(bySubKey);
+        setOutfitsLoaded(true);
+      } catch {
+        // Load lỗi: KHÔNG set loaded ⇒ lượt save này bỏ qua sync trang phục (không xoá nhầm data).
+        if (!cancelled) setOutfitsBySub({});
+      }
+    })();
     return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [booking?.id]);
   const [depositProofImages, setDepositProofImages] = useState<string[]>([]);
   // EDIT mode (show đã có cọc, số tiền khóa): vẫn cho XEM + THÊM ảnh bằng chứng cọc.
@@ -1491,7 +1504,12 @@ function ShowFormPanel({
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
   }, [isUploadingImages]);
-  const [outfitDrafts, setOutfitDrafts] = useState<OutfitDraft[]>([]);
+  // Trang phục THEO TỪNG DỊCH VỤ — key = sub.id (SubServiceDraft). Trước đây là 1 mảng dùng
+  // chung cho cả form ⇒ thêm váy ở Dịch vụ 1 thì mọi dịch vụ khác hiện y chang (bug).
+  const [outfitsBySub, setOutfitsBySub] = useState<Record<string, OutfitDraft[]>>({});
+  // Chỉ cho phép SYNC trang phục khi đã load thành công — load lỗi mà vẫn save sẽ sync mảng rỗng
+  // ⇒ xoá nhầm váy thật trong DB (review finding #5).
+  const [outfitsLoaded, setOutfitsLoaded] = useState(false);
   const hasSiblingEdit = siblingBookings.length > 0;
 
   // ── Service blocks (unified: single or multi-service) ────────────────────
@@ -2023,6 +2041,9 @@ function ShowFormPanel({
         // cidResolved sẽ được gán cho cha + tất cả dịch vụ con để show hiển thị đúng tên.
         const cidResolved = await resolveCustomerForSave();
         qc.invalidateQueries({ queryKey: ["customers"] });
+        // Map sub.id → booking id THẬT của dịch vụ (sibling cũ giữ id, dịch vụ mới lấy id từ
+        // response add-child) — để sync trang phục vào ĐÚNG child booking.
+        const subBookingIds: Record<string, number> = {};
         for (const sub of subDrafts) {
           const validItems = normalizeItems(sub.items);
           const subPackageTotal = calcSubPackageTotal(sub.items);
@@ -2046,6 +2067,7 @@ function ShowFormPanel({
               }),
             });
             if (!res.ok) throw new Error("Lỗi lưu dịch vụ");
+            subBookingIds[sub.id] = sub.siblingId;
           } else if (booking?.id) {
             const res = await authFetch(`${BASE}/api/bookings/${booking.id}/add-child`, {
               method: "POST",
@@ -2062,6 +2084,8 @@ function ShowFormPanel({
               }),
             });
             if (!res.ok) throw new Error("Lỗi thêm dịch vụ mới");
+            const createdChild = await res.json().catch(() => null);
+            if (createdChild?.id) subBookingIds[sub.id] = createdChild.id;
           }
         }
         // ── BUG FIX (tiền bạc): xoá các dịch vụ con đã bị gỡ khỏi form ──
@@ -2094,9 +2118,20 @@ function ShowFormPanel({
             qc.invalidateQueries({ queryKey: ["booking-full", childId] });
           }
         }
-        // Sync booking-dresses for multi-service edit
-        if (booking?.id) {
-          await syncOutfitDrafts(booking.id, outfitDrafts);
+        // Sync booking-dresses THEO TỪNG DỊCH VỤ (child booking id) — hết cảnh dồn chung vào cha.
+        // Guard outfitsLoaded: load lỗi thì bỏ qua toàn bộ sync (kể cả dọn cha) — không xoá nhầm.
+        if (outfitsLoaded) {
+          for (const sub of subDrafts) {
+            const bid = subBookingIds[sub.id];
+            if (bid) await syncOutfitDrafts(bid, outfitsBySub[sub.id] ?? []);
+          }
+          // Dọn váy còn gắn ở CHA (data cũ): đã hiển thị ở Dịch vụ 1 và (nếu user giữ) vừa được
+          // insert lại dưới child ⇒ xoá row cha = HOÀN TẤT move, mở lại không còn lẫn. Cha là hợp
+          // đồng tổng, không giữ trang phục riêng. syncOutfitDrafts THROW khi request fail nên
+          // bước dọn này chỉ chạy khi mọi bản copy đã nằm an toàn dưới child (chống mất data).
+          if (booking?.id) {
+            await syncOutfitDrafts(booking.id, []);
+          }
         }
         if (booking?.id) {
           const editMultiAssignedStaff: { id: string; role: string; staffId: number; staffName: string; castAmount: number; taskKey: string }[] = [];
@@ -2215,6 +2250,20 @@ function ShowFormPanel({
         saved = await authFetch(`${BASE}/api/bookings`, {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
         }).then(r => { if (!r.ok) throw new Error("Lỗi tạo hợp đồng"); return r.json(); });
+
+        // Sync trang phục THEO TỪNG DỊCH VỤ vào child booking vừa tạo (response trả children
+        // đúng thứ tự subServices). Trước đây nhánh tạo hợp đồng nhiều dịch vụ KHÔNG sync
+        // trang phục ⇒ váy chọn lúc tạo bị rơi lặng lẽ — vá luôn tại đây.
+        // KHÔNG sync cho BÁO GIÁ TẠM (temp_quote): quote chưa chốt mà giữ váy sẽ chặn lịch
+        // váy của đơn thật (schedule/conflict chỉ lọc theo status váy, không theo status đơn).
+        if (!tempQuoteMode) {
+          const createdChildren = Array.isArray(saved?.children) ? saved.children : [];
+          for (let i = 0; i < subDrafts.length; i++) {
+            const childId = createdChildren[i]?.id;
+            const drafts = outfitsBySub[subDrafts[i].id] ?? [];
+            if (childId && drafts.length > 0) await syncOutfitDrafts(childId, drafts);
+          }
+        }
 
         // Upload ảnh cọc riêng sau khi booking tạo xong (tách luồng để không làm fail booking)
         let proofUploadFailed = false;
@@ -2336,10 +2385,11 @@ function ShowFormPanel({
         }).then(r => { if (!r.ok) throw new Error("Lỗi tạo đơn"); return r.json(); });
       }
 
-      // Sync booking-dresses after booking saved
+      // Sync booking-dresses after booking saved (đơn 1 dịch vụ: váy nằm trên booking chính).
+      // Guard outfitsLoaded: load lỗi thì bỏ qua — tránh sync mảng rỗng xoá nhầm váy thật.
       const bookingIdToSync = isEdit && booking ? booking.id : saved?.id;
-      if (bookingIdToSync) {
-        await syncOutfitDrafts(bookingIdToSync, outfitDrafts);
+      if (bookingIdToSync && outfitsLoaded) {
+        await syncOutfitDrafts(bookingIdToSync, outfitsBySub[subDrafts[0]?.id] ?? []);
       }
 
       // Upload ảnh cọc riêng sau khi booking tạo xong (tách luồng, không làm fail booking)
@@ -2640,7 +2690,13 @@ function ShowFormPanel({
                       </div>
                     )}
                     {subDrafts.length > 1 && (
-                      <button type="button" onClick={() => setSubDrafts(p => p.filter(s => s.id !== sub.id))} className="p-1 text-muted-foreground hover:text-destructive transition-colors" title="Xoá dịch vụ này">
+                      <button type="button" onClick={() => {
+                        // Váy LEGACY của cha đang "ở tạm" card này → chuyển sang card còn lại đầu
+                        // tiên (không bị dọn mất khi lưu); váy của child thì mất theo card là đúng.
+                        const fallback = subDrafts.find(s => s.id !== sub.id)?.id ?? null;
+                        setOutfitsBySub(p => moveOutfitsOnSubRemove(p, sub.id, fallback));
+                        setSubDrafts(p => p.filter(s => s.id !== sub.id));
+                      }} className="p-1 text-muted-foreground hover:text-destructive transition-colors" title="Xoá dịch vụ này">
                         <X className="w-3.5 h-3.5" />
                       </button>
                     )}
@@ -2688,8 +2744,12 @@ function ShowFormPanel({
                       allStaffRates={allStaffRates}
                       formatVND={formatVND}
                     />
-                    {/* F. Trang phục / Đạo cụ đi kèm — per service card */}
-                    <OutfitBookingSection draft={outfitDrafts} onChange={setOutfitDrafts} />
+                    {/* F. Trang phục / Đạo cụ đi kèm — RIÊNG từng dịch vụ (key theo sub.id).
+                        Thêm/xoá/sửa váy ở dịch vụ này KHÔNG ảnh hưởng dịch vụ khác. */}
+                    <OutfitBookingSection
+                      draft={outfitsBySub[sub.id] ?? []}
+                      onChange={next => setOutfitsBySub(p => ({ ...p, [sub.id]: next }))}
+                    />
                     {/* Notes */}
                     <Input className="h-8 text-sm" placeholder="Ghi chú cho dịch vụ này..." value={sub.notes} onChange={e => updateSubDraft(sub.id, { notes: e.target.value })} />
                     {/* Sub total */}

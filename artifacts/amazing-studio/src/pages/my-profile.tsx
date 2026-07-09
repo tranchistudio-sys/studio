@@ -48,7 +48,7 @@ const fmtDate = (d?: string) => d
 
 const ROLE_LABELS: Record<string, string> = {
   admin: "Quản lý", photographer: "Nhiếp ảnh", photo: "Nhiếp ảnh",
-  makeup: "Trang điểm", sale: "Kinh doanh", photoshop: "Chỉnh sửa",
+  makeup: "Trang điểm", sale: "Sale", photoshop: "Chỉnh sửa",
   assistant: "Hỗ trợ", marketing: "Marketing",
 };
 

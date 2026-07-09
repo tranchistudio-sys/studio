@@ -47,7 +47,7 @@ const ROLES = [
   { key: "admin",        label: "Quản lý",    icon: "👑" },
   { key: "photographer", label: "Nhiếp ảnh",  icon: "📷" },
   { key: "makeup",       label: "Trang điểm", icon: "💄" },
-  { key: "sale",         label: "Kinh doanh",  icon: "💼" },
+  { key: "sale",         label: "Sale",  icon: "💼" },
   { key: "photoshop",    label: "Chỉnh sửa",  icon: "🖥️" },
   { key: "assistant",    label: "Hỗ trợ",     icon: "🤝" },
   { key: "marketing",    label: "Marketing",  icon: "📣" },
@@ -1816,7 +1816,7 @@ export default function StaffPage() {
                   <div className="flex-1 min-w-0">
                     <p className="font-medium text-sm truncate">{String(s.name)}</p>
                     <p className="text-xs text-muted-foreground">
-                      {roles.map(r => ({ admin: "Quản lý", photographer: "Nhiếp ảnh", makeup: "Trang điểm", sale: "Kinh doanh", photoshop: "Chỉnh sửa", assistant: "Hỗ trợ", marketing: "Marketing" }[r] || r)).join(", ")}
+                      {roles.map(r => ({ admin: "Quản lý", photographer: "Nhiếp ảnh", makeup: "Trang điểm", sale: "Sale", photoshop: "Chỉnh sửa", assistant: "Hỗ trợ", marketing: "Marketing" }[r] || r)).join(", ")}
                     </p>
                   </div>
                   {isMe && <span className="text-xs bg-primary text-primary-foreground px-2 py-0.5 rounded-full">Đang dùng</span>}

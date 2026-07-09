@@ -1325,7 +1325,7 @@ function SaleStaffDropdown({ value, onChange }: { value: string; onChange: (v: s
   const { data: saleStaff = [], isLoading } = useSaleStaff();
   return (
     <div>
-      <label className="text-xs font-medium text-muted-foreground">Sale (Kinh doanh)</label>
+      <label className="text-xs font-medium text-muted-foreground">Sale</label>
       <Select value={value} onChange={e => onChange(e.target.value)} disabled={isLoading}>
         <option value="">— Chưa chọn —</option>
         {saleStaff.map(s => (
@@ -1334,7 +1334,7 @@ function SaleStaffDropdown({ value, onChange }: { value: string; onChange: (v: s
       </Select>
       {!isLoading && saleStaff.length === 0 && (
         <p className="text-[10px] text-muted-foreground mt-1">
-          Chưa có nhân viên nào có vai trò Kinh doanh. Vào trang Nhân sự để gán.
+          Chưa có nhân viên nào có vai trò Sale. Vào trang Nhân sự để gán.
         </p>
       )}
     </div>

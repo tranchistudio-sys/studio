@@ -718,12 +718,11 @@ export default function PricingPage() {
                                 {pkg.pkgDiscountStatus === "scheduled" ? "🏷️ Ưu đãi sắp áp dụng" : "🏷️ Ưu đãi đã hết hạn"}
                               </span>
                             )}
-                            {/* Chi phí sản xuất */}
-                            {(pkg.printCost > 0 || pkg.operatingCost > 0 || pkg.salePercent > 0) && (
+                            {/* Chi phí sản xuất — bỏ dòng "Sale %" (trùng với lương sale ở module Nhân sự) */}
+                            {(pkg.printCost > 0 || pkg.operatingCost > 0) && (
                               <div className="mt-1.5 space-y-0.5 text-[11px] text-muted-foreground">
                                 {pkg.printCost > 0 && <p>🖨️ In ấn: {formatVNDShort(pkg.printCost)}</p>}
                                 {pkg.operatingCost > 0 && <p>⚡ Vận hành: {formatVNDShort(pkg.operatingCost)}</p>}
-                                {pkg.salePercent > 0 && <p>💼 Sale: {pkg.salePercent}%</p>}
                                 <p className="text-[10px] text-sky-600">👤 Cast theo nhân sự</p>
                               </div>
                             )}
@@ -926,12 +925,8 @@ export default function PricingPage() {
                     <span className={val > 0 ? "" : "text-muted-foreground/40"}>{val > 0 ? formatVND(val) : "—"}</span>
                   </div>
                 ))}
-                {selectedPkg.salePercent > 0 && (
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">💼 Sale ({selectedPkg.salePercent}%)</span>
-                    <span>≈ {formatVND(Math.round(selectedPkg.price * selectedPkg.salePercent / 100))}</span>
-                  </div>
-                )}
+                {/* Bỏ hiển thị "Sale (%)" — lương sale đã tính riêng ở module Nhân sự nên hiện ở đây bị trùng.
+                    Vẫn giữ cột salePercent trong DB + ô nhập ở form gói (không mất dữ liệu). */}
                 <div className="flex justify-between text-xs">
                   <span className="text-sky-600">👤 Cast nhân sự</span>
                   <span className="text-sky-600 italic">Xem bảng lương nhân viên</span>

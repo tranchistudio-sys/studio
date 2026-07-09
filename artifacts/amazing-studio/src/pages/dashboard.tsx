@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui";
+import { OpenCalendarButton } from "@/components/OpenCalendarButton";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -870,13 +871,17 @@ export default function Dashboard() {
                     <p className="font-medium text-sm">{b.customerName}</p>
                     <p className="text-xs text-muted-foreground mt-0.5">{b.serviceLabel || b.packageType || "—"}</p>
                   </div>
-                  <div className="text-right">
-                    <p className="text-sm font-medium">
-                      {b.shootDate
-                        ? new Date(b.shootDate).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit" })
-                        : "—"}
-                    </p>
-                    <p className="text-xs text-muted-foreground">{b.shootTime ?? ""}</p>
+                  <div className="flex items-center gap-2">
+                    <div className="text-right">
+                      <p className="text-sm font-medium">
+                        {b.shootDate
+                          ? new Date(b.shootDate).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit" })
+                          : "—"}
+                      </p>
+                      <p className="text-xs text-muted-foreground">{b.shootTime ?? ""}</p>
+                    </div>
+                    {/* Mở đúng show này trên lịch chụp (bổ sung #70: widget "Lịch chụp sắp tới") */}
+                    <OpenCalendarButton bookingId={b.id} shootDate={b.shootDate} requireShootDate iconOnly className="px-1.5 py-1" />
                   </div>
                 </div>
               ))

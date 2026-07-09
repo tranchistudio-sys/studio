@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { formatDate } from "@/lib/utils";
 import { StaffAssignmentEditor, type StaffAssignment } from "@/components/staff-assignment-editor";
+import { OpenCalendarButton } from "@/components/OpenCalendarButton";
 import { useToast } from "@/hooks/use-toast";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
 
@@ -196,6 +197,8 @@ function BookingCard({
               📅 Sắp chụp ({daysToShoot === 0 ? "Hôm nay!" : `${daysToShoot} ngày`})
             </span>
           )}
+          {/* Mở đúng show này trên lịch chụp (bổ sung #70: trang Giao việc) */}
+          <OpenCalendarButton bookingId={booking.booking_id} shootDate={booking.shoot_date} requireShootDate className="ml-auto" />
         </div>
         <div className="flex flex-wrap gap-x-3 gap-y-0.5 mt-0.5 text-xs text-muted-foreground">
           <span>{booking.customer_phone}</span>

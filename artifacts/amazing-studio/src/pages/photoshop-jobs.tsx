@@ -910,6 +910,8 @@ function DetailModal({ row, onClose, staffList, isAdmin, viewerId, viewerName }:
                   {deadlineBarText(deadlineBar.daysRemaining)}
                 </span>
               )}
+              {/* Mở đúng show này trên lịch chụp (bổ sung #70: modal chi tiết hậu kỳ, không chỉ card list) */}
+              <OpenCalendarButton bookingId={row.booking_id} shootDate={row.shoot_date} requireShootDate className="ml-auto" />
             </div>
           </div>
         </div>

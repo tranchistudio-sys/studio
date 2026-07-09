@@ -55,7 +55,8 @@ router.get("/revenue/v2/monthly", async (req, res) => {
     const contractValue = monthBookings.reduce((s, b) => s + (b.netAmount || 0), 0); // NET (đã trừ giảm giá)
     const bookingIds = new Set(monthBookings.map(b => b.id));
 
-    // Task #394: "Đã thu" = tất cả payments có paidAt trong khoảng ngày, bao gồm ad_hoc — không filter theo booking_id cohort.
+    // Task #394: "Đã thu" (dòng tiền THỰC NHẬN trong kỳ) = mọi payment có paidAt trong khoảng ngày,
+    // gồm cả ad_hoc — cash-basis theo kỳ, KHÔNG lọc theo cohort đơn.
     const monthPayments = payments.filter(p => {
       if (p.paymentType === "refund") return false;
       const d = getPaymentDate(p);
@@ -63,12 +64,14 @@ router.get("/revenue/v2/monthly", async (req, res) => {
     });
     const collected = monthPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
 
-    // Task #394: remaining = contractValue - cohort cashIn (chỉ tính booking thuộc tháng này).
-    // Tách riêng khỏi collected để remaining không bị ảnh hưởng khi collected mở rộng ra ad_hoc.
-    const cohortCollected = monthPayments
-      .filter(p => p.bookingId != null && bookingIds.has(p.bookingId))
-      .reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
-    const remaining = contractValue - cohortCollected;
+    // Còn nợ = CÔNG NỢ SỐNG của lứa đơn KÝ trong kỳ này: net hợp đồng − TỔNG đã thu của đơn
+    // (paidAmount, MỌI tháng), clamp ≥0 từng đơn. Trước đây monthly chỉ trừ tiền thu TRONG kỳ ký
+    // (cohort cashIn) nên "còn nợ" không giảm khi khách trả ở tháng sau. Nay dùng chung công thức
+    // với custom-range.ts / by-service.ts (đều Σ max(0, total−disc−paidAmount)) → nhất quán.
+    const remaining = monthBookings.reduce(
+      (s, b) => s + Math.max(0, (b.netAmount || 0) - (parseFloat(b.paidAmount) || 0)),
+      0,
+    );
 
     let staffCast = 0;
     for (const bid of bookingIds) {

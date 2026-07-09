@@ -48,13 +48,13 @@ let baseUrl = "";
 function mkBooking(opts: {
   id: number; createdAt: string; total: number;
   service?: string; saleId?: number | null;
-  status?: string; shootDate?: string;
+  status?: string; shootDate?: string; paid?: string;
 }): Row {
   const [y, m, d] = opts.createdAt.split("-").map(Number);
   return {
     id: opts.id,
     totalAmount: String(opts.total),
-    paidAmount: "0",
+    paidAmount: opts.paid ?? "0",
     discountAmount: "0",
     shootDate: opts.shootDate ?? opts.createdAt,
     status: opts.status ?? "confirmed",
@@ -73,6 +73,8 @@ beforeAll(async () => {
     mkBooking({ id: 3, createdAt: "2026-02-20", total: 5_000_000, service: "wedding", saleId: 101 }),
     mkBooking({ id: 4, createdAt: "2026-03-05", total: 30_000_000, service: "prewedding", saleId: 102 }),
     mkBooking({ id: 5, createdAt: "2026-03-25", total: 7_000_000, service: "wedding", saleId: null }),
+    // Đơn ký T4, total 20tr, đã thu 12tr (paidAmount cột đơn = tổng thu MỌI tháng).
+    mkBooking({ id: 6, createdAt: "2026-04-10", total: 20_000_000, service: "wedding", saleId: 101, paid: "12000000" }),
   ]);
   setRows(tasksTable, [
     { id: 1, bookingId: 1, cost: "1000000", role: "photographer", taskType: "shoot", status: "done" },
@@ -88,6 +90,9 @@ beforeAll(async () => {
     { id: 2, bookingId: 2, amount: "10000000", paymentType: "deposit", paidDate: "2026-02-10", paidAt: new Date(2026, 1, 10) },
     { id: 3, bookingId: 3, amount: "5000000", paymentType: "deposit", paidDate: "2026-02-20", paidAt: new Date(2026, 1, 20) },
     { id: 4, bookingId: 4, amount: "15000000", paymentType: "deposit", paidDate: "2026-03-05", paidAt: new Date(2026, 2, 5) },
+    // Đơn 6 ký T4 nhưng trả 12tr vào T5 (khác tháng ký) — để phân biệt logic cũ (chỉ trừ thu trong kỳ ký)
+    // vs mới (còn nợ sống, trừ paidAmount tổng).
+    { id: 5, bookingId: 6, amount: "12000000", paymentType: "deposit", paidDate: "2026-05-08", paidAt: new Date(2026, 4, 8) },
   ]);
   setRows(staffTable, [
     { id: 101, name: "Sale A" },
@@ -137,6 +142,19 @@ describe("GET /api/revenue/v2/monthly — date filter regression", () => {
     expect(r.dateTo).toBe("2026-02-28");
     expect(r.totals.contractValue).toBe(25_000_000);
     expect(r.totals.bookingCount).toBe(2);
+  });
+});
+
+describe("GET /api/revenue/v2/monthly — Còn nợ = công nợ SỐNG (net − paidAmount tổng)", () => {
+  it("trừ tiền đã thu MỌI tháng chứ không chỉ tháng ký (đơn 6: ký T4, trả 12tr ở T5)", async () => {
+    const apr = await get("/api/revenue/v2/monthly?from=2026-04-01&to=2026-04-30");
+    expect(apr.totals.contractValue).toBe(20_000_000);
+    // Còn nợ sống = net 20tr − paidAmount 12tr = 8tr.
+    expect(apr.totals.remaining).toBe(8_000_000);
+    // Logic CŨ (chỉ trừ payment paidAt trong T4) sẽ ra 20tr vì tiền trả nằm ở T5 → phải KHÁC 20tr.
+    expect(apr.totals.remaining).not.toBe(20_000_000);
+    // "Đã thu" (dòng tiền kỳ) vẫn tách bạch: T4 = 0 (tiền về T5), độc lập với "Còn nợ".
+    expect(apr.totals.collected).toBe(0);
   });
 });
 
@@ -204,6 +222,7 @@ describe("GET /api/revenue/by-sale — date filter regression (Task #366)", () =
   it("returns full population when no date filter is provided", async () => {
     const all = await get("/api/revenue/by-sale");
     const total = all.reduce((s: number, r: { revenue: number }) => s + r.revenue, 0);
-    expect(total).toBe(72_000_000);
+    // 5 đơn gốc (10+20+5+30+7=72tr) + đơn 6 (20tr, T4) = 92tr.
+    expect(total).toBe(92_000_000);
   });
 });

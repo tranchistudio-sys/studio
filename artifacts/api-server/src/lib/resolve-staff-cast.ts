@@ -1,6 +1,6 @@
 import { db } from "@workspace/db";
 import { staffCastRatesTable, staffRatePricesTable } from "@workspace/db/schema";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 
 export type CastResolveSource = "staff_pricing" | "staff_rate" | "none";
 
@@ -38,6 +38,9 @@ export type StaffAssignmentCastInput = {
   castAmount?: number;
   castSource?: string;
   taskKey?: string;
+  // Slot nhân sự trong gói (vd 'traditional_photo'). Không có = assignment cấp
+  // role như trước giờ.
+  slotKey?: string | null;
 };
 
 export type ResolvedCast = {
@@ -48,6 +51,7 @@ export type ResolvedCast = {
   role: string;
   packageId: number | null;
   taskKey: string;
+  slotKey: string | null;
 };
 
 export async function resolveStaffCastAmount(opts: {
@@ -56,11 +60,13 @@ export async function resolveStaffCastAmount(opts: {
   packageId?: number | null;
   taskKey?: string | null;
   staffName?: string;
+  slotKey?: string | null;
 }): Promise<ResolvedCast> {
   const role = normalizeRoleForCast(opts.role);
   const staffId = opts.staffId;
   const packageId = opts.packageId ?? null;
   const taskKey = (opts.taskKey && opts.taskKey.trim()) || "mac_dinh";
+  const slotKey = (opts.slotKey && String(opts.slotKey).trim()) || null;
   const base: ResolvedCast = {
     amount: null,
     source: "none",
@@ -69,11 +75,16 @@ export async function resolveStaffCastAmount(opts: {
     role,
     packageId,
     taskKey,
+    slotKey,
   };
 
   if (!staffId || !role) return base;
 
   if (packageId) {
+    // Có slotKey → CHỈ tra đúng dòng cast của slot đó; thiếu là "Chưa có giá",
+    // KHÔNG fallback sang slot khác hay dòng cast cấp role (yêu cầu nghiệp vụ:
+    // 2 slot cùng role phải có 2 mức tiền độc lập, không mượn giá nhau).
+    // Không slotKey → tra dòng cast cấp role (slot_key IS NULL) — y hệt trước giờ.
     const rows = await db
       .select()
       .from(staffCastRatesTable)
@@ -82,6 +93,7 @@ export async function resolveStaffCastAmount(opts: {
           eq(staffCastRatesTable.staffId, staffId),
           eq(staffCastRatesTable.role, role),
           eq(staffCastRatesTable.packageId, packageId),
+          slotKey ? eq(staffCastRatesTable.slotKey, slotKey) : isNull(staffCastRatesTable.slotKey),
         ),
       );
     if (rows.length > 0 && rows[0].amount != null) {
@@ -115,8 +127,10 @@ export async function resolveStaffCastAmount(opts: {
   return base;
 }
 
-function assignmentKey(staffId: number, role: string): string {
-  return `${staffId}:${normalizeRoleForCast(role)}`;
+function assignmentKey(staffId: number, role: string, slotKey?: string | null): string {
+  // slotKey trong key: cho phép cùng 1 người giữ 2 slot khác nhau cùng role
+  // (vd vừa Photo truyền thống vừa Photo phóng sự). Entry không slot → key như cũ.
+  return `${staffId}:${normalizeRoleForCast(role)}:${(slotKey && String(slotKey).trim()) || ""}`;
 }
 
 // Giá tay CHỈ áp cho photographer/makeup — đúng bài toán "gói nhiều thợ ảnh",
@@ -172,12 +186,13 @@ export async function normalizeItemsAssignedStaffCast(
           normalized.push(raw);
           continue;
         }
-        const key = assignmentKey(raw.staffId, raw.role);
+        const key = assignmentKey(raw.staffId, raw.role, raw.slotKey);
         if (seen.has(key)) {
           console.warn("[cast-resolve] dropped duplicate assignment", {
             itemIdx,
             staffId: raw.staffId,
             role: normalizeRoleForCast(raw.role),
+            slotKey: raw.slotKey ?? null,
           });
           continue;
         }
@@ -208,6 +223,7 @@ export async function normalizeItemsAssignedStaffCast(
           packageId,
           taskKey,
           staffName: raw.staffName,
+          slotKey: raw.slotKey,
         });
 
         const sent = typeof raw.castAmount === "number" ? raw.castAmount : parseFloat(String(raw.castAmount ?? 0));

@@ -977,6 +977,12 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
       ON CONFLICT (key) DO NOTHING
     `);
 
+    // ── Cast theo slot nhân sự trong gói (slot-cast bước 1) ──────────────────
+    // staff_cast_rates.slot_key: NULL = cast cấp role như cũ (dữ liệu cũ giữ nguyên).
+    // service_packages.staff_slots: NULL/[] = gói thường không bung slot.
+    await client.query(`ALTER TABLE staff_cast_rates ADD COLUMN IF NOT EXISTS slot_key text`);
+    await client.query(`ALTER TABLE service_packages ADD COLUMN IF NOT EXISTS staff_slots jsonb`);
+
     await client.query("COMMIT");
     console.log("[migrations] Hoàn thành.");
   } catch (err) {

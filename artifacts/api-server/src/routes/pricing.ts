@@ -81,6 +81,26 @@ function parseDiscountPayload(body: Record<string, unknown>) {
   };
 }
 
+// ── Staff slot của gói (slot-cast bước 1) ────────────────────────────────────
+// Gói CHỈ định nghĩa slot cần giao việc — KHÔNG chứa lương mặc định (lương luôn
+// tra bảng cast nhân viên theo staffId+role+packageId+slotKey).
+// Sanitize: bỏ entry thiếu field / trùng slotKey; không phải mảng → [] (gói thường).
+type StaffSlot = { slotKey: string; label: string; baseRole: string };
+function sanitizeStaffSlots(v: unknown): StaffSlot[] {
+  if (!Array.isArray(v)) return [];
+  const out: StaffSlot[] = [];
+  const seen = new Set<string>();
+  for (const s of v as Record<string, unknown>[]) {
+    const slotKey = typeof s?.slotKey === "string" ? s.slotKey.trim() : "";
+    const label = typeof s?.label === "string" ? s.label.trim() : "";
+    const baseRole = typeof s?.baseRole === "string" ? s.baseRole.trim().toLowerCase() : "";
+    if (!slotKey || !label || !baseRole || seen.has(slotKey)) continue;
+    seen.add(slotKey);
+    out.push({ slotKey, label, baseRole });
+  }
+  return out;
+}
+
 const fmtPkg = (p: {
   price: string;
   printCost?: string | null; operatingCost?: string | null; salePercent?: string | null;
@@ -105,6 +125,7 @@ const fmtPkg = (p: {
     addons: p.addons ? (() => { try { return JSON.parse(p.addons!); } catch { return []; } })() : [],
     products: p.products ? (() => { try { return JSON.parse(p.products!); } catch { return []; } })() : [],
     serviceType: p.serviceType ?? null,
+    staffSlots: sanitizeStaffSlots((p as { staffSlots?: unknown }).staffSlots),
     photoCount: p.photoCount ?? 1,
     includesMakeup: p.includesMakeup !== 0,
     includedRetouchedPhotos: p.includedRetouchedPhotos ?? 0,
@@ -1159,6 +1180,10 @@ router.post("/service-packages", async (req, res) => {
     isActive: isActive !== false ? 1 : 0,
     sortOrder: sortOrder ?? 0,
     serviceType: serviceType ?? null,
+    // staffSlots: không gửi → null (gói thường); gửi mảng → sanitize rồi lưu jsonb
+    staffSlots: req.body.staffSlots !== undefined
+      ? (() => { const s = sanitizeStaffSlots(req.body.staffSlots); return s.length > 0 ? s : null; })()
+      : null,
     photoCount: photoCount ? parseInt(photoCount) : 1,
     includesMakeup: includesMakeup === false || includesMakeup === 0 ? 0 : 1,
     includedRetouchedPhotos: includedRetouchedPhotos ? parseInt(String(includedRetouchedPhotos)) : 0,
@@ -1224,6 +1249,11 @@ router.put("/service-packages/:id", async (req, res) => {
     if (isActive !== undefined) update.isActive = isActive ? 1 : 0;
     if (sortOrder !== undefined) update.sortOrder = sortOrder;
     if (serviceType !== undefined) update.serviceType = serviceType ?? null;
+    if (req.body.staffSlots !== undefined) {
+      // null/[] → xoá slot (về gói thường); mảng hợp lệ → sanitize rồi lưu
+      const s = sanitizeStaffSlots(req.body.staffSlots);
+      update.staffSlots = s.length > 0 ? s : null;
+    }
     if (photoCount !== undefined) update.photoCount = photoCount ? parseInt(photoCount) : 1;
     if (includesMakeup !== undefined) update.includesMakeup = includesMakeup === false || includesMakeup === 0 ? 0 : 1;
     if (includedRetouchedPhotos !== undefined) update.includedRetouchedPhotos = includedRetouchedPhotos ? parseInt(String(includedRetouchedPhotos)) : 0;

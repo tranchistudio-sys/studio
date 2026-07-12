@@ -2301,6 +2301,20 @@ function ShowFormPanel({
       }
 
       // ── 2. Single booking ──
+      // ── Guard P0 (sự cố DH0191): đơn THƯỜNG đang edit mà form có ≥2 dịch vụ thì
+      // nhánh này chỉ gửi items của Dịch vụ 1 nhưng totalAmount = tổng TẤT CẢ dịch vụ
+      // → tiền Dịch vụ 2 nhập vào tổng còn nội dung bị vứt. CHẶN LƯU, không lưu nửa vời.
+      // (Nút "+ Thêm dịch vụ mới" đã ẩn khi edit đơn thường — guard này là chốt chặn cuối.)
+      if (isEdit && subDrafts.length > 1) {
+        alert(
+          "Đơn này là đơn 1 dịch vụ — chưa hỗ trợ thêm dịch vụ mới khi chỉnh sửa (tránh lệch tiền).\n\n" +
+          "Chưa có gì được lưu. Cách làm đúng:\n" +
+          "• Tạo ĐƠN MỚI riêng cho dịch vụ mới, hoặc\n" +
+          "• Tạo HỢP ĐỒNG GỘP mới và chọn đủ các dịch vụ ngay khi tạo.",
+        );
+        setSaving(false);
+        return;
+      }
       const sub0 = subDrafts[0];
       const effectiveShootDate = sub0.shootDate || shootDate;
       const validLines = sub0.items.filter(l => l.serviceName || l.serviceId);
@@ -2756,8 +2770,11 @@ function ShowFormPanel({
                     {subTotal > 0 && (
                       <div className="text-xs text-right text-primary font-semibold">{formatVND(subTotal)}</div>
                     )}
-                    {/* Add next service button — inside the block, at the bottom */}
-                    {idx === subDrafts.length - 1 && (
+                    {/* Add next service button — inside the block, at the bottom.
+                        ẨN khi edit đơn THƯỜNG (không phải hợp đồng gộp): nhánh lưu single
+                        chỉ gửi items của Dịch vụ 1 → thêm Dịch vụ 2 sẽ lệch tiền (sự cố
+                        DH0191). Muốn nhiều dịch vụ: tạo hợp đồng gộp mới hoặc đơn riêng. */}
+                    {idx === subDrafts.length - 1 && (!isEdit || hasSiblingEdit) && (
                       <button
                         type="button"
                         onClick={addSubDraft}
@@ -2765,6 +2782,11 @@ function ShowFormPanel({
                       >
                         <Plus className="w-4 h-4" /> Thêm dịch vụ mới
                       </button>
+                    )}
+                    {idx === subDrafts.length - 1 && isEdit && !hasSiblingEdit && (
+                      <p className="mt-1 text-[10px] text-muted-foreground text-center">
+                        Đơn 1 dịch vụ không thêm được dịch vụ mới khi chỉnh sửa — tạo đơn riêng hoặc hợp đồng gộp mới.
+                      </p>
                     )}
                   </div>
                 </div>

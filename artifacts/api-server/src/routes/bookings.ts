@@ -3,6 +3,7 @@ import { db, pool } from "@workspace/db";
 import { bookingsTable, customersTable, paymentsTable, expensesTable, tasksTable, staffTable, servicePackagesTable, packageItemsTable, photoshopJobsTable, servicesTable, bookingChangeLogTable, contractsTable, bookingDressesTable, bookingItemsTable, staffJobEarningsTable, staffAllowancesTable, attendanceLogsTable } from "@workspace/db/schema";
 import { eq, and, desc, inArray, or, ilike, sql, asc, gte, lte, isNull, ne } from "drizzle-orm";
 import { isCollectedPayment, money } from "../lib/booking-money";
+import { resolveBookingTotal, summarizeItemsForLog } from "../lib/booking-total";
 import { verifyToken, getCallerRole } from "./auth";
 import { computeBookingEarnings } from "./job-earnings";
 import { emitNotification } from "./notifications";
@@ -567,6 +568,14 @@ router.post("/bookings", async (req, res) => {
         childAdditionalServices = await prepareAdditionalServicesForSave(sub.additionalServices, childPkgId);
       }
       const childCode = `${orderCode}-${i + 1}`;
+      // Guard P0: tổng dịch vụ con phải khớp dữ liệu dịch vụ của chính nó
+      // (tổng cha = Σ con, nên con lệch là cha lệch theo).
+      const childResolved = resolveBookingTotal(String(sub.totalAmount || 0), sub.items || [], childAdditionalServices);
+      if (childResolved.mismatch) {
+        console.warn(
+          `[booking-total-guard] POST /bookings (con ${childCode}): totalAmount client=${sub.totalAmount} lệch expected=${childResolved.expected} — tự tính lại.`,
+        );
+      }
       const [child] = await db
         .insert(bookingsTable)
         .values({
@@ -577,7 +586,7 @@ router.post("/bookings", async (req, res) => {
           serviceCategory: serviceCategory || "wedding",
           packageType: sub.serviceLabel || sub.items?.[0]?.serviceName || `Dịch vụ ${i + 1}`,
           location: sub.location || location || null,
-          totalAmount: String(sub.totalAmount || 0),
+          totalAmount: String(childResolved.total),
           depositAmount: "0",
           discountAmount: "0",
           paidAmount: "0",
@@ -650,6 +659,16 @@ router.post("/bookings", async (req, res) => {
     snapshotAdditionalServices = await prepareAdditionalServicesForSave(additionalServices, pkgIdForCast);
   }
 
+  // Guard P0 chống lệch total/items khi TẠO đơn thường (đồng nhất với PUT).
+  // resolveBookingTotal chỉ đối chiếu khi items có giá — snapshot từ gói có thể là
+  // content-lines không mang giá → expected=0 → giữ nguyên tổng client (an toàn).
+  const singleResolved = resolveBookingTotal(String(totalAmount), snapshotItems, snapshotAdditionalServices);
+  if (singleResolved.mismatch) {
+    console.warn(
+      `[booking-total-guard] POST /bookings: totalAmount client=${totalAmount} lệch expected=${singleResolved.expected} — tự tính lại.`,
+    );
+  }
+
   const [booking] = await db
     .insert(bookingsTable)
     .values({
@@ -660,7 +679,7 @@ router.post("/bookings", async (req, res) => {
       serviceCategory: serviceCategory || "wedding",
       packageType,
       location,
-      totalAmount: String(totalAmount),
+      totalAmount: String(singleResolved.total),
       depositAmount: String(depositAmount || 0),
       discountAmount: String(discountAmount || 0),
       paidAmount: isTempQuote ? "0" : String(depositAmount || 0),
@@ -965,9 +984,9 @@ router.put("/bookings/:id", async (req, res) => {
   if (notes !== undefined) updateData.notes = notes;
   if (internalNotes !== undefined) updateData.internalNotes = internalNotes;
   if (assignedStaff !== undefined) updateData.assignedStaff = assignedStaff;
-  if (parentId !== undefined) updateData.parentId = parentId;
   if (serviceLabel !== undefined) updateData.serviceLabel = serviceLabel;
-  if (isParentContract !== undefined) updateData.isParentContract = isParentContract;
+  // parentId / isParentContract KHÔNG nhận qua PUT — xem guard cách ly cha–con bên dưới
+  // (re-parent qua PUT có thể hút đơn độc lập vào tổng hợp đồng khác).
   if (photoCount !== undefined) updateData.photoCount = photoCount !== null ? parseInt(String(photoCount)) : null;
   if (includedRetouchedPhotosSnapshot !== undefined) updateData.includedRetouchedPhotosSnapshot = parseInt(String(includedRetouchedPhotosSnapshot)) || 0;
   if (servicePackageId !== undefined) updateData.servicePackageId = servicePackageId ? parseInt(String(servicePackageId)) : null;
@@ -988,11 +1007,22 @@ router.put("/bookings/:id", async (req, res) => {
       discountAmount: bookingsTable.discountAmount,
       notes: bookingsTable.notes,
       items: bookingsTable.items,
+      additionalServices: bookingsTable.additionalServices,
     })
     .from(bookingsTable)
     .where(eq(bookingsTable.id, id));
   if (!oldBooking) return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
   const oldStatus = oldBooking.status;
+
+  // ── Cách ly cha–con (P0 isolation): PUT sửa đơn KHÔNG được đổi quan hệ cha–con.
+  // Quan hệ này chỉ được thay đổi qua add-child / remove-child (server-side, có kiểm
+  // soát). Client gửi đúng giá trị hiện tại thì bỏ qua; cố ĐỔI thì trả 400.
+  if (parentId !== undefined && (parentId ?? null) !== (oldBooking.parentId ?? null)) {
+    return res.status(400).json({ error: "Không thể đổi quan hệ cha–con của đơn qua chỉnh sửa. Dùng thêm/xoá dịch vụ con của hợp đồng gộp." });
+  }
+  if (isParentContract !== undefined && Boolean(isParentContract) !== Boolean(oldBooking.isParentContract)) {
+    return res.status(400).json({ error: "Không thể đổi loại hợp đồng gộp qua chỉnh sửa đơn." });
+  }
 
   // A8: parent contracts ignore client totalAmount — derived from Σ children
   if (oldBooking.isParentContract) {
@@ -1126,6 +1156,23 @@ router.put("/bookings/:id", async (req, res) => {
     // chạy SAU normalize để photoName/photoId khớp assignedStaff đã chuẩn hoá.
     const mergedNormalized = await normalizeBookingItemsCast(mergedItems, null, { allowManual, prevManual });
     updateData.items = (mergedNormalized as Record<string, unknown>[]).map(syncItemLegacyFields);
+  }
+
+  // ── Guard P0 chống lệch total/items (sự cố DH0191 2026-07-12): booking THƯỜNG không
+  // được ghi totalAmount mâu thuẫn với dữ liệu dịch vụ. Nếu payload có CẢ items lẫn
+  // totalAmount mà tổng lệch khỏi Σ(items + dịch vụ cộng thêm) → tự tính lại từ dữ liệu
+  // thực tế. Booking CHA đã bị xoá totalAmount ở guard A8 (tổng cha recalc từ con).
+  // Payload chỉ có totalAmount không kèm items (vd sửa tổng tay ở trang Đơn hàng) giữ nguyên.
+  if (!oldBooking.isParentContract && items !== undefined && updateData.totalAmount !== undefined) {
+    const extrasForTotal =
+      updateData.additionalServices !== undefined ? updateData.additionalServices : oldBooking.additionalServices;
+    const resolved = resolveBookingTotal(String(updateData.totalAmount), updateData.items, extrasForTotal);
+    if (resolved.mismatch) {
+      console.warn(
+        `[booking-total-guard] PUT /bookings/${id}: totalAmount client=${updateData.totalAmount} lệch expected=${resolved.expected} — tự tính lại từ items/dịch vụ cộng thêm.`,
+      );
+      updateData.totalAmount = String(resolved.total);
+    }
   }
 
   // Run all changes in a single DB transaction: deposit payment upsert + booking update + recalculate
@@ -1327,7 +1374,8 @@ router.put("/bookings/:id", async (req, res) => {
     if (shootTime !== undefined) pushChange("shootTime", "giờ chụp", oldBooking.shootTime, shootTime);
     if (location !== undefined) pushChange("location", "địa điểm", oldBooking.location, location);
     if (status !== undefined) pushChange("status", "trạng thái", oldBooking.status, status);
-    if (totalAmount !== undefined) pushChange("totalAmount", "tổng tiền", oldBooking.totalAmount, totalAmount, fmtVND);
+    // Log giá trị THẬT SỰ được ghi (sau guard chống lệch), không phải giá trị client gửi.
+    if (totalAmount !== undefined) pushChange("totalAmount", "tổng tiền", oldBooking.totalAmount, updateData.totalAmount ?? totalAmount, fmtVND);
     if (depositAmount !== undefined) pushChange("depositAmount", "tiền cọc", oldBooking.depositAmount, depositAmount, fmtVND);
     if (discountAmount !== undefined) pushChange("discountAmount", "giảm giá", oldBooking.discountAmount, discountAmount, fmtVND);
     if (notes !== undefined) pushChange("notes", "ghi chú", oldBooking.notes, notes);
@@ -1339,6 +1387,17 @@ router.put("/bookings/:id", async (req, res) => {
       const newMakeup = extractStaffByRole(newItems, "makeup");
       if (oldPhoto !== newPhoto) changes.push({ field: "photographer", label: "nhiếp ảnh", oldDisplay: oldPhoto || "(chưa có)", newDisplay: newPhoto || "(chưa có)" });
       if (oldMakeup !== newMakeup) changes.push({ field: "makeup", label: "makeup", oldDisplay: oldMakeup || "(chưa có)", newDisplay: newMakeup || "(chưa có)" });
+    }
+
+    // Đổi DỊCH VỤ phải để lại dấu vết: sự cố DH0191 chỉ thấy mỗi dòng "Tổng tiền"
+    // nên không truy được chuyện gì đã xảy ra với dịch vụ. Log tóm tắt items cũ→mới.
+    if (items !== undefined) {
+      pushChange(
+        "services",
+        "dịch vụ",
+        summarizeItemsForLog(oldBooking.items, fmtVND),
+        summarizeItemsForLog(newItems, fmtVND),
+      );
     }
 
     // Giá tay: ghi lịch sử khi admin đổi lương tay của nhân sự (minh bạch tiền bạc)
@@ -1513,6 +1572,19 @@ router.post("/bookings/:parentId/add-child", async (req, res) => {
     const nextIndex = maxIndex + 1;
     const childCode = `${parent.orderCode}-${nextIndex}`;
 
+    // FE tính totalAmount của dịch vụ con = gói + DỊCH VỤ CỘNG THÊM, nhưng trước đây
+    // add-child VỨT additionalServices (không lưu) → tiền có trong tổng mà dữ liệu mất
+    // (cùng họ bug DH0191). Lưu extras + đối chiếu tổng với dữ liệu thực tế.
+    const childExtras = additionalServices !== undefined
+      ? await prepareAdditionalServicesForSave(additionalServices, childPkgId)
+      : [];
+    const childResolved = resolveBookingTotal(String(totalAmount || 0), normalizedChildItems, childExtras);
+    if (childResolved.mismatch) {
+      console.warn(
+        `[booking-total-guard] POST add-child ${childCode}: totalAmount client=${totalAmount} lệch expected=${childResolved.expected} — tự tính lại.`,
+      );
+    }
+
     const [child] = await db.insert(bookingsTable).values({
       orderCode: childCode,
       customerId: childCustomerId,
@@ -1521,7 +1593,7 @@ router.post("/bookings/:parentId/add-child", async (req, res) => {
       serviceCategory: parent.serviceCategory,
       packageType: serviceLabel || `Dịch vụ ${nextIndex}`,
       location: location || parent.location || null,
-      totalAmount: String(totalAmount || 0),
+      totalAmount: String(childResolved.total),
       depositAmount: "0",
       discountAmount: "0",
       paidAmount: "0",
@@ -1537,6 +1609,7 @@ router.post("/bookings/:parentId/add-child", async (req, res) => {
       status: "confirmed",
       createdByStaffId: callerId,
       servicePackageId: servicePackageId ? parseInt(String(servicePackageId)) : null,
+      additionalServices: childExtras,
     }).returning();
 
     const newParentTotal = await recalcParentTotalFromChildren(parentId);
@@ -1595,8 +1668,15 @@ router.delete("/bookings/:parentId/remove-child/:childId", async (req, res) => {
         changedById: callerId,
       });
 
+      // Đồng nhất với recalcParentTotalFromChildren: chỉ con CÒN HIỆU LỰC được tính
+      // vào tổng cha (bỏ con trong thùng rác + con đã hủy) — nếu không, xoá 1 con có
+      // thể "hồi sinh" tiền của con khác đã nằm trong thùng rác.
       const remainingChildren = await tx.select({ totalAmount: bookingsTable.totalAmount, serviceLabel: bookingsTable.serviceLabel, packageType: bookingsTable.packageType })
-        .from(bookingsTable).where(eq(bookingsTable.parentId, parentId));
+        .from(bookingsTable).where(and(
+          eq(bookingsTable.parentId, parentId),
+          isNull(bookingsTable.deletedAt),
+          ne(bookingsTable.status, "cancelled"),
+        ));
       const newParentTotal = remainingChildren.reduce((s, c) => s + parseFloat(c.totalAmount), 0);
       const newPackageType = remainingChildren.map(c => c.serviceLabel || c.packageType || "Dịch vụ").join(" + ");
 
@@ -1628,6 +1708,7 @@ router.delete("/bookings/:id", async (req, res) => {
     const [target] = await db.select({
       isParentContract: bookingsTable.isParentContract,
       deletedAt: bookingsTable.deletedAt,
+      parentId: bookingsTable.parentId,
     }).from(bookingsTable).where(eq(bookingsTable.id, id));
     if (!target) return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
     if (target.deletedAt) return res.status(400).json({ error: "Đơn đã ở trong thùng rác" });
@@ -1654,6 +1735,10 @@ router.delete("/bookings/:id", async (req, res) => {
         changedById: callerId,
       });
     });
+
+    // Cách ly tiền cha–con: đưa một dịch vụ CON vào thùng rác phải tính lại tổng cha
+    // ngay (recalc đã lọc con deleted/cancelled) — không để cha ôm tiền con đã xoá.
+    if (target.parentId) await recalcParentTotalFromChildren(target.parentId);
 
     emitNotification({ staffId: null, type: "booking_cancelled", title: "Đưa đơn vào thùng rác", message: `Đơn #${id} đã được chuyển vào thùng rác`, targetModule: "calendar", targetId: String(id), bookingId: id });
     res.json({ ok: true, trashed: true, ids });
@@ -1712,6 +1797,13 @@ router.post("/bookings/:id/restore", async (req, res) => {
         reason: "Phục hồi từ thùng rác", changedById: callerId,
       });
     });
+    // Cách ly tiền cha–con: phục hồi một dịch vụ CON thì tổng cha phải cộng lại nó ngay.
+    if (target.parentId) await recalcParentTotalFromChildren(target.parentId);
+    // Phục hồi CHA khôi phục cả cụm con (kể cả con từng bị trash RIÊNG trước đó, theo
+    // query ids ở trên) → tổng cha phải tính lại theo con active, nếu không sẽ đọng
+    // giá trị cũ và HỤT tiền của con vừa sống lại (review C1).
+    else if (target.isParentContract) await recalcParentTotalFromChildren(id);
+
     emitNotification({ staffId: null, type: "booking_cancelled", title: "Phục hồi đơn", message: `Đơn #${id} đã được phục hồi từ thùng rác`, targetModule: "calendar", targetId: String(id), bookingId: id });
     res.json({ ok: true, restored: true, ids, conflicts });
   } catch (err) {

@@ -16,8 +16,19 @@ export const bookingDressesTable = pgTable("booking_dresses", {
   rentalPrice: numeric("rental_price", { precision: 12, scale: 2 }).notNull().default("0"),
   pickupDate: date("pickup_date").notNull(),
   returnDate: date("return_date").notNull(),
-  status: text("status").notNull().default("reserved"), // reserved | picked_up | returned | cancelled
+  // Vòng đời thuê váy theo TỪNG sản phẩm. status (8 trạng thái):
+  //   reserved | preparing | picked_up | waiting_return | returned | cleaning | ready | cancelled
+  // (overdue = TÍNH TỰ ĐỘNG, không lưu: return_date < hôm nay AND chưa actual_return_date
+  //  AND status ∈ {picked_up, waiting_return} — xem lib/dress-lifecycle.ts)
+  status: text("status").notNull().default("reserved"),
   note: text("note"),
+  // Ngày lấy/trả THỰC TẾ (khác với pickup/return DỰ KIẾN ở trên).
+  actualPickupDate: date("actual_pickup_date"),
+  actualReturnDate: date("actual_return_date"),
+  // Ghi chú vòng đời (thuần văn bản, không tiền).
+  preparationNote: text("preparation_note"),
+  returnNote: text("return_note"),
+  damageNote: text("damage_note"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 

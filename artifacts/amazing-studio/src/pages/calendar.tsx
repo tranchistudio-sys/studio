@@ -521,7 +521,7 @@ async function syncOutfitDrafts(bookingId: number, drafts: OutfitDraft[]) {
   for (const d of toUpdate) {
     const r = await authFetch(`${BASE}/api/booking-dresses/${d.dbId}`, {
       method: "PUT", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pickupDate: d.pickupDate, returnDate: d.returnDate, status: d.status, note: d.note, rentalPrice: d.rentalPrice }),
+      body: JSON.stringify({ pickupDate: d.pickupDate, returnDate: d.returnDate, status: d.status, note: d.note, rentalPrice: d.rentalPrice, preparationNote: d.preparationNote ?? "", returnNote: d.returnNote ?? "", damageNote: d.damageNote ?? "" }),
     });
     if (!r.ok) throw new Error(`Lỗi lưu trang phục ${d.outfitCode}`);
   }
@@ -2763,6 +2763,7 @@ function ShowFormPanel({
                     <OutfitBookingSection
                       draft={outfitsBySub[sub.id] ?? []}
                       onChange={next => setOutfitsBySub(p => ({ ...p, [sub.id]: next }))}
+                      shootDate={sub.shootDate || shootDate}
                     />
                     {/* Notes */}
                     <Input className="h-8 text-sm" placeholder="Ghi chú cho dịch vụ này..." value={sub.notes} onChange={e => updateSubDraft(sub.id, { notes: e.target.value })} />

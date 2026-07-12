@@ -977,6 +977,15 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
       ON CONFLICT (key) DO NOTHING
     `);
 
+    // ── Vòng đời thuê váy theo từng sản phẩm — thêm cột vào booking_dresses (additive,
+    // idempotent). status mở rộng dùng chung cột text sẵn có (không đổi kiểu).
+    // KHÔNG có cột tiền → không đụng doanh thu/công nợ. Không sửa dữ liệu cũ.
+    await client.query(`ALTER TABLE booking_dresses ADD COLUMN IF NOT EXISTS actual_pickup_date date`);
+    await client.query(`ALTER TABLE booking_dresses ADD COLUMN IF NOT EXISTS actual_return_date date`);
+    await client.query(`ALTER TABLE booking_dresses ADD COLUMN IF NOT EXISTS preparation_note text`);
+    await client.query(`ALTER TABLE booking_dresses ADD COLUMN IF NOT EXISTS return_note text`);
+    await client.query(`ALTER TABLE booking_dresses ADD COLUMN IF NOT EXISTS damage_note text`);
+
     await client.query("COMMIT");
     console.log("[migrations] Hoàn thành.");
   } catch (err) {

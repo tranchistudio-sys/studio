@@ -63,7 +63,7 @@ export default function ContractDocument({
   customerLinkCopied = false,
   customerLinkBusy = false,
 }: ContractDocumentProps) {
-  const { contract, studio, customer, services, money, payments, signatures } = payload;
+  const { contract, studio, customer, services, money, payments, signatures, schedule } = payload;
   const isMulti = services.length > 1;
   const contractCode = contract.contractCode || `HD-${String(contract.id).padStart(4, "0")}`;
 
@@ -316,6 +316,21 @@ export default function ContractDocument({
           </div>
         </div>
       </div>
+
+      {/* Lịch thực hiện (dịch vụ nhiều ngày) — chỉ hiện khi có ≥2 mốc */}
+      {schedule && schedule.length > 1 ? (
+        <div className="mb-6" style={{ breakInside: "avoid" }}>
+          <div className="text-[10.5px] font-bold uppercase tracking-wider text-[#111] mb-2.5">📅 Lịch thực hiện</div>
+          <div className="space-y-1">
+            {schedule.map((s, i) => (
+              <div key={i} className="flex items-baseline gap-2 text-[13px] text-[#333]">
+                <span className="font-bold text-[#111] flex-shrink-0">{i + 1}.</span>
+                <span>{fmtDate(s.date)}{s.time ? ` lúc ${s.time.slice(0, 5)}` : ""}{s.label ? ` — ${s.label}` : ""}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       {/* Lịch sử thanh toán */}
       {payments.length > 0 ? (

@@ -140,7 +140,16 @@ type Booking = {
   parentContract?: Booking & { remainingAmount: number };
   children?: Booking[];
   additionalServices?: AdditionalServiceLine[];
+  // Ngày thực hiện phụ (dịch vụ nhiều ngày). Ngày 1 = shootDate; đây là ngày 2..n.
+  occurrences?: BookingOccurrence[];
+  // Chỉ dùng ở tầng HIỂN THỊ lịch: khi 1 booking nhiều ngày được "bung" thành nhiều
+  // event, mỗi event mang nhãn "Ngày k/n — label" + key riêng. KHÔNG gửi lên server.
+  _occLabel?: string | null;
+  _occKey?: string;
 };
+type BookingOccurrence = { id: number; shootDate: string; shootTime: string | null; label: string | null; sortOrder: number };
+// Draft ngày phụ trong form (id âm = chưa lưu; id dương = occurrence thật trong DB).
+type OccurrenceDraft = { id: number | null; shootDate: string; shootTime: string; label: string };
 
 // ─── Helper: lấy tên nhân sự từ 2 nguồn (ưu tiên giảm dần) ──────────────────
 // 1. item.photoName / item.makeupName  (trực tiếp từ Booking modal)
@@ -404,6 +413,7 @@ type SubServiceDraft = {
   makeupId: number | null; makeupName: string; makeupTask: string;
   notes: string;
   additionalServices: AdditionalServiceLine[];
+  occurrences: OccurrenceDraft[];
 };
 
 const STATUS = {
@@ -511,6 +521,54 @@ function genId() { return Math.random().toString(36).slice(2); }
 // Per-booking (mỗi DỊCH VỤ sync với CHILD booking id của nó — không còn dồn hết vào cha).
 // Draft mang dbId của booking KHÁC (váy legacy đang nằm ở CHA) ⇒ planOutfitSync xếp vào
 // toInsert ⇒ POST row MỚI dưới booking này; row cũ ở cha được dọn khi sync cha với [] (move).
+// Đồng bộ ngày thực hiện phụ của MỘT booking sau khi có id thật (mirror syncOutfitDrafts):
+// diff theo id → PUT (occurrence cũ), POST (draft mới id=null), DELETE (occurrence bị gỡ).
+// Mọi request phải res.ok, lỗi THROW để handleSave dừng — không để dữ liệu nửa vời.
+async function syncOccurrences(bookingId: number, drafts: OccurrenceDraft[]) {
+  const existing: BookingOccurrence[] = await authFetch(`${BASE}/api/bookings/${bookingId}/occurrences`)
+    .then(r => (r.ok ? r.json() : [])).catch(() => []);
+  const draftIds = new Set(drafts.map(d => d.id).filter((n): n is number => n != null));
+  const valid = drafts.filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d.shootDate));
+  for (const d of valid) {
+    const body = JSON.stringify({ shootDate: d.shootDate, shootTime: d.shootTime || null, label: d.label?.trim() || null });
+    if (d.id != null) {
+      const r = await authFetch(`${BASE}/api/bookings/${bookingId}/occurrences/${d.id}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body });
+      if (!r.ok) throw new Error("Lỗi lưu ngày thực hiện");
+    } else {
+      const r = await authFetch(`${BASE}/api/bookings/${bookingId}/occurrences`, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+      if (!r.ok) { const e = await r.json().catch(() => null); throw new Error(e?.error || "Lỗi thêm ngày thực hiện"); }
+    }
+  }
+  for (const row of existing) {
+    if (!draftIds.has(row.id)) {
+      const r = await authFetch(`${BASE}/api/bookings/${bookingId}/occurrences/${row.id}`, { method: "DELETE" });
+      if (!r.ok) throw new Error("Lỗi gỡ ngày thực hiện cũ");
+    }
+  }
+}
+
+// "Bung" 1 booking thành các event theo ngày để vẽ lên lịch. Đơn 1 ngày → [b] (giữ
+// nguyên hành vi cũ, không nhãn). Đơn nhiều ngày → event ngày chính ("Ngày 1/n") +
+// mỗi occurrence 1 event ("Ngày k/n — label"), TẤT CẢ cùng id + mã đơn. Không đụng tiền.
+function expandBookingToDayEvents(b: Booking): Booking[] {
+  const occ = Array.isArray(b.occurrences) ? b.occurrences : [];
+  if (occ.length === 0) return [b];
+  const total = occ.length + 1;
+  const events: Booking[] = [{ ...b, _occLabel: `Ngày 1/${total}`, _occKey: `${b.id}-main` }];
+  occ.forEach((o, i) => {
+    const base = `Ngày ${i + 2}/${total}`;
+    const lbl = (o.label ?? "").trim();
+    events.push({
+      ...b,
+      shootDate: (o.shootDate || "").slice(0, 10),
+      shootTime: (o.shootTime || b.shootTime || "").slice(0, 5),
+      _occLabel: lbl ? `${base} — ${lbl}` : base,
+      _occKey: `${b.id}-occ-${o.id}`,
+    });
+  });
+  return events;
+}
+
 async function syncOutfitDrafts(bookingId: number, drafts: OutfitDraft[]) {
   const existing = await authFetch(`${BASE}/api/bookings/${bookingId}/dresses`).then(r => r.ok ? r.json() : []).catch(() => []);
   const existingIds: number[] = [];
@@ -1584,6 +1642,9 @@ function ShowFormPanel({
       makeupId: null, makeupName: "", makeupTask: "",
       notes: booking?.notes ?? "",
       additionalServices: Array.isArray(booking?.additionalServices) ? booking!.additionalServices!.map(l => ({ ...l })) : [],
+      occurrences: Array.isArray(booking?.occurrences)
+        ? booking!.occurrences!.map(o => ({ id: o.id, shootDate: (o.shootDate || "").slice(0, 10), shootTime: (o.shootTime || "").slice(0, 5), label: o.label || "" }))
+        : [],
     };
   };
   const [subDrafts, setSubDrafts] = useState<SubServiceDraft[]>(() => siblingBookings.length > 0 ? siblingBookings.map(sib => {
@@ -1653,12 +1714,15 @@ function ShowFormPanel({
       makeupId: null, makeupName: "", makeupTask: "",
       notes: sib.notes ?? "",
       additionalServices: Array.isArray((sib as Booking).additionalServices) ? (sib as Booking).additionalServices!.map(l => ({ ...l })) : [],
+      occurrences: Array.isArray((sib as Booking).occurrences)
+        ? (sib as Booking).occurrences!.map(o => ({ id: o.id, shootDate: (o.shootDate || "").slice(0, 10), shootTime: (o.shootTime || "").slice(0, 5), label: o.label || "" }))
+        : [],
     };
   }) : [makeSubDraft(format(date, "yyyy-MM-dd"), initialTime)]);
   const updateSubDraft = (id: string, patch: Partial<SubServiceDraft>) =>
     setSubDrafts(p => p.map(s => s.id === id ? { ...s, ...patch } : s));
   const addSubDraft = () =>
-    setSubDrafts(p => [...p, { id: genId(), serviceLabel: "", shootDate: shootDate, shootTime: "08:00", items: [emptyOrderLine()], photoId: null, photoName: "", photoTask: "", makeupId: null, makeupName: "", makeupTask: "", notes: "", additionalServices: [] }]);
+    setSubDrafts(p => [...p, { id: genId(), serviceLabel: "", shootDate: shootDate, shootTime: "08:00", items: [emptyOrderLine()], photoId: null, photoName: "", photoTask: "", makeupId: null, makeupName: "", makeupTask: "", notes: "", additionalServices: [], occurrences: [] }]);
 
   const { data: allStaff = [] } = useQuery<Staff[]>({ queryKey: ["staff-assignable"], queryFn: () => authFetch(`${BASE}/api/staff/assignable`).then(r => r.ok ? r.json() : []).then((d: unknown) => Array.isArray(d) ? d : []) });
   const { data: services = [] } = useQuery<Service[]>({ queryKey: ["services"], queryFn: () => authFetch(`${BASE}/api/services`).then(r => r.ok ? r.json() : []).then((d: unknown) => Array.isArray(d) ? d : []) });
@@ -2133,6 +2197,11 @@ function ShowFormPanel({
             await syncOutfitDrafts(booking.id, []);
           }
         }
+        // Sync ngày thực hiện phụ theo từng dịch vụ con (thuần lịch, không đụng tiền).
+        for (const sub of subDrafts) {
+          const bid = subBookingIds[sub.id];
+          if (bid) await syncOccurrences(bid, sub.occurrences ?? []);
+        }
         if (booking?.id) {
           const editMultiAssignedStaff: { id: string; role: string; staffId: number; staffName: string; castAmount: number; taskKey: string }[] = [];
           if (saleId) {
@@ -2262,6 +2331,7 @@ function ShowFormPanel({
             const childId = createdChildren[i]?.id;
             const drafts = outfitsBySub[subDrafts[i].id] ?? [];
             if (childId && drafts.length > 0) await syncOutfitDrafts(childId, drafts);
+            if (childId) await syncOccurrences(childId, subDrafts[i].occurrences ?? []);
           }
         }
 
@@ -2405,6 +2475,8 @@ function ShowFormPanel({
       if (bookingIdToSync && outfitsLoaded) {
         await syncOutfitDrafts(bookingIdToSync, outfitsBySub[subDrafts[0]?.id] ?? []);
       }
+      // Sync ngày thực hiện phụ (không phụ thuộc outfitsLoaded — bảng riêng, thuần lịch).
+      if (bookingIdToSync) await syncOccurrences(bookingIdToSync, subDrafts[0]?.occurrences ?? []);
 
       // Upload ảnh cọc riêng sau khi booking tạo xong (tách luồng, không làm fail booking)
       let singleProofUploadFailed = false;
@@ -2727,6 +2799,34 @@ function ShowFormPanel({
                         <Input type="time" className="h-8 text-sm" value={sub.shootTime} onChange={e => updateSubDraft(sub.id, { shootTime: e.target.value })} />
                       </div>
                     </div>
+                    {/* Ngày thực hiện phụ (dịch vụ nhiều ngày) — ngày 1 = ô trên; đây là ngày 2..n */}
+                    {(sub.occurrences?.length ?? 0) > 0 && (
+                      <div className="space-y-2">
+                        {sub.occurrences.map((occ, oi) => (
+                          <div key={occ.id ?? `new-${oi}`} className="rounded-lg border border-dashed border-blue-300 dark:border-blue-800 p-2 bg-blue-50/40 dark:bg-blue-950/10 space-y-1.5">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400">📅 Ngày thực hiện {oi + 2}</span>
+                              <button type="button" onClick={() => updateSubDraft(sub.id, { occurrences: sub.occurrences.filter((_, i) => i !== oi) })}
+                                className="text-[10px] text-red-500 hover:underline">Xóa ngày</button>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <DateInput className="h-8 text-sm" value={occ.shootDate} onChange={v => updateSubDraft(sub.id, { occurrences: sub.occurrences.map((o, i) => i === oi ? { ...o, shootDate: v } : o) })} />
+                              <Input type="time" className="h-8 text-sm" value={occ.shootTime} onChange={e => updateSubDraft(sub.id, { occurrences: sub.occurrences.map((o, i) => i === oi ? { ...o, shootTime: e.target.value } : o) })} />
+                            </div>
+                            <Input className="h-8 text-sm" placeholder="Ghi chú: Nhà gái / Rước dâu / Tiệc…" value={occ.label}
+                              onChange={e => updateSubDraft(sub.id, { occurrences: sub.occurrences.map((o, i) => i === oi ? { ...o, label: e.target.value } : o) })} />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <button type="button"
+                      onClick={() => updateSubDraft(sub.id, { occurrences: [...(sub.occurrences ?? []), { id: null, shootDate: sub.shootDate, shootTime: "08:00", label: "" }] })}
+                      className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1">
+                      <Plus className="w-3.5 h-3.5" /> Thêm ngày
+                    </button>
+                    {(sub.occurrences?.length ?? 0) > 0 && (
+                      <p className="text-[10px] text-muted-foreground">{(sub.occurrences.length + 1)} ngày thực hiện · tổng tiền không đổi</p>
+                    )}
                     {/* Service rows */}
                     <div>
                       <label className="text-[10px] text-muted-foreground mb-1 block">Gói / dịch vụ</label>
@@ -4049,6 +4149,22 @@ function ShowDetailPanel({
                 <span>{booking.location}</span>
               </div>
             )}
+            {/* Lịch thực hiện (dịch vụ nhiều ngày) — ngày 1 = trên; đây là ngày 2..n */}
+            {(booking.occurrences?.length ?? 0) > 0 && (
+              <div className="rounded-lg border border-blue-200 dark:border-blue-900 bg-blue-50/40 dark:bg-blue-950/10 p-2.5 space-y-1">
+                <p className="text-[11px] font-bold text-blue-700 dark:text-blue-300">📅 Lịch thực hiện ({(booking.occurrences!.length + 1)} ngày)</p>
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="font-bold text-blue-600 dark:text-blue-400 flex-shrink-0">Ngày 1</span>
+                  <span>{format(shootDateObj, "dd/MM/yyyy", { locale: vi })}{booking.shootTime ? ` · ${booking.shootTime.slice(0, 5)}` : ""}</span>
+                </div>
+                {booking.occurrences!.map((o, i) => (
+                  <div key={o.id} className="flex items-center gap-2 text-xs">
+                    <span className="font-bold text-blue-600 dark:text-blue-400 flex-shrink-0">Ngày {i + 2}</span>
+                    <span>{(o.shootDate || "").slice(0, 10).split("-").reverse().join("/")}{o.shootTime ? ` · ${o.shootTime.slice(0, 5)}` : ""}{o.label ? ` — ${o.label}` : ""}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div className="border-t border-border/40" />
@@ -5280,7 +5396,7 @@ function _MonthAgendaMobile_DEPRECATED({
                 const customerName = b.customerName?.trim() || "(Chưa có tên)";
                 return (
                   <button
-                    key={b.id}
+                    key={b._occKey ?? b.id}
                     type="button"
                     onClick={(e) => { e.stopPropagation(); onBookingClick?.(b); }}
                     className={`w-full text-left rounded-xl border ${cardBg} px-3 py-2.5 active:scale-[0.99] transition-transform shadow-sm flex gap-3`}
@@ -5520,7 +5636,7 @@ function MonthDayCell({
 
             return (
               <button
-                key={b.id}
+                key={b._occKey ?? b.id}
                 type="button"
                 onClick={e => { e.stopPropagation(); onBookingClick ? onBookingClick(b) : onDayClick(date); }}
                 className={`w-full text-left rounded ${cardPad} ${chipBar} hover:brightness-95 transition-all ${isComfort ? "shadow-sm" : ""}`}
@@ -5533,6 +5649,9 @@ function MonthDayCell({
                   )}
                   <span className={nameCls}>{b.customerName || "(Chưa có tên)"}</span>
                 </div>
+                {b._occLabel && (
+                  <div className="text-[9px] sm:text-[10px] font-bold text-blue-600 dark:text-blue-300 leading-tight truncate">📅 {b._occLabel}</div>
+                )}
                 {/* 3b. VIP badge — luôn xuống dòng riêng để không bị che (không thu nhỏ quá) */}
                 {b.customerRank && b.customerRank !== "new" && (
                   <div className="mt-0.5"><RankBadge rank={b.customerRank} size={isComfort ? "sm" : "xs"} /></div>
@@ -6056,7 +6175,7 @@ function DayView({
 
                           return (
                             <button
-                              key={b.id}
+                              key={b._occKey ?? b.id}
                               onClick={e => { e.stopPropagation(); onEventClick(b); }}
                               className={`w-full sm:flex-[1_1_250px] sm:min-w-[230px] sm:max-w-[min(100%,360px)] rounded-xl px-2 py-2 sm:px-2.5 text-left shadow-sm hover:shadow-md transition-all border border-l-4 text-foreground touch-manipulation ${b.status === "temp_quote" ? "bg-purple-50 border-purple-300 hover:bg-purple-100/70" : "bg-card hover:bg-muted/30"} ${isHighlighted ? "ring-2 ring-offset-1 ring-primary animate-pulse" : isVip ? "ring-1 ring-amber-300/60" : ""}`}
                               style={{ borderLeftColor: staffDot }}
@@ -6098,6 +6217,11 @@ function DayView({
                                       {b.status === "temp_quote" && (
                                         <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-purple-400 text-purple-800 bg-purple-100 whitespace-nowrap">
                                           🧮 Báo giá tạm
+                                        </span>
+                                      )}
+                                      {b._occLabel && (
+                                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-blue-400 text-blue-700 bg-blue-50 whitespace-nowrap">
+                                          📅 {b._occLabel}
                                         </span>
                                       )}
                                     </div>
@@ -6281,6 +6405,9 @@ function WeekBookingCard({ booking: b, onEventClick, allStaff, pkgGroupMap }: { 
         {isPriorityRank(b.customerRank) && <Crown className={`${isComfort ? "w-3.5 h-3.5" : "w-2.5 h-2.5"} text-amber-600 flex-shrink-0 self-center`} />}
         <span className={`font-bold ${isComfort ? "text-sm break-words" : "text-xs truncate"}`}>{b.customerName || "(Chưa có tên)"}</span>
       </div>
+      {b._occLabel && (
+        <div className="text-[9px] font-bold text-blue-600 dark:text-blue-300 leading-tight truncate">📅 {b._occLabel}</div>
+      )}
       {b.customerRank && b.customerRank !== "new" && (
         <div className="mt-1"><RankBadge rank={b.customerRank} size="xs" /></div>
       )}
@@ -6345,6 +6472,7 @@ function WeekView({
 
   const bookingsForDay = (d: Date) =>
     bookings
+      .flatMap(expandBookingToDayEvents)
       .filter(b => {
         if (b.isParentContract || !b.shootDate) return false;
         const sd = new Date(b.shootDate);
@@ -6437,7 +6565,7 @@ function WeekView({
                     {dayBookings.length === 0 ? (
                       <div className="text-center text-[10px] text-muted-foreground/50 pt-3 italic">Trống</div>
                     ) : (
-                      dayBookings.map(b => <WeekBookingCard key={b.id} booking={b} onEventClick={onEventClick} allStaff={allStaff} pkgGroupMap={pkgGroupMap} />)
+                      dayBookings.map(b => <WeekBookingCard key={b._occKey ?? b.id} booking={b} onEventClick={onEventClick} allStaff={allStaff} pkgGroupMap={pkgGroupMap} />)
                     )}
                   </div>
                 </div>
@@ -6780,7 +6908,7 @@ function CalendarPageInner() {
   const weekStart = useMemo(() => startOfWeek(selectedDate, { weekStartsOn: 1 }), [selectedDate]);
 
   const getBookingsForDay = useCallback(
-    (date: Date) => bookings.filter(b => {
+    (date: Date) => bookings.flatMap(expandBookingToDayEvents).filter(b => {
       if (b.isParentContract) return false;
       if (!b.shootDate) return false;
       const d = new Date(b.shootDate);
@@ -6790,7 +6918,7 @@ function CalendarPageInner() {
   );
 
   const selectedBookings = getBookingsForDay(selectedDate);
-  const monthBookings = bookings.filter(b => {
+  const monthBookings = bookings.flatMap(expandBookingToDayEvents).filter(b => {
     if (b.isParentContract) return false;
     if (!b.shootDate) return false;
     const d = new Date(b.shootDate);
@@ -7046,7 +7174,7 @@ function CalendarPageInner() {
         <div className="hidden sm:block">
           <h1 className="text-2xl font-bold tracking-tight leading-tight">Lịch Chụp</h1>
           <p className="text-muted-foreground text-sm mt-0.5">
-            {monthBookings.length} show tháng này · Bấm ngày để xem lịch 24h
+            {new Set(monthBookings.map(b => b.id)).size} show tháng này · Bấm ngày để xem lịch 24h
           </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap w-full sm:w-auto">

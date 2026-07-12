@@ -977,6 +977,24 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
       ON CONFLICT (key) DO NOTHING
     `);
 
+    // ── Ngày thực hiện PHỤ của booking (dịch vụ nhiều ngày) — additive, idempotent.
+    // Ngày 1 vẫn là bookings.shoot_date; bảng này chỉ lưu ngày 2 trở đi, KHÔNG có
+    // trường tiền (chống nhân đôi doanh thu/công nợ). Không sửa dữ liệu booking cũ.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS booking_occurrences (
+        id          serial PRIMARY KEY,
+        booking_id  integer NOT NULL REFERENCES bookings(id) ON DELETE CASCADE,
+        shoot_date  date NOT NULL,
+        shoot_time  text,
+        label       text,
+        sort_order  integer NOT NULL DEFAULT 0,
+        created_at  timestamp NOT NULL DEFAULT now(),
+        updated_at  timestamp
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_booking_occurrences_booking ON booking_occurrences(booking_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_booking_occurrences_date ON booking_occurrences(shoot_date)`);
+
     await client.query("COMMIT");
     console.log("[migrations] Hoàn thành.");
   } catch (err) {

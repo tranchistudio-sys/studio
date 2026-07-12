@@ -8,7 +8,7 @@ import {
   notificationsTable,
   staffTable,
 } from "@workspace/db/schema";
-import { eq, desc, and, isNull } from "drizzle-orm";
+import { eq, desc, and, isNull, inArray } from "drizzle-orm";
 import crypto from "node:crypto";
 import { getPublicBaseUrl } from "../lib/publicUrl";
 import { verifyToken } from "./auth";
@@ -16,6 +16,11 @@ import {
   buildContractPayload,
   buildSignedSnapshot,
 } from "../lib/contractPayload";
+import {
+  contractCandidateBookingIds,
+  newestContractIdByBooking,
+  pickContractIdForBooking,
+} from "../lib/contract-resolve";
 
 const router: IRouter = Router();
 
@@ -570,34 +575,25 @@ router.post("/contracts/find-or-create", async (req, res): Promise<void> => {
     return;
   }
 
-  // 1. Theo bookingId (kể cả booking cha nếu là đơn gộp)
-  const candidateBookingIds = booking.parentId != null ? [bookingId, booking.parentId] : [bookingId];
-  for (const bid of candidateBookingIds) {
-    const [byBooking] = await db
-      .select({ id: contractsTable.id })
-      .from(contractsTable)
-      .where(eq(contractsTable.bookingId, bid))
-      .orderBy(desc(contractsTable.createdAt));
-    if (byBooking) {
-      res.json({ id: byBooking.id, created: false });
-      return;
-    }
+  // Hợp đồng gắn theo TỪNG đơn (contracts.booking_id): chỉ tìm theo bookingId — đơn hiện tại,
+  // rồi tới đơn CHA nếu là đơn gộp. TUYỆT ĐỐI không fallback sang hợp đồng gần nhất của cùng
+  // khách (bug P0: đơn mới của khách cũ mở nhầm hợp đồng cũ đã ký). Xem lib/contract-resolve.ts.
+  const candidateBookingIds = contractCandidateBookingIds(bookingId, booking.parentId);
+  const existingRows = await db
+    .select({ id: contractsTable.id, bookingId: contractsTable.bookingId })
+    .from(contractsTable)
+    .where(inArray(contractsTable.bookingId, candidateBookingIds))
+    .orderBy(desc(contractsTable.createdAt));
+  const existingId = pickContractIdForBooking(
+    candidateBookingIds,
+    newestContractIdByBooking(existingRows),
+  );
+  if (existingId != null) {
+    res.json({ id: existingId, created: false });
+    return;
   }
 
-  // 2. Theo customerId (giữ đúng UX cũ của handleViewInvoice)
-  if (booking.customerId) {
-    const [byCustomer] = await db
-      .select({ id: contractsTable.id })
-      .from(contractsTable)
-      .where(eq(contractsTable.customerId, booking.customerId))
-      .orderBy(desc(contractsTable.createdAt));
-    if (byCustomer) {
-      res.json({ id: byCustomer.id, created: false });
-      return;
-    }
-  }
-
-  // 3. Tạo mới từ dữ liệu booking
+  // Chưa có hợp đồng cho đơn này ⇒ TẠO MỚI, gắn đúng bookingId hiện tại.
   if (!booking.customerId) {
     res.status(400).json({ error: "Show này chưa có khách hàng để tạo hóa đơn" });
     return;

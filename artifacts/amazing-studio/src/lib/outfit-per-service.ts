@@ -91,8 +91,8 @@ export function effectiveDressStatusFE(d: { status: string; returnDate: string; 
   return dressIsOverdue(d.status, d.returnDate, d.actualReturnDate, today) ? "overdue" : d.status;
 }
 
-/** Ngày gợi ý: lấy trước ngày cưới N ngày, trả sau N ngày. */
-export function suggestDressDatesFE(weddingDate: string, beforeDays = 3, afterDays = 3): { pickupDate: string; returnDate: string } {
+/** Ngày gợi ý: lấy ĐÚNG ngày cưới (cảnh báo lịch tự nhắc 3 ngày trước ngày lấy), trả sau N ngày. */
+export function suggestDressDatesFE(weddingDate: string, beforeDays = 0, afterDays = 3): { pickupDate: string; returnDate: string } {
   const base = (weddingDate || "").slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(base)) return { pickupDate: "", returnDate: "" };
   const shift = (iso: string, days: number) => {

@@ -9,11 +9,11 @@ import {
 
 // ── suggestDressDates — Case 1 ───────────────────────────────────────────────
 describe("suggestDressDates", () => {
-  it("Case 1: cưới 05/08 → lấy 02/08, trả 08/08", () => {
-    expect(suggestDressDates("2026-08-05")).toEqual({ pickupDate: "2026-08-02", returnDate: "2026-08-08" });
+  it("Case 1: cưới 05/08 → lấy ĐÚNG 05/08, trả 08/08", () => {
+    expect(suggestDressDates("2026-08-05")).toEqual({ pickupDate: "2026-08-05", returnDate: "2026-08-08" });
   });
-  it("qua ranh giới tháng", () => {
-    expect(suggestDressDates("2026-08-02")).toEqual({ pickupDate: "2026-07-30", returnDate: "2026-08-05" });
+  it("qua ranh giới tháng (trả +3 nhảy tháng)", () => {
+    expect(suggestDressDates("2026-07-30")).toEqual({ pickupDate: "2026-07-30", returnDate: "2026-08-02" });
   });
   it("ngày cưới không hợp lệ → rỗng", () => {
     expect(suggestDressDates("")).toEqual({ pickupDate: "", returnDate: "" });

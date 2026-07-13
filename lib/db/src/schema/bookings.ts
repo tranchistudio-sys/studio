@@ -42,6 +42,10 @@ export const bookingsTable = pgTable("bookings", {
   createdByStaffId: integer("created_by_staff_id").references(() => staffTable.id, { onDelete: "set null" }),
   // Dịch vụ cộng thêm (qty × unitPrice + staff assignments) — additive, không đụng items[]
   additionalServices: jsonb("additional_services").notNull().default([]),
+  // Setting nhắc lấy/trả đồ trên Lịch (gói bật warn_upcoming_show).
+  // NULL = mặc định (lấy trước 3 ngày, trả sau 2 ngày). Thuần lịch nhắc, không đụng tiền.
+  dressWarnPickupDays: integer("dress_warn_pickup_days"),
+  dressWarnReturnDays: integer("dress_warn_return_days"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   // Thùng rác Booking (soft-delete): deletedAt != null = đã vào thùng rác.
   // Mọi query active phải lọc deletedAt IS NULL; chỉ admin xem/khôi phục/xoá vĩnh viễn.

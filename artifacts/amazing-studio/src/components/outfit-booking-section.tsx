@@ -298,7 +298,8 @@ function OutfitBookingSectionInner({
       }
       return;
     }
-    // Gợi ý ngày: lấy trước ngày cưới 3 ngày, trả sau 3 ngày (admin chỉnh tay được).
+    // Gợi ý ngày: lấy ĐÚNG ngày cưới, trả sau 3 ngày (admin chỉnh tay được;
+    // cảnh báo "Sắp lấy váy" trên Lịch tự hiện 3 ngày trước ngày lấy).
     const suggested = suggestDressDatesFE(shootDate || "");
     const next: OutfitDraft = {
       tempId: Math.random().toString(36).slice(2),

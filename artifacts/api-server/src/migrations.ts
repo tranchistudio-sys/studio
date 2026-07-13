@@ -1004,6 +1004,16 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
     await client.query(`ALTER TABLE booking_dresses ADD COLUMN IF NOT EXISTS return_note text`);
     await client.query(`ALTER TABLE booking_dresses ADD COLUMN IF NOT EXISTS damage_note text`);
 
+    // ── Nút gạt "Thuê đồ" per gói (additive, idempotent): gói/nhóm CÓ CHO THUÊ
+    // trang phục → mọi đơn dùng gói tự sinh nhắc soạn/lấy/trả đồ trên Lịch.
+    // Thuần hiển thị chip cảnh báo — không đụng tiền/đơn/công nợ.
+    await client.query(`ALTER TABLE service_packages ADD COLUMN IF NOT EXISTS warn_upcoming_show boolean NOT NULL DEFAULT false`);
+
+    // ── Setting nhắc lấy/trả đồ per booking (nullable = mặc định lấy trước 3
+    // ngày, trả sau 2 ngày). Thuần lịch nhắc — không có trường tiền nào.
+    await client.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS dress_warn_pickup_days integer`);
+    await client.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS dress_warn_return_days integer`);
+
     await client.query("COMMIT");
     console.log("[migrations] Hoàn thành.");
   } catch (err) {

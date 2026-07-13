@@ -42,6 +42,7 @@ import { DeductionEditor, type DeductionItem } from "@/components/deduction-edit
 import { StaffAssignmentEditor, type StaffAssignment, newStaffAssignment } from "@/components/staff-assignment-editor";
 import { castAmountFromResult, lookupCastByPkg, resolveCastAmount } from "@/lib/resolve-cast";
 import { reflowDescriptionLines, firstDescriptionLine, parseDescriptionBlocks } from "@/lib/package-description";
+import { buildDressWarningsByDate, type DressWarnRow, type DressWarnChip } from "@/lib/dress-warnings";
 import OutfitBookingSection, { type OutfitDraft } from "@/components/outfit-booking-section";
 import { splitOutfitsBySub, planOutfitSync, mapDressRowToDraft, dedupeParentOutfits, moveOutfitsOnSubRemove } from "@/lib/outfit-per-service";
 import AdditionalServicesSection, { validateAdditionalServicesForm, type AdditionalServiceLine, newAdditionalServiceLine } from "@/components/additional-services-section";
@@ -142,6 +143,9 @@ type Booking = {
   additionalServices?: AdditionalServiceLine[];
   // Ngày thực hiện phụ (dịch vụ nhiều ngày). Ngày 1 = shootDate; đây là ngày 2..n.
   occurrences?: BookingOccurrence[];
+  // Setting nhắc thuê đồ (gói bật "Thuê đồ"): null = mặc định lấy trước 3 / trả sau 2 ngày.
+  dressWarnPickupDays?: number | null;
+  dressWarnReturnDays?: number | null;
   // Chỉ dùng ở tầng HIỂN THỊ lịch: khi 1 booking nhiều ngày được "bung" thành nhiều
   // event, mỗi event mang nhãn "Ngày k/n — label" + key riêng. KHÔNG gửi lên server.
   _occLabel?: string | null;
@@ -524,6 +528,15 @@ function genId() { return Math.random().toString(36).slice(2); }
 // Đồng bộ ngày thực hiện phụ của MỘT booking sau khi có id thật (mirror syncOutfitDrafts):
 // diff theo id → PUT (occurrence cũ), POST (draft mới id=null), DELETE (occurrence bị gỡ).
 // Mọi request phải res.ok, lỗi THROW để handleSave dừng — không để dữ liệu nửa vời.
+/** Parse ô nhập số ngày nhắc thuê đồ: "" = null (dùng mặc định 3/2), clamp 0..30. */
+function parseWarnDays(s: string): number | null {
+  const t = (s ?? "").trim();
+  if (t === "") return null;
+  const n = Number(t);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.min(30, Math.floor(n));
+}
+
 async function syncOccurrences(bookingId: number, drafts: OccurrenceDraft[]) {
   const existing: BookingOccurrence[] = await authFetch(`${BASE}/api/bookings/${bookingId}/occurrences`)
     .then(r => (r.ok ? r.json() : [])).catch(() => []);
@@ -1534,6 +1547,10 @@ function ShowFormPanel({
   const [depositProofError, setDepositProofError] = useState("");
   const [discount, setDiscount] = useState(booking?.discountAmount?.toString() ?? "0");
   const [notes, setNotes] = useState(booking?.notes ?? "");
+  // Setting nhắc thuê đồ per booking ("" = mặc định: lấy trước 3 ngày / trả sau 2 ngày).
+  // Chỉ có tác dụng khi gói thuộc nhóm bảng giá đã gạt "Thuê đồ". Thuần lịch nhắc, không đụng tiền.
+  const [dressWarnPickupDays, setDressWarnPickupDays] = useState<string>(() => booking?.dressWarnPickupDays != null ? String(booking.dressWarnPickupDays) : "");
+  const [dressWarnReturnDays, setDressWarnReturnDays] = useState<string>(() => booking?.dressWarnReturnDays != null ? String(booking.dressWarnReturnDays) : "");
   // Giữ lại giá trị photoCount cũ của show (để lưu lại không bị mất); ô nhập đã bỏ khỏi form.
   const [photoCount] = useState<string>(() => String(booking?.photoCount ?? ""));
   const [surcharges, setSurcharges] = useState<SurchargeItem[]>(() => {
@@ -2221,6 +2238,8 @@ function ShowFormPanel({
               depositAmount: depositNum,
               discountAmount: discountNum,
               packageType: subDrafts.map(s => s.serviceLabel || "Dịch vụ").join(" + "),
+              dressWarnPickupDays: parseWarnDays(dressWarnPickupDays),
+              dressWarnReturnDays: parseWarnDays(dressWarnReturnDays),
               // Only send assignedStaff when non-empty to avoid wiping item-level photographer/makeup
               ...(editMultiAssignedStaff.length > 0 ? { assignedStaff: editMultiAssignedStaff } : {}),
             }),
@@ -2312,6 +2331,8 @@ function ShowFormPanel({
           notes: notes || null,
           location: location || null,
           subServices: subServicePayloads,
+          dressWarnPickupDays: parseWarnDays(dressWarnPickupDays),
+          dressWarnReturnDays: parseWarnDays(dressWarnReturnDays),
           // Báo giá tạm tính: backend lưu status temp_quote + mã BG, không phiếu thu/hậu kỳ
           isTempQuote: tempQuoteMode,
         };
@@ -2456,6 +2477,8 @@ function ShowFormPanel({
       };
       body.additionalServices = cleanAdditionalServicesForSave(subDrafts[0]?.additionalServices || []);
       body.servicePackageId = servicePackageId ?? null;
+      body.dressWarnPickupDays = parseWarnDays(dressWarnPickupDays);
+      body.dressWarnReturnDays = parseWarnDays(dressWarnReturnDays);
       // Báo giá tạm tính (chỉ khi tạo mới): backend lưu status temp_quote + mã BG
       if (!isEdit) body.isTempQuote = tempQuoteMode;
 
@@ -2893,6 +2916,29 @@ function ShowFormPanel({
                 </div>
               );
             })}
+          </section>
+
+          {/* Nhắc thuê đồ — chỉ có tác dụng khi gói thuộc nhóm bảng giá gạt "Thuê đồ".
+              Thuần lịch nhắc (chip trên Lịch), không đụng tiền/công nợ/lương. */}
+          <section className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-dashed border-amber-300/70 dark:border-amber-700/50 bg-amber-50/40 dark:bg-amber-950/10 px-3 py-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+              <Shirt className="w-3.5 h-3.5" /> Nhắc thuê đồ
+            </span>
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              Lấy trước
+              <Input type="number" min={0} max={30} className="h-7 w-14 text-xs text-center" placeholder="3"
+                value={dressWarnPickupDays} onChange={e => setDressWarnPickupDays(e.target.value)} />
+              ngày
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              Trả sau
+              <Input type="number" min={0} max={30} className="h-7 w-14 text-xs text-center" placeholder="2"
+                value={dressWarnReturnDays} onChange={e => setDressWarnReturnDays(e.target.value)} />
+              ngày
+            </label>
+            <span className="text-[10px] text-muted-foreground">
+              Bỏ trống = mặc định (3/2) · lấy theo ngày thực hiện ĐẦU, trả theo ngày CUỐI · chỉ áp dụng gói nhóm "Thuê đồ"
+            </span>
           </section>
 
           {/* E. Phụ cấp nhân sự — REMOVED (Task #487): chuyển inline vào StaffAssignmentEditor */}
@@ -5530,11 +5576,12 @@ const MAX_VISIBLE_COMPACT = 3;
 const MAX_VISIBLE_COMFORT = 4;
 
 function MonthDayCell({
-  date, bookings, leaves, isSelected, isOtherMonth, onDayClick, onBookingClick, onLeaveClick, allStaff, pkgGroupMap,
+  date, bookings, leaves, warnings, isSelected, isOtherMonth, onDayClick, onBookingClick, onLeaveClick, onWarningClick, allStaff, pkgGroupMap,
 }: {
-  date: Date; bookings: Booking[]; leaves?: LeaveRequest[]; isSelected: boolean; isOtherMonth?: boolean;
+  date: Date; bookings: Booking[]; leaves?: LeaveRequest[]; warnings?: DressWarnChip[]; isSelected: boolean; isOtherMonth?: boolean;
   onDayClick: (d: Date) => void; onBookingClick?: (b: Booking) => void;
   onLeaveClick?: (l: LeaveRequest) => void;
+  onWarningClick?: (bookingId: number) => void;
   allStaff: Staff[];
   pkgGroupMap?: Map<number, string>;
 }) {
@@ -5607,6 +5654,26 @@ function MonthDayCell({
             </button>
           );
         })}
+        {/* Nhắc thuê đồ — chip riêng kiểu Off, KHÔNG gộp bookings[] (không phải booking).
+            Màu: lấy đồ = VÀNG, trả đồ = CAM, quá hạn = ĐỎ. Bấm mở đúng booking chính. */}
+        {warnings && warnings.length > 0 && warnings.map(w => (
+          <button
+            key={w.key}
+            type="button"
+            onClick={e => { e.stopPropagation(); onWarningClick?.(w.bookingId); }}
+            className={`w-full text-left rounded px-1 py-0.5 border text-[10px] leading-tight flex items-center gap-1 ${
+              w.overdue
+                ? "bg-red-200 text-red-900 border-red-500 font-semibold hover:bg-red-300 dark:bg-red-900/40 dark:text-red-200"
+                : w.kind === "return"
+                  ? "bg-orange-200 text-orange-900 border-orange-400 hover:bg-orange-300 dark:bg-orange-900/30 dark:text-orange-300"
+                  : "bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 dark:bg-amber-900/20 dark:text-amber-300"
+            }`}
+            title={w.label}
+          >
+            <Shirt className="w-2.5 h-2.5 flex-shrink-0" />
+            <span className="truncate">{w.label}</span>
+          </button>
+        ))}
         {bookings
           .slice()
           .sort((a, b) => (a.shootTime ?? "").localeCompare(b.shootTime ?? ""))
@@ -6834,6 +6901,31 @@ function CalendarPageInner() {
     (date: Date) => (showLeaves ? (leavesByDate.get(format(date, "yyyy-MM-dd")) ?? []) : []),
     [leavesByDate, showLeaves]
   );
+
+  // ── Cảnh báo lấy/trả váy (source RIÊNG kiểu leaves, không đụng bookings[]/tiền) ──
+  // Chỉ đơn dùng gói có bật nút gạt "warn_upcoming_show" mới có (lọc ở backend).
+  const { data: dressWarnRows = [] } = useQuery<DressWarnRow[]>({
+    queryKey: ["dress-warnings", "range", leavesFrom, leavesTo],
+    queryFn: async () => {
+      try {
+        const res = await authFetch(`${BASE}/api/dress-warnings?from=${leavesFrom}&to=${leavesTo}`);
+        if (!res.ok) return [];
+        const j = await res.json().catch(() => []);
+        return Array.isArray(j) ? (j as DressWarnRow[]) : [];
+      } catch { return []; }
+    },
+    staleTime: 30_000,
+    retry: false,
+    throwOnError: false,
+  });
+  const warningsByDate = useMemo(
+    () => buildDressWarningsByDate(dressWarnRows, format(new Date(), "yyyy-MM-dd")),
+    [dressWarnRows],
+  );
+  const getWarningsForDay = useCallback(
+    (date: Date) => warningsByDate.get(format(date, "yyyy-MM-dd")) ?? [],
+    [warningsByDate],
+  );
   const refreshLeaves = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["leave-requests"] });
   }, [queryClient]);
@@ -6941,6 +7033,13 @@ function CalendarPageInner() {
     setHighlightedBookingId(b.id);
     setCalView("day");
   }, []);
+  // Bấm chip cảnh báo váy → mở đúng đơn (không cần dialog riêng).
+  const handleWarningClick = useCallback((bookingId: number) => {
+    const b = bookings.find(x => x.id === bookingId);
+    if (b) handleBookingClickFromMonth(b);
+    // Không thấy trong list (hiếm — data đang refetch): đi đường deep-link ?bookingId.
+    else setPendingBookingIdFromUrl(bookingId);
+  }, [bookings, handleBookingClickFromMonth]);
 
   // Handlers — day view
   const handleTimeClick = useCallback((time: string) => {
@@ -7424,12 +7523,14 @@ function CalendarPageInner() {
               {/* Leading days from prev month */}
               {Array.from({ length: firstDayOfMonth }).map((_, i) => {
                 const d = new Date(monthStart); d.setDate(d.getDate() - (firstDayOfMonth - i));
-                return <MonthDayCell key={`p${i}`} date={d} bookings={getBookingsForDay(d)} leaves={getLeavesForDay(d)} isSelected={false} isOtherMonth onDayClick={handleDayClick} onBookingClick={handleBookingClickFromMonth} onLeaveClick={setViewingLeave} allStaff={allStaff} pkgGroupMap={pkgGroupMap} />;
+                return <MonthDayCell key={`p${i}`} date={d} bookings={getBookingsForDay(d)} leaves={getLeavesForDay(d)} warnings={getWarningsForDay(d)} isSelected={false} isOtherMonth onDayClick={handleDayClick} onBookingClick={handleBookingClickFromMonth} onLeaveClick={setViewingLeave} onWarningClick={handleWarningClick} allStaff={allStaff} pkgGroupMap={pkgGroupMap} />;
               })}
               {/* Current month days */}
               {daysInMonth.map(day => (
                 <MonthDayCell key={day.toISOString()} date={day} bookings={getBookingsForDay(day)}
                   leaves={getLeavesForDay(day)}
+                  warnings={getWarningsForDay(day)}
+                  onWarningClick={handleWarningClick}
                   isSelected={isSameDay(day, selectedDate)}
                   onDayClick={handleDayClick}
                   onBookingClick={handleBookingClickFromMonth}
@@ -7441,7 +7542,7 @@ function CalendarPageInner() {
               {/* Trailing days from next month */}
               {Array.from({ length: (7 - ((firstDayOfMonth + daysInMonth.length) % 7)) % 7 }).map((_, i) => {
                 const d = new Date(monthEnd); d.setDate(d.getDate() + i + 1);
-                return <MonthDayCell key={`n${i}`} date={d} bookings={getBookingsForDay(d)} leaves={getLeavesForDay(d)} isSelected={false} isOtherMonth onDayClick={handleDayClick} onBookingClick={handleBookingClickFromMonth} onLeaveClick={setViewingLeave} allStaff={allStaff} pkgGroupMap={pkgGroupMap} />;
+                return <MonthDayCell key={`n${i}`} date={d} bookings={getBookingsForDay(d)} leaves={getLeavesForDay(d)} warnings={getWarningsForDay(d)} isSelected={false} isOtherMonth onDayClick={handleDayClick} onBookingClick={handleBookingClickFromMonth} onLeaveClick={setViewingLeave} onWarningClick={handleWarningClick} allStaff={allStaff} pkgGroupMap={pkgGroupMap} />;
               })}
             </div>
           </div>

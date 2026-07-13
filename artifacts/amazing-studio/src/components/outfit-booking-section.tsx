@@ -7,6 +7,7 @@ import { Shirt, Plus, X, AlertTriangle, Calendar, Search, QrCode, Loader2 } from
 import { useToast } from "@/hooks/use-toast";
 import { formatVND } from "@/lib/utils";
 import { getImageSrc } from "@/lib/imageUtils";
+import { DRESS_STATUS_META, effectiveDressStatusFE, suggestDressDatesFE, type DressStatus } from "@/lib/outfit-per-service";
 
 const RENTAL_STATUS_LABEL: Record<string, string> = {
   san_sang: "Sẵn sàng",
@@ -62,11 +63,17 @@ export type OutfitDraft = {
   rentalPrice?: number;
   pickupDate: string;
   returnDate: string;
-  status: "reserved" | "picked_up" | "returned" | "cancelled";
+  status: DressStatus;
   note?: string;
   dbId?: number | null;
   /** Váy data cũ còn gắn ở booking CHA — hiển thị tạm ở Dịch vụ 1, lưu xong move về child. */
   fromParent?: boolean;
+  // Vòng đời thuê váy.
+  actualPickupDate?: string | null;
+  actualReturnDate?: string | null;
+  preparationNote?: string;
+  returnNote?: string;
+  damageNote?: string;
 };
 
 type DressOption = {
@@ -135,9 +142,12 @@ function FilterChip({ label, active, onClick }: { label: string; active: boolean
 function OutfitBookingSectionInner({
   draft,
   onChange,
+  shootDate,
 }: {
   draft: OutfitDraft[];
   onChange: (next: OutfitDraft[]) => void;
+  /** Ngày cưới của dịch vụ — để gợi ý ngày lấy (−3) / trả (+3) khi thêm váy. */
+  shootDate?: string;
 }) {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -288,6 +298,8 @@ function OutfitBookingSectionInner({
       }
       return;
     }
+    // Gợi ý ngày: lấy trước ngày cưới 3 ngày, trả sau 3 ngày (admin chỉnh tay được).
+    const suggested = suggestDressDatesFE(shootDate || "");
     const next: OutfitDraft = {
       tempId: Math.random().toString(36).slice(2),
       dressId: dress.id,
@@ -297,8 +309,8 @@ function OutfitBookingSectionInner({
       category: dress.category || null,
       size: dress.size || null,
       rentalPrice: dress.rentalPrice || 0,
-      pickupDate: today,
-      returnDate: today,
+      pickupDate: suggested.pickupDate || today,
+      returnDate: suggested.returnDate || today,
       status: "reserved",
       note: "",
       dbId: null,
@@ -368,6 +380,24 @@ function OutfitBookingSectionInner({
     onChange(draft.map(d => d.tempId === tempId ? { ...d, ...patch } : d));
   }, [draft, onChange]);
 
+  // Nút vòng đời (Khách đã lấy / Đã nhận lại / Chuyển giặt / Sẵn sàng) → PATCH backend.
+  // Chỉ chạy khi váy ĐÃ lưu (có dbId). Cập nhật lại draft từ response (status + ngày thực tế).
+  const doLifecycle = useCallback(async (item: OutfitDraft, action: string) => {
+    if (!item.dbId) { toast({ title: "Lưu show trước rồi mới cập nhật vòng đời váy", variant: "destructive" }); return; }
+    try {
+      const res = await authFetch(`${API_BASE}/api/booking-dresses/${item.dbId}/lifecycle`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      if (!res.ok) { const e = await res.json().catch(() => null); toast({ title: e?.error || "Không đổi được trạng thái váy", variant: "destructive" }); return; }
+      const u = await res.json();
+      onChange(draft.map(d => d.tempId === item.tempId
+        ? { ...d, status: u.status, actualPickupDate: u.actual_pickup_date, actualReturnDate: u.actual_return_date }
+        : d));
+    } catch { toast({ title: "Lỗi kết nối khi cập nhật váy", variant: "destructive" }); }
+  }, [draft, onChange, toast]);
+
   const onKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown") {
       e.preventDefault();
@@ -400,6 +430,7 @@ function OutfitBookingSectionInner({
           item={item}
           onUpdate={(patch) => updateOutfit(item.tempId, patch)}
           onRemove={() => removeOutfit(item.tempId)}
+          onLifecycle={(action) => doLifecycle(item, action)}
           today={today}
         />
       ))}
@@ -621,11 +652,13 @@ const OutfitRow = memo(function OutfitRow({
   item,
   onUpdate,
   onRemove,
+  onLifecycle,
   today,
 }: {
   item: OutfitDraft;
   onUpdate: (patch: Partial<OutfitDraft>) => void;
   onRemove: () => void;
+  onLifecycle: (action: string) => void;
   today: string;
 }) {
   const { data: schedule = [] } = useOutfitSchedule(item.dressId, "admin");
@@ -642,6 +675,17 @@ const OutfitRow = memo(function OutfitRow({
   const hasConflict = (conflict?.conflicts?.length ?? 0) > 0;
   const [imgErr, setImgErr] = useState(false);
   const thumb = pickThumb(item);
+  // Trạng thái hiển thị (đắp "overdue" nếu quá hạn) + nhãn/màu badge.
+  const effStatus = effectiveDressStatusFE({ status: item.status, returnDate: item.returnDate, actualReturnDate: item.actualReturnDate }, today);
+  const statusMeta = DRESS_STATUS_META[effStatus] ?? DRESS_STATUS_META.reserved;
+  const saved = !!item.dbId;
+  // Nút vòng đời hiện theo trạng thái hiện tại (chỉ nút hợp lệ).
+  const lifecycleBtns: { action: string; label: string; show: boolean }[] = [
+    { action: "pick_up", label: "Khách đã lấy", show: item.status === "reserved" || item.status === "preparing" },
+    { action: "receive_back", label: "Đã nhận lại", show: item.status === "picked_up" || item.status === "waiting_return" },
+    { action: "start_cleaning", label: "Chuyển giặt", show: item.status === "returned" },
+    { action: "mark_ready", label: "Sẵn sàng", show: item.status === "cleaning" || item.status === "returned" },
+  ];
 
   return (
     <div className={`rounded-xl border p-2.5 space-y-2 ${hasConflict ? "border-destructive bg-destructive/5" : "border-border bg-muted/30"}`}>
@@ -712,17 +756,51 @@ const OutfitRow = memo(function OutfitRow({
           onChange={e => onUpdate({ status: e.target.value as OutfitDraft["status"] })}
         >
           <option value="reserved">Đã giữ</option>
-          <option value="picked_up">Đã lấy</option>
+          <option value="preparing">Đang chuẩn bị</option>
+          <option value="picked_up">Khách đang giữ</option>
+          <option value="waiting_return">Chờ khách trả</option>
           <option value="returned">Đã trả</option>
+          <option value="cleaning">Đang giặt/kiểm tra</option>
+          <option value="ready">Sẵn sàng</option>
           <option value="cancelled">Huỷ</option>
         </select>
         <input
-          className="flex-1 h-7 px-2 rounded-md border border-input bg-background text-xs"
+          className="flex-1 min-w-0 h-7 px-2 rounded-md border border-input bg-background text-xs"
           placeholder="Ghi chú..."
           value={item.note || ""}
           onChange={e => onUpdate({ note: e.target.value })}
         />
       </div>
+
+      {/* Trạng thái hiện tại + hàng nút vòng đời (mobile tự xuống dòng, không tràn) */}
+      <div className="flex items-center flex-wrap gap-1.5">
+        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border ${statusMeta.cls}`}>{statusMeta.label}</span>
+        {saved ? (
+          lifecycleBtns.filter(b => b.show).map(b => (
+            <button key={b.action} type="button" onClick={() => onLifecycle(b.action)}
+              className="text-[10px] font-medium px-2 py-0.5 rounded-full border border-primary/40 text-primary hover:bg-primary/10 transition-colors">
+              {b.label}
+            </button>
+          ))
+        ) : (
+          <span className="text-[10px] text-muted-foreground italic">Lưu show để dùng nút vòng đời</span>
+        )}
+      </div>
+
+      {/* Ghi chú vòng đời — chỉ hiện khi liên quan để đỡ rối */}
+      {(item.status === "reserved" || item.status === "preparing") && (
+        <input className="w-full h-7 px-2 rounded-md border border-dashed border-input bg-background text-xs"
+          placeholder="Ghi chú chuẩn bị (kiểm váy, phụ kiện, hấp/ủi...)"
+          value={item.preparationNote || ""} onChange={e => onUpdate({ preparationNote: e.target.value })} />
+      )}
+      {(item.status === "cleaning" || item.status === "returned" || item.status === "waiting_return") && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+          <input className="h-7 px-2 rounded-md border border-dashed border-input bg-background text-xs"
+            placeholder="Ghi chú khi trả" value={item.returnNote || ""} onChange={e => onUpdate({ returnNote: e.target.value })} />
+          <input className="h-7 px-2 rounded-md border border-dashed border-red-300 bg-background text-xs"
+            placeholder="Ghi hư hỏng (nếu có)" value={item.damageNote || ""} onChange={e => onUpdate({ damageNote: e.target.value })} />
+        </div>
+      )}
     </div>
   );
 });

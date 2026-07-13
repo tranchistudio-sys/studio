@@ -26,10 +26,21 @@ export type OutfitDraftLike = {
   rentalPrice?: number;
   pickupDate: string;
   returnDate: string;
-  status: "reserved" | "picked_up" | "returned" | "cancelled";
+  status: DressStatus;
   note?: string;
   dbId?: number | null;
+  // Vòng đời thuê váy (ngày thực tế + ghi chú). overdue = tính tự động, không lưu.
+  actualPickupDate?: string | null;
+  actualReturnDate?: string | null;
+  preparationNote?: string;
+  returnNote?: string;
+  damageNote?: string;
 };
+
+/** 8 trạng thái LƯU trong DB (mirror lib backend dress-lifecycle.ts). */
+export type DressStatus =
+  | "reserved" | "preparing" | "picked_up" | "waiting_return"
+  | "returned" | "cleaning" | "ready" | "cancelled";
 
 export function mapDressRowToDraft(r: Record<string, unknown>, genTempId: () => string): OutfitDraftLike {
   return {
@@ -46,7 +57,51 @@ export function mapDressRowToDraft(r: Record<string, unknown>, genTempId: () => 
     status: String(r.status) as OutfitDraftLike["status"],
     note: (r.note as string) || "",
     dbId: Number(r.id) || null,
+    actualPickupDate: (r.actual_pickup_date as string) || null,
+    actualReturnDate: (r.actual_return_date as string) || null,
+    preparationNote: (r.preparation_note as string) || "",
+    returnNote: (r.return_note as string) || "",
+    damageNote: (r.damage_note as string) || "",
   };
+}
+
+/** Nhãn + màu badge cho từng trạng thái hiển thị (gồm "overdue" suy ra). */
+export const DRESS_STATUS_META: Record<string, { label: string; cls: string }> = {
+  reserved:       { label: "Đã giữ",        cls: "bg-slate-100 text-slate-700 border-slate-300" },
+  preparing:      { label: "Đang chuẩn bị", cls: "bg-amber-100 text-amber-800 border-amber-300" },
+  picked_up:      { label: "Khách đang giữ", cls: "bg-red-100 text-red-700 border-red-300" },
+  waiting_return: { label: "Chờ khách trả",  cls: "bg-orange-100 text-orange-800 border-orange-300" },
+  overdue:        { label: "Quá hạn!",       cls: "bg-red-200 text-red-900 border-red-500 font-bold" },
+  returned:       { label: "Đã trả",         cls: "bg-slate-100 text-slate-600 border-slate-300" },
+  cleaning:       { label: "Đang giặt/kiểm tra", cls: "bg-blue-100 text-blue-700 border-blue-300" },
+  ready:          { label: "Sẵn sàng",       cls: "bg-green-100 text-green-700 border-green-400" },
+  cancelled:      { label: "Đã huỷ",         cls: "bg-slate-100 text-slate-400 border-slate-200 line-through" },
+};
+
+/** overdue derived (mirror backend isOverdue). today = "YYYY-MM-DD". */
+export function dressIsOverdue(status: string, returnDate: string, actualReturnDate: string | null | undefined, today: string): boolean {
+  if (status !== "picked_up" && status !== "waiting_return") return false;
+  if ((actualReturnDate || "").slice(0, 10)) return false;
+  const rd = (returnDate || "").slice(0, 10);
+  return !!rd && rd < today;
+}
+
+/** Trạng thái hiển thị hiệu dụng (đắp overdue). */
+export function effectiveDressStatusFE(d: { status: string; returnDate: string; actualReturnDate?: string | null }, today: string): string {
+  return dressIsOverdue(d.status, d.returnDate, d.actualReturnDate, today) ? "overdue" : d.status;
+}
+
+/** Ngày gợi ý: lấy trước ngày cưới N ngày, trả sau N ngày. */
+export function suggestDressDatesFE(weddingDate: string, beforeDays = 3, afterDays = 3): { pickupDate: string; returnDate: string } {
+  const base = (weddingDate || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(base)) return { pickupDate: "", returnDate: "" };
+  const shift = (iso: string, days: number) => {
+    const [y, m, d] = iso.split("-").map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    dt.setUTCDate(dt.getUTCDate() + days);
+    return dt.toISOString().slice(0, 10);
+  };
+  return { pickupDate: shift(base, -beforeDays), returnDate: shift(base, afterDays) };
 }
 
 /**

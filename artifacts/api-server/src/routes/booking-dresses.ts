@@ -1,6 +1,7 @@
 import { Router, type IRouter } from "express";
 import { pool } from "@workspace/db";
 import { verifyToken, getCallerRole } from "./auth";
+import { resolveLifecycleTransition, type LifecycleAction } from "../lib/dress-lifecycle";
 
 const router: IRouter = Router();
 
@@ -44,6 +45,7 @@ router.get("/dresses/:id/schedule", async (req, res) => {
        LEFT JOIN customers c ON c.id = b.customer_id
        WHERE bd.dress_id = $1
          AND bd.status != 'cancelled'
+         AND b.deleted_at IS NULL
          AND bd.return_date >= $2
        ORDER BY bd.pickup_date`,
       [dressId, fromDate]
@@ -71,7 +73,10 @@ router.get("/dresses/:id/conflict", async (req, res) => {
       LEFT JOIN bookings b ON b.id = bd.booking_id
       LEFT JOIN customers c ON c.id = b.customer_id
       WHERE bd.dress_id = $1
-        AND bd.status != 'cancelled'
+        -- CHỈ váy đang chiếm dụng mới gây trùng: bỏ cancelled + returned/ready
+        -- (đã trả/sẵn sàng = váy về kho, không chặn). cleaning VẪN chiếm.
+        AND bd.status NOT IN ('cancelled', 'returned', 'ready')
+        AND b.deleted_at IS NULL
         AND bd.return_date >= $2
         AND bd.pickup_date <= $3
     `;
@@ -144,6 +149,11 @@ router.put("/booking-dresses/:id", async (req, res) => {
     if (body.status !== undefined) add("status", body.status);
     if (body.note !== undefined) add("note", body.note);
     if (body.rentalPrice !== undefined) add("rental_price", String(body.rentalPrice));
+    if (body.actualPickupDate !== undefined) add("actual_pickup_date", body.actualPickupDate || null);
+    if (body.actualReturnDate !== undefined) add("actual_return_date", body.actualReturnDate || null);
+    if (body.preparationNote !== undefined) add("preparation_note", body.preparationNote || null);
+    if (body.returnNote !== undefined) add("return_note", body.returnNote || null);
+    if (body.damageNote !== undefined) add("damage_note", body.damageNote || null);
     if (!sets.length) return res.json({ ok: true });
     const beforeQ = await pool.query(`SELECT dress_id, status FROM booking_dresses WHERE id = $1`, [id]);
     const beforeRow = beforeQ.rows[0];
@@ -158,6 +168,40 @@ router.put("/booking-dresses/:id", async (req, res) => {
       await pool.query(`UPDATE dresses SET usage_count = GREATEST(0, usage_count - 1) WHERE id = $1`, [after.dress_id]);
     }
     res.json(after);
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+// ─── PATCH lifecycle: chuyển trạng thái vòng đời + ghi ngày lấy/trả thực tế ───
+// Hành động từ UI (pick_up / receive_back / start_cleaning / mark_ready / set_preparing).
+// Chỉ đổi trạng thái + ngày thực tế + ghi chú — KHÔNG đụng tiền/booking/công nợ.
+router.patch("/booking-dresses/:id/lifecycle", async (req, res) => {
+  try {
+    const auth = await requireAuth(req);
+    if (!auth.ok) return res.status(auth.status).json({ error: auth.message });
+    const id = +req.params.id;
+    const action = String(req.body?.action || "") as LifecycleAction;
+
+    const cur = await pool.query(`SELECT status FROM booking_dresses WHERE id = $1`, [id]);
+    if (!cur.rows[0]) return res.status(404).json({ error: "Không tìm thấy váy trong đơn" });
+    const currentStatus = cur.rows[0].status as string;
+
+    const transition = resolveLifecycleTransition(action, currentStatus);
+    if (!transition) {
+      return res.status(400).json({ error: `Không thể thực hiện thao tác này khi váy đang ở trạng thái "${currentStatus}"` });
+    }
+
+    const sets: string[] = ["status = $1"];
+    const params: unknown[] = [transition.status];
+    // COALESCE: không ghi đè ngày thực tế đã có (giữ dấu vết lần đầu).
+    if (transition.setActualPickup) { params.push(todayStr()); sets.push(`actual_pickup_date = COALESCE(actual_pickup_date, $${params.length})`); }
+    if (transition.setActualReturn) { params.push(todayStr()); sets.push(`actual_return_date = COALESCE(actual_return_date, $${params.length})`); }
+    if (typeof req.body?.preparationNote === "string") { params.push(req.body.preparationNote); sets.push(`preparation_note = $${params.length}`); }
+    if (typeof req.body?.returnNote === "string") { params.push(req.body.returnNote); sets.push(`return_note = $${params.length}`); }
+    if (typeof req.body?.damageNote === "string") { params.push(req.body.damageNote); sets.push(`damage_note = $${params.length}`); }
+    params.push(id);
+
+    const result = await pool.query(`UPDATE booking_dresses SET ${sets.join(", ")} WHERE id = $${params.length} RETURNING *`, params);
+    res.json(result.rows[0]);
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 

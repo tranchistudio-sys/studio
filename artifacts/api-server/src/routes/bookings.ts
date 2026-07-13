@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { db, pool } from "@workspace/db";
-import { bookingsTable, customersTable, paymentsTable, expensesTable, tasksTable, staffTable, servicePackagesTable, packageItemsTable, photoshopJobsTable, servicesTable, bookingChangeLogTable, contractsTable, bookingDressesTable, bookingItemsTable, staffJobEarningsTable, staffAllowancesTable, attendanceLogsTable } from "@workspace/db/schema";
+import { bookingsTable, customersTable, paymentsTable, expensesTable, tasksTable, staffTable, servicePackagesTable, packageItemsTable, photoshopJobsTable, servicesTable, bookingChangeLogTable, contractsTable, bookingDressesTable, bookingItemsTable, staffJobEarningsTable, staffAllowancesTable, attendanceLogsTable, bookingOccurrencesTable } from "@workspace/db/schema";
 import { eq, and, desc, inArray, or, ilike, sql, asc, gte, lte, isNull, ne } from "drizzle-orm";
 import { isCollectedPayment, money } from "../lib/booking-money";
 import { resolveBookingTotal, summarizeItemsForLog } from "../lib/booking-total";
@@ -370,6 +370,23 @@ router.get("/bookings", async (req, res) => {
     }
   }
 
+  // Ngày thực hiện phụ (dịch vụ nhiều ngày) — batch theo tất cả booking. Thuần
+  // lịch trình, KHÔNG có tiền nên không ảnh hưởng tổng/công nợ/doanh thu.
+  const occByBookingId: Record<number, { id: number; shootDate: string; shootTime: string | null; label: string | null; sortOrder: number }[]> = {};
+  {
+    const allBookingIds = rows.map(r => r.id);
+    if (allBookingIds.length > 0) {
+      const occRows = await db
+        .select({ id: bookingOccurrencesTable.id, bookingId: bookingOccurrencesTable.bookingId, shootDate: bookingOccurrencesTable.shootDate, shootTime: bookingOccurrencesTable.shootTime, label: bookingOccurrencesTable.label, sortOrder: bookingOccurrencesTable.sortOrder })
+        .from(bookingOccurrencesTable)
+        .where(inArray(bookingOccurrencesTable.bookingId, allBookingIds))
+        .orderBy(asc(bookingOccurrencesTable.sortOrder), asc(bookingOccurrencesTable.shootDate), asc(bookingOccurrencesTable.id));
+      for (const o of occRows) {
+        (occByBookingId[o.bookingId] ??= []).push({ id: o.id, shootDate: o.shootDate as string, shootTime: o.shootTime, label: o.label, sortOrder: o.sortOrder });
+      }
+    }
+  }
+
   let bookings = rows.map((b) => {
     const totalAmount = parseFloat(b.totalAmount);
     const discountAmt = parseFloat(b.discountAmount ?? "0");
@@ -427,6 +444,7 @@ router.get("/bookings", async (req, res) => {
       staffStatus: bStaffStatus,
       progressStatus: bProgressStatus,
       shootDuration,
+      occurrences: occByBookingId[b.id] ?? [],
     };
   });
 
@@ -787,6 +805,13 @@ router.get("/bookings/:id", async (req, res) => {
   const paymentBookingId = row.parentId ?? id;
   const payments = await db.select().from(paymentsTable).where(eq(paymentsTable.bookingId, paymentBookingId));
 
+  // Ngày thực hiện phụ (dịch vụ nhiều ngày) của CHÍNH đơn này — thuần lịch, không tiền.
+  const occurrences = await db
+    .select({ id: bookingOccurrencesTable.id, shootDate: bookingOccurrencesTable.shootDate, shootTime: bookingOccurrencesTable.shootTime, label: bookingOccurrencesTable.label, sortOrder: bookingOccurrencesTable.sortOrder })
+    .from(bookingOccurrencesTable)
+    .where(eq(bookingOccurrencesTable.bookingId, id))
+    .orderBy(asc(bookingOccurrencesTable.sortOrder), asc(bookingOccurrencesTable.shootDate), asc(bookingOccurrencesTable.id));
+
   // Expenses: child/standalone = this booking only; parent contract = parent + all children
   let expenseBookingIds: number[] = [id];
   let children: unknown[] = [];
@@ -949,6 +974,7 @@ router.get("/bookings/:id", async (req, res) => {
     siblings,
     parentContract,
     children,
+    occurrences,
   });
   } catch (err) {
     console.error("GET /bookings/:id error:", err);

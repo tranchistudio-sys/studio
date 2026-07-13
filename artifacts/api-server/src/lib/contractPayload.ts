@@ -16,6 +16,7 @@ import {
   contractsTable,
   customersTable,
   bookingsTable,
+  bookingOccurrencesTable,
   paymentsTable,
   servicePackagesTable,
   staffTable,
@@ -82,6 +83,9 @@ export type ContractPayload = {
   studio: typeof STUDIO_INFO;
   customer: { name: string; phone: string | null };
   services: ContractService[];
+  // Lịch thực hiện: ngày chính của (các) dịch vụ + ngày phụ (booking_occurrences),
+  // theo thứ tự. KHÔNG ảnh hưởng tiền — chỉ để hiển thị "Lịch thực hiện" trên HĐ.
+  schedule: { date: string; time: string | null; label: string | null }[];
   money: {
     totalAmount: number;
     discountAmount: number;
@@ -350,6 +354,29 @@ export async function buildContractPayload(
 
   const services = serviceRows.map((b) => buildService(b, pkgMap, mode));
 
+  // ── Lịch thực hiện: ngày chính từng dịch vụ + ngày phụ (occurrences) ────────
+  // Thuần lịch trình, không đọc/không đụng tiền. Thứ tự: theo serviceRows, mỗi
+  // dịch vụ hiện ngày chính rồi tới các ngày phụ của chính nó.
+  const schedule: { date: string; time: string | null; label: string | null }[] = [];
+  const serviceRowIds = serviceRows.map((b) => b.id).filter((n): n is number => n != null);
+  const occByBooking = new Map<number, { shootDate: string; shootTime: string | null; label: string | null }[]>();
+  if (serviceRowIds.length > 0) {
+    const occRows = await db
+      .select({ bookingId: bookingOccurrencesTable.bookingId, shootDate: bookingOccurrencesTable.shootDate, shootTime: bookingOccurrencesTable.shootTime, label: bookingOccurrencesTable.label })
+      .from(bookingOccurrencesTable)
+      .where(inArray(bookingOccurrencesTable.bookingId, serviceRowIds))
+      .orderBy(asc(bookingOccurrencesTable.sortOrder), asc(bookingOccurrencesTable.shootDate), asc(bookingOccurrencesTable.id));
+    for (const o of occRows) {
+      (occByBooking.get(o.bookingId) ?? occByBooking.set(o.bookingId, []).get(o.bookingId)!).push({ shootDate: o.shootDate as string, shootTime: o.shootTime, label: o.label });
+    }
+  }
+  for (const b of serviceRows) {
+    if (b.shootDate) schedule.push({ date: b.shootDate, time: b.shootTime, label: b.serviceLabel || b.packageType || null });
+    for (const o of (b.id != null ? occByBooking.get(b.id) ?? [] : [])) {
+      schedule.push({ date: o.shootDate, time: o.shootTime, label: o.label });
+    }
+  }
+
   // ── Thanh toán ────────────────────────────────────────────────────────────
   let paymentRows: ContractPaymentRow[] = [];
   let paidAmount = 0;
@@ -406,6 +433,7 @@ export async function buildContractPayload(
     studio: STUDIO_INFO,
     customer: { name: c.customerName, phone: c.customerPhone ?? null },
     services,
+    schedule,
     money: { totalAmount, discountAmount, paidAmount, remainingAmount },
     payments: paymentRows,
     signatures: {

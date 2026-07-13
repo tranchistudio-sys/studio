@@ -92,3 +92,23 @@ export type BookingItem = typeof bookingItemsTable.$inferSelect;
 
 export const insertBookingChangeLogSchema = createInsertSchema(bookingChangeLogTable).omit({ id: true, createdAt: true });
 export type InsertBookingChangeLog = z.infer<typeof insertBookingChangeLogSchema>;
+
+// ─── Ngày thực hiện PHỤ của booking (dịch vụ nhiều ngày) ─────────────────────
+// Ngày 1 = bookings.shoot_date/shoot_time (giữ nguyên mọi logic cũ: công nợ,
+// lương, hậu kỳ, hợp đồng). Bảng này CHỈ lưu ngày 2 trở đi — thuần lịch trình
+// + nhãn ("Nhà gái", "Rước dâu"...), KHÔNG có bất kỳ trường tiền nào để không
+// thể nhân đôi doanh thu/công nợ/hoa hồng by-construction.
+export const bookingOccurrencesTable = pgTable("booking_occurrences", {
+  id: serial("id").primaryKey(),
+  bookingId: integer("booking_id").notNull().references(() => bookingsTable.id, { onDelete: "cascade" }),
+  shootDate: date("shoot_date").notNull(),
+  shootTime: text("shoot_time"),
+  label: text("label"),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at"),
+});
+
+export const insertBookingOccurrenceSchema = createInsertSchema(bookingOccurrencesTable).omit({ id: true, createdAt: true });
+export type InsertBookingOccurrence = z.infer<typeof insertBookingOccurrenceSchema>;
+export type BookingOccurrence = typeof bookingOccurrencesTable.$inferSelect;

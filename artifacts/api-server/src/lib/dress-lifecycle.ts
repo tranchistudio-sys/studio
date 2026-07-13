@@ -94,8 +94,8 @@ export function resolveLifecycleTransition(action: LifecycleAction, current: str
   }
 }
 
-/** Gợi ý ngày lấy/trả mặc định từ ngày cưới: lấy trước N ngày, trả sau N ngày. */
-export function suggestDressDates(weddingDate: string, beforeDays = 3, afterDays = 3): { pickupDate: string; returnDate: string } {
+/** Gợi ý ngày lấy/trả mặc định từ ngày cưới: lấy ĐÚNG ngày cưới (nhắc lịch tự lùi 3 ngày), trả sau N ngày. */
+export function suggestDressDates(weddingDate: string, beforeDays = 0, afterDays = 3): { pickupDate: string; returnDate: string } {
   const base = ymd(weddingDate);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(base)) return { pickupDate: "", returnDate: "" };
   const shift = (iso: string, days: number): string => {

@@ -1,4 +1,5 @@
 import { pool } from "@workspace/db";
+import { revenueCountableSql } from "./booking-money";
 
 // ─── Types & constants ───────────────────────────────────────────────────────
 
@@ -34,13 +35,32 @@ function formatDate(d: string): string {
   return `${dt.getDate()}/${dt.getMonth() + 1}/${dt.getFullYear()}`;
 }
 
+// Mốc "hôm nay/tháng này" tính theo giờ Việt Nam, không phụ thuộc TZ server
+// (prod chạy UTC — cùng kỹ thuật với dashboard.ts và revenue/helpers.ts).
+const APP_TZ = "Asia/Ho_Chi_Minh";
+
+function toVNDateStr(d: Date): string {
+  return d.toLocaleDateString("en-CA", { timeZone: APP_TZ }); // "YYYY-MM-DD"
+}
+
+/**
+ * Cột timestamp naive (paid_at, created_at) đang lưu wall-clock UTC → quy đổi
+ * mốc ngày VN ($n dạng 'YYYY-MM-DD') sang UTC trước khi so sánh, độc lập session TZ.
+ */
+function vnBoundToUtc(param: string): string {
+  return `(${param}::timestamp AT TIME ZONE '${APP_TZ}' AT TIME ZONE 'UTC')`;
+}
+
 function monthRange(ref = new Date()) {
-  const y = ref.getFullYear();
-  const m = ref.getMonth() + 1;
+  const [y, m] = toVNDateStr(ref).split("-").map(Number);
   const lastDay = new Date(y, m, 0).getDate();
+  const p = (n: number) => String(n).padStart(2, "0");
+  const [ny, nm] = m === 12 ? [y + 1, 1] : [y, m + 1];
   return {
-    start: `${y}-${String(m).padStart(2, "0")}-01`,
-    end: `${y}-${String(m).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`,
+    start: `${y}-${p(m)}-01`,
+    end: `${y}-${p(m)}-${p(lastDay)}`,
+    // Mốc nửa mở cho cột timestamp: [start, nextStart)
+    nextStart: `${ny}-${p(nm)}-01`,
     label: `tháng ${m}/${y}`,
     year: y,
     month: m,
@@ -64,11 +84,11 @@ function staffSalutation(name: string | null | undefined): string {
 }
 
 function todayStr(): string {
-  return new Date().toISOString().split("T")[0];
+  return toVNDateStr(new Date());
 }
 
 function weekEnd(from = new Date()): string {
-  return new Date(from.getTime() + 7 * 86400000).toISOString().split("T")[0];
+  return toVNDateStr(new Date(from.getTime() + 7 * 86400000));
 }
 
 // ─── Intent classification ─────────────────────────────────────────────────────
@@ -103,7 +123,13 @@ export function classifyIntent(question: string): CopilotIntent {
     q === "xin chao ban";
   if (pureGreeting) return "greeting";
 
-  if (/(no|cong no|no tien|chua tra|dang no|chua thanh toan)/.test(q)) return "debt";
+  // Nhánh debt PHẢI đứng trước revenue: câu chứa từ khóa cả 2 nhánh (vd "doanh thu
+  // chưa thu") là hỏi tiền CHƯA thu về → debt. "(?!\s?xep)" chặn "chưa thu xếp".
+  if (
+    /(no|cong no|no tien|chua tra|dang no|chua thanh toan)/.test(q) ||
+    /(chua thu|phai thu|co the thu|con thu (dc|duoc))(?!\s?xep)/.test(q)
+  )
+    return "debt";
   if (/(doanh thu|thu ve|da thu|tien ve|loi nhuan|loi lo)/.test(q)) return "revenue";
   if (/(di tre|tre gio|muon|cham cong|check in|checkin)/.test(q)) return "staff";
   if (/(tre|qua han|overdue)/.test(q) && /(hau ky|pts|photoshop|retouch|don)/.test(q)) return "post_production";
@@ -128,8 +154,7 @@ export async function getTodayBookings() {
             c.name AS customer_name, c.phone AS customer_phone
      FROM bookings b
      LEFT JOIN customers c ON c.id = b.customer_id
-     WHERE b.shoot_date = $1::date AND b.status != 'cancelled'
-       AND COALESCE(b.is_parent_contract, false) = false
+     WHERE b.shoot_date = $1::date AND ${revenueCountableSql("b")}
      ORDER BY b.shoot_time NULLS LAST, b.id
      LIMIT 30`,
     [today],
@@ -151,8 +176,7 @@ export async function getMonthBookings(ref = new Date()) {
      FROM bookings b
      LEFT JOIN customers c ON c.id = b.customer_id
      WHERE b.shoot_date >= $1::date AND b.shoot_date <= $2::date
-       AND b.status != 'cancelled'
-       AND COALESCE(b.is_parent_contract, false) = false
+       AND ${revenueCountableSql("b")}
      ORDER BY b.shoot_date, b.shoot_time NULLS LAST
      LIMIT 50`,
     [start, end],
@@ -167,19 +191,23 @@ export async function getMonthBookings(ref = new Date()) {
 }
 
 export async function getRevenueSummary(ref = new Date()) {
-  const { start, end, label } = monthRange(ref);
+  const { start, end, nextStart, label } = monthRange(ref);
+  // paid_at là timestamp naive-UTC → ranh giới tháng VN phải quy đổi + nửa mở,
+  // nếu không phiếu thu từ 07:00 sáng ngày cuối tháng trở đi bị rớt khỏi tháng.
+  const paidCond = `paid_at >= ${vnBoundToUtc("$1")} AND paid_at < ${vnBoundToUtc("$2")}
+     AND COALESCE(status, 'active') != 'voided'`;
   const revR = await pool.query(
-    `SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE paid_at >= $1 AND paid_at <= $2`,
-    [start, end],
+    `SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE ${paidCond}`,
+    [start, nextStart],
   );
   const ordR = await pool.query(
-    `SELECT COUNT(*) AS cnt FROM bookings
-     WHERE shoot_date >= $1 AND shoot_date <= $2 AND status != 'cancelled'`,
+    `SELECT COUNT(*) AS cnt FROM bookings b
+     WHERE b.shoot_date >= $1::date AND b.shoot_date <= $2::date AND ${revenueCountableSql("b")}`,
     [start, end],
   );
   const paidR = await pool.query(
-    `SELECT COUNT(*) AS cnt FROM payments WHERE paid_at >= $1 AND paid_at <= $2`,
-    [start, end],
+    `SELECT COUNT(*) AS cnt FROM payments WHERE ${paidCond}`,
+    [start, nextStart],
   );
   return {
     label,
@@ -189,36 +217,63 @@ export async function getRevenueSummary(ref = new Date()) {
   };
 }
 
-export async function getUnpaidCustomers(limit = 15) {
+// Nợ per-booking theo ĐÚNG chuẩn dashboard/simple (customerDebt): NET − đã thu.
+const BOOKING_DEBT_SQL =
+  "GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0) - COALESCE(b.paid_amount, 0))";
+
+/**
+ * Khách còn nợ trên tập đơn countable chuẩn (loại thùng rác/hủy/báo giá tạm/đơn CHA
+ * tổng/con mồ côi — cùng predicate với dashboard, chống cộng trùng cha–con PR #65).
+ * @param range giới hạn "đơn phát sinh trong tháng" theo shoot_date (mốc ngày VN).
+ */
+export async function getUnpaidCustomers(
+  limit = 15,
+  range?: { start: string; end: string; label: string },
+) {
+  const rangeCond = range ? ` AND b.shoot_date >= $2::date AND b.shoot_date <= $3::date` : "";
   const r = await pool.query(
-    `SELECT c.name, c.phone,
-            SUM(GREATEST(0,
-              CAST(b.total_amount AS numeric) - CAST(b.discount_amount AS numeric) - CAST(b.paid_amount AS numeric)
-            )) AS debt
+    `SELECT c.name, c.phone, SUM(${BOOKING_DEBT_SQL}) AS debt
      FROM bookings b
      JOIN customers c ON c.id = b.customer_id
-     WHERE b.status != 'cancelled'
+     WHERE ${revenueCountableSql("b")}${rangeCond}
      GROUP BY c.id, c.name, c.phone
-     HAVING SUM(GREATEST(0,
-       CAST(b.total_amount AS numeric) - CAST(b.discount_amount AS numeric) - CAST(b.paid_amount AS numeric)
-     )) > 0
+     HAVING SUM(${BOOKING_DEBT_SQL}) > 0
      ORDER BY debt DESC
      LIMIT $1`,
-    [limit],
+    range ? [limit, range.start, range.end] : [limit],
   );
   const rows = r.rows as Record<string, unknown>[];
   const lines = rows.map(d => `• ${d.name} (${d.phone}): còn nợ ${formatVND(Number(d.debt))}`);
   const totalR = await pool.query(
-    `SELECT COALESCE(SUM(GREATEST(0,
-      CAST(b.total_amount AS numeric) - CAST(b.discount_amount AS numeric) - CAST(b.paid_amount AS numeric)
-    )), 0) AS total_debt
-     FROM bookings b WHERE b.status != 'cancelled'`,
+    `SELECT COUNT(*) FILTER (WHERE ${BOOKING_DEBT_SQL} > 0) AS order_cnt,
+            COALESCE(SUM(${BOOKING_DEBT_SQL}), 0) AS total_debt
+     FROM bookings b
+     WHERE ${revenueCountableSql("b")}${range ? " AND b.shoot_date >= $1::date AND b.shoot_date <= $2::date" : ""}`,
+    range ? [range.start, range.end] : [],
   );
-  const totalDebt = Number((totalR.rows[0] as Record<string, unknown>)?.total_debt ?? 0);
-  return { count: rows.length, totalDebt, lines };
+  const totalRow = totalR.rows[0] as Record<string, unknown> | undefined;
+  return {
+    count: rows.length,
+    totalDebt: Number(totalRow?.total_debt ?? 0),
+    orderCount: Number(totalRow?.order_cnt ?? 0),
+    lines,
+  };
+}
+
+/**
+ * customer_deadline / deadline_system là cột TEXT default '' — dữ liệu thật lẫn '',
+ * 'YYYY-MM-DD' và 'YYYY-MM-DD HH:MM:SS'. Cast thẳng ::date nổ 22007 với '' (sự cố
+ * Copilot "Không đọc được dữ liệu studio") → chỉ cast phần khớp dạng ngày, mọi giá
+ * trị khác thành NULL (NULL so sánh = false, không crash).
+ */
+function safeDateSql(col: string): string {
+  return `substring(${col} from '^\\d{4}-\\d{2}-\\d{2}')`;
 }
 
 export async function getOverduePostProductionJobs(limit = 15) {
+  const cd = safeDateSql("pj.customer_deadline");
+  const ds = safeDateSql("pj.deadline_system");
+  const vnToday = `(NOW() AT TIME ZONE '${APP_TZ}')::date`;
   const r = await pool.query(
     `SELECT pj.job_code, b.order_code, c.name AS customer_name,
             pj.customer_deadline, pj.deadline_system, pj.status,
@@ -228,11 +283,8 @@ export async function getOverduePostProductionJobs(limit = 15) {
      LEFT JOIN customers c ON c.id = b.customer_id
      WHERE pj.is_active = true
        AND pj.status NOT IN ('xong_show', 'hoan_thanh')
-       AND (
-         (pj.customer_deadline IS NOT NULL AND pj.customer_deadline::date < CURRENT_DATE)
-         OR (pj.deadline_system IS NOT NULL AND pj.deadline_system::date < CURRENT_DATE)
-       )
-     ORDER BY COALESCE(pj.customer_deadline, pj.deadline_system)
+       AND (${cd}::date < ${vnToday} OR ${ds}::date < ${vnToday})
+     ORDER BY COALESCE(${cd}, ${ds}) NULLS LAST
      LIMIT $1`,
     [limit],
   );
@@ -264,22 +316,24 @@ export async function getStaffWorkload(limit = 10) {
 }
 
 export async function getAttendanceSummary(ref = new Date()) {
-  const { start, end, label } = monthRange(ref);
+  const { start, nextStart, label } = monthRange(ref);
+  // created_at naive-UTC: đổi sang giờ VN phải qua 'UTC' trước ('AT TIME ZONE VN'
+  // trực tiếp là SAI CHIỀU — check-in buổi sáng bị đếm nhầm thành đi trễ).
   const r = await pool.query(
     `SELECT s.name,
             COUNT(*) FILTER (
               WHERE al.type = 'check_in'
-                AND (al.created_at AT TIME ZONE 'Asia/Ho_Chi_Minh')::time > TIME '08:10:00'
+                AND (al.created_at AT TIME ZONE 'UTC' AT TIME ZONE '${APP_TZ}')::time > TIME '08:10:00'
             ) AS late_count,
             COUNT(*) FILTER (WHERE al.type = 'check_in') AS checkins
      FROM attendance_logs al
      JOIN staff s ON s.id = al.staff_id
-     WHERE al.created_at >= $1::date AND al.created_at < ($2::date + INTERVAL '1 day')
+     WHERE al.created_at >= ${vnBoundToUtc("$1")} AND al.created_at < ${vnBoundToUtc("$2")}
      GROUP BY s.id, s.name
      HAVING COUNT(*) FILTER (WHERE al.type = 'check_in') > 0
      ORDER BY late_count DESC, checkins DESC
      LIMIT 10`,
-    [start, end],
+    [start, nextStart],
   );
   const rows = r.rows as Record<string, unknown>[];
   const lateLines = rows
@@ -298,7 +352,7 @@ export async function getServicePerformance(ref = new Date()) {
      FROM bookings b
      LEFT JOIN service_packages sp ON sp.id = b.service_package_id
      WHERE b.shoot_date >= $1::date AND b.shoot_date <= $2::date
-       AND b.status != 'cancelled'
+       AND ${revenueCountableSql("b")}
      GROUP BY COALESCE(sp.name, b.package_type, 'Khác')
      ORDER BY booking_count DESC
      LIMIT 10`,
@@ -337,8 +391,7 @@ async function getWeekSchedule() {
     `SELECT b.shoot_date, b.shoot_time, b.order_code, b.package_type, c.name AS customer_name
      FROM bookings b
      LEFT JOIN customers c ON c.id = b.customer_id
-     WHERE b.shoot_date BETWEEN $1::date AND $2::date AND b.status != 'cancelled'
-       AND COALESCE(b.is_parent_contract, false) = false
+     WHERE b.shoot_date BETWEEN $1::date AND $2::date AND ${revenueCountableSql("b")}
      ORDER BY b.shoot_date, b.shoot_time NULLS LAST
      LIMIT 40`,
     [today, end],
@@ -358,11 +411,9 @@ async function searchCustomer(q: string): Promise<string | null> {
     const r = await pool.query(
       `SELECT c.name, c.phone,
               COUNT(b.id) AS booking_count,
-              COALESCE(SUM(GREATEST(0,
-                CAST(b.total_amount AS numeric) - CAST(b.discount_amount AS numeric) - CAST(b.paid_amount AS numeric)
-              )), 0) AS debt
+              COALESCE(SUM(${BOOKING_DEBT_SQL}), 0) AS debt
        FROM customers c
-       LEFT JOIN bookings b ON b.customer_id = c.id AND b.status != 'cancelled'
+       LEFT JOIN bookings b ON b.customer_id = c.id AND ${revenueCountableSql("b")}
        WHERE c.phone LIKE $1
        GROUP BY c.id, c.name, c.phone
        LIMIT 5`,
@@ -405,12 +456,21 @@ async function answerSchedule(q: string): Promise<string> {
   return `📅 **Hôm nay ${formatDate(today.date)}:** ${today.count} show\n\n${today.lines.join("\n") || "• Không có show hôm nay"}\n\n💡 Xem chi tiết từng đơn tại module Lịch chụp.`;
 }
 
-async function answerDebt(): Promise<string> {
-  const data = await getUnpaidCustomers();
+async function answerDebt(q: string): Promise<string> {
+  // "tháng này" → chỉ đơn PHÁT SINH trong tháng (theo shoot_date, giờ VN) —
+  // nói rõ phạm vi để không lẫn với nợ tồn toàn hệ thống.
+  const range = /thang nay/.test(q) ? monthRange() : undefined;
+  const data = await getUnpaidCustomers(15, range);
+  if (range) {
+    if (!data.orderCount) {
+      return `✅ **${range.label}: các đơn phát sinh trong tháng đã thu đủ.**\n\n📌 Phạm vi: chỉ tính đơn có ngày chụp trong ${range.label}. Nợ tồn các tháng trước (nếu có) không nằm trong số này — hỏi "khách nào đang nợ tiền" để xem toàn bộ.`;
+    }
+    return `💰 **${range.label}: ${data.orderCount} đơn chưa thu đủ** — còn có thể thu ${formatVND(data.totalDebt)} (${data.count} khách)\n\n${data.lines.join("\n")}\n\n📌 Phạm vi: đơn phát sinh trong ${range.label} (đã loại đơn hủy/xóa/báo giá tạm, không cộng trùng hợp đồng cha–con).\n💡 Muốn xem nợ tồn toàn bộ mọi tháng: hỏi "khách nào đang nợ tiền".`;
+  }
   if (!data.count) {
     return "✅ **Không có khách nợ** — tất cả đơn đã thanh toán đủ trong hệ thống.";
   }
-  return `💰 **${data.count} khách còn nợ** — tổng: ${formatVND(data.totalDebt)}\n\n${data.lines.join("\n")}\n\n⚠️ Ưu tiên nhắc khách đầu danh sách.\n💡 Vào module Khách hàng để ghi nhận thanh toán.`;
+  return `💰 **${data.count} khách còn nợ** — tổng: ${formatVND(data.totalDebt)} (${data.orderCount} đơn chưa thu đủ)\n\n${data.lines.join("\n")}\n\n📌 Phạm vi: nợ tồn toàn hệ thống tính đến hiện tại, không giới hạn tháng.\n⚠️ Ưu tiên nhắc khách đầu danh sách.\n💡 Vào module Khách hàng để ghi nhận thanh toán.`;
 }
 
 async function answerRevenue(q: string): Promise<string> {
@@ -480,31 +540,54 @@ async function answerCustomer(q: string): Promise<string> {
 }
 
 
+/**
+ * Một tool lỗi KHÔNG được giết cả câu trả lời tổng quan/phân tích (sự cố prod:
+ * Promise.all chết chùm vì 1 query hỏng) — trả null + log lỗi thật để tra sau.
+ */
+async function safeTool<T>(name: string, run: Promise<T>): Promise<T | null> {
+  try {
+    return await run;
+  } catch (err) {
+    console.error(`studio-copilot tool ${name} error:`, err);
+    return null;
+  }
+}
+
+const NO_DATA = "(tạm không đọc được mục này)";
+
 async function answerOverview(q: string): Promise<string> {
   const scope = detectOverviewScope(q) ?? "general";
   const isToday = scope === "today";
+  const mLabel = monthRange().label;
   const label = isToday
     ? `hôm nay ${formatDate(todayStr())}`
     : scope === "month"
-      ? monthRange().label
+      ? mLabel
       : `studio — ${formatDate(todayStr())}`;
 
   const [rev, debt, today, month, overdue, workload, att] = await Promise.all([
-    getRevenueSummary(),
-    getUnpaidCustomers(3),
-    getTodayBookings(),
-    getMonthBookings(),
-    getOverduePostProductionJobs(5),
-    getStaffWorkload(3),
-    getAttendanceSummary(),
+    safeTool("revenue", getRevenueSummary()),
+    safeTool("debt", getUnpaidCustomers(3)),
+    safeTool("todaySchedule", getTodayBookings()),
+    safeTool("monthSchedule", getMonthBookings()),
+    safeTool("overduePts", getOverduePostProductionJobs(5)),
+    safeTool("workload", getStaffWorkload(3)),
+    safeTool("attendance", getAttendanceSummary()),
   ]);
 
-  const scheduleCount = isToday ? today.count : month.count;
   const scheduleNote = isToday
-    ? (today.count ? `${today.count} show` : "không có show")
-    : (month.count ? `${month.count} buổi chụp` : "chưa có lịch");
+    ? today
+      ? today.count
+        ? `${today.count} show`
+        : "không có show"
+      : NO_DATA
+    : month
+      ? month.count
+        ? `${month.count} buổi chụp`
+        : "chưa có lịch"
+      : NO_DATA;
 
-  const ptsActive = workload.lines.length
+  const ptsActive = workload?.lines.length
     ? workload.lines.reduce((sum, line) => {
         const m = line.match(/: (\d+) việc/);
         return sum + (m ? Number(m[1]) : 0);
@@ -512,34 +595,47 @@ async function answerOverview(q: string): Promise<string> {
     : 0;
 
   const summaryLines = [
-    `• **Doanh thu ${rev.label}:** ${formatVND(rev.revenue)} (${rev.orderCount} đơn chụp)`,
-    `• **Lịch ${isToday ? "hôm nay" : scope === "month" ? month.label : "hôm nay"}:** ${scheduleNote}`,
-    `• **Công nợ:** ${debt.count ? `${debt.count} khách — ${formatVND(debt.totalDebt)}` : "không có"}`,
-    `• **Hậu kỳ:** ${ptsActive} việc đang làm${overdue.count ? `, **${overdue.count} đơn trễ**` : ""}`,
-    workload.top
-      ? `• **Nhân sự HK:** ${workload.top.staff_name} nhiều việc nhất (${workload.top.job_count} job)`
-      : `• **Nhân sự HK:** không có việc tồn`,
-    att.lateLines.length
-      ? `• **Chấm công ${att.label}:** ${att.lateLines[0].replace("• ", "")}`
-      : att.hasData
-        ? `• **Chấm công ${att.label}:** không ai đi trễ sau 08:10`
-        : `• **Chấm công:** chưa có dữ liệu check-in`,
+    rev
+      ? `• **Doanh thu ${rev.label}:** ${formatVND(rev.revenue)} (${rev.orderCount} đơn chụp)`
+      : `• **Doanh thu ${mLabel}:** ${NO_DATA}`,
+    `• **Lịch ${isToday ? "hôm nay" : scope === "month" ? mLabel : "hôm nay"}:** ${scheduleNote}`,
+    debt
+      ? `• **Công nợ:** ${debt.count ? `${debt.count} khách — ${formatVND(debt.totalDebt)}` : "không có"}`
+      : `• **Công nợ:** ${NO_DATA}`,
+    workload && overdue
+      ? `• **Hậu kỳ:** ${ptsActive} việc đang làm${overdue.count ? `, **${overdue.count} đơn trễ**` : ""}`
+      : `• **Hậu kỳ:** ${NO_DATA}`,
+    workload
+      ? workload.top
+        ? `• **Nhân sự HK:** ${workload.top.staff_name} nhiều việc nhất (${workload.top.job_count} job)`
+        : `• **Nhân sự HK:** không có việc tồn`
+      : `• **Nhân sự HK:** ${NO_DATA}`,
+    att
+      ? att.lateLines.length
+        ? `• **Chấm công ${att.label}:** ${att.lateLines[0].replace("• ", "")}`
+        : att.hasData
+          ? `• **Chấm công ${att.label}:** không ai đi trễ sau 08:10`
+          : `• **Chấm công:** chưa có dữ liệu check-in`
+      : `• **Chấm công:** ${NO_DATA}`,
   ];
 
   const issues: string[] = [];
-  if (overdue.count > 0) issues.push(`🚨 **${overdue.count} đơn hậu kỳ trễ** — ${overdue.lines.slice(0, 2).map(l => l.replace("• ", "")).join("; ")}`);
-  if (debt.count > 0) issues.push(`💰 Công nợ **${formatVND(debt.totalDebt)}** — ${debt.lines.slice(0, 2).map(l => l.replace("• ", "")).join("; ")}`);
-  if (isToday && today.count >= 3) issues.push(`📅 Hôm nay **${today.count} show** — cần sắp nhân sự & thiết bị`);
-  if (workload.top && Number(workload.top.job_count) >= 5) issues.push(`👷 ${workload.top.staff_name} đang **${workload.top.job_count}** việc HK — cân tải`);
-  if (att.lateLines.length >= 2) issues.push(`⏰ Nhiều người đi trễ tháng này — xem module Chấm công`);
+  if (overdue && overdue.count > 0) issues.push(`🚨 **${overdue.count} đơn hậu kỳ trễ** — ${overdue.lines.slice(0, 2).map(l => l.replace("• ", "")).join("; ")}`);
+  if (debt && debt.count > 0) issues.push(`💰 Công nợ **${formatVND(debt.totalDebt)}** — ${debt.lines.slice(0, 2).map(l => l.replace("• ", "")).join("; ")}`);
+  if (isToday && today && today.count >= 3) issues.push(`📅 Hôm nay **${today.count} show** — cần sắp nhân sự & thiết bị`);
+  if (workload?.top && Number(workload.top.job_count) >= 5) issues.push(`👷 ${workload.top.staff_name} đang **${workload.top.job_count}** việc HK — cân tải`);
+  if (att && att.lateLines.length >= 2) issues.push(`⏰ Nhiều người đi trễ tháng này — xem module Chấm công`);
+  if (!rev || !debt || !today || !month || !overdue || !workload || !att) {
+    issues.push("⚠️ Một phần dữ liệu tạm không đọc được — số liệu phía trên có thể thiếu");
+  }
   if (!issues.length) issues.push("✅ Không có vấn đề cấp bách — vận hành ổn định");
 
   const priorities: string[] = [];
-  if (overdue.count > 0) priorities.push(`1. Xử lý **${overdue.count} đơn trễ hậu kỳ** trước`);
-  if (debt.count > 0) priorities.push(`${priorities.length + 1}. Nhắc thu công nợ — ưu tiên khách đầu danh sách`);
-  if (isToday && today.count > 0) priorities.push(`${priorities.length + 1}. Chuẩn bị **${today.count} show hôm nay**`);
-  else if (!isToday && month.count > 0) priorities.push(`${priorities.length + 1}. Rà soát lịch **${month.label}** (${month.count} buổi)`);
-  if (workload.top && Number(workload.top.job_count) >= 4) priorities.push(`${priorities.length + 1}. Hỗ trợ **${workload.top.staff_name}** giảm tải hậu kỳ`);
+  if (overdue && overdue.count > 0) priorities.push(`1. Xử lý **${overdue.count} đơn trễ hậu kỳ** trước`);
+  if (debt && debt.count > 0) priorities.push(`${priorities.length + 1}. Nhắc thu công nợ — ưu tiên khách đầu danh sách`);
+  if (isToday && today && today.count > 0) priorities.push(`${priorities.length + 1}. Chuẩn bị **${today.count} show hôm nay**`);
+  else if (!isToday && month && month.count > 0) priorities.push(`${priorities.length + 1}. Rà soát lịch **${month.label}** (${month.count} buổi)`);
+  if (workload?.top && Number(workload.top.job_count) >= 4) priorities.push(`${priorities.length + 1}. Hỗ trợ **${workload.top.staff_name}** giảm tải hậu kỳ`);
   if (!priorities.length) priorities.push("1. Chăm sóc khách mới & cập nhật tiến độ đơn đang làm");
 
   return `📊 **Tổng quan ${label}**
@@ -556,57 +652,62 @@ ${priorities.join("\n")}`;
 
 async function answerAnalysis(): Promise<string> {
   const [today, debt, overdue, workload, perf] = await Promise.all([
-    getTodayBookings(),
-    getUnpaidCustomers(3),
-    getOverduePostProductionJobs(5),
-    getStaffWorkload(3),
-    getServicePerformance(),
+    safeTool("todaySchedule", getTodayBookings()),
+    safeTool("debt", getUnpaidCustomers(3)),
+    safeTool("overduePts", getOverduePostProductionJobs(5)),
+    safeTool("workload", getStaffWorkload(3)),
+    safeTool("servicePerf", getServicePerformance()),
   ]);
 
   const priorities: string[] = [];
-  if (overdue.count > 0) priorities.push(`1. **Hậu kỳ trễ** (${overdue.count} đơn) — xử lý ngay: ${overdue.lines.slice(0, 2).join("; ")}`);
-  if (debt.count > 0) priorities.push(`2. **Thu công nợ** — tổng ${formatVND(debt.totalDebt)}, ưu tiên: ${debt.lines.slice(0, 2).join("; ")}`);
-  if (today.count > 0) priorities.push(`3. **Lịch hôm nay** — ${today.count} show, chuẩn bị nhân sự & thiết bị`);
-  if (workload.top) priorities.push(`4. **Cân tải hậu kỳ** — ${workload.top.staff_name} đang ${workload.top.job_count} việc`);
-  if (perf.top) priorities.push(`5. **Gói bán chạy** — ${perf.top.package_name} (${perf.top.booking_count} đơn ${perf.label})`);
+  if (overdue && overdue.count > 0) priorities.push(`1. **Hậu kỳ trễ** (${overdue.count} đơn) — xử lý ngay: ${overdue.lines.slice(0, 2).join("; ")}`);
+  if (debt && debt.count > 0) priorities.push(`2. **Thu công nợ** — tổng ${formatVND(debt.totalDebt)}, ưu tiên: ${debt.lines.slice(0, 2).join("; ")}`);
+  if (today && today.count > 0) priorities.push(`3. **Lịch hôm nay** — ${today.count} show, chuẩn bị nhân sự & thiết bị`);
+  if (workload?.top) priorities.push(`4. **Cân tải hậu kỳ** — ${workload.top.staff_name} đang ${workload.top.job_count} việc`);
+  if (perf?.top) priorities.push(`5. **Gói bán chạy** — ${perf.top.package_name} (${perf.top.booking_count} đơn ${perf.label})`);
+
+  const degraded = !today || !debt || !overdue || !workload || !perf
+    ? "\n\n⚠️ Một phần dữ liệu tạm không đọc được — danh sách có thể thiếu mục."
+    : "";
 
   if (!priorities.length) {
-    return "📊 Tuần này hệ thống ít việc cấp bách — tập trung chăm sóc khách mới và cập nhật bảng giá.";
+    return `📊 Tuần này hệ thống ít việc cấp bách — tập trung chăm sóc khách mới và cập nhật bảng giá.${degraded}`;
   }
 
-  return `📊 **Ưu tiên tuần này** (từ dữ liệu thật):\n\n${priorities.join("\n")}\n\n💡 Hỏi chi tiết từng mục: lịch hôm nay, công nợ, đơn trễ HK...`;
+  return `📊 **Ưu tiên tuần này** (từ dữ liệu thật):\n\n${priorities.join("\n")}\n\n💡 Hỏi chi tiết từng mục: lịch hôm nay, công nợ, đơn trễ HK...${degraded}`;
 }
 
 /** Dữ liệu gộp cho LLM khi intent = analysis */
 export async function buildAnalysisContext(): Promise<string> {
   const [today, debt, overdue, workload, att, perf, rev] = await Promise.all([
-    getTodayBookings(),
-    getUnpaidCustomers(5),
-    getOverduePostProductionJobs(8),
-    getStaffWorkload(5),
-    getAttendanceSummary(),
-    getServicePerformance(),
-    getRevenueSummary(),
+    safeTool("todaySchedule", getTodayBookings()),
+    safeTool("debt", getUnpaidCustomers(5)),
+    safeTool("overduePts", getOverduePostProductionJobs(8)),
+    safeTool("workload", getStaffWorkload(5)),
+    safeTool("attendance", getAttendanceSummary()),
+    safeTool("servicePerf", getServicePerformance()),
+    safeTool("revenue", getRevenueSummary()),
   ]);
+  const mLabel = monthRange().label;
   return `=== DỮ LIỆU PHÂN TÍCH AMAZING STUDIO ===
-Hôm nay (${formatDate(today.date)}): ${today.count} show
-${today.lines.slice(0, 5).join("\n") || "(không có show)"}
+Hôm nay (${formatDate(todayStr())}): ${today ? `${today.count} show` : NO_DATA}
+${today ? today.lines.slice(0, 5).join("\n") || "(không có show)" : ""}
 
-Doanh thu ${rev.label}: ${formatVND(rev.revenue)} (${rev.orderCount} đơn chụp)
+Doanh thu ${rev?.label ?? mLabel}: ${rev ? `${formatVND(rev.revenue)} (${rev.orderCount} đơn chụp)` : NO_DATA}
 
-Công nợ: ${debt.count} khách, tổng ${formatVND(debt.totalDebt)}
-${debt.lines.join("\n") || "(không nợ)"}
+Công nợ: ${debt ? `${debt.count} khách, tổng ${formatVND(debt.totalDebt)}` : NO_DATA}
+${debt ? debt.lines.join("\n") || "(không nợ)" : ""}
 
-Đơn trễ hậu kỳ: ${overdue.count}
-${overdue.lines.join("\n") || "(không trễ)"}
+Đơn trễ hậu kỳ: ${overdue ? overdue.count : NO_DATA}
+${overdue ? overdue.lines.join("\n") || "(không trễ)" : ""}
 
 Tải hậu kỳ:
-${workload.lines.join("\n") || "(không có việc)"}
+${workload ? workload.lines.join("\n") || "(không có việc)" : NO_DATA}
 
-Chấm công ${att.label}: ${att.lateLines.join("\n") || "(không đi trễ hoặc chưa có dữ liệu)"}
+Chấm công ${att?.label ?? mLabel}: ${att ? att.lateLines.join("\n") || "(không đi trễ hoặc chưa có dữ liệu)" : NO_DATA}
 
-Gói bán ${perf.label}:
-${perf.lines.slice(0, 5).join("\n") || "(chưa có đơn)"}`;
+Gói bán ${perf?.label ?? mLabel}:
+${perf ? perf.lines.slice(0, 5).join("\n") || "(chưa có đơn)" : NO_DATA}`;
 }
 
 // ─── Main entry ────────────────────────────────────────────────────────────────
@@ -640,7 +741,7 @@ export async function answerStudioCopilot(
         answer = await answerSchedule(q);
         break;
       case "debt":
-        answer = await answerDebt();
+        answer = await answerDebt(q);
         break;
       case "revenue":
         answer = await answerRevenue(q);

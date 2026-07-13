@@ -70,6 +70,10 @@ function groupAllRequirePrinting(pkgs: ServicePackage[]): boolean {
   return pkgs.length > 0 && pkgs.every(p => p.requiresPrinting === true);
 }
 
+function groupAllWarnUpcomingShow(pkgs: ServicePackage[]): boolean {
+  return pkgs.length > 0 && pkgs.every(p => p.warnUpcomingShow === true);
+}
+
 function defaultRequiresPostProductionByGroupName(groupName: string | null | undefined): boolean {
   if (!groupName) return false;
   const n = groupName.trim().toUpperCase();
@@ -353,6 +357,50 @@ export default function PricingPage() {
     },
   });
 
+  // Bật/tắt cảnh báo lấy/trả váy trên Lịch cho CẢ NHÓM (warn_upcoming_show per gói).
+  const toggleGroupWarn = useMutation({
+    mutationFn: async ({ packageIds, enable }: { packageIds: number[]; enable: boolean }) => {
+      const tok = getAuthToken(token);
+      if (!tok) throw new Error("Chưa đăng nhập — vui lòng đăng nhập lại");
+      if (packageIds.length === 0) throw new Error("Nhóm không có gói dịch vụ");
+      const headers = { "Content-Type": "application/json", Authorization: `Bearer ${tok}` };
+      return Promise.all(packageIds.map(id =>
+        fetch(`${BASE}/api/service-packages/${id}`, {
+          method: "PUT", headers,
+          body: JSON.stringify({ warnUpcomingShow: enable }),
+        }).then(async r => {
+          if (!r.ok) {
+            const ct = r.headers.get("content-type") ?? "";
+            if (ct.includes("application/json")) {
+              const body = await r.json().catch(() => ({})) as Record<string, unknown>;
+              throw new Error(String(body.error ?? "Lỗi lưu gói"));
+            }
+            throw new Error(`Lỗi lưu gói (${r.status})`);
+          }
+          return r.json() as Promise<ServicePackage>;
+        }),
+      ));
+    },
+    onMutate: async ({ packageIds, enable }) => {
+      await qc.cancelQueries({ queryKey: ["service-packages"] });
+      const prev = qc.getQueryData<ServicePackage[]>(["service-packages"]);
+      qc.setQueryData<ServicePackage[]>(["service-packages"], (old) =>
+        (old ?? []).map(p => packageIds.includes(p.id) ? { ...p, warnUpcomingShow: enable } : p),
+      );
+      if (selectedPkg && packageIds.includes(selectedPkg.id)) {
+        setSelectedPkg(sp => sp ? { ...sp, warnUpcomingShow: enable } : sp);
+      }
+      return { prev };
+    },
+    onSuccess: (results: ServicePackage[]) => {
+      mergePackagesIntoCache(qc, results.map(normalizeServicePackage));
+    },
+    onError: (err, _vars, ctx) => {
+      if (ctx?.prev) qc.setQueryData(["service-packages"], ctx.prev);
+      alert("Lưu thất bại: " + err.message);
+    },
+  });
+
   const toggleGroupPostProduction = useMutation({
     mutationFn: async ({ packageIds, groupId, enable }: { packageIds: number[]; groupId: number; enable: boolean }) => {
       const tok = getAuthToken(token);
@@ -543,6 +591,8 @@ export default function PricingPage() {
                 const groupPostMixed = allPkgsInGroup.some(p => p.requiresPostProduction === false) && allPkgsInGroup.some(p => p.requiresPostProduction !== false);
                 const groupHasPrinting = groupAllRequirePrinting(allPkgsInGroup);
                 const groupPrintMixed = allPkgsInGroup.some(p => p.requiresPrinting !== true) && allPkgsInGroup.some(p => p.requiresPrinting === true);
+                const groupHasWarn = groupAllWarnUpcomingShow(allPkgsInGroup);
+                const groupWarnMixed = allPkgsInGroup.some(p => p.warnUpcomingShow !== true) && allPkgsInGroup.some(p => p.warnUpcomingShow === true);
                 return (
                   <div key={group.id} className="border border-border rounded-xl overflow-hidden bg-card">
                     <div className="flex items-center justify-between px-4 py-3 bg-muted/20 hover:bg-muted/40 transition-colors gap-3">
@@ -633,6 +683,33 @@ export default function PricingPage() {
                           >
                             <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform mt-1 ${
                               groupHasPrinting ? "translate-x-6" : "translate-x-1"
+                            }`} />
+                          </button>
+                          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium hidden lg:inline ${
+                            groupWarnMixed ? "bg-amber-100 text-amber-800" : groupHasWarn ? "bg-amber-100 text-amber-700" : "bg-muted text-muted-foreground"
+                          }`} title="Cảnh báo lấy/trả váy trên Lịch: nhắc 3 ngày trước ngày lấy + đòi váy khi quá hạn trả">
+                            {groupWarnMixed ? "CB lẫn" : groupHasWarn ? "Cảnh báo" : "Không CB"}
+                          </span>
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={groupHasWarn}
+                            aria-label={`Bật tắt cảnh báo lấy/trả váy trên Lịch cho nhóm ${group.name}`}
+                            disabled={toggleGroupWarn.isPending}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              toggleGroupWarn.mutate({
+                                packageIds: allPkgsInGroup.map(p => p.id),
+                                enable: !groupHasWarn,
+                              });
+                            }}
+                            className={`relative inline-flex h-7 w-12 flex-shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+                              groupHasWarn ? "bg-amber-400" : "bg-muted-foreground/30"
+                            }`}
+                          >
+                            <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform mt-1 ${
+                              groupHasWarn ? "translate-x-6" : "translate-x-1"
                             }`} />
                           </button>
                           {/* Ưu đãi nhóm (mở GroupModal — có section giảm giá nhóm) */}

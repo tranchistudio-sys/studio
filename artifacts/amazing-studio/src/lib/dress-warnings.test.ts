@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { shiftYmd, daysBetween, buildDressWarningsByDate, type DressWarnRow } from "./dress-warnings";
+import { shiftYmd, daysBetween, buildDressWarningsByDate, type RentalReminder, type OverdueReminder } from "./dress-warnings";
 
 describe("shiftYmd", () => {
   it("cộng/trừ ngày, qua ranh giới tháng", () => {
@@ -18,70 +18,71 @@ describe("daysBetween", () => {
   });
 });
 
-const row = (o: Partial<DressWarnRow>): DressWarnRow => ({
-  id: 1, bookingId: 10, orderCode: "DH0254", customerName: "HAZI",
-  pickupDate: "2026-08-05", returnDate: "2026-08-11", status: "reserved", actualReturnDate: null, ...o,
+const rental = (o: Partial<RentalReminder>): RentalReminder => ({
+  kind: "rental", bookingId: 10, rootId: 10, orderCode: "DH0238", customerName: "Chí Thiện",
+  firstDate: "2026-08-05", lastDate: "2026-08-10", pickupDaysBefore: 3, returnDaysAfter: 2,
+  dressCodes: [], hasDresses: false, allReturned: false, ...o,
 });
 
-describe("buildDressWarningsByDate — cảnh báo LẤY", () => {
-  it("chưa lấy (reserved) → chip ĐÚNG 3 ngày trước [pickup−3 .. pickup−1], KHÔNG gồm ngày lấy", () => {
-    const m = buildDressWarningsByDate([row({ pickupDate: "2026-08-05", status: "reserved" })], "2026-08-01");
-    // lấy 05/08 → chip 02, 03, 04 (KHÔNG có 05)
+describe("rental — acceptance: 2 ngày thực hiện 05/08 + 10/08, mặc định lấy −3 / trả +2", () => {
+  const m = buildDressWarningsByDate([rental({})], "2026-08-01");
+  it("Sắp lấy đồ ở 02, 03, 04/08 (vàng), KHÔNG gồm ngày thực hiện 05/08", () => {
     expect(m.get("2026-08-02")?.[0].kind).toBe("pickup");
+    expect(m.get("2026-08-02")?.[0].label).toContain("Sắp lấy đồ");
+    expect(m.get("2026-08-03")?.[0].kind).toBe("pickup");
     expect(m.get("2026-08-04")?.[0].kind).toBe("pickup");
-    expect(m.has("2026-08-05")).toBe(false); // ngày lấy → KHÔNG
-    expect(m.has("2026-08-06")).toBe(false); // sau ngày lấy → không
-    expect(m.has("2026-08-01")).toBe(false); // trước pickup−3 → không
+    expect(m.has("2026-08-05")).toBe(false);
+    expect(m.has("2026-08-01")).toBe(false);
   });
-  it("đã lấy (picked_up) → KHÔNG còn chip lấy", () => {
-    const m = buildDressWarningsByDate([row({ status: "picked_up", returnDate: "2026-08-11" })], "2026-08-06");
-    // không có chip 'pickup' nào
-    const all = [...m.values()].flat();
-    expect(all.some(c => c.kind === "pickup")).toBe(false);
+  it("KHÔNG nhắc trả sau ngày ĐẦU (06→11/08 sạch) — mốc trả phải là ngày CUỐI", () => {
+    for (const d of ["2026-08-06", "2026-08-07", "2026-08-08", "2026-08-09", "2026-08-10", "2026-08-11"]) {
+      expect(m.has(d)).toBe(false);
+    }
   });
-});
-
-describe("buildDressWarningsByDate — cảnh báo TRẢ (persistent)", () => {
-  it("còn ở tay khách, chưa quá hạn → chip trả ở ngày trả (không overdue)", () => {
-    const m = buildDressWarningsByDate([row({ status: "picked_up", returnDate: "2026-08-11" })], "2026-08-08");
-    const c = m.get("2026-08-11")?.[0];
-    expect(c?.kind).toBe("return");
-    expect(c?.overdue).toBe(false);
-  });
-  it("QUÁ HẠN chưa trả → chip đỏ ở ngày trả VÀ ở hôm nay (đòi váy)", () => {
-    const m = buildDressWarningsByDate([row({ status: "picked_up", returnDate: "2026-08-11" })], "2026-08-20");
-    expect(m.get("2026-08-11")?.[0].overdue).toBe(true);
-    expect(m.get("2026-08-20")?.[0].overdue).toBe(true); // hôm nay
-  });
-  it("đã xác nhận trả (actualReturnDate có) → KHÔNG còn chip trả", () => {
-    const m = buildDressWarningsByDate([row({ status: "cleaning", actualReturnDate: "2026-08-10", returnDate: "2026-08-11" })], "2026-08-20");
-    const all = [...m.values()].flat();
-    expect(all.some(c => c.kind === "return")).toBe(false);
-  });
-  it("đã trả (returned) → không cảnh báo gì", () => {
-    const m = buildDressWarningsByDate([row({ status: "returned", actualReturnDate: "2026-08-10" })], "2026-08-20");
-    expect([...m.values()].flat().length).toBe(0);
-  });
-});
-
-describe("buildDressWarningsByDate — source='show' (đơn KHÔNG gắn váy, nhắc theo ngày show)", () => {
-  // BE gửi pickupDate = ngày show, returnDate = show+3.
-  const showRow = row({ source: "show", pickupDate: "2026-07-14", returnDate: "2026-07-17", status: "reserved" });
-  it("Soạn đồ [show−3 .. show−1], KHÔNG gồm ngày show", () => {
-    const m = buildDressWarningsByDate([showRow], "2026-07-13");
-    expect(m.get("2026-07-11")?.[0].label).toContain("Soạn đồ");
-    expect(m.get("2026-07-12")?.[0].kind).toBe("pickup");
-    expect(m.get("2026-07-13")?.[0].kind).toBe("pickup");
-    expect(m.has("2026-07-14")).toBe(false); // ngày show → không chip soạn đồ
-  });
-  it("Nhắc trả đồ đúng ngày show+3, không persistent", () => {
-    const m = buildDressWarningsByDate([showRow], "2026-07-13");
-    const c = m.get("2026-07-17")?.[0];
+  it("Nhắc trả đồ đúng 12/08 = ngày CUỐI 10/08 + 2", () => {
+    const c = m.get("2026-08-12")?.[0];
     expect(c?.kind).toBe("return");
     expect(c?.label).toContain("Nhắc trả đồ");
     expect(c?.overdue).toBe(false);
-    // quá ngày trả → KHÔNG nhảy chip về hôm nay (không đòi nợ khi không gắn váy)
-    const m2 = buildDressWarningsByDate([showRow], "2026-07-25");
-    expect(m2.has("2026-07-25")).toBe(false);
+  });
+});
+
+describe("rental — setting per booking + mã váy + tắt nhắc", () => {
+  it("chỉnh N/M: lấy trước 5 ngày, trả sau 1 ngày", () => {
+    const m = buildDressWarningsByDate([rental({ pickupDaysBefore: 5, returnDaysAfter: 1 })], "2026-08-01");
+    expect(m.get("2026-07-31")?.[0].kind).toBe("pickup"); // 05/08 − 5
+    expect(m.get("2026-08-11")?.[0].kind).toBe("return"); // 10/08 + 1
+    expect(m.has("2026-08-12")).toBe(false);
+  });
+  it("N=0 → không nhắc lấy; vẫn nhắc trả", () => {
+    const m = buildDressWarningsByDate([rental({ pickupDaysBefore: 0 })], "2026-08-01");
+    expect([...m.values()].flat().some(c => c.kind === "pickup")).toBe(false);
+    expect(m.get("2026-08-12")?.[0].kind).toBe("return");
+  });
+  it("mã váy gắn thêm → hiện trong label (không phải điều kiện)", () => {
+    const m = buildDressWarningsByDate([rental({ dressCodes: ["V012", "V034"], hasDresses: true })], "2026-08-01");
+    expect(m.get("2026-08-02")?.[0].label).toContain("V012, V034");
+  });
+  it("có váy và TẤT CẢ đã trả → tắt nhắc trả (vẫn còn nhắc lấy nếu chưa tới ngày)", () => {
+    const m = buildDressWarningsByDate([rental({ hasDresses: true, allReturned: true })], "2026-08-01");
+    expect([...m.values()].flat().some(c => c.kind === "return")).toBe(false);
+  });
+  it("1 ngày thực hiện: first = last → trả = ngày đó + 2", () => {
+    const m = buildDressWarningsByDate([rental({ firstDate: "2026-08-05", lastDate: "2026-08-05" })], "2026-08-01");
+    expect(m.get("2026-08-07")?.[0].kind).toBe("return");
+  });
+});
+
+const overdue = (o: Partial<OverdueReminder>): OverdueReminder => ({
+  kind: "overdue", id: 7, bookingId: 22, orderCode: "DH0100", customerName: "HAZI",
+  dressCode: "V001", returnDate: "2026-08-01", ...o,
+});
+
+describe("overdue — váy thật quá hạn (đòi váy persistent)", () => {
+  it("chip đỏ ở ngày trả VÀ bám hôm nay", () => {
+    const m = buildDressWarningsByDate([overdue({})], "2026-08-05");
+    expect(m.get("2026-08-01")?.[0].overdue).toBe(true);
+    expect(m.get("2026-08-05")?.[0].overdue).toBe(true);
+    expect(m.get("2026-08-05")?.[0].label).toContain("V001");
   });
 });

@@ -141,6 +141,9 @@ type Booking = {
   parentContract?: Booking & { remainingAmount: number };
   children?: Booking[];
   additionalServices?: AdditionalServiceLine[];
+  // Setting nhắc thuê đồ (gói bật "Thuê đồ"): null = mặc định lấy trước 3 / trả sau 2 ngày.
+  dressWarnPickupDays?: number | null;
+  dressWarnReturnDays?: number | null;
 };
 
 // ─── Helper: lấy tên nhân sự từ 2 nguồn (ưu tiên giảm dần) ──────────────────
@@ -512,6 +515,16 @@ function genId() { return Math.random().toString(36).slice(2); }
 // Per-booking (mỗi DỊCH VỤ sync với CHILD booking id của nó — không còn dồn hết vào cha).
 // Draft mang dbId của booking KHÁC (váy legacy đang nằm ở CHA) ⇒ planOutfitSync xếp vào
 // toInsert ⇒ POST row MỚI dưới booking này; row cũ ở cha được dọn khi sync cha với [] (move).
+/** Parse ô nhập số ngày nhắc thuê đồ: "" = null (dùng mặc định 3/2), clamp 0..30. */
+function parseWarnDays(s: string): number | null {
+  const t = (s ?? "").trim();
+  if (t === "") return null;
+  const n = Number(t);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.min(30, Math.floor(n));
+}
+
+
 async function syncOutfitDrafts(bookingId: number, drafts: OutfitDraft[]) {
   const existing = await authFetch(`${BASE}/api/bookings/${bookingId}/dresses`).then(r => r.ok ? r.json() : []).catch(() => []);
   const existingIds: number[] = [];
@@ -1477,6 +1490,10 @@ function ShowFormPanel({
   const [depositProofError, setDepositProofError] = useState("");
   const [discount, setDiscount] = useState(booking?.discountAmount?.toString() ?? "0");
   const [notes, setNotes] = useState(booking?.notes ?? "");
+  // Setting nhắc thuê đồ per booking ("" = mặc định: lấy trước 3 ngày / trả sau 2 ngày).
+  // Chỉ có tác dụng khi gói thuộc nhóm bảng giá đã gạt "Thuê đồ". Thuần lịch nhắc, không đụng tiền.
+  const [dressWarnPickupDays, setDressWarnPickupDays] = useState<string>(() => booking?.dressWarnPickupDays != null ? String(booking.dressWarnPickupDays) : "");
+  const [dressWarnReturnDays, setDressWarnReturnDays] = useState<string>(() => booking?.dressWarnReturnDays != null ? String(booking.dressWarnReturnDays) : "");
   // Giữ lại giá trị photoCount cũ của show (để lưu lại không bị mất); ô nhập đã bỏ khỏi form.
   const [photoCount] = useState<string>(() => String(booking?.photoCount ?? ""));
   const [surcharges, setSurcharges] = useState<SurchargeItem[]>(() => {
@@ -2153,6 +2170,8 @@ function ShowFormPanel({
               depositAmount: depositNum,
               discountAmount: discountNum,
               packageType: subDrafts.map(s => s.serviceLabel || "Dịch vụ").join(" + "),
+              dressWarnPickupDays: parseWarnDays(dressWarnPickupDays),
+              dressWarnReturnDays: parseWarnDays(dressWarnReturnDays),
               // Only send assignedStaff when non-empty to avoid wiping item-level photographer/makeup
               ...(editMultiAssignedStaff.length > 0 ? { assignedStaff: editMultiAssignedStaff } : {}),
             }),
@@ -2244,6 +2263,8 @@ function ShowFormPanel({
           notes: notes || null,
           location: location || null,
           subServices: subServicePayloads,
+          dressWarnPickupDays: parseWarnDays(dressWarnPickupDays),
+          dressWarnReturnDays: parseWarnDays(dressWarnReturnDays),
           // Báo giá tạm tính: backend lưu status temp_quote + mã BG, không phiếu thu/hậu kỳ
           isTempQuote: tempQuoteMode,
         };
@@ -2387,6 +2408,8 @@ function ShowFormPanel({
       };
       body.additionalServices = cleanAdditionalServicesForSave(subDrafts[0]?.additionalServices || []);
       body.servicePackageId = servicePackageId ?? null;
+      body.dressWarnPickupDays = parseWarnDays(dressWarnPickupDays);
+      body.dressWarnReturnDays = parseWarnDays(dressWarnReturnDays);
       // Báo giá tạm tính (chỉ khi tạo mới): backend lưu status temp_quote + mã BG
       if (!isEdit) body.isTempQuote = tempQuoteMode;
 
@@ -2794,6 +2817,29 @@ function ShowFormPanel({
                 </div>
               );
             })}
+          </section>
+
+          {/* Nhắc thuê đồ — chỉ có tác dụng khi gói thuộc nhóm bảng giá gạt "Thuê đồ".
+              Thuần lịch nhắc (chip trên Lịch), không đụng tiền/công nợ/lương. */}
+          <section className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-dashed border-amber-300/70 dark:border-amber-700/50 bg-amber-50/40 dark:bg-amber-950/10 px-3 py-2">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+              <Shirt className="w-3.5 h-3.5" /> Nhắc thuê đồ
+            </span>
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              Lấy trước
+              <Input type="number" min={0} max={30} className="h-7 w-14 text-xs text-center" placeholder="3"
+                value={dressWarnPickupDays} onChange={e => setDressWarnPickupDays(e.target.value)} />
+              ngày
+            </label>
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              Trả sau
+              <Input type="number" min={0} max={30} className="h-7 w-14 text-xs text-center" placeholder="2"
+                value={dressWarnReturnDays} onChange={e => setDressWarnReturnDays(e.target.value)} />
+              ngày
+            </label>
+            <span className="text-[10px] text-muted-foreground">
+              Bỏ trống = mặc định (3/2) · lấy theo ngày thực hiện ĐẦU, trả theo ngày CUỐI · chỉ áp dụng gói nhóm "Thuê đồ"
+            </span>
           </section>
 
           {/* E. Phụ cấp nhân sự — REMOVED (Task #487): chuyển inline vào StaffAssignmentEditor */}
@@ -5493,7 +5539,8 @@ function MonthDayCell({
             </button>
           );
         })}
-        {/* Cảnh báo lấy/trả váy — chip riêng kiểu Off, KHÔNG gộp bookings[] */}
+        {/* Nhắc thuê đồ — chip riêng kiểu Off, KHÔNG gộp bookings[] (không phải booking).
+            Màu: lấy đồ = VÀNG, trả đồ = CAM, quá hạn = ĐỎ. Bấm mở đúng booking chính. */}
         {warnings && warnings.length > 0 && warnings.map(w => (
           <button
             key={w.key}
@@ -5502,7 +5549,9 @@ function MonthDayCell({
             className={`w-full text-left rounded px-1 py-0.5 border text-[10px] leading-tight flex items-center gap-1 ${
               w.overdue
                 ? "bg-red-200 text-red-900 border-red-500 font-semibold hover:bg-red-300 dark:bg-red-900/40 dark:text-red-200"
-                : "bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 dark:bg-amber-900/20 dark:text-amber-300"
+                : w.kind === "return"
+                  ? "bg-orange-200 text-orange-900 border-orange-400 hover:bg-orange-300 dark:bg-orange-900/30 dark:text-orange-300"
+                  : "bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 dark:bg-amber-900/20 dark:text-amber-300"
             }`}
             title={w.label}
           >
@@ -6861,6 +6910,8 @@ function CalendarPageInner() {
   const handleWarningClick = useCallback((bookingId: number) => {
     const b = bookings.find(x => x.id === bookingId);
     if (b) handleBookingClickFromMonth(b);
+    // Không thấy trong list (hiếm — data đang refetch): đi đường deep-link ?bookingId.
+    else setPendingBookingIdFromUrl(bookingId);
   }, [bookings, handleBookingClickFromMonth]);
 
   // Handlers — day view

@@ -59,18 +59,99 @@ router.get("/dresses/:id/schedule", async (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
-// ─── GET cảnh báo lấy/trả váy cho Lịch (chỉ gói có warn_upcoming_show) ────────
-// 2 nguồn: (1) đơn có gắn váy → theo pickup/return của TỪNG váy (đòi váy quá hạn persistent);
-// (2) đơn KHÔNG gắn váy → nhắc theo NGÀY SHOW: soạn đồ [show−3..show−1] + nhắc trả đồ show+3
-//     (source="show", không cần gắn váy vẫn được nhắc — chỉ cần gói bật cảnh báo).
-// Thuần đọc, không đụng tiền/đơn. FE tự tính vị trí chip.
+// ─── GET nhắc thuê đồ cho Lịch (gói/nhóm gạt "Thuê đồ" = warn_upcoming_show) ──
+// Reminder theo TỪNG ĐƠN GỐC (family = đơn gốc + đơn con + ngày thực hiện phụ):
+// - "rental": lấy đồ [ngàyĐẦU−N .. ngàyĐẦU−1] + trả đồ ngàyCUỐI+M (N/M chỉnh per booking,
+//   mặc định 3/2). KHÔNG cần gắn váy; mã váy gắn thêm chỉ là thông tin hiển thị.
+//   Tất cả váy gắn đã trả xong → tắt nhắc trả.
+// - "overdue": váy THẬT đang ở tay khách quá hạn trả (đòi váy persistent) — theo trạng thái
+//   lifecycle từng váy, độc lập với reminder lịch.
+// Thuần đọc, không đụng tiền/đơn/công nợ/lương. FE tự đặt chip theo ngày.
+let hasOccurrencesTable: boolean | null = null;
 router.get("/dress-warnings", async (req, res) => {
   try {
     const auth = await requireAuth(req);
     if (!auth.ok) return res.status(auth.status).json({ error: auth.message });
     const from = dateStr(req.query.from) || todayStr();
     const to = dateStr(req.query.to) || from;
-    const warnPkgExists = `EXISTS (
+    // Guard: bảng booking_occurrences có thể chưa tồn tại (PR ngày phụ chưa deploy).
+    if (hasOccurrencesTable !== true) {
+      const chk = await pool.query(`SELECT to_regclass('public.booking_occurrences') IS NOT NULL AS ok`);
+      hasOccurrencesTable = chk.rows[0]?.ok === true;
+    }
+    const occUnion = hasOccurrencesTable
+      ? `UNION ALL SELECT o.shoot_date FROM booking_occurrences o WHERE o.booking_id = f.id`
+      : ``;
+    const rentalRows = await pool.query(
+      `WITH fam AS (
+         SELECT COALESCE(b.parent_id, b.id) AS root_id, b.id, b.shoot_date,
+                b.service_package_id, b.items, b.is_parent_contract
+         FROM bookings b
+         WHERE b.deleted_at IS NULL AND b.status != 'temp_quote'
+       ),
+       flagged AS (
+         SELECT f.root_id, MIN(f.id) FILTER (WHERE NOT f.is_parent_contract) AS anchor_id
+         FROM fam f
+         WHERE EXISTS (
+           SELECT 1 FROM service_packages sp
+           WHERE sp.warn_upcoming_show = true
+             AND (
+               sp.id = f.service_package_id
+               OR EXISTS (
+                 SELECT 1 FROM jsonb_array_elements(f.items) it
+                 WHERE it->>'serviceKey' = 'pkg-' || sp.id::text
+               )
+             )
+         )
+         GROUP BY f.root_id
+       ),
+       dates AS (
+         SELECT f.root_id, MIN(d.dt) AS first_date, MAX(d.dt) AS last_date
+         FROM fam f
+         JOIN LATERAL (
+           SELECT f.shoot_date AS dt
+           ${occUnion}
+         ) d ON true
+         GROUP BY f.root_id
+       )
+       SELECT r.id AS root_id,
+              COALESCE(fl.anchor_id, r.id) AS anchor_id,
+              r.order_code, c.name AS customer_name,
+              d.first_date::text AS first_date, d.last_date::text AS last_date,
+              LEAST(GREATEST(COALESCE(r.dress_warn_pickup_days, 3), 0), 30) AS pickup_days,
+              LEAST(GREATEST(COALESCE(r.dress_warn_return_days, 2), 0), 30) AS return_days,
+              (SELECT COALESCE(json_agg(DISTINCT bd.outfit_code) FILTER (WHERE bd.outfit_code IS NOT NULL AND bd.outfit_code != ''), '[]'::json)
+                 FROM booking_dresses bd JOIN fam f2 ON f2.id = bd.booking_id AND f2.root_id = r.id
+                WHERE bd.status != 'cancelled') AS dress_codes,
+              (SELECT COUNT(*) FROM booking_dresses bd JOIN fam f2 ON f2.id = bd.booking_id AND f2.root_id = r.id
+                WHERE bd.status != 'cancelled') AS n_dresses,
+              (SELECT COUNT(*) FROM booking_dresses bd JOIN fam f2 ON f2.id = bd.booking_id AND f2.root_id = r.id
+                WHERE bd.status != 'cancelled'
+                  AND (bd.actual_return_date IS NOT NULL OR bd.status IN ('returned','cleaning','ready'))) AS n_returned
+       FROM flagged fl
+       JOIN bookings r ON r.id = fl.root_id AND r.deleted_at IS NULL AND r.status != 'temp_quote'
+       JOIN dates d ON d.root_id = fl.root_id
+       LEFT JOIN customers c ON c.id = r.customer_id
+       WHERE (
+         (d.first_date - LEAST(GREATEST(COALESCE(r.dress_warn_pickup_days, 3), 0), 30) <= $2::date
+          AND d.first_date - 1 >= $1::date)
+         OR (d.last_date + LEAST(GREATEST(COALESCE(r.dress_warn_return_days, 2), 0), 30) BETWEEN $1::date AND $2::date)
+       )
+       ORDER BY d.first_date`,
+      [from, to],
+    );
+    // Váy thật quá hạn trả (đòi váy) — vẫn lọc theo gói bật Thuê đồ.
+    const overdueRows = await pool.query(
+      `SELECT bd.id, bd.booking_id, bd.outfit_code, bd.return_date::text AS return_date,
+              b.order_code, c.name AS customer_name
+       FROM booking_dresses bd
+       JOIN bookings b ON b.id = bd.booking_id
+       LEFT JOIN customers c ON c.id = b.customer_id
+       WHERE b.deleted_at IS NULL
+         AND bd.status IN ('picked_up','waiting_return')
+         AND bd.actual_return_date IS NULL
+         AND bd.return_date < CURRENT_DATE
+         AND EXISTS (
            SELECT 1 FROM service_packages sp
            WHERE sp.warn_upcoming_show = true
              AND (
@@ -80,69 +161,33 @@ router.get("/dress-warnings", async (req, res) => {
                  WHERE it->>'serviceKey' = 'pkg-' || sp.id::text
                )
              )
-         )`;
-    const rows = await pool.query(
-      `SELECT bd.id, bd.booking_id, bd.pickup_date::text AS pickup_date, bd.return_date::text AS return_date, bd.status,
-              bd.actual_return_date::text AS actual_return_date,
-              b.order_code, c.name AS customer_name
-       FROM booking_dresses bd
-       JOIN bookings b ON b.id = bd.booking_id
-       LEFT JOIN customers c ON c.id = b.customer_id
-       WHERE b.deleted_at IS NULL
-         AND bd.status NOT IN ('cancelled')
-         AND ${warnPkgExists}
-         AND (
-           bd.pickup_date BETWEEN ($1::date - INTERVAL '3 days') AND $2::date
-           OR bd.return_date BETWEEN $1::date AND $2::date
-           OR (bd.actual_return_date IS NULL
-               AND bd.status IN ('picked_up','waiting_return')
-               AND bd.return_date < $2::date)
          )
-       ORDER BY bd.pickup_date`,
-      [from, to],
-    );
-    // Đơn dùng gói bật cảnh báo nhưng CHƯA gắn váy → nhắc theo ngày show.
-    // Range: soạn đồ cần show ≤ to+3; nhắc trả (show+3) cần show ≥ from−3.
-    const showRows = await pool.query(
-      `SELECT b.id, b.order_code, c.name AS customer_name,
-              b.shoot_date::text AS pickup_date,
-              (b.shoot_date + INTERVAL '3 days')::date::text AS return_date
-       FROM bookings b
-       LEFT JOIN customers c ON c.id = b.customer_id
-       WHERE b.deleted_at IS NULL
-         AND b.status != 'temp_quote'
-         AND b.shoot_date IS NOT NULL
-         AND ${warnPkgExists}
-         AND NOT EXISTS (
-           SELECT 1 FROM booking_dresses bd
-           WHERE bd.booking_id = b.id AND bd.status != 'cancelled'
-         )
-         AND b.shoot_date BETWEEN ($1::date - INTERVAL '3 days') AND ($2::date + INTERVAL '3 days')
-       ORDER BY b.shoot_date`,
-      [from, to],
+       ORDER BY bd.return_date`,
+      [],
     );
     res.json([
-      ...rows.rows.map((r: Record<string, unknown>) => ({
-        id: r.id,
-        bookingId: r.booking_id,
+      ...rentalRows.rows.map((r: Record<string, unknown>) => ({
+        kind: "rental",
+        bookingId: Number(r.anchor_id),
+        rootId: Number(r.root_id),
         orderCode: r.order_code,
         customerName: r.customer_name,
-        pickupDate: r.pickup_date,
-        returnDate: r.return_date,
-        status: r.status,
-        actualReturnDate: r.actual_return_date,
-        source: "dress",
+        firstDate: r.first_date,
+        lastDate: r.last_date,
+        pickupDaysBefore: Number(r.pickup_days),
+        returnDaysAfter: Number(r.return_days),
+        dressCodes: r.dress_codes ?? [],
+        hasDresses: Number(r.n_dresses) > 0,
+        allReturned: Number(r.n_dresses) > 0 && Number(r.n_returned) === Number(r.n_dresses),
       })),
-      ...showRows.rows.map((r: Record<string, unknown>) => ({
+      ...overdueRows.rows.map((r: Record<string, unknown>) => ({
+        kind: "overdue",
         id: r.id,
-        bookingId: r.id,
+        bookingId: Number(r.booking_id),
         orderCode: r.order_code,
         customerName: r.customer_name,
-        pickupDate: r.pickup_date,
+        dressCode: r.outfit_code || null,
         returnDate: r.return_date,
-        status: "reserved",
-        actualReturnDate: null,
-        source: "show",
       })),
     ]);
   } catch (e) { res.status(500).json({ error: String(e) }); }

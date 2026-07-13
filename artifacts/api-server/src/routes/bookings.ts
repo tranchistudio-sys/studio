@@ -153,8 +153,18 @@ const bookingFields = {
   deductions: bookingsTable.deductions,
   createdByStaffId: bookingsTable.createdByStaffId,
   additionalServices: bookingsTable.additionalServices,
+  dressWarnPickupDays: bookingsTable.dressWarnPickupDays,
+  dressWarnReturnDays: bookingsTable.dressWarnReturnDays,
   createdAt: bookingsTable.createdAt,
 };
+
+/** Chuẩn hoá số ngày nhắc thuê đồ: null/rỗng = null (mặc định 3/2), clamp 0..30. */
+function toWarnDays(v: unknown): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.min(30, Math.floor(n));
+}
 
 router.get("/bookings", async (req, res) => {
   try {
@@ -537,6 +547,8 @@ router.post("/bookings", async (req, res) => {
         isParentContract: true,
         status: isTempQuote ? "temp_quote" : "confirmed",
         createdByStaffId: callerId,
+        dressWarnPickupDays: toWarnDays(req.body.dressWarnPickupDays),
+        dressWarnReturnDays: toWarnDays(req.body.dressWarnReturnDays),
       })
       .returning();
 
@@ -697,6 +709,8 @@ router.post("/bookings", async (req, res) => {
       status: isTempQuote ? "temp_quote" : "pending",
       createdByStaffId: callerId,
       additionalServices: snapshotAdditionalServices,
+      dressWarnPickupDays: toWarnDays(req.body.dressWarnPickupDays),
+      dressWarnReturnDays: toWarnDays(req.body.dressWarnReturnDays),
     })
     .returning();
 
@@ -990,6 +1004,9 @@ router.put("/bookings/:id", async (req, res) => {
   if (photoCount !== undefined) updateData.photoCount = photoCount !== null ? parseInt(String(photoCount)) : null;
   if (includedRetouchedPhotosSnapshot !== undefined) updateData.includedRetouchedPhotosSnapshot = parseInt(String(includedRetouchedPhotosSnapshot)) || 0;
   if (servicePackageId !== undefined) updateData.servicePackageId = servicePackageId ? parseInt(String(servicePackageId)) : null;
+  // Setting nhắc thuê đồ (thuần lịch nhắc, không đụng tiền) — chỉ cập nhật khi field có mặt.
+  if (req.body.dressWarnPickupDays !== undefined) updateData.dressWarnPickupDays = toWarnDays(req.body.dressWarnPickupDays);
+  if (req.body.dressWarnReturnDays !== undefined) updateData.dressWarnReturnDays = toWarnDays(req.body.dressWarnReturnDays);
 
   // Check booking exists. Đọc đầy đủ field để diff trước/sau, ghi lịch sử sửa đơn.
   const [oldBooking] = await db

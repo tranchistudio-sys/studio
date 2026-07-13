@@ -687,14 +687,14 @@ export default function PricingPage() {
                           </button>
                           <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium hidden lg:inline ${
                             groupWarnMixed ? "bg-amber-100 text-amber-800" : groupHasWarn ? "bg-amber-100 text-amber-700" : "bg-muted text-muted-foreground"
-                          }`} title="Cảnh báo trên Lịch cho đơn dùng gói nhóm này: soạn đồ 3 ngày trước show + nhắc trả đồ sau show 3 ngày (không cần gắn váy); đơn có gắn váy thì theo ngày lấy/trả từng váy + đòi váy quá hạn">
-                            {groupWarnMixed ? "CB lẫn" : groupHasWarn ? "Cảnh báo" : "Không CB"}
+                          }`} title="Nhóm CÓ CHO THUÊ trang phục: mọi đơn dùng gói nhóm này tự nhắc trên Lịch — lấy đồ trước ngày thực hiện đầu (mặc định 3 ngày), trả đồ sau ngày thực hiện cuối (mặc định 2 ngày). Không cần gắn váy; số ngày chỉnh được trong từng đơn.">
+                            {groupWarnMixed ? "Thuê đồ lẫn" : groupHasWarn ? "Thuê đồ" : "Ko thuê đồ"}
                           </span>
                           <button
                             type="button"
                             role="switch"
                             aria-checked={groupHasWarn}
-                            aria-label={`Bật tắt cảnh báo lấy/trả váy trên Lịch cho nhóm ${group.name}`}
+                            aria-label={`Bật tắt nhắc thuê đồ (lấy/trả trang phục) cho nhóm ${group.name}`}
                             disabled={toggleGroupWarn.isPending}
                             onClick={(e) => {
                               e.stopPropagation();

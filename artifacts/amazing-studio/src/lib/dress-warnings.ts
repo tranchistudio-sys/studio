@@ -2,11 +2,16 @@
  * dress-warnings.ts — logic THUẦN tính chip cảnh báo lấy/trả váy trên Lịch.
  * Không React, không tiền. Mirror pattern leavesByDate của calendar.
  *
- * - Cảnh báo LẤY: hiện ĐÚNG 3 ngày TRƯỚC ngày lấy [pickup−3 .. pickup−1] (KHÔNG gồm
- *   ngày lấy) khi váy CHƯA lấy (reserved/preparing). Tự tắt khi "Khách đã lấy".
- * - Cảnh báo TRẢ: PERSISTENT — hiện ở ngày trả; nếu QUÁ HẠN chưa trả (return < hôm nay,
- *   status còn picked_up/waiting_return) thì hiện thêm ở HÔM NAY để luôn thấy ("đòi váy").
- *   Tắt ngay khi xác nhận đã trả (actualReturnDate có / status returned+).
+ * 2 nguồn (source):
+ * - "dress" (mặc định) — đơn có gắn váy cụ thể, theo pickup/return TỪNG váy:
+ *   · Cảnh báo LẤY: hiện ĐÚNG 3 ngày TRƯỚC ngày lấy [pickup−3 .. pickup−1] (KHÔNG gồm
+ *     ngày lấy) khi váy CHƯA lấy (reserved/preparing). Tự tắt khi "Khách đã lấy".
+ *   · Cảnh báo TRẢ: PERSISTENT — hiện ở ngày trả; nếu QUÁ HẠN chưa trả (return < hôm nay,
+ *     status còn picked_up/waiting_return) thì hiện thêm ở HÔM NAY để luôn thấy ("đòi váy").
+ *     Tắt ngay khi xác nhận đã trả (actualReturnDate có / status returned+).
+ * - "show" — đơn dùng gói bật cảnh báo nhưng KHÔNG gắn váy (BE gửi pickupDate = ngày show,
+ *   returnDate = show+3): nhắc "Soạn đồ" [show−3 .. show−1] + "Nhắc trả đồ" đúng ngày show+3.
+ *   Nhắc lịch nhẹ — không persistent/đòi nợ (muốn theo dõi chặt thì gắn váy vào đơn).
  */
 
 export type DressWarnRow = {
@@ -18,6 +23,7 @@ export type DressWarnRow = {
   returnDate: string;
   status: string;
   actualReturnDate?: string | null;
+  source?: "dress" | "show";
 };
 
 export type DressWarnChip = {
@@ -67,6 +73,16 @@ export function buildDressWarningsByDate(rows: DressWarnRow[], today: string): M
   const t = ymd(today);
   for (const r of rows) {
     const who = `${r.customerName || "Khách"} · ${r.orderCode || "DH"}`;
+    // ── source="show": đơn không gắn váy — nhắc theo ngày show, không persistent ──
+    if (r.source === "show") {
+      const pk = ymd(r.pickupDate);
+      for (const day of daysBetween(shiftYmd(pk, -3), shiftYmd(pk, -1))) {
+        add(day, { key: `pick-show-${r.bookingId}-${day}`, kind: "pickup", bookingId: r.bookingId, label: `Soạn đồ: ${who}`, overdue: false });
+      }
+      const rt = ymd(r.returnDate);
+      add(rt, { key: `ret-show-${r.bookingId}`, kind: "return", bookingId: r.bookingId, label: `Nhắc trả đồ: ${who}`, overdue: false });
+      continue;
+    }
     // ── Cảnh báo LẤY: chưa lấy → [pickup−3 .. pickup] ──
     if (NOT_YET_PICKED.has(r.status)) {
       const pk = ymd(r.pickupDate);

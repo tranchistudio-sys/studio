@@ -687,7 +687,7 @@ export default function PricingPage() {
                           </button>
                           <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium hidden lg:inline ${
                             groupWarnMixed ? "bg-amber-100 text-amber-800" : groupHasWarn ? "bg-amber-100 text-amber-700" : "bg-muted text-muted-foreground"
-                          }`} title="Cảnh báo lấy/trả váy trên Lịch: nhắc 3 ngày trước ngày lấy + đòi váy khi quá hạn trả">
+                          }`} title="Cảnh báo trên Lịch cho đơn dùng gói nhóm này: soạn đồ 3 ngày trước show + nhắc trả đồ sau show 3 ngày (không cần gắn váy); đơn có gắn váy thì theo ngày lấy/trả từng váy + đòi váy quá hạn">
                             {groupWarnMixed ? "CB lẫn" : groupHasWarn ? "Cảnh báo" : "Không CB"}
                           </span>
                           <button

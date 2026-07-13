@@ -63,3 +63,25 @@ describe("buildDressWarningsByDate — cảnh báo TRẢ (persistent)", () => {
     expect([...m.values()].flat().length).toBe(0);
   });
 });
+
+describe("buildDressWarningsByDate — source='show' (đơn KHÔNG gắn váy, nhắc theo ngày show)", () => {
+  // BE gửi pickupDate = ngày show, returnDate = show+3.
+  const showRow = row({ source: "show", pickupDate: "2026-07-14", returnDate: "2026-07-17", status: "reserved" });
+  it("Soạn đồ [show−3 .. show−1], KHÔNG gồm ngày show", () => {
+    const m = buildDressWarningsByDate([showRow], "2026-07-13");
+    expect(m.get("2026-07-11")?.[0].label).toContain("Soạn đồ");
+    expect(m.get("2026-07-12")?.[0].kind).toBe("pickup");
+    expect(m.get("2026-07-13")?.[0].kind).toBe("pickup");
+    expect(m.has("2026-07-14")).toBe(false); // ngày show → không chip soạn đồ
+  });
+  it("Nhắc trả đồ đúng ngày show+3, không persistent", () => {
+    const m = buildDressWarningsByDate([showRow], "2026-07-13");
+    const c = m.get("2026-07-17")?.[0];
+    expect(c?.kind).toBe("return");
+    expect(c?.label).toContain("Nhắc trả đồ");
+    expect(c?.overdue).toBe(false);
+    // quá ngày trả → KHÔNG nhảy chip về hôm nay (không đòi nợ khi không gắn váy)
+    const m2 = buildDressWarningsByDate([showRow], "2026-07-25");
+    expect(m2.has("2026-07-25")).toBe(false);
+  });
+});

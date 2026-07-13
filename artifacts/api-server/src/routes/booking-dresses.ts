@@ -60,24 +60,17 @@ router.get("/dresses/:id/schedule", async (req, res) => {
 });
 
 // ─── GET cảnh báo lấy/trả váy cho Lịch (chỉ gói có warn_upcoming_show) ────────
-// Trả váy đang chiếm cần theo dõi trong khoảng tháng đang xem HOẶC quá hạn chưa trả.
-// Thuần đọc, không đụng tiền/đơn. FE tự tính vị trí chip (lấy = pickup−3; trả = persistent).
+// 2 nguồn: (1) đơn có gắn váy → theo pickup/return của TỪNG váy (đòi váy quá hạn persistent);
+// (2) đơn KHÔNG gắn váy → nhắc theo NGÀY SHOW: soạn đồ [show−3..show−1] + nhắc trả đồ show+3
+//     (source="show", không cần gắn váy vẫn được nhắc — chỉ cần gói bật cảnh báo).
+// Thuần đọc, không đụng tiền/đơn. FE tự tính vị trí chip.
 router.get("/dress-warnings", async (req, res) => {
   try {
     const auth = await requireAuth(req);
     if (!auth.ok) return res.status(auth.status).json({ error: auth.message });
     const from = dateStr(req.query.from) || todayStr();
     const to = dateStr(req.query.to) || from;
-    const rows = await pool.query(
-      `SELECT bd.id, bd.booking_id, bd.pickup_date::text AS pickup_date, bd.return_date::text AS return_date, bd.status,
-              bd.actual_return_date::text AS actual_return_date,
-              b.order_code, c.name AS customer_name
-       FROM booking_dresses bd
-       JOIN bookings b ON b.id = bd.booking_id
-       LEFT JOIN customers c ON c.id = b.customer_id
-       WHERE b.deleted_at IS NULL
-         AND bd.status NOT IN ('cancelled')
-         AND EXISTS (
+    const warnPkgExists = `EXISTS (
            SELECT 1 FROM service_packages sp
            WHERE sp.warn_upcoming_show = true
              AND (
@@ -87,7 +80,17 @@ router.get("/dress-warnings", async (req, res) => {
                  WHERE it->>'serviceKey' = 'pkg-' || sp.id::text
                )
              )
-         )
+         )`;
+    const rows = await pool.query(
+      `SELECT bd.id, bd.booking_id, bd.pickup_date::text AS pickup_date, bd.return_date::text AS return_date, bd.status,
+              bd.actual_return_date::text AS actual_return_date,
+              b.order_code, c.name AS customer_name
+       FROM booking_dresses bd
+       JOIN bookings b ON b.id = bd.booking_id
+       LEFT JOIN customers c ON c.id = b.customer_id
+       WHERE b.deleted_at IS NULL
+         AND bd.status NOT IN ('cancelled')
+         AND ${warnPkgExists}
          AND (
            bd.pickup_date BETWEEN ($1::date - INTERVAL '3 days') AND $2::date
            OR bd.return_date BETWEEN $1::date AND $2::date
@@ -98,16 +101,50 @@ router.get("/dress-warnings", async (req, res) => {
        ORDER BY bd.pickup_date`,
       [from, to],
     );
-    res.json(rows.rows.map((r: Record<string, unknown>) => ({
-      id: r.id,
-      bookingId: r.booking_id,
-      orderCode: r.order_code,
-      customerName: r.customer_name,
-      pickupDate: r.pickup_date,
-      returnDate: r.return_date,
-      status: r.status,
-      actualReturnDate: r.actual_return_date,
-    })));
+    // Đơn dùng gói bật cảnh báo nhưng CHƯA gắn váy → nhắc theo ngày show.
+    // Range: soạn đồ cần show ≤ to+3; nhắc trả (show+3) cần show ≥ from−3.
+    const showRows = await pool.query(
+      `SELECT b.id, b.order_code, c.name AS customer_name,
+              b.shoot_date::text AS pickup_date,
+              (b.shoot_date + INTERVAL '3 days')::date::text AS return_date
+       FROM bookings b
+       LEFT JOIN customers c ON c.id = b.customer_id
+       WHERE b.deleted_at IS NULL
+         AND b.status != 'temp_quote'
+         AND b.shoot_date IS NOT NULL
+         AND ${warnPkgExists}
+         AND NOT EXISTS (
+           SELECT 1 FROM booking_dresses bd
+           WHERE bd.booking_id = b.id AND bd.status != 'cancelled'
+         )
+         AND b.shoot_date BETWEEN ($1::date - INTERVAL '3 days') AND ($2::date + INTERVAL '3 days')
+       ORDER BY b.shoot_date`,
+      [from, to],
+    );
+    res.json([
+      ...rows.rows.map((r: Record<string, unknown>) => ({
+        id: r.id,
+        bookingId: r.booking_id,
+        orderCode: r.order_code,
+        customerName: r.customer_name,
+        pickupDate: r.pickup_date,
+        returnDate: r.return_date,
+        status: r.status,
+        actualReturnDate: r.actual_return_date,
+        source: "dress",
+      })),
+      ...showRows.rows.map((r: Record<string, unknown>) => ({
+        id: r.id,
+        bookingId: r.id,
+        orderCode: r.order_code,
+        customerName: r.customer_name,
+        pickupDate: r.pickup_date,
+        returnDate: r.return_date,
+        status: "reserved",
+        actualReturnDate: null,
+        source: "show",
+      })),
+    ]);
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 

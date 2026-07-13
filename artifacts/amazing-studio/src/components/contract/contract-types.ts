@@ -59,6 +59,8 @@ export type ContractPayload = {
   studio: { name: string; desc: string; address: string; phone: string };
   customer: { name: string; phone: string | null };
   services: ContractService[];
+  // Lịch thực hiện: ngày chính + ngày phụ (booking_occurrences). Chỉ hiển thị, không tiền.
+  schedule?: { date: string; time: string | null; label: string | null }[];
   money: {
     totalAmount: number;
     discountAmount: number;

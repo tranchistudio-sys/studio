@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { pool } from "@workspace/db";
 import { verifyToken, getCallerRole } from "./auth";
 import { resolveLifecycleTransition, type LifecycleAction } from "../lib/dress-lifecycle";
+import { getSchemaFlags } from "../lib/schema-compat";
 
 const router: IRouter = Router();
 
@@ -67,19 +68,20 @@ router.get("/dresses/:id/schedule", async (req, res) => {
 // - "overdue": váy THẬT đang ở tay khách quá hạn trả (đòi váy persistent) — theo trạng thái
 //   lifecycle từng váy, độc lập với reminder lịch.
 // Thuần đọc, không đụng tiền/đơn/công nợ/lương. FE tự đặt chip theo ngày.
-let hasOccurrencesTable: boolean | null = null;
 router.get("/dress-warnings", async (req, res) => {
   try {
     const auth = await requireAuth(req);
     if (!auth.ok) return res.status(auth.status).json({ error: auth.message });
     const from = dateStr(req.query.from) || todayStr();
     const to = dateStr(req.query.to) || from;
-    // Guard: bảng booking_occurrences có thể chưa tồn tại (PR ngày phụ chưa deploy).
-    if (hasOccurrencesTable !== true) {
-      const chk = await pool.query(`SELECT to_regclass('public.booking_occurrences') IS NOT NULL AS ok`);
-      hasOccurrencesTable = chk.rows[0]?.ok === true;
+    // Tương thích ngược (sự cố 2026-07-13): DB chưa migrate đủ schema thuê đồ
+    // (cột warn_upcoming_show / dress_warn_* / lifecycle) → tính năng tạm tắt,
+    // trả [] an toàn thay vì 500 làm hỏng Lịch.
+    const flags = await getSchemaFlags();
+    if (!flags.warnToggleCol || !flags.dressWarnCols || !flags.lifecycleCols) {
+      return res.json([]);
     }
-    const occUnion = hasOccurrencesTable
+    const occUnion = flags.occurrences
       ? `UNION ALL SELECT o.shoot_date FROM booking_occurrences o WHERE o.booking_id = f.id`
       : ``;
     const rentalRows = await pool.query(

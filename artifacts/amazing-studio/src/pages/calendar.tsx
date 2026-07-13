@@ -6756,13 +6756,27 @@ function CalendarPageInner() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
-  const { data: bookings = [], isLoading } = useQuery<Booking[]>({
+  const { data: bookingsRaw = [], isLoading, isError: bookingsError } = useQuery<Booking[]>({
     queryKey: ["bookings"],
     // Lịch chụp là nơi duy nhất chủ động xem cả báo giá tạm (hiện nhãn "Báo giá tạm" màu riêng);
     // các trang khác gọi /api/bookings mặc định KHÔNG thấy temp_quote.
-    queryFn: () => authFetch(`${BASE}/api/bookings?includeTempQuotes=1`).then(r => r.json()),
+    // SỰ CỐ 2026-07-13: API 500 trả {error} mà .then(r => r.json()) nuốt luôn →
+    // bookings = object → bookings.flatMap nổ → sập trắng cả /calendar.
+    // Fix: !r.ok phải THROW (React Query giữ data mặc định []), tuyệt đối không
+    // để non-array lọt vào state.
+    queryFn: async () => {
+      const r = await authFetch(`${BASE}/api/bookings?includeTempQuotes=1`);
+      if (!r.ok) {
+        const body = await r.json().catch(() => null) as { error?: string } | null;
+        throw new Error(body?.error || `Lỗi tải danh sách show (HTTP ${r.status})`);
+      }
+      const j = await r.json();
+      return Array.isArray(j) ? (j as Booking[]) : [];
+    },
     staleTime: 0,
   });
+  // Chốt chặn cuối: mọi nơi dùng bookings.flatMap/.filter đều được đảm bảo là Array.
+  const bookings = Array.isArray(bookingsRaw) ? bookingsRaw : [];
 
   // Deep-link ?bookingId=N → tự mở detail panel của booking đó. Dùng cho: thông báo, VÀ ô Tìm kiếm
   // thông minh (SmartSearch) — bấm 1 kết quả mở thẳng chi tiết SHOW (không phải trang Đơn hàng).
@@ -7268,6 +7282,14 @@ function CalendarPageInner() {
   // ── MONTH VIEW (full screen) ──
   return (
     <div className="flex flex-col gap-3" style={{ minHeight: 0 }}>
+      {/* API bookings lỗi (vd DB chưa migrate) → báo RÕ thay vì lịch trống im lặng / sập trắng. */}
+      {bookingsError && (
+        <div className="rounded-lg border border-red-300 bg-red-50 dark:bg-red-950/20 dark:border-red-800 px-3 py-2 text-sm text-red-700 dark:text-red-300 flex items-center justify-between gap-2 flex-wrap">
+          <span>Không tải được danh sách show (lỗi máy chủ). Lịch đang hiển thị thiếu — thử tải lại; nếu vẫn lỗi, báo quản trị kiểm tra server/migration.</span>
+          <button type="button" className="px-2 py-1 rounded-md border border-red-300 hover:bg-red-100 dark:hover:bg-red-900/30 text-xs font-medium"
+            onClick={() => queryClient.invalidateQueries({ queryKey: ["bookings"] })}>Thử lại</button>
+        </div>
+      )}
       {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
         {/* Khối tiêu đề riêng — chỉ desktop; mobile dùng tiêu đề gọn nằm chung hàng công cụ (bên dưới). */}

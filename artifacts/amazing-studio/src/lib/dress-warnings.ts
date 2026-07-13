@@ -87,6 +87,8 @@ function clampDays(n: unknown, fallback: number): number {
 /** Dựng Map ngày(YYYY-MM-DD) → danh sách chip nhắc. today = "YYYY-MM-DD". */
 export function buildDressWarningsByDate(rows: DressWarnRow[], today: string): Map<string, DressWarnChip[]> {
   const map = new Map<string, DressWarnChip[]>();
+  // Chống sập: API lỗi/DB chưa migrate có thể đưa non-array vào đây → không nhắc gì.
+  if (!Array.isArray(rows)) return map;
   const add = (dayKey: string, chip: DressWarnChip) => {
     if (!dayKey) return;
     const arr = map.get(dayKey);

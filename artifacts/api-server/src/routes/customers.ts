@@ -5,6 +5,7 @@ import { eq, desc, and, isNull } from "drizzle-orm";
 import { verifyToken } from "./auth";
 import { withStartupDdlLock } from "../lib/startup-ddl";
 import { computeCustomerAggregate, customerVisibleBookings } from "../lib/customer-aggregate";
+import { bookingColumnsCompat } from "../lib/schema-compat";
 
 const router: IRouter = Router();
 
@@ -96,7 +97,7 @@ router.get("/customers", async (req, res) => {
       // Lấy TOÀN BỘ đơn của khách (kể cả đã xóa mềm) — helper tự lọc: bỏ đơn trong thùng rác,
       // đơn hủy, báo giá tạm, đơn CHA tổng (chống cộng trùng cha-con) và con mồ côi của cha đã xóa;
       // "đã thu" chỉ cộng phiếu thu còn hiệu lực trên đơn còn sống (kể cả đơn cha còn sống).
-      const bookings = await db.select().from(bookingsTable).where(eq(bookingsTable.customerId, c.id as number));
+      const bookings = await db.select(await bookingColumnsCompat()).from(bookingsTable).where(eq(bookingsTable.customerId, c.id as number));
       const { totalBookings, totalOwed, totalPaid, totalDebt } = computeCustomerAggregate(bookings, allPayments);
       return { ...c, totalBookings, totalOwed, totalPaid, totalDebt };
     })
@@ -168,7 +169,7 @@ router.get("/customers/:id", async (req, res) => {
   if (!customer) return res.status(404).json({ error: "Không tìm thấy khách hàng" });
   // Lấy TOÀN BỘ đơn của khách (kể cả đã xóa mềm) — cần đơn cha đã xóa trong danh sách
   // để helper nhận diện con mồ côi; helper tự lọc toàn bộ (xem customer-aggregate.ts).
-  const bookings = await db.select().from(bookingsTable).where(eq(bookingsTable.customerId, id));
+  const bookings = await db.select(await bookingColumnsCompat()).from(bookingsTable).where(eq(bookingsTable.customerId, id));
   const allPayments = await db.select().from(paymentsTable);
   const { totalBookings, totalOwed, totalPaid, totalDebt } = computeCustomerAggregate(bookings, allPayments);
   // Lịch sử show: chỉ các đơn còn hiệu lực (đơn con + đơn lẻ) — bỏ đơn cha tổng (bản gộp

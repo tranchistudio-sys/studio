@@ -5,6 +5,7 @@ import { eq, desc, inArray, and, sql } from "drizzle-orm";
 import { verifyToken, getCallerRole } from "./auth";
 import { emitNotification } from "./notifications";
 import { BOOKING_REQUIRES_POST_PRODUCTION_SQL, bookingRequiresPostProduction } from "../lib/post-production-eligibility";
+import { bookingColumnsCompat } from "../lib/schema-compat";
 
 
 function pkgRequiresPostProductionFlag(v: unknown): boolean {
@@ -1637,7 +1638,7 @@ router.delete("/photoshop-jobs/:id", async (req, res) => {
 });
 
 export async function maybeCreatePhotoshopJobForBooking(bookingId: number): Promise<void> {
-  const [bk] = await db.select().from(bookingsTable).where(eq(bookingsTable.id, bookingId));
+  const [bk] = await db.select(await bookingColumnsCompat()).from(bookingsTable).where(eq(bookingsTable.id, bookingId));
   // Báo giá tạm tính không vào hậu kỳ — chưa phải đơn thật
   if (!bk || bk.isParentContract || bk.status === "temp_quote") return;
   const eligible = await bookingRequiresPostProduction({

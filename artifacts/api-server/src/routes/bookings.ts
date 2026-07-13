@@ -1031,6 +1031,15 @@ router.put("/bookings/:id", async (req, res) => {
   if (!oldBooking) return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
   const oldStatus = oldBooking.status;
 
+  // Setting nhắc thuê đồ sống ở ĐƠN GỐC (reminder tính per family theo root).
+  // PUT vào đơn con mà có gửi field nhắc → ghi sang đơn gốc để setting luôn có tác dụng.
+  if (oldBooking.parentId && (updateData.dressWarnPickupDays !== undefined || updateData.dressWarnReturnDays !== undefined)) {
+    const rootWarnUpdate: Record<string, unknown> = {};
+    if (updateData.dressWarnPickupDays !== undefined) { rootWarnUpdate.dressWarnPickupDays = updateData.dressWarnPickupDays; delete updateData.dressWarnPickupDays; }
+    if (updateData.dressWarnReturnDays !== undefined) { rootWarnUpdate.dressWarnReturnDays = updateData.dressWarnReturnDays; delete updateData.dressWarnReturnDays; }
+    await db.update(bookingsTable).set(rootWarnUpdate).where(eq(bookingsTable.id, oldBooking.parentId));
+  }
+
   // ── Cách ly cha–con (P0 isolation): PUT sửa đơn KHÔNG được đổi quan hệ cha–con.
   // Quan hệ này chỉ được thay đổi qua add-child / remove-child (server-side, có kiểm
   // soát). Client gửi đúng giá trị hiện tại thì bỏ qua; cố ĐỔI thì trả 400.

@@ -59,6 +59,58 @@ router.get("/dresses/:id/schedule", async (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
+// ─── GET cảnh báo lấy/trả váy cho Lịch (chỉ gói có warn_upcoming_show) ────────
+// Trả váy đang chiếm cần theo dõi trong khoảng tháng đang xem HOẶC quá hạn chưa trả.
+// Thuần đọc, không đụng tiền/đơn. FE tự tính vị trí chip (lấy = pickup−3; trả = persistent).
+router.get("/dress-warnings", async (req, res) => {
+  try {
+    const auth = await requireAuth(req);
+    if (!auth.ok) return res.status(auth.status).json({ error: auth.message });
+    const from = dateStr(req.query.from) || todayStr();
+    const to = dateStr(req.query.to) || from;
+    const rows = await pool.query(
+      `SELECT bd.id, bd.booking_id, bd.pickup_date::text AS pickup_date, bd.return_date::text AS return_date, bd.status,
+              bd.actual_return_date::text AS actual_return_date,
+              b.order_code, c.name AS customer_name
+       FROM booking_dresses bd
+       JOIN bookings b ON b.id = bd.booking_id
+       LEFT JOIN customers c ON c.id = b.customer_id
+       WHERE b.deleted_at IS NULL
+         AND bd.status NOT IN ('cancelled')
+         AND EXISTS (
+           SELECT 1 FROM service_packages sp
+           WHERE sp.warn_upcoming_show = true
+             AND (
+               sp.id = b.service_package_id
+               OR EXISTS (
+                 SELECT 1 FROM jsonb_array_elements(b.items) it
+                 WHERE it->>'serviceKey' = 'pkg-' || sp.id::text
+               )
+             )
+         )
+         AND (
+           bd.pickup_date BETWEEN ($1::date - INTERVAL '3 days') AND $2::date
+           OR bd.return_date BETWEEN $1::date AND $2::date
+           OR (bd.actual_return_date IS NULL
+               AND bd.status IN ('picked_up','waiting_return')
+               AND bd.return_date < $2::date)
+         )
+       ORDER BY bd.pickup_date`,
+      [from, to],
+    );
+    res.json(rows.rows.map((r: Record<string, unknown>) => ({
+      id: r.id,
+      bookingId: r.booking_id,
+      orderCode: r.order_code,
+      customerName: r.customer_name,
+      pickupDate: r.pickup_date,
+      returnDate: r.return_date,
+      status: r.status,
+      actualReturnDate: r.actual_return_date,
+    })));
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
 // ─── GET conflict check ─────────────────────────────────────────────────────
 router.get("/dresses/:id/conflict", async (req, res) => {
   try {

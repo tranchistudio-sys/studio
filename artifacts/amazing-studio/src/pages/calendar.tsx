@@ -42,6 +42,7 @@ import { DeductionEditor, type DeductionItem } from "@/components/deduction-edit
 import { StaffAssignmentEditor, type StaffAssignment, newStaffAssignment } from "@/components/staff-assignment-editor";
 import { castAmountFromResult, lookupCastByPkg, resolveCastAmount } from "@/lib/resolve-cast";
 import { reflowDescriptionLines, firstDescriptionLine, parseDescriptionBlocks } from "@/lib/package-description";
+import { buildDressWarningsByDate, type DressWarnRow, type DressWarnChip } from "@/lib/dress-warnings";
 import OutfitBookingSection, { type OutfitDraft } from "@/components/outfit-booking-section";
 import { splitOutfitsBySub, planOutfitSync, mapDressRowToDraft, dedupeParentOutfits, moveOutfitsOnSubRemove } from "@/lib/outfit-per-service";
 import AdditionalServicesSection, { validateAdditionalServicesForm, type AdditionalServiceLine, newAdditionalServiceLine } from "@/components/additional-services-section";
@@ -5414,11 +5415,12 @@ const MAX_VISIBLE_COMPACT = 3;
 const MAX_VISIBLE_COMFORT = 4;
 
 function MonthDayCell({
-  date, bookings, leaves, isSelected, isOtherMonth, onDayClick, onBookingClick, onLeaveClick, allStaff, pkgGroupMap,
+  date, bookings, leaves, warnings, isSelected, isOtherMonth, onDayClick, onBookingClick, onLeaveClick, onWarningClick, allStaff, pkgGroupMap,
 }: {
-  date: Date; bookings: Booking[]; leaves?: LeaveRequest[]; isSelected: boolean; isOtherMonth?: boolean;
+  date: Date; bookings: Booking[]; leaves?: LeaveRequest[]; warnings?: DressWarnChip[]; isSelected: boolean; isOtherMonth?: boolean;
   onDayClick: (d: Date) => void; onBookingClick?: (b: Booking) => void;
   onLeaveClick?: (l: LeaveRequest) => void;
+  onWarningClick?: (bookingId: number) => void;
   allStaff: Staff[];
   pkgGroupMap?: Map<number, string>;
 }) {
@@ -5491,6 +5493,23 @@ function MonthDayCell({
             </button>
           );
         })}
+        {/* Cảnh báo lấy/trả váy — chip riêng kiểu Off, KHÔNG gộp bookings[] */}
+        {warnings && warnings.length > 0 && warnings.map(w => (
+          <button
+            key={w.key}
+            type="button"
+            onClick={e => { e.stopPropagation(); onWarningClick?.(w.bookingId); }}
+            className={`w-full text-left rounded px-1 py-0.5 border text-[10px] leading-tight flex items-center gap-1 ${
+              w.overdue
+                ? "bg-red-200 text-red-900 border-red-500 font-semibold hover:bg-red-300 dark:bg-red-900/40 dark:text-red-200"
+                : "bg-amber-100 text-amber-800 border-amber-300 hover:bg-amber-200 dark:bg-amber-900/20 dark:text-amber-300"
+            }`}
+            title={w.label}
+          >
+            <Shirt className="w-2.5 h-2.5 flex-shrink-0" />
+            <span className="truncate">{w.label}</span>
+          </button>
+        ))}
         {bookings
           .slice()
           .sort((a, b) => (a.shootTime ?? "").localeCompare(b.shootTime ?? ""))
@@ -6706,6 +6725,31 @@ function CalendarPageInner() {
     (date: Date) => (showLeaves ? (leavesByDate.get(format(date, "yyyy-MM-dd")) ?? []) : []),
     [leavesByDate, showLeaves]
   );
+
+  // ── Cảnh báo lấy/trả váy (source RIÊNG kiểu leaves, không đụng bookings[]/tiền) ──
+  // Chỉ đơn dùng gói có bật nút gạt "warn_upcoming_show" mới có (lọc ở backend).
+  const { data: dressWarnRows = [] } = useQuery<DressWarnRow[]>({
+    queryKey: ["dress-warnings", "range", leavesFrom, leavesTo],
+    queryFn: async () => {
+      try {
+        const res = await authFetch(`${BASE}/api/dress-warnings?from=${leavesFrom}&to=${leavesTo}`);
+        if (!res.ok) return [];
+        const j = await res.json().catch(() => []);
+        return Array.isArray(j) ? (j as DressWarnRow[]) : [];
+      } catch { return []; }
+    },
+    staleTime: 30_000,
+    retry: false,
+    throwOnError: false,
+  });
+  const warningsByDate = useMemo(
+    () => buildDressWarningsByDate(dressWarnRows, format(new Date(), "yyyy-MM-dd")),
+    [dressWarnRows],
+  );
+  const getWarningsForDay = useCallback(
+    (date: Date) => warningsByDate.get(format(date, "yyyy-MM-dd")) ?? [],
+    [warningsByDate],
+  );
   const refreshLeaves = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["leave-requests"] });
   }, [queryClient]);
@@ -6813,6 +6857,11 @@ function CalendarPageInner() {
     setHighlightedBookingId(b.id);
     setCalView("day");
   }, []);
+  // Bấm chip cảnh báo váy → mở đúng đơn (không cần dialog riêng).
+  const handleWarningClick = useCallback((bookingId: number) => {
+    const b = bookings.find(x => x.id === bookingId);
+    if (b) handleBookingClickFromMonth(b);
+  }, [bookings, handleBookingClickFromMonth]);
 
   // Handlers — day view
   const handleTimeClick = useCallback((time: string) => {
@@ -7296,12 +7345,14 @@ function CalendarPageInner() {
               {/* Leading days from prev month */}
               {Array.from({ length: firstDayOfMonth }).map((_, i) => {
                 const d = new Date(monthStart); d.setDate(d.getDate() - (firstDayOfMonth - i));
-                return <MonthDayCell key={`p${i}`} date={d} bookings={getBookingsForDay(d)} leaves={getLeavesForDay(d)} isSelected={false} isOtherMonth onDayClick={handleDayClick} onBookingClick={handleBookingClickFromMonth} onLeaveClick={setViewingLeave} allStaff={allStaff} pkgGroupMap={pkgGroupMap} />;
+                return <MonthDayCell key={`p${i}`} date={d} bookings={getBookingsForDay(d)} leaves={getLeavesForDay(d)} warnings={getWarningsForDay(d)} isSelected={false} isOtherMonth onDayClick={handleDayClick} onBookingClick={handleBookingClickFromMonth} onLeaveClick={setViewingLeave} onWarningClick={handleWarningClick} allStaff={allStaff} pkgGroupMap={pkgGroupMap} />;
               })}
               {/* Current month days */}
               {daysInMonth.map(day => (
                 <MonthDayCell key={day.toISOString()} date={day} bookings={getBookingsForDay(day)}
                   leaves={getLeavesForDay(day)}
+                  warnings={getWarningsForDay(day)}
+                  onWarningClick={handleWarningClick}
                   isSelected={isSameDay(day, selectedDate)}
                   onDayClick={handleDayClick}
                   onBookingClick={handleBookingClickFromMonth}
@@ -7313,7 +7364,7 @@ function CalendarPageInner() {
               {/* Trailing days from next month */}
               {Array.from({ length: (7 - ((firstDayOfMonth + daysInMonth.length) % 7)) % 7 }).map((_, i) => {
                 const d = new Date(monthEnd); d.setDate(d.getDate() + i + 1);
-                return <MonthDayCell key={`n${i}`} date={d} bookings={getBookingsForDay(d)} leaves={getLeavesForDay(d)} isSelected={false} isOtherMonth onDayClick={handleDayClick} onBookingClick={handleBookingClickFromMonth} onLeaveClick={setViewingLeave} allStaff={allStaff} pkgGroupMap={pkgGroupMap} />;
+                return <MonthDayCell key={`n${i}`} date={d} bookings={getBookingsForDay(d)} leaves={getLeavesForDay(d)} warnings={getWarningsForDay(d)} isSelected={false} isOtherMonth onDayClick={handleDayClick} onBookingClick={handleBookingClickFromMonth} onLeaveClick={setViewingLeave} onWarningClick={handleWarningClick} allStaff={allStaff} pkgGroupMap={pkgGroupMap} />;
               })}
             </div>
           </div>

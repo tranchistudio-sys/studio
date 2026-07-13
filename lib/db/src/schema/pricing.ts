@@ -63,6 +63,9 @@ export const servicePackagesTable = pgTable("service_packages", {
   requiresPostProduction: boolean("requires_post_production").notNull().default(false),
   /** When true, job shows "Đã xuất in" tracking (physical print). */
   requiresPrinting: boolean("requires_printing").notNull().default(false),
+  /** Bật cảnh báo lấy/trả váy trên lịch cho đơn dùng gói này (chip kiểu Xin nghỉ/Off).
+   *  Thuần hiển thị — KHÔNG đụng tiền/đơn/công nợ. */
+  warnUpcomingShow: boolean("warn_upcoming_show").notNull().default(false),
   // ── Chương trình giảm giá RIÊNG cho gói — ưu tiên hơn giảm giá nhóm (KHÔNG cộng
   //    dồn). KHÁC salePercent (salePercent = % margin nội bộ trong breakdown chi phí,
   //    KHÔNG phải ưu đãi cho khách). Tính giá sau giảm bằng resolveDiscount(). ──

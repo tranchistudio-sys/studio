@@ -102,6 +102,8 @@ type ServicePackage = {
   defaultEditingDays?: number | null;
   requiresPostProduction?: boolean;
   requiresPrinting?: boolean;
+  /** Bật cảnh báo lấy/trả váy trên lịch cho đơn dùng gói này. */
+  warnUpcomingShow?: boolean;
   // Chương trình giảm giá riêng gói (field thô để sửa) + kết quả backend tính sẵn.
   discountEnabled?: boolean;
   discountType?: "percent" | "fixed" | null;
@@ -144,6 +146,7 @@ function normalizeServicePackage(p: ServicePackage & { requires_printing?: boole
     ...p,
     requiresPrinting: rawPrint === true || rawPrint === 1 || rawPrint === "1",
     requiresPostProduction: p.requiresPostProduction !== false && p.requiresPostProduction !== 0,
+    warnUpcomingShow: p.warnUpcomingShow === true || (p as { warn_upcoming_show?: unknown }).warn_upcoming_show === true,
   };
 }
 
@@ -1012,6 +1015,43 @@ export default function PricingPage() {
               )}
             </div>
 
+            {/* Cảnh báo lấy/trả váy trên lịch — bật/tắt nhanh tại panel chi tiết */}
+            <div className="flex items-center justify-between p-4 bg-muted/30 rounded-xl border border-border">
+              <div>
+                <p className="text-xs font-semibold text-muted-foreground">👗 Cảnh báo lấy/trả váy trên lịch</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  {selectedPkg.warnUpcomingShow === true
+                    ? "Đơn dùng gói này hiện chip nhắc lấy váy (trước 3 ngày) & đòi váy khi quá hạn"
+                    : "Tắt — không nhắc trên lịch"}
+                </p>
+              </div>
+              {effectiveIsAdmin ? (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={selectedPkg.warnUpcomingShow === true}
+                  disabled={updatePkgInline.isPending}
+                  onClick={() => updatePkgInline.mutate({
+                    id: selectedPkg.id,
+                    warnUpcomingShow: selectedPkg.warnUpcomingShow !== true,
+                  })}
+                  className={`relative inline-flex h-7 w-12 flex-shrink-0 rounded-full transition-colors disabled:opacity-50 ${
+                    selectedPkg.warnUpcomingShow === true ? "bg-amber-400" : "bg-muted-foreground/30"
+                  }`}
+                >
+                  <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform mt-1 ${
+                    selectedPkg.warnUpcomingShow === true ? "translate-x-6" : "translate-x-1"
+                  }`} />
+                </button>
+              ) : (
+                <span className={`text-[10px] px-2 py-1 rounded-full font-medium ${
+                  selectedPkg.warnUpcomingShow === true ? "bg-amber-100 text-amber-700" : "bg-muted text-muted-foreground"
+                }`}>
+                  {selectedPkg.warnUpcomingShow === true ? "Có cảnh báo" : "Không"}
+                </span>
+              )}
+            </div>
+
             {/* Mô tả — inline edit */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
@@ -1489,6 +1529,7 @@ function PackageModal({
     defaultEditingDays: pkg?.defaultEditingDays != null ? String(pkg.defaultEditingDays) : "",
     requiresPostProduction: pkg?.requiresPostProduction !== false,
     requiresPrinting: pkg?.requiresPrinting === true,
+    warnUpcomingShow: pkg?.warnUpcomingShow === true,
   });
   const [items, setItems] = useState<PackageItem[]>(
     pkg?.items.length ? pkg.items : []
@@ -1527,6 +1568,7 @@ function PackageModal({
             : null),
         requiresPostProduction: form.requiresPostProduction,
         requiresPrinting: form.requiresPrinting,
+        warnUpcomingShow: form.warnUpcomingShow,
         ...discountFormToPayload(discount),
         items: items.filter(it => it.name.trim()).map((it, i) => ({ ...it, sortOrder: i })),
       };
@@ -1729,6 +1771,24 @@ function PackageModal({
               className={`relative inline-flex h-7 w-12 flex-shrink-0 rounded-full transition-colors ${form.requiresPrinting ? "bg-rose-400" : "bg-muted-foreground/30"}`}
             >
               <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform mt-1 ${form.requiresPrinting ? "translate-x-6" : "translate-x-1"}`} />
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between p-3 bg-muted/30 rounded-xl border border-border">
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground">👗 Cảnh báo lấy/trả váy trên lịch</p>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                {form.warnUpcomingShow ? "Nhắc lấy váy trước 3 ngày + đòi váy khi quá hạn" : "Tắt — không nhắc trên lịch"}
+              </p>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={form.warnUpcomingShow}
+              onClick={() => setForm(f => ({ ...f, warnUpcomingShow: !f.warnUpcomingShow }))}
+              className={`relative inline-flex h-7 w-12 flex-shrink-0 rounded-full transition-colors ${form.warnUpcomingShow ? "bg-amber-400" : "bg-muted-foreground/30"}`}
+            >
+              <span className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform mt-1 ${form.warnUpcomingShow ? "translate-x-6" : "translate-x-1"}`} />
             </button>
           </div>
 

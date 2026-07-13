@@ -986,6 +986,10 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
     await client.query(`ALTER TABLE booking_dresses ADD COLUMN IF NOT EXISTS return_note text`);
     await client.query(`ALTER TABLE booking_dresses ADD COLUMN IF NOT EXISTS damage_note text`);
 
+    // ── Nút gạt "Cảnh báo lấy/trả váy trên lịch" per gói (additive, idempotent).
+    // Thuần hiển thị chip cảnh báo — không đụng tiền/đơn/công nợ.
+    await client.query(`ALTER TABLE service_packages ADD COLUMN IF NOT EXISTS warn_upcoming_show boolean NOT NULL DEFAULT false`);
+
     await client.query("COMMIT");
     console.log("[migrations] Hoàn thành.");
   } catch (err) {

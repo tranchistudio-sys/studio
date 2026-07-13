@@ -33,6 +33,11 @@ function toRequiresPrintingFlag(v: unknown): boolean {
   return false;
 }
 
+function toWarnUpcomingShowFlag(v: unknown): boolean {
+  if (v === true || v === 1 || v === "1") return true;
+  return false;
+}
+
 // Chuẩn hoá các field discount_* thô (string numeric / Date) cho FE đọc.
 const fmtDiscountFields = (o: Record<string, unknown>) => ({
   discountEnabled: Boolean(o.discountEnabled),
@@ -113,6 +118,9 @@ const fmtPkg = (p: {
     requiresPostProduction: toRequiresPostProductionFlag(p.requiresPostProduction),
     requiresPrinting: toRequiresPrintingFlag(
       p.requiresPrinting ?? (p as { requires_printing?: unknown }).requires_printing,
+    ),
+    warnUpcomingShow: toWarnUpcomingShowFlag(
+      p.warnUpcomingShow ?? (p as { warn_upcoming_show?: unknown }).warn_upcoming_show,
     ),
     ...fmtDiscountFields(p),
   };
@@ -1139,6 +1147,7 @@ router.post("/service-packages", async (req, res) => {
     defaultEditingDays,
     requiresPostProduction,
     requiresPrinting,
+    warnUpcomingShow,
   } = req.body;
   const parseEditingDays = (v: unknown): number | null => {
     if (v == null || v === "") return null;
@@ -1173,6 +1182,7 @@ router.post("/service-packages", async (req, res) => {
       : (requiresPrinting === true || requiresPrinting === 1
         ? true
         : (groupId ? await defaultRequiresPrintingForGroupId(parseInt(String(groupId))) : false)),
+    warnUpcomingShow: toWarnUpcomingShowFlag(warnUpcomingShow),
     ...parseDiscountPayload(req.body),
   }).returning();
 
@@ -1207,6 +1217,7 @@ router.put("/service-packages/:id", async (req, res) => {
       defaultEditingDays,
       requiresPostProduction,
       requiresPrinting,
+      warnUpcomingShow,
     } = req.body;
 
     const update: Record<string, unknown> = {};
@@ -1241,6 +1252,9 @@ router.put("/service-packages/:id", async (req, res) => {
     }
     if (requiresPrinting !== undefined) {
       update.requiresPrinting = toRequiresPrintingFlag(requiresPrinting);
+    }
+    if (warnUpcomingShow !== undefined) {
+      update.warnUpcomingShow = toWarnUpcomingShowFlag(warnUpcomingShow);
     }
     // Chương trình giảm giá riêng cho gói — form luôn gửi cả khối khi lưu.
     if (req.body.discountEnabled !== undefined) {

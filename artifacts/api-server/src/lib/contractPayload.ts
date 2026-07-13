@@ -23,6 +23,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, inArray, asc } from "drizzle-orm";
 import { isCollectedPayment, money } from "./booking-money";
+import { getSchemaFlags } from "./schema-compat";
 
 export const STUDIO_INFO = {
   name: "Amazing Studio",
@@ -360,7 +361,8 @@ export async function buildContractPayload(
   const schedule: { date: string; time: string | null; label: string | null }[] = [];
   const serviceRowIds = serviceRows.map((b) => b.id).filter((n): n is number => n != null);
   const occByBooking = new Map<number, { shootDate: string; shootTime: string | null; label: string | null }[]>();
-  if (serviceRowIds.length > 0) {
+  // Tương thích ngược: DB chưa migrate (thiếu bảng ngày phụ) → hợp đồng chỉ hiện ngày chính.
+  if (serviceRowIds.length > 0 && (await getSchemaFlags()).occurrences) {
     const occRows = await db
       .select({ bookingId: bookingOccurrencesTable.bookingId, shootDate: bookingOccurrencesTable.shootDate, shootTime: bookingOccurrencesTable.shootTime, label: bookingOccurrencesTable.label })
       .from(bookingOccurrencesTable)

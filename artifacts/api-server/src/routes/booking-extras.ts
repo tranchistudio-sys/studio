@@ -1,4 +1,5 @@
 import { Router, type IRouter } from "express";
+import { bookingColumnsCompat } from "../lib/schema-compat";
 import { db, pool } from "@workspace/db";
 import {
   bookingItemsTable, bookingChangeLogTable, bookingsTable, staffTable,
@@ -81,7 +82,7 @@ router.post("/bookings/:id/upgrade", async (req, res) => {
     return res.status(400).json({ error: "Vui lòng nhập tên gói mới và giá" });
   }
 
-  const [booking] = await db.select().from(bookingsTable).where(and(eq(bookingsTable.id, bookingId), isNull(bookingsTable.deletedAt)));
+  const [booking] = await db.select(await bookingColumnsCompat()).from(bookingsTable).where(and(eq(bookingsTable.id, bookingId), isNull(bookingsTable.deletedAt)));
   if (!booking) return res.status(404).json({ error: "Không tìm thấy booking" });
 
   const existingItems = await db.select().from(bookingItemsTable)
@@ -140,7 +141,7 @@ router.patch("/bookings/:id/reschedule", async (req, res) => {
   if (!newDate) return res.status(400).json({ error: "Vui lòng chọn ngày mới" });
   if (!reason?.trim()) return res.status(400).json({ error: "Vui lòng nhập lý do đổi lịch" });
 
-  const [booking] = await db.select().from(bookingsTable).where(and(eq(bookingsTable.id, bookingId), isNull(bookingsTable.deletedAt)));
+  const [booking] = await db.select(await bookingColumnsCompat()).from(bookingsTable).where(and(eq(bookingsTable.id, bookingId), isNull(bookingsTable.deletedAt)));
   if (!booking) return res.status(404).json({ error: "Không tìm thấy booking" });
 
   // Phân quyền: admin hoặc nhân viên được assigned vào buổi đó

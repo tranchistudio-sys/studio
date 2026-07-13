@@ -1,4 +1,5 @@
 import { Router, type IRouter } from "express";
+import { bookingColumnsCompat } from "../lib/schema-compat";
 import { db } from "@workspace/db";
 import {
   staffJobEarningsTable, staffRatePricesTable,
@@ -103,7 +104,7 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
     ne(staffJobEarningsTable.role, "photoshop"),
   ));
 
-  const [booking] = await db.select().from(bookingsTable).where(eq(bookingsTable.id, bookingId));
+  const [booking] = await db.select(await bookingColumnsCompat()).from(bookingsTable).where(eq(bookingsTable.id, bookingId));
   // Booking đã HỦY (cancelled) hoặc đã vào THÙNG RÁC (deleted_at) → KHÔNG tính lương
   // (pending earnings đã bị xóa ở trên).
   if (!booking || booking.status === "cancelled" || booking.status === "temp_quote" || booking.deletedAt != null) return;

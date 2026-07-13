@@ -1,4 +1,5 @@
 import { Router, type IRouter } from "express";
+import { bookingColumnsCompat } from "../lib/schema-compat";
 import { db, pool } from "@workspace/db";
 import {
   bookingsTable, customersTable, dressesTable, rentalsTable,
@@ -68,7 +69,7 @@ router.get("/dashboard/stats", async (_req, res) => {
   const revenueThisMonth = allPayments.reduce((s, p) => s + parseFloat(p.amount), 0);
 
   // Công nợ tổng: chỉ đơn CÒN HIỆU LỰC (loại thùng rác/hủy/báo giá tạm/đơn cha/con mồ côi).
-  const allBookings = await db.select().from(bookingsTable).where(countableBookingCond);
+  const allBookings = await db.select(await bookingColumnsCompat()).from(bookingsTable).where(countableBookingCond);
   const allPaymentsAll = await db.select().from(paymentsTable);
   const totalOwed = allBookings.reduce((s, b) => s + parseFloat(b.totalAmount), 0);
   const totalPaidAll = allPaymentsAll

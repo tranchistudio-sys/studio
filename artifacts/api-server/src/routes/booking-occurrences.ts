@@ -4,6 +4,7 @@ import { bookingsTable, bookingOccurrencesTable, bookingChangeLogTable } from "@
 import { eq, and, asc } from "drizzle-orm";
 import { verifyToken } from "./auth";
 import { isDuplicateOccurrence, normalizeDate, normalizeTime } from "../lib/booking-occurrences";
+import { getSchemaFlags } from "../lib/schema-compat";
 
 /**
  * Ngày thực hiện PHỤ của booking ("dịch vụ nhiều ngày").
@@ -52,6 +53,8 @@ router.get("/bookings/:id/occurrences", async (req, res) => {
     const bookingId = parseInt(req.params.id);
     const loaded = await loadActiveBooking(bookingId);
     if ("error" in loaded) return res.status(loaded.status).json({ error: loaded.error });
+    // Tương thích ngược: DB chưa migrate (thiếu bảng) → danh sách rỗng, không 500.
+    if (!(await getSchemaFlags()).occurrences) return res.json([]);
     res.json(await listOccurrences(bookingId));
   } catch (err) {
     console.error("GET /bookings/:id/occurrences error:", err);
@@ -64,6 +67,10 @@ router.post("/bookings/:id/occurrences", async (req, res) => {
   try {
     const callerId = verifyToken(req.headers.authorization);
     if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
+    // Tương thích ngược: DB chưa migrate → báo lỗi RÕ thay vì 500 mơ hồ.
+    if (!(await getSchemaFlags()).occurrences) {
+      return res.status(503).json({ error: "Tính năng ngày thực hiện phụ chưa sẵn sàng: DB chưa được migrate (thiếu bảng booking_occurrences). Liên hệ quản trị để chạy migration." });
+    }
     const bookingId = parseInt(req.params.id);
     const loaded = await loadActiveBooking(bookingId);
     if ("error" in loaded) return res.status(loaded.status).json({ error: loaded.error });
@@ -104,6 +111,10 @@ router.put("/bookings/:id/occurrences/:occId", async (req, res) => {
   try {
     const callerId = verifyToken(req.headers.authorization);
     if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
+    // Tương thích ngược: DB chưa migrate → báo lỗi RÕ thay vì 500 mơ hồ.
+    if (!(await getSchemaFlags()).occurrences) {
+      return res.status(503).json({ error: "Tính năng ngày thực hiện phụ chưa sẵn sàng: DB chưa được migrate (thiếu bảng booking_occurrences). Liên hệ quản trị để chạy migration." });
+    }
     const bookingId = parseInt(req.params.id);
     const occId = parseInt(req.params.occId);
     const loaded = await loadActiveBooking(bookingId);
@@ -160,6 +171,10 @@ router.delete("/bookings/:id/occurrences/:occId", async (req, res) => {
   try {
     const callerId = verifyToken(req.headers.authorization);
     if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
+    // Tương thích ngược: DB chưa migrate → báo lỗi RÕ thay vì 500 mơ hồ.
+    if (!(await getSchemaFlags()).occurrences) {
+      return res.status(503).json({ error: "Tính năng ngày thực hiện phụ chưa sẵn sàng: DB chưa được migrate (thiếu bảng booking_occurrences). Liên hệ quản trị để chạy migration." });
+    }
     const bookingId = parseInt(req.params.id);
     const occId = parseInt(req.params.occId);
     const loaded = await loadActiveBooking(bookingId);

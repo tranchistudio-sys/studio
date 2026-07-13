@@ -9,6 +9,7 @@ import { computeBookingEarnings } from "./job-earnings";
 import { emitNotification } from "./notifications";
 import { normalizeItemsAssignedStaffCast, buildPrevManualMap } from "../lib/resolve-staff-cast";
 import { maybeCreatePhotoshopJobForBooking } from "./photoshop-jobs";
+import { getSchemaFlags, bookingColumnsCompat, type SchemaFlags } from "../lib/schema-compat";
 import { bookingRequiresPostProduction } from "../lib/post-production-eligibility";
 import {
   sanitizeAdditionalServices,
@@ -121,7 +122,10 @@ function normalizeItemStaff(rawItems: unknown): unknown[] {
 }
 
 // ─── Select fields shared across GET queries ──────────────────────────────────
-const bookingFields = {
+// TƯƠNG THÍCH NGƯỢC (sự cố 2026-07-13): 2 cột dress_warn_* có thể CHƯA tồn tại
+// trên DB chưa migrate → tách riêng, chỉ select khi schema có (getSchemaFlags).
+// Thiếu cột thì FE nhận undefined → form dùng mặc định 3/2, KHÔNG sập /calendar.
+const bookingFieldsBase = {
   id: bookingsTable.id,
   orderCode: bookingsTable.orderCode,
   customerId: bookingsTable.customerId,
@@ -153,10 +157,17 @@ const bookingFields = {
   deductions: bookingsTable.deductions,
   createdByStaffId: bookingsTable.createdByStaffId,
   additionalServices: bookingsTable.additionalServices,
-  dressWarnPickupDays: bookingsTable.dressWarnPickupDays,
-  dressWarnReturnDays: bookingsTable.dressWarnReturnDays,
   createdAt: bookingsTable.createdAt,
 };
+const bookingFieldsFull = {
+  ...bookingFieldsBase,
+  dressWarnPickupDays: bookingsTable.dressWarnPickupDays,
+  dressWarnReturnDays: bookingsTable.dressWarnReturnDays,
+};
+/** Chọn bộ field theo schema thực tế của DB (thiếu cột → bộ base, không 500). */
+function bookingFieldsFor(flags: SchemaFlags) {
+  return flags.dressWarnCols ? bookingFieldsFull : bookingFieldsBase;
+}
 
 /** Chuẩn hoá số ngày nhắc thuê đồ: null/rỗng = null (mặc định 3/2), clamp 0..30. */
 function toWarnDays(v: unknown): number | null {
@@ -207,8 +218,9 @@ router.get("/bookings", async (req, res) => {
     shootMonthCondition = and(gte(bookingsTable.shootDate, startDate), lte(bookingsTable.shootDate, endDate));
   }
 
+  const schemaFlags = await getSchemaFlags();
   const baseQuery = db
-    .select(bookingFields)
+    .select(bookingFieldsFor(schemaFlags))
     .from(bookingsTable)
     .innerJoin(customersTable, eq(bookingsTable.customerId, customersTable.id))
     .where(
@@ -373,7 +385,8 @@ router.get("/bookings", async (req, res) => {
   // Ngày thực hiện phụ (dịch vụ nhiều ngày) — batch theo tất cả booking. Thuần
   // lịch trình, KHÔNG có tiền nên không ảnh hưởng tổng/công nợ/doanh thu.
   const occByBookingId: Record<number, { id: number; shootDate: string; shootTime: string | null; label: string | null; sortOrder: number }[]> = {};
-  {
+  // Tương thích ngược: DB chưa migrate (thiếu bảng) → bỏ qua, đơn hiện như 1 ngày.
+  if (schemaFlags.occurrences) {
     const allBookingIds = rows.map(r => r.id);
     if (allBookingIds.length > 0) {
       const occRows = await db
@@ -477,7 +490,7 @@ router.get("/bookings/trash", async (req, res) => {
     }
     const rows = await db
       .select({
-        ...bookingFields,
+        ...bookingFieldsFor(await getSchemaFlags()),
         deletedAt: bookingsTable.deletedAt,
         deletedBy: bookingsTable.deletedBy,
         deleteReason: bookingsTable.deleteReason,
@@ -533,7 +546,7 @@ router.post("/bookings", async (req, res) => {
   // không tạo phiếu cọc, không tạo job hậu kỳ — chưa phải đơn thật.
   const isTempQuote = req.body.isTempQuote === true;
 
-  const count = await db.select().from(bookingsTable);
+  const count = await db.select(await bookingColumnsCompat()).from(bookingsTable);
   const bgCount = count.filter(b => (b.orderCode ?? "").startsWith("BG")).length;
   const orderCode = isTempQuote
     ? `BG${String(bgCount + 1).padStart(4, "0")}`
@@ -565,8 +578,11 @@ router.post("/bookings", async (req, res) => {
         isParentContract: true,
         status: isTempQuote ? "temp_quote" : "confirmed",
         createdByStaffId: callerId,
-        dressWarnPickupDays: toWarnDays(req.body.dressWarnPickupDays),
-        dressWarnReturnDays: toWarnDays(req.body.dressWarnReturnDays),
+        // Tương thích ngược: chỉ ghi cột setting nhắc khi DB đã migrate.
+        ...((await getSchemaFlags()).dressWarnCols ? {
+          dressWarnPickupDays: toWarnDays(req.body.dressWarnPickupDays),
+          dressWarnReturnDays: toWarnDays(req.body.dressWarnReturnDays),
+        } : {}),
       })
       .returning();
 
@@ -639,7 +655,7 @@ router.post("/bookings", async (req, res) => {
     }
 
     const newParentTotal = await recalcParentTotalFromChildren(parent.id);
-    const [parentRefreshed] = await db.select().from(bookingsTable).where(eq(bookingsTable.id, parent.id));
+    const [parentRefreshed] = await db.select(await bookingColumnsCompat()).from(bookingsTable).where(eq(bookingsTable.id, parent.id));
 
     const [customer] = await db.select().from(customersTable).where(eq(customersTable.id, customerId));
     emitNotification({
@@ -727,8 +743,11 @@ router.post("/bookings", async (req, res) => {
       status: isTempQuote ? "temp_quote" : "pending",
       createdByStaffId: callerId,
       additionalServices: snapshotAdditionalServices,
-      dressWarnPickupDays: toWarnDays(req.body.dressWarnPickupDays),
-      dressWarnReturnDays: toWarnDays(req.body.dressWarnReturnDays),
+      // Tương thích ngược: chỉ ghi cột setting nhắc khi DB đã migrate.
+      ...((await getSchemaFlags()).dressWarnCols ? {
+        dressWarnPickupDays: toWarnDays(req.body.dressWarnPickupDays),
+        dressWarnReturnDays: toWarnDays(req.body.dressWarnReturnDays),
+      } : {}),
     })
     .returning();
 
@@ -794,8 +813,9 @@ router.post("/bookings", async (req, res) => {
 router.get("/bookings/:id", async (req, res) => {
   try {
   const id = parseInt(req.params.id);
+  const schemaFlags = await getSchemaFlags();
   const [row] = await db
-    .select(bookingFields)
+    .select(bookingFieldsFor(schemaFlags))
     .from(bookingsTable)
     .innerJoin(customersTable, eq(bookingsTable.customerId, customersTable.id))
     .where(eq(bookingsTable.id, id));
@@ -806,18 +826,21 @@ router.get("/bookings/:id", async (req, res) => {
   const payments = await db.select().from(paymentsTable).where(eq(paymentsTable.bookingId, paymentBookingId));
 
   // Ngày thực hiện phụ (dịch vụ nhiều ngày) của CHÍNH đơn này — thuần lịch, không tiền.
-  const occurrences = await db
-    .select({ id: bookingOccurrencesTable.id, shootDate: bookingOccurrencesTable.shootDate, shootTime: bookingOccurrencesTable.shootTime, label: bookingOccurrencesTable.label, sortOrder: bookingOccurrencesTable.sortOrder })
-    .from(bookingOccurrencesTable)
-    .where(eq(bookingOccurrencesTable.bookingId, id))
-    .orderBy(asc(bookingOccurrencesTable.sortOrder), asc(bookingOccurrencesTable.shootDate), asc(bookingOccurrencesTable.id));
+  // Tương thích ngược: DB chưa migrate (thiếu bảng) → coi như không có ngày phụ.
+  const occurrences = schemaFlags.occurrences
+    ? await db
+        .select({ id: bookingOccurrencesTable.id, shootDate: bookingOccurrencesTable.shootDate, shootTime: bookingOccurrencesTable.shootTime, label: bookingOccurrencesTable.label, sortOrder: bookingOccurrencesTable.sortOrder })
+        .from(bookingOccurrencesTable)
+        .where(eq(bookingOccurrencesTable.bookingId, id))
+        .orderBy(asc(bookingOccurrencesTable.sortOrder), asc(bookingOccurrencesTable.shootDate), asc(bookingOccurrencesTable.id))
+    : [];
 
   // Expenses: child/standalone = this booking only; parent contract = parent + all children
   let expenseBookingIds: number[] = [id];
   let children: unknown[] = [];
   if (row.isParentContract) {
     const childRows = await db
-      .select(bookingFields)
+      .select(bookingFieldsFor(schemaFlags))
       .from(bookingsTable)
       .innerJoin(customersTable, eq(bookingsTable.customerId, customersTable.id))
       .where(eq(bookingsTable.parentId, id))
@@ -873,7 +896,7 @@ router.get("/bookings/:id", async (req, res) => {
 
   if (row.parentId) {
     const siblingRows = await db
-      .select(bookingFields)
+      .select(bookingFieldsFor(schemaFlags))
       .from(bookingsTable)
       .innerJoin(customersTable, eq(bookingsTable.customerId, customersTable.id))
       .where(and(eq(bookingsTable.parentId, row.parentId)))
@@ -910,7 +933,7 @@ router.get("/bookings/:id", async (req, res) => {
     }));
 
     const [parentRow] = await db
-      .select(bookingFields)
+      .select(bookingFieldsFor(schemaFlags))
       .from(bookingsTable)
       .innerJoin(customersTable, eq(bookingsTable.customerId, customersTable.id))
       .where(eq(bookingsTable.id, row.parentId));
@@ -1030,9 +1053,11 @@ router.put("/bookings/:id", async (req, res) => {
   if (photoCount !== undefined) updateData.photoCount = photoCount !== null ? parseInt(String(photoCount)) : null;
   if (includedRetouchedPhotosSnapshot !== undefined) updateData.includedRetouchedPhotosSnapshot = parseInt(String(includedRetouchedPhotosSnapshot)) || 0;
   if (servicePackageId !== undefined) updateData.servicePackageId = servicePackageId ? parseInt(String(servicePackageId)) : null;
-  // Setting nhắc thuê đồ (thuần lịch nhắc, không đụng tiền) — chỉ cập nhật khi field có mặt.
-  if (req.body.dressWarnPickupDays !== undefined) updateData.dressWarnPickupDays = toWarnDays(req.body.dressWarnPickupDays);
-  if (req.body.dressWarnReturnDays !== undefined) updateData.dressWarnReturnDays = toWarnDays(req.body.dressWarnReturnDays);
+  // Setting nhắc thuê đồ (thuần lịch nhắc, không đụng tiền) — chỉ cập nhật khi field có mặt
+  // VÀ DB đã migrate (tương thích ngược: thiếu cột thì bỏ qua thay vì 500).
+  const dressWarnColsReady = (await getSchemaFlags()).dressWarnCols;
+  if (dressWarnColsReady && req.body.dressWarnPickupDays !== undefined) updateData.dressWarnPickupDays = toWarnDays(req.body.dressWarnPickupDays);
+  if (dressWarnColsReady && req.body.dressWarnReturnDays !== undefined) updateData.dressWarnReturnDays = toWarnDays(req.body.dressWarnReturnDays);
 
   // Check booking exists. Đọc đầy đủ field để diff trước/sau, ghi lịch sử sửa đơn.
   const [oldBooking] = await db
@@ -1369,7 +1394,7 @@ router.put("/bookings/:id", async (req, res) => {
 
     // Re-read full booking + customer (outside transaction is fine — data is committed)
     const [[fullBooking], [customer]] = await Promise.all([
-      db.select().from(bookingsTable).where(eq(bookingsTable.id, id)),
+      db.select(await bookingColumnsCompat()).from(bookingsTable).where(eq(bookingsTable.id, id)),
       db.select({ name: customersTable.name, phone: customersTable.phone }).from(customersTable).where(eq(customersTable.id, customerId)),
     ]);
 
@@ -1597,7 +1622,7 @@ router.post("/bookings/:parentId/add-child", async (req, res) => {
     const callerId = verifyToken(req.headers.authorization);
     if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
 
-    const [parent] = await db.select().from(bookingsTable).where(eq(bookingsTable.id, parentId));
+    const [parent] = await db.select(await bookingColumnsCompat()).from(bookingsTable).where(eq(bookingsTable.id, parentId));
     if (!parent) return res.status(404).json({ error: "Không tìm thấy hợp đồng gốc" });
     if (!parent.isParentContract) return res.status(400).json({ error: "Booking này không phải hợp đồng multi-service" });
 
@@ -1687,11 +1712,11 @@ router.delete("/bookings/:parentId/remove-child/:childId", async (req, res) => {
     const role = await getCallerRole(req.headers.authorization);
     if (role !== "admin") return res.status(403).json({ error: "Chỉ admin mới có thể xoá dịch vụ con" });
 
-    const [parent] = await db.select().from(bookingsTable).where(eq(bookingsTable.id, parentId));
+    const [parent] = await db.select(await bookingColumnsCompat()).from(bookingsTable).where(eq(bookingsTable.id, parentId));
     if (!parent) return res.status(404).json({ error: "Không tìm thấy hợp đồng gốc" });
     if (!parent.isParentContract) return res.status(400).json({ error: "Booking này không phải hợp đồng multi-service" });
 
-    const [child] = await db.select().from(bookingsTable).where(and(eq(bookingsTable.id, childId), eq(bookingsTable.parentId, parentId)));
+    const [child] = await db.select(await bookingColumnsCompat()).from(bookingsTable).where(and(eq(bookingsTable.id, childId), eq(bookingsTable.parentId, parentId)));
     if (!child) return res.status(404).json({ error: "Không tìm thấy dịch vụ con trong hợp đồng này" });
 
     const allChildren = await db.select({ id: bookingsTable.id })
@@ -1809,7 +1834,7 @@ router.post("/bookings/:id/restore", async (req, res) => {
     if ((await getCallerRole(req.headers.authorization)) !== "admin") {
       return res.status(403).json({ error: "Chỉ admin được phục hồi booking" });
     }
-    const [target] = await db.select().from(bookingsTable).where(eq(bookingsTable.id, id));
+    const [target] = await db.select(await bookingColumnsCompat()).from(bookingsTable).where(eq(bookingsTable.id, id));
     if (!target) return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
     if (!target.deletedAt) return res.status(400).json({ error: "Đơn không ở trong thùng rác" });
 

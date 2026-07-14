@@ -260,8 +260,10 @@ function mockRevenueMonth() {
   q.mockImplementation(async (sql: string) => {
     const s = String(sql);
     if (s.includes("SUM(amount)")) return { rows: [{ total: "24699006" }] };
-    if (s.includes("FROM bookings")) return { rows: [{ cnt: "40" }] };
+    // COUNT phiếu thu phải check TRƯỚC "FROM bookings": predicate cha-rỗng mới
+    // chứa subquery "FROM bookings zp" ngay trong câu payments.
     if (s.includes("FROM payments")) return { rows: [{ cnt: "24" }] };
+    if (s.includes("FROM bookings")) return { rows: [{ cnt: "40" }] };
     return { rows: [] };
   });
 }
@@ -350,5 +352,78 @@ describe("buildFollowUp — không dùng một câu chung cho mọi intent", () 
     expect(buildFollowUp("schedule", { count: 4 })).toMatch(/nhân sự/);
     expect(buildFollowUp("post_production", { overdueCount: 2 })).toMatch(/Tiến độ hậu kỳ/);
     expect(buildFollowUp("staff", { topStaffName: "An", topJobCount: 6 })).toContain("An");
+  });
+});
+
+// ─── 9. Finance — cùng công thức màn "Tổng quan tài chính" (sự cố 14/07) ───────
+
+describe("classifyIntent — finance (tài chính/lợi nhuận/hòa vốn/chi phí)", () => {
+  it.each([
+    ["tổng quan tài chính", "finance"],
+    ["tổng quan tài chính á", "finance"],
+    ["lợi nhuận tháng này bao nhiêu?", "finance"],
+    ["tháng này lời lỗ thế nào?", "finance"],
+    ["chi phí tháng này hết bao nhiêu?", "finance"],
+    ["studio đạt hòa vốn chưa?", "finance"],
+  ])("%s → %s", (question, intent) => {
+    expect(classifyIntent(question)).toBe(intent);
+  });
+
+  it("không cướp câu doanh thu / công nợ / tổng quan vận hành", () => {
+    expect(classifyIntent("Doanh thu tháng này bao nhiêu?")).toBe("revenue");
+    expect(classifyIntent("Khách nào đang nợ tiền?")).toBe("debt");
+    expect(classifyIntent("tình hình hôm nay sao rồi")).toBe("overview");
+  });
+});
+
+describe("getRevenueSummary — khớp lớp lọc 'Đã thu' của /dashboard/simple", () => {
+  it("SQL loại refund + phiếu thu trên đơn CHA rỗng (khoản phồng 2.000.000 đ)", async () => {
+    const sqls: string[] = [];
+    q.mockImplementation(async (sql: string) => {
+      sqls.push(String(sql));
+      return { rows: [{ total: "0", cnt: "0" }] };
+    });
+    await getRevenueSummary();
+    const paymentSqls = sqls.filter(s => s.includes("FROM payments"));
+    expect(paymentSqls.length).toBe(2); // SUM tiền + COUNT phiếu
+    for (const s of paymentSqls) {
+      expect(s).toContain("payment_type != 'refund'");
+      expect(s).toContain("!= 'voided'");
+      expect(s).toContain("is_parent_contract = true"); // predicate cha rỗng
+    }
+  });
+});
+
+describe("answerFinance — số y hệt màn Tổng quan tài chính", () => {
+  it("đủ đã thu / đã chi (trực tiếp + cố định) / lợi nhuận / hòa vốn, không **", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-14T12:00:00+07:00"));
+    q.mockImplementation(async (sql: string) => {
+      const s = String(sql);
+      if (s.includes("FROM payments")) return { rows: [{ total: "34198006" }] };
+      if (s.includes("FROM expenses")) return { rows: [{ total: "15310000" }] };
+      if (s.includes("FROM fixed_costs")) return { rows: [{ total: "37100000" }] };
+      if (s.includes("GREATEST")) return { rows: [{ total: "409927995" }] };
+      return { rows: [] };
+    });
+    const r = await answerStudioCopilot("tổng quan tài chính");
+    expect(r.intent).toBe("finance");
+    expect(r.fromData).toBe(true);
+    // Số y hệt /dashboard/simple — không tự chế công thức
+    expect(r.answer).toContain("34.198.006");
+    expect(r.answer).toContain("52.410.000");
+    expect(r.answer).toContain("15.310.000");
+    expect(r.answer).toContain("37.100.000");
+    expect(r.answer).toContain("18.211.994");
+    expect(r.answer).toContain("hòa vốn");
+    expect(r.answer).not.toContain("**");
+    // Facts cho composer: đủ chi phí/lợi nhuận, không thiếu như sự cố
+    expect(r.facts?.intent).toBe("finance");
+    expect(r.facts?.facts).toMatchObject({
+      collectedAmount: 34198006,
+      totalSpent: 52410000,
+      realProfit: -18211994,
+      breakevenStatus: "under",
+    });
   });
 });

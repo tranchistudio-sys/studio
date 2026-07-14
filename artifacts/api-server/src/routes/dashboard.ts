@@ -9,6 +9,7 @@ import { eq, and, gte, lte, count, sum, ne, sql, isNull } from "drizzle-orm";
 import { getCallerRole } from "./auth";
 import { revenueCountableSql } from "../lib/booking-money";
 import { paymentNotOnEmptyParentSql } from "../lib/parent-contract";
+import { getSimpleFinance } from "../lib/finance-summary";
 
 // PR D (read-layer): loại phiếu cọc nằm ở CHA RỖNG/ZOMBIE (hợp đồng cha hết dịch vụ con hiệu lực)
 // khỏi các tổng "đã thu" active — dùng cho query tiền cash-basis của dashboard.
@@ -828,57 +829,24 @@ router.get("/dashboard/simple", async (req, res): Promise<void> => {
     const from = String(req.query.from ?? firstOfMonth)
     const to = String(req.query.to ?? today)
 
-    const [incomeRow, expenseRow, debtRow, fixedRow] = await Promise.all([
-      pool.query(`
-        SELECT COALESCE(SUM(amount::numeric), 0) AS total
-        FROM payments
-        WHERE paid_at >= $1::date
-          AND paid_at < ($2::date + INTERVAL '1 day')
-          AND payment_type != 'refund'
-          AND COALESCE(status, 'active') != 'voided'
-          AND ${paymentNotOnEmptyParentSql("payments")}
-      `, [from, to]),
-      pool.query(`
-        SELECT COALESCE(SUM(amount::numeric), 0) AS total
-        FROM expenses
-        WHERE expense_date >= $1::date
-          AND expense_date <= $2::date
-      `, [from, to]),
-      pool.query(`
-        SELECT COALESCE(SUM(GREATEST(0, total_amount - COALESCE(discount_amount, 0) - COALESCE(paid_amount, 0))), 0) AS total
-        FROM bookings
-        WHERE ${revenueCountableSql("bookings")}
-      `),
-      pool.query(`
-        SELECT COALESCE(SUM(amount::numeric), 0) AS total
-        FROM fixed_costs
-        WHERE active = true
-      `),
-    ])
-
-    const totalIncome = parseFloat(incomeRow.rows[0]?.total ?? '0')
-    const directExpense = parseFloat(expenseRow.rows[0]?.total ?? '0')
-    const customerDebt = parseFloat(debtRow.rows[0]?.total ?? '0')
-    const fixedCostMonthly = parseFloat(fixedRow.rows[0]?.total ?? '0')
-    const totalSpent = directExpense + fixedCostMonthly
-    const realProfit = totalIncome - totalSpent
+    // Công thức nằm ở lib/finance-summary.ts — dùng CHUNG với Studio Copilot để
+    // hai nơi không bao giờ lệch số (sự cố 14/07: Copilot phồng 2tr vì thiếu lớp
+    // loại refund + phiếu trên đơn cha rỗng).
+    const f = await getSimpleFinance(from, to)
 
     res.json({
       period: { from, to },
-      totalIncome,
+      totalIncome: f.totalIncome,
       // Giữ nguyên field cũ để không phá client cũ (totalExpense = chi trực tiếp)
-      totalExpense: directExpense,
-      profit: totalIncome - directExpense,
-      customerDebt,
+      totalExpense: f.directExpense,
+      profit: f.totalIncome - f.directExpense,
+      customerDebt: f.customerDebt,
       // Field mới cho block "Lợi nhuận thực tế"
-      directExpense,
-      fixedCostMonthly,
-      totalSpent,
-      realProfit,
-      breakeven: {
-        status: realProfit >= 0 ? 'over' : 'under',
-        delta: Math.abs(realProfit),
-      },
+      directExpense: f.directExpense,
+      fixedCostMonthly: f.fixedCostMonthly,
+      totalSpent: f.totalSpent,
+      realProfit: f.realProfit,
+      breakeven: f.breakeven,
     })
   } catch (err) {
     console.error('[dashboard/simple]', err)

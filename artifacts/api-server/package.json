@@ -8,7 +8,8 @@
     "build": "node ./scripts/check-duplicate-functions.mjs && node ./build.mjs",
     "start": "node --env-file=../../.env --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "truth": "vitest run --config vitest.truth.config.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.1",

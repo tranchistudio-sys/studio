@@ -368,3 +368,173 @@ export async function engineCastForCreatedCohort(from: string, to: string): Prom
     [from, to],
   );
 }
+
+// ─── GĐ1e-1: READ MODEL cho Business Engine (chủ duyệt 15/07) ──────────────────
+// Business Engine KHÔNG được SQL — mọi con số đi qua 3 hàm read dưới đây.
+// Quy tắc giữ nguyên: countable chuẩn ①, cast từ sổ earnings ④ (không tasks.cost),
+// expense chỉ approved/paid ③ không personal/loan ②, không payroll/advance.
+
+export type OverdueReceivable = {
+  bookingId: number;
+  bookingCode: string | null;
+  customerId: number | null;
+  customerName: string | null;
+  /** Ngày thực hiện CUỐI CÙNG (shoot_date hoặc occurrence muộn nhất). */
+  lastPerformanceDate: string;
+  daysOverdue: number;
+  receivable: number;
+};
+
+/**
+ * Đơn hợp lệ đã DIỄN RA XONG (ngày thực hiện cuối < hôm nay VN) mà còn công nợ.
+ * Multi-occurrence: lấy MAX(ngày) — mỗi booking đúng MỘT dòng, không double-count.
+ */
+export async function engineOverdueReceivables(limit = 100): Promise<OverdueReceivable[]> {
+  const hasOcc = (await getSchemaFlags()).occurrences;
+  const lastPerf = hasOcc
+    ? `GREATEST(b.shoot_date, COALESCE((SELECT MAX(oc.shoot_date) FROM booking_occurrences oc WHERE oc.booking_id = b.id), b.shoot_date))`
+    : `b.shoot_date`;
+  const r = await pool.query(
+    `SELECT b.id, b.order_code, b.customer_id, c.name AS customer_name,
+            ${lastPerf} AS last_perf,
+            ((NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date - ${lastPerf}) AS days_overdue,
+            ${ENGINE_DEBT_SQL} AS receivable
+     FROM bookings b
+     LEFT JOIN customers c ON c.id = b.customer_id
+     WHERE ${revenueCountableSql("b")}
+       AND b.shoot_date IS NOT NULL
+       AND ${lastPerf} < (NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
+       AND ${ENGINE_DEBT_SQL} > 0
+     ORDER BY receivable DESC, days_overdue DESC
+     LIMIT $1`,
+    [limit],
+  );
+  return (r.rows as Array<Record<string, unknown>>).map(x => ({
+    bookingId: Number(x.id),
+    bookingCode: (x.order_code as string) ?? null,
+    customerId: x.customer_id == null ? null : Number(x.customer_id),
+    customerName: (x.customer_name as string) ?? null,
+    lastPerformanceDate: String(x.last_perf).slice(0, 10),
+    daysOverdue: Number(x.days_overdue),
+    receivable: Number(x.receivable),
+  }));
+}
+
+export type BookingFinance = {
+  bookingId: number;
+  bookingCode: string | null;
+  customerId: number | null;
+  customerName: string | null;
+  service: string | null;
+  shootDate: string | null;
+  occurrenceDates: string[];
+  netValue: number;
+  paid: number;
+  receivable: number;
+  /** Cast từ SỔ staff_job_earnings (④) — 0 nếu chưa có khoản nào được ghi sổ. */
+  laborCost: number;
+  hasLaborLedger: boolean;
+  /** Expense approved/paid, class direct (kể cả class NULL gắn booking theo quy ước cũ). */
+  approvedDirectExpense: number;
+  /** Tạm tính = net − laborCost − approvedDirectExpense (accrual). */
+  estimatedProfit: number;
+};
+
+/** Sổ tài chính per-booking trên toàn tập countable (Business Engine xếp hạng từ đây). */
+export async function engineBookingFinance(): Promise<BookingFinance[]> {
+  const hasOcc = (await getSchemaFlags()).occurrences;
+  const occSelect = hasOcc
+    ? `(SELECT COALESCE(array_agg(oc.shoot_date::text ORDER BY oc.shoot_date), '{}')
+        FROM booking_occurrences oc WHERE oc.booking_id = b.id)`
+    : `'{}'::text[]`;
+  const r = await pool.query(
+    `SELECT b.id, b.order_code, b.customer_id, c.name AS customer_name,
+            COALESCE(b.service_label, b.package_type, b.service_category) AS service,
+            b.shoot_date, ${occSelect} AS occ_dates,
+            GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0)) AS net_value,
+            COALESCE(b.paid_amount, 0) AS paid,
+            ${ENGINE_DEBT_SQL} AS receivable,
+            COALESCE((SELECT SUM(e.rate::numeric) FROM staff_job_earnings e
+              WHERE e.booking_id = b.id
+                AND COALESCE(e.status,'') NOT IN ('voided','cancelled')), 0) AS labor_cost,
+            COALESCE((SELECT SUM(x.amount::numeric) FROM expenses x
+              WHERE x.booking_id = b.id AND x.status IN ('approved','paid')
+                AND COALESCE(x.cost_class, 'direct') = 'direct'), 0) AS direct_expense
+     FROM bookings b
+     LEFT JOIN customers c ON c.id = b.customer_id
+     WHERE ${revenueCountableSql("b")}`,
+  );
+  return (r.rows as Array<Record<string, unknown>>).map(x => {
+    const netValue = Number(x.net_value);
+    const laborCost = Number(x.labor_cost);
+    const direct = Number(x.direct_expense);
+    return {
+      bookingId: Number(x.id),
+      bookingCode: (x.order_code as string) ?? null,
+      customerId: x.customer_id == null ? null : Number(x.customer_id),
+      customerName: (x.customer_name as string) ?? null,
+      service: (x.service as string) ?? null,
+      shootDate: x.shoot_date ? String(x.shoot_date).slice(0, 10) : null,
+      occurrenceDates: (x.occ_dates as string[]) ?? [],
+      netValue,
+      paid: Number(x.paid),
+      receivable: Number(x.receivable),
+      laborCost,
+      hasLaborLedger: laborCost > 0,
+      approvedDirectExpense: direct,
+      estimatedProfit: netValue - laborCost - direct,
+    };
+  });
+}
+
+export type ServiceRollup = {
+  service: string;
+  bookingCount: number;
+  contractValue: number;
+  collected: number;
+  receivable: number;
+  laborRecognized: number;
+  approvedDirectExpense: number;
+  /** Tạm tính = contractValue − labor − direct (accrual, coverage partial). */
+  estimatedProfit: number;
+  bookingsWithLaborLedger: number;
+};
+
+/** Gộp tài chính theo DỊCH VỤ (khóa gộp: service_category — chú thích ở caveats tầng business). */
+export async function engineServiceRollup(): Promise<ServiceRollup[]> {
+  const r = await pool.query(
+    `SELECT COALESCE(NULLIF(TRIM(b.service_category), ''), 'khac') AS service,
+            COUNT(*)::int AS booking_count,
+            COALESCE(SUM(GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0))), 0) AS contract_value,
+            COALESCE(SUM(COALESCE(b.paid_amount, 0)), 0) AS collected,
+            COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS receivable,
+            COALESCE(SUM((SELECT COALESCE(SUM(e.rate::numeric), 0) FROM staff_job_earnings e
+              WHERE e.booking_id = b.id
+                AND COALESCE(e.status,'') NOT IN ('voided','cancelled'))), 0) AS labor,
+            COALESCE(SUM((SELECT COALESCE(SUM(x.amount::numeric), 0) FROM expenses x
+              WHERE x.booking_id = b.id AND x.status IN ('approved','paid')
+                AND COALESCE(x.cost_class, 'direct') = 'direct')), 0) AS direct_expense,
+            COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM staff_job_earnings e
+              WHERE e.booking_id = b.id
+                AND COALESCE(e.status,'') NOT IN ('voided','cancelled')))::int AS with_labor
+     FROM bookings b
+     WHERE ${revenueCountableSql("b")}
+     GROUP BY COALESCE(NULLIF(TRIM(b.service_category), ''), 'khac')`,
+  );
+  return (r.rows as Array<Record<string, unknown>>).map(x => {
+    const contractValue = Number(x.contract_value);
+    const labor = Number(x.labor);
+    const direct = Number(x.direct_expense);
+    return {
+      service: String(x.service),
+      bookingCount: Number(x.booking_count),
+      contractValue,
+      collected: Number(x.collected),
+      receivable: Number(x.receivable),
+      laborRecognized: labor,
+      approvedDirectExpense: direct,
+      estimatedProfit: contractValue - labor - direct,
+      bookingsWithLaborLedger: Number(x.with_labor),
+    };
+  });
+}

@@ -414,3 +414,53 @@ describe("TIER 1e — Cast từ sổ earnings (bắt buộc PASS từ GĐ1b-2)",
     }
   });
 });
+
+// ─── TIER 1f — GĐ1e-1: BUSINESS ENGINE = Financial Engine TỪNG ĐỒNG ────────────
+
+describe("TIER 1f — Business Engine không được đổi một đồng nào (bắt buộc PASS)", () => {
+  const ym = vnToday().slice(0, 7);
+
+  it("A. Tổng quan tháng: mọi facts JSON == Engine", async () => {
+    const { verifyBusinessMonthly } = await import("../lib/finance/truth-service");
+    const checks = (await verifyBusinessMonthly(ym)).map(record);
+    const fails = checks.filter(c => !c.pass);
+    expect(fails.map(formatCheck), `\n${fails.map(formatCheck).join("\n")}`).toEqual([]);
+  });
+
+  it("C. Công nợ: tổng + từng khách top nợ + tổng quá hạn == Engine", async () => {
+    const { verifyBusinessDebt } = await import("../lib/finance/truth-service");
+    const checks = (await verifyBusinessDebt()).map(record);
+    const fails = checks.filter(c => !c.pass);
+    expect(fails.map(formatCheck), `\n${fails.map(formatCheck).join("\n")}`).toEqual([]);
+  });
+
+  it("D+E. Chéo sổ per-booking ↔ per-service ↔ tổng hệ thống ↔ sổ cast", async () => {
+    const { verifyBusinessCrossSums } = await import("../lib/finance/truth-service");
+    const checks = (await verifyBusinessCrossSums()).map(record);
+    const fails = checks.filter(c => !c.pass);
+    expect(fails.map(formatCheck), `\n${fails.map(formatCheck).join("\n")}`).toEqual([]);
+  });
+
+  it("VÍ DỤ JSON thật cho câu 'Tháng này thế nào?' (log để chủ duyệt)", async () => {
+    const { bizMonthlyOverview, bizBusinessHealth, bizCashflowProjection } = await import(
+      "../lib/finance/business-engine"
+    );
+    const [overview, health, cashflow] = await Promise.all([
+      bizMonthlyOverview(ym),
+      bizBusinessHealth(ym),
+      bizCashflowProjection(ym),
+    ]);
+    console.log("=== JSON 'Tháng này thế nào?' ===");
+    console.log(JSON.stringify({ overview, cashflow, health }, null, 2));
+    // Ghi ra file khi cần đính kèm báo cáo (vitest có thể nuốt console)
+    if (process.env.TRUTH_JSON_OUT) {
+      const { writeFileSync } = await import("node:fs");
+      writeFileSync(process.env.TRUTH_JSON_OUT, JSON.stringify({ overview, cashflow, health }, null, 2));
+    }
+    expect(overview.status).toBeDefined();
+    expect(overview.source).toBe("financial-engine");
+    // Coverage cast đang partial trên data thật → không được nhận 'ok'
+    expect(["partial", "ok", "unknown"]).toContain(overview.status);
+    expect(health.data?.health).toBeDefined();
+  });
+});

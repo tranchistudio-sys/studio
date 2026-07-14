@@ -153,6 +153,16 @@
   @apply bg-muted-foreground/50;
 }
 
+/* Ẩn scrollbar cho dải chip cuộn ngang (vd gợi ý Copilot) — class đã được
+   tham chiếu trong code nhưng trước đây chưa hề định nghĩa. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* Toast sinh động hơn khi báo lỗi / thành công */
 @keyframes toast-shake {
   0%, 100% { transform: translateX(0); }

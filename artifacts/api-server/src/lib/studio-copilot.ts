@@ -20,7 +20,25 @@ export type CopilotResult = {
   answer: string;
   fromData: boolean;
   intent: CopilotIntent;
+  /** Facts đã xác minh từ DB — nguồn số liệu DUY NHẤT cho AI composer diễn đạt lại. */
+  facts?: CopilotFacts;
 };
+
+/**
+ * Dữ kiện có cấu trúc, tách "số liệu đã xác minh" khỏi "cách diễn đạt".
+ * Composer (AI hoặc deterministic) chỉ được diễn đạt từ đây, không tự tạo số.
+ */
+export type CopilotFacts = {
+  intent: CopilotIntent;
+  /** "2026-07" (theo tháng) hoặc "2026-07-14" (theo ngày) nếu câu hỏi có mốc thời gian. */
+  period?: string;
+  /** Phạm vi số liệu bằng lời — composer phải giữ đúng phạm vi này khi diễn đạt. */
+  scopeDescription: string;
+  facts: Record<string, unknown>;
+};
+
+/** Câu trả lời nội bộ của từng intent: text deterministic + facts kèm theo. */
+type BuiltAnswer = { text: string; facts?: CopilotFacts };
 
 export const COPILOT_SYSTEM_PROMPT = `Bạn là Amazing Studio Copilot, trợ lý điều hành nội bộ cho studio cưới Amazing Studio. Nhiệm vụ của bạn là đọc dữ liệu thật trong hệ thống, trả lời ngắn gọn, rõ ràng, không bịa, không nói lan man. Ưu tiên hỗ trợ quản lý lịch chụp, khách hàng, công nợ, doanh thu, nhân sự, chấm công, hậu kỳ và bảng giá. Nếu câu hỏi chỉ là chào hỏi thì chỉ chào lại, không tự xuất báo cáo.`;
 
@@ -33,6 +51,10 @@ function formatVND(n: number): string {
 function formatDate(d: string): string {
   const dt = new Date(d + "T00:00:00");
   return `${dt.getDate()}/${dt.getMonth() + 1}/${dt.getFullYear()}`;
+}
+
+function capitalize(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 // Mốc "hôm nay/tháng này" tính theo giờ Việt Nam, không phụ thuộc TZ server
@@ -62,6 +84,7 @@ function monthRange(ref = new Date()) {
     // Mốc nửa mở cho cột timestamp: [start, nextStart)
     nextStart: `${ny}-${p(nm)}-01`,
     label: `tháng ${m}/${y}`,
+    period: `${y}-${p(m)}`,
     year: y,
     month: m,
   };
@@ -119,7 +142,7 @@ export function classifyIntent(question: string): CopilotIntent {
   if (!q) return "unknown";
 
   const pureGreeting =
-    /^(hi|hello|hey|alo|chao|xin chao|helo)([\s!.,?]*)$/.test(q) ||
+    /^(hi|hello|hey|alo|chao|xin chao|helo)( em| ban| anh| chi)?([\s!.,?]*)$/.test(q) ||
     q === "xin chao ban";
   if (pureGreeting) return "greeting";
 
@@ -257,6 +280,8 @@ export async function getUnpaidCustomers(
     totalDebt: Number(totalRow?.total_debt ?? 0),
     orderCount: Number(totalRow?.order_cnt ?? 0),
     lines,
+    // Khách nợ lớn nhất (danh sách đã ORDER BY debt DESC) — cho follow-up có căn cứ.
+    top: rows[0] ? { name: String(rows[0].name), debt: Number(rows[0].debt) } : undefined,
   };
 }
 
@@ -405,7 +430,7 @@ async function getWeekSchedule() {
   return { count: rows.length, lines };
 }
 
-async function searchCustomer(q: string): Promise<string | null> {
+async function searchCustomer(q: string): Promise<BuiltAnswer | null> {
   const phone = q.replace(/\D/g, "");
   if (phone.length >= 9) {
     const r = await pool.query(
@@ -424,7 +449,14 @@ async function searchCustomer(q: string): Promise<string | null> {
       const lines = rows.map(c =>
         `• ${c.name} (${c.phone}): ${c.booking_count} đơn, còn nợ ${formatVND(Number(c.debt))}`,
       );
-      return `👤 **${rows.length} khách** tìm theo SĐT:\n\n${lines.join("\n")}`;
+      return {
+        text: `Em tìm thấy ${rows.length} khách theo số điện thoại này:\n\n${lines.join("\n")}`,
+        facts: {
+          intent: "customer",
+          scopeDescription: "tra khách theo số điện thoại, kèm số đơn hợp lệ và nợ còn lại",
+          facts: { matchCount: rows.length, lines },
+        },
+      };
     }
   }
   return null;
@@ -434,109 +466,310 @@ async function searchCustomer(q: string): Promise<string | null> {
 
 function greetingResponse(staffName?: string | null): string {
   const who = staffSalutation(staffName);
-  return `Chào ${who}, em sẵn sàng hỗ trợ Amazing Studio. Anh có thể hỏi: hôm nay có bao nhiêu show, khách nào đang nợ, hoặc đơn nào trễ hậu kỳ.`;
+  return `Chào ${who}, em sẵn sàng hỗ trợ Amazing Studio. Anh có thể hỏi em về lịch chụp, công nợ, doanh thu, hậu kỳ hay chấm công — ví dụ "hôm nay có bao nhiêu show".`;
 }
 
 function unknownResponse(): string {
-  return `Em chưa hiểu câu hỏi này. Anh thử hỏi cụ thể hơn, hoặc gõ "tình hình hôm nay" / "tháng này ra sao" để xem tổng quan.`;
+  return `Em chưa hiểu ý anh lắm. Anh hỏi cụ thể hơn giúp em, hoặc gõ "tình hình hôm nay" / "tháng này ra sao" để em tóm tắt tổng quan.`;
 }
 
-async function answerSchedule(q: string): Promise<string> {
+/**
+ * Tối đa MỘT gợi ý bước tiếp theo, gắn với đúng intent và CHỈ khi facts có căn cứ.
+ * Không dùng câu khuyên chung chung kiểu "so sánh với mục tiêu" khi không có dữ liệu
+ * mục tiêu, và không dùng cùng một câu cho mọi loại câu hỏi.
+ */
+export function buildFollowUp(intent: CopilotIntent, f: Record<string, unknown>): string | null {
+  switch (intent) {
+    case "revenue": {
+      const n = Number(f.bookingCount ?? 0);
+      if (n <= 0) return null;
+      return `Số đã thu chưa phản ánh hết dòng tiền — anh muốn biết trong ${n} đơn của tháng còn đơn nào chưa thu đủ, còn thu về được bao nhiêu thì hỏi em "tháng này còn bao nhiêu đơn chưa thu".`;
+    }
+    case "debt": {
+      const name = typeof f.topDebtorName === "string" ? f.topDebtorName : "";
+      const debt = Number(f.topDebtorDebt ?? 0);
+      if (!name || debt <= 0) return null;
+      return `Riêng ${name} đã chiếm ${formatVND(debt)} — anh nên nhắc nhóm khách đầu danh sách trước.`;
+    }
+    case "schedule": {
+      const n = Number(f.count ?? 0);
+      if (n < 3) return null;
+      return `Lịch khá dày, anh để ý sắp nhân sự và thiết bị sớm nha.`;
+    }
+    case "post_production": {
+      const n = Number(f.overdueCount ?? 0);
+      if (n <= 0) return null;
+      return `Đơn đứng đầu danh sách đang trễ lâu nhất — anh ưu tiên xử lý rồi cập nhật trạng thái trong Tiến độ hậu kỳ.`;
+    }
+    case "staff": {
+      const name = typeof f.topStaffName === "string" ? f.topStaffName : "";
+      const top = Number(f.topJobCount ?? 0);
+      if (!name || top < 5) return null;
+      return `${name} đang ôm ${top} việc — anh cân nhắc san bớt cho người đang ít việc hơn.`;
+    }
+    default:
+      return null;
+  }
+}
+
+async function answerSchedule(q: string): Promise<BuiltAnswer> {
   if (/tuan nay|week|7 ngay/.test(q)) {
     const week = await getWeekSchedule();
-    const warn = week.count >= 40 ? "\n\n⚠️ Danh sách dài — hiển thị tối đa 40 buổi." : "";
-    return `📅 **Lịch chụp 7 ngày tới:** ${week.count} buổi\n\n${week.lines.join("\n") || "• Không có lịch trong tuần này"}${warn}\n\n💡 Kiểm tra nhân sự cast trước từng buổi chụp.`;
+    const facts: CopilotFacts = {
+      intent: "schedule",
+      scopeDescription: "lịch chụp 7 ngày tới, chỉ tính đơn hợp lệ (đã loại đơn hủy/xóa/báo giá tạm)",
+      facts: { count: week.count, lines: week.lines },
+    };
+    if (!week.count) {
+      return { text: "7 ngày tới studio chưa có lịch chụp nào anh nha.", facts };
+    }
+    const warn = week.count >= 40 ? "\n\nDanh sách dài nên em chỉ hiển thị 40 buổi đầu." : "";
+    const follow = buildFollowUp("schedule", facts.facts);
+    return {
+      text: `7 ngày tới studio có ${week.count} buổi chụp anh nha:\n\n${week.lines.join("\n")}${warn}${follow ? `\n\n${follow}` : ""}`,
+      facts,
+    };
   }
   if (/thang nay|thang/.test(q) && !/hom nay/.test(q)) {
+    const m = monthRange();
     const month = await getMonthBookings();
-    const suffix = month.truncated ? "\n\n⚠️ Chỉ hiển thị 50 buổi đầu trong tháng." : "";
-    return `📅 **Lịch chụp ${month.label}:** ${month.count} buổi\n\n${month.lines.join("\n") || "• Chưa có lịch trong tháng"}${suffix}`;
+    const facts: CopilotFacts = {
+      intent: "schedule",
+      period: m.period,
+      scopeDescription: `lịch chụp ${month.label}, chỉ tính đơn hợp lệ`,
+      facts: { count: month.count, lines: month.lines },
+    };
+    if (!month.count) {
+      return { text: `${capitalize(month.label)} chưa có lịch chụp nào trong hệ thống anh nha.`, facts };
+    }
+    const suffix = month.truncated ? "\n\nDanh sách dài nên em chỉ hiển thị 50 buổi đầu trong tháng." : "";
+    return {
+      text: `${capitalize(month.label)} studio có ${month.count} buổi chụp:\n\n${month.lines.join("\n")}${suffix}`,
+      facts,
+    };
   }
   const today = await getTodayBookings();
-  return `📅 **Hôm nay ${formatDate(today.date)}:** ${today.count} show\n\n${today.lines.join("\n") || "• Không có show hôm nay"}\n\n💡 Xem chi tiết từng đơn tại module Lịch chụp.`;
+  const facts: CopilotFacts = {
+    intent: "schedule",
+    period: today.date,
+    scopeDescription: `lịch chụp hôm nay ${formatDate(today.date)}, chỉ tính đơn hợp lệ`,
+    facts: { count: today.count, lines: today.lines },
+  };
+  if (!today.count) {
+    return {
+      text: `Hôm nay ${formatDate(today.date)} studio không có show nào anh nha. Anh muốn xem lịch tuần này hay cả tháng thì hỏi em thêm.`,
+      facts,
+    };
+  }
+  const follow = buildFollowUp("schedule", facts.facts);
+  return {
+    text: `Hôm nay ${formatDate(today.date)} studio có ${today.count} show anh nha:\n\n${today.lines.join("\n")}${follow ? `\n\n${follow}` : ""}`,
+    facts,
+  };
 }
 
-async function answerDebt(q: string): Promise<string> {
+async function answerDebt(q: string): Promise<BuiltAnswer> {
   // "tháng này" → chỉ đơn PHÁT SINH trong tháng (theo shoot_date, giờ VN) —
   // nói rõ phạm vi để không lẫn với nợ tồn toàn hệ thống.
   const range = /thang nay/.test(q) ? monthRange() : undefined;
   const data = await getUnpaidCustomers(15, range);
+  const factData: Record<string, unknown> = {
+    customerCount: data.count,
+    orderCount: data.orderCount,
+    totalDebt: data.totalDebt,
+    topDebtorName: data.top?.name,
+    topDebtorDebt: data.top?.debt,
+    lines: data.lines,
+  };
+  const facts: CopilotFacts = {
+    intent: "debt",
+    period: range?.period,
+    scopeDescription: range
+      ? `công nợ các đơn có ngày chụp trong ${range.label}, đã loại đơn hủy/xóa/báo giá tạm, không cộng trùng hợp đồng cha–con`
+      : "nợ tồn toàn hệ thống tính đến hiện tại, đã loại đơn hủy/xóa/báo giá tạm, không cộng trùng hợp đồng cha–con",
+    facts: factData,
+  };
+  const follow = buildFollowUp("debt", factData);
   if (range) {
     if (!data.orderCount) {
-      return `✅ **${range.label}: các đơn phát sinh trong tháng đã thu đủ.**\n\n📌 Phạm vi: chỉ tính đơn có ngày chụp trong ${range.label}. Nợ tồn các tháng trước (nếu có) không nằm trong số này — hỏi "khách nào đang nợ tiền" để xem toàn bộ.`;
+      return {
+        text: `Các đơn phát sinh trong ${range.label} đã thu đủ hết rồi anh. Phạm vi em tính là đơn có ngày chụp trong ${range.label} — nợ tồn các tháng trước (nếu có) không nằm trong số này, anh hỏi "khách nào đang nợ tiền" là em xem toàn bộ.`,
+        facts,
+      };
     }
-    return `💰 **${range.label}: ${data.orderCount} đơn chưa thu đủ** — còn có thể thu ${formatVND(data.totalDebt)} (${data.count} khách)\n\n${data.lines.join("\n")}\n\n📌 Phạm vi: đơn phát sinh trong ${range.label} (đã loại đơn hủy/xóa/báo giá tạm, không cộng trùng hợp đồng cha–con).\n💡 Muốn xem nợ tồn toàn bộ mọi tháng: hỏi "khách nào đang nợ tiền".`;
+    return {
+      text: `${capitalize(range.label)} còn ${data.orderCount} đơn chưa thu đủ, tiền còn có thể thu về là ${formatVND(data.totalDebt)} từ ${data.count} khách:\n\n${data.lines.join("\n")}\n\nPhạm vi em tính: đơn phát sinh trong ${range.label}, đã loại đơn hủy/xóa/báo giá tạm và không cộng trùng hợp đồng cha–con.${follow ? ` ${follow}` : ""}`,
+      facts,
+    };
   }
   if (!data.count) {
-    return "✅ **Không có khách nợ** — tất cả đơn đã thanh toán đủ trong hệ thống.";
+    return { text: "Hiện không có khách nào còn nợ — mọi đơn trong hệ thống đã thu đủ anh nha.", facts };
   }
-  return `💰 **${data.count} khách còn nợ** — tổng: ${formatVND(data.totalDebt)} (${data.orderCount} đơn chưa thu đủ)\n\n${data.lines.join("\n")}\n\n📌 Phạm vi: nợ tồn toàn hệ thống tính đến hiện tại, không giới hạn tháng.\n⚠️ Ưu tiên nhắc khách đầu danh sách.\n💡 Vào module Khách hàng để ghi nhận thanh toán.`;
+  return {
+    text: `Hiện có ${data.count} khách còn nợ với ${data.orderCount} đơn chưa thu đủ, tổng cộng ${formatVND(data.totalDebt)}:\n\n${data.lines.join("\n")}\n\nSố này là nợ tồn toàn hệ thống tính đến hiện tại, không giới hạn tháng.${follow ? ` ${follow}` : ""}`,
+    facts,
+  };
 }
 
-async function answerRevenue(q: string): Promise<string> {
+async function answerRevenue(q: string): Promise<BuiltAnswer> {
   if (/(ban tot|ban chay|nhieu don|goi.*ban)/.test(q)) {
     const perf = await getServicePerformance();
+    const facts: CopilotFacts = {
+      intent: "revenue",
+      scopeDescription: `số đơn và doanh thu theo gói dịch vụ trong ${perf.label}, tính theo ngày chụp của đơn hợp lệ`,
+      facts: {
+        topPackage: perf.top?.package_name ?? null,
+        topBookingCount: perf.top ? Number(perf.top.booking_count) : 0,
+        topRevenue: perf.top ? Number(perf.top.revenue) : 0,
+        lines: perf.lines.slice(0, 5),
+      },
+    };
     if (!perf.top) {
-      return `📦 **Gói dịch vụ ${perf.label}:** chưa có đơn chụp trong tháng.\n\n💡 Kiểm tra module Đơn hàng nếu đã có booking ngoài hệ thống.`;
+      return {
+        text: `${capitalize(perf.label)} chưa có đơn chụp nào nên em chưa xếp hạng gói được. Nếu studio đã nhận booking ngoài hệ thống thì anh kiểm tra lại module Đơn hàng nha.`,
+        facts,
+      };
     }
-    const topLines = perf.lines.slice(0, 5).join("\n");
-    return `📦 **Gói bán tốt nhất ${perf.label}:** ${perf.top.package_name} (${perf.top.booking_count} đơn — ${formatVND(Number(perf.top.revenue))})\n\n**Top gói:**\n${topLines}\n\n💡 Tập trung marketing gói đang bán chạy.`;
+    return {
+      text: `Gói bán tốt nhất ${perf.label} là ${perf.top.package_name} với ${perf.top.booking_count} đơn, mang về ${formatVND(Number(perf.top.revenue))}. Top gói trong tháng:\n\n${perf.lines.slice(0, 5).join("\n")}`,
+      facts,
+    };
   }
+  const m = monthRange();
   const data = await getRevenueSummary();
+  const factData: Record<string, unknown> = {
+    collectedAmount: data.revenue,
+    bookingCount: data.orderCount,
+    paymentCount: data.paymentCount,
+  };
+  const facts: CopilotFacts = {
+    intent: "revenue",
+    period: m.period,
+    scopeDescription: `phiếu thu thực tế trong ${data.label}, đã loại phiếu hủy`,
+    facts: factData,
+  };
   if (data.paymentCount === 0 && data.revenue === 0) {
-    return `📊 **Doanh thu ${data.label}:** chưa có phiếu thu trong hệ thống.\n\n💡 Nếu đã thu tiền ngoài app, cần ghi nhận vào module Thanh toán.`;
+    return {
+      text: `${capitalize(data.label)} hệ thống chưa ghi nhận phiếu thu nào. Nếu studio có thu tiền ngoài app thì anh cần ghi nhận vào module Thanh toán để số liệu khớp thực tế.`,
+      facts,
+    };
   }
-  return `💵 **Doanh thu ${data.label}** (phiếu thu thực tế): ${formatVND(data.revenue)}\n📦 Đơn chụp trong tháng: **${data.orderCount}** đơn (${data.paymentCount} phiếu thu)\n\n💡 So sánh với mục tiêu tháng để điều chỉnh kế hoạch bán.`;
+  const follow = buildFollowUp("revenue", factData);
+  return {
+    text: `${capitalize(data.label)} studio đã thu thực tế ${formatVND(data.revenue)}, ghi nhận qua ${data.paymentCount} phiếu thu. Trong tháng có ${data.orderCount} đơn chụp.${follow ? `\n\n${follow}` : ""}`,
+    facts,
+  };
 }
 
-async function answerPostProduction(q: string): Promise<string> {
+async function answerPostProduction(q: string): Promise<BuiltAnswer> {
   if (/(tre|qua han|overdue)/.test(q)) {
     const overdue = await getOverduePostProductionJobs();
+    const factData: Record<string, unknown> = { overdueCount: overdue.count, lines: overdue.lines };
+    const facts: CopilotFacts = {
+      intent: "post_production",
+      scopeDescription: "job hậu kỳ đang mở và đã quá hạn khách hoặc hạn hệ thống, tính đến hôm nay",
+      facts: factData,
+    };
     if (!overdue.count) {
-      return "✅ **Không có đơn trễ hậu kỳ** — tất cả job đang trong hạn.";
+      return { text: "Không có đơn nào trễ hậu kỳ, tất cả job đang trong hạn anh nha.", facts };
     }
-    return `🚨 **${overdue.count} đơn trễ hậu kỳ:**\n\n${overdue.lines.join("\n")}\n\n⚠️ Ưu tiên xử lý các đơn quá hạn giao khách.\n💡 Vào Tiến độ hậu kỳ để cập nhật trạng thái.`;
+    const follow = buildFollowUp("post_production", factData);
+    return {
+      text: `Đang có ${overdue.count} đơn trễ hậu kỳ:\n\n${overdue.lines.join("\n")}${follow ? `\n\n${follow}` : ""}`,
+      facts,
+    };
   }
   const workload = await getStaffWorkload();
+  const factData: Record<string, unknown> = {
+    staffCount: workload.count,
+    topStaffName: workload.top?.staff_name ?? null,
+    topJobCount: workload.top ? Number(workload.top.job_count) : 0,
+    lines: workload.lines,
+  };
+  const facts: CopilotFacts = {
+    intent: "post_production",
+    scopeDescription: "job hậu kỳ đang mở, gom theo nhân sự được giao",
+    facts: factData,
+  };
   if (!workload.count) {
-    return "✅ Không có việc hậu kỳ đang tồn — tất cả đã xong hoặc chưa có job.";
+    return { text: "Hiện không có việc hậu kỳ nào đang tồn — tất cả đã xong hoặc chưa có job anh nha.", facts };
   }
-  return `🖥️ **Việc hậu kỳ đang làm** (${workload.count} nhân sự):\n\n${workload.lines.join("\n")}\n\n💡 Cân bằng tải nếu một người quá nhiều việc.`;
+  const follow = buildFollowUp("staff", factData);
+  return {
+    text: `Hậu kỳ đang có ${workload.count} nhân sự cầm việc:\n\n${workload.lines.join("\n")}${follow ? `\n\n${follow}` : ""}`,
+    facts,
+  };
 }
 
-async function answerStaff(q: string): Promise<string> {
+async function answerStaff(q: string): Promise<BuiltAnswer> {
   if (/(di tre|tre gio|muon|cham cong)/.test(q)) {
     const att = await getAttendanceSummary();
+    const facts: CopilotFacts = {
+      intent: "staff",
+      scopeDescription: `chấm công ${att.label}, mốc đi trễ là check-in sau 08:10 giờ VN`,
+      facts: { totalCheckins: att.totalCheckins, lateLines: att.lateLines, hasData: att.hasData },
+    };
     if (!att.hasData) {
-      return `⏰ **Chấm công ${att.label}:** chưa có dữ liệu check-in trong hệ thống.\n\n💡 Cần nhân viên chấm công qua app để có số liệu.`;
+      return {
+        text: `${capitalize(att.label)} chưa có dữ liệu check-in nào. Nhân viên cần chấm công qua app thì em mới có số liệu cho anh xem.`,
+        facts,
+      };
     }
     if (!att.lateLines.length) {
-      return `⏰ **Chấm công ${att.label}:** ${att.totalCheckins} lần check-in — không ai đi trễ sau 08:10.`;
+      return {
+        text: `${capitalize(att.label)} có ${att.totalCheckins} lần check-in và không ai đi trễ sau 08:10 — chấm công đang ổn anh nha.`,
+        facts,
+      };
     }
-    return `⏰ **Đi trễ nhiều nhất** (${att.label}, sau 08:10):\n\n${att.lateLines.join("\n")}\n\n💡 Trao đổi với nhân viên đầu danh sách nếu lặp lại.`;
+    return {
+      text: `Đi trễ ${att.label} (mốc 08:10) như sau:\n\n${att.lateLines.join("\n")}\n\nNgười đầu danh sách đang trễ nhiều nhất — nếu còn lặp lại thì anh nên trao đổi trực tiếp.`,
+      facts,
+    };
   }
   const workload = await getStaffWorkload();
+  const factData: Record<string, unknown> = {
+    staffCount: workload.count,
+    topStaffName: workload.top?.staff_name ?? null,
+    topJobCount: workload.top ? Number(workload.top.job_count) : 0,
+    lines: workload.lines,
+  };
+  const facts: CopilotFacts = {
+    intent: "staff",
+    scopeDescription: "việc hậu kỳ đang mở, gom theo nhân sự được giao",
+    facts: factData,
+  };
   if (!workload.count) {
-    return "✅ Không có việc hậu kỳ đang giao — kiểm tra module Nhân sự để xem lịch cast.";
+    return { text: "Hiện không có việc hậu kỳ nào đang giao anh nha. Lịch cast từng show anh xem ở module Nhân sự.", facts };
   }
-  const top = workload.top;
-  const topName = top?.staff_name ?? "—";
-  const topCount = top?.job_count ?? 0;
-  return `👷 **Tải hậu kỳ theo nhân sự:**\n\n${workload.lines.join("\n")}\n\n⚠️ **${topName}** đang nhiều việc nhất (${topCount} job).\n💡 Cân nhắc chuyển bớt job hoặc hỗ trợ thêm.`;
+  const follow = buildFollowUp("staff", factData);
+  return {
+    text: `Tải hậu kỳ theo nhân sự hiện tại:\n\n${workload.lines.join("\n")}${follow ? `\n\n${follow}` : ""}`,
+    facts,
+  };
 }
 
-async function answerPricing(): Promise<string> {
+async function answerPricing(): Promise<BuiltAnswer> {
   const pkgs = await getPricingPackages();
+  const facts: CopilotFacts = {
+    intent: "pricing",
+    scopeDescription: "bảng giá gói dịch vụ đang mở bán (chưa xóa)",
+    facts: { count: pkgs.count, lines: pkgs.lines },
+  };
   if (!pkgs.count) {
-    return "📋 Chưa có gói dịch vụ trong bảng giá (service_packages). Cần cập nhật CMS Bảng giá.";
+    return { text: "Bảng giá chưa có gói dịch vụ nào — anh cần cập nhật trong CMS Bảng giá.", facts };
   }
-  return `📋 **Bảng giá** (${pkgs.count} gói):\n\n${pkgs.lines.join("\n")}\n\n💡 Chi tiết đầy đủ xem tại module Bảng giá / CMS.`;
+  return {
+    text: `Bảng giá đang có ${pkgs.count} gói:\n\n${pkgs.lines.join("\n")}\n\nChi tiết mô tả từng gói anh xem thêm ở module Bảng giá.`,
+    facts,
+  };
 }
 
-async function answerCustomer(q: string): Promise<string> {
+async function answerCustomer(q: string): Promise<BuiltAnswer> {
   const found = await searchCustomer(q);
-  if (found) return found + "\n\n💡 Gửi SĐT hoặc tên khách cụ thể để tra chi tiết hơn.";
-  return "👤 Để tra khách hàng, anh gửi **số điện thoại** hoặc hỏi: \"Khách nào đang nợ tiền?\"";
+  if (found) return found;
+  return {
+    text: `Anh gửi em số điện thoại của khách để em tra, hoặc hỏi "khách nào đang nợ tiền" để xem danh sách công nợ.`,
+  };
 }
 
 
@@ -555,7 +788,7 @@ async function safeTool<T>(name: string, run: Promise<T>): Promise<T | null> {
 
 const NO_DATA = "(tạm không đọc được mục này)";
 
-async function answerOverview(q: string): Promise<string> {
+async function answerOverview(q: string): Promise<BuiltAnswer> {
   const scope = detectOverviewScope(q) ?? "general";
   const isToday = scope === "today";
   const mLabel = monthRange().label;
@@ -563,7 +796,7 @@ async function answerOverview(q: string): Promise<string> {
     ? `hôm nay ${formatDate(todayStr())}`
     : scope === "month"
       ? mLabel
-      : `studio — ${formatDate(todayStr())}`;
+      : `studio ${formatDate(todayStr())}`;
 
   const [rev, debt, today, month, overdue, workload, att] = await Promise.all([
     safeTool("revenue", getRevenueSummary()),
@@ -594,63 +827,84 @@ async function answerOverview(q: string): Promise<string> {
       }, 0)
     : 0;
 
+  const partialMissing = !rev || !debt || !today || !month || !overdue || !workload || !att;
+
   const summaryLines = [
     rev
-      ? `• **Doanh thu ${rev.label}:** ${formatVND(rev.revenue)} (${rev.orderCount} đơn chụp)`
-      : `• **Doanh thu ${mLabel}:** ${NO_DATA}`,
-    `• **Lịch ${isToday ? "hôm nay" : scope === "month" ? mLabel : "hôm nay"}:** ${scheduleNote}`,
+      ? `• Doanh thu ${rev.label}: ${formatVND(rev.revenue)} (${rev.orderCount} đơn chụp)`
+      : `• Doanh thu ${mLabel}: ${NO_DATA}`,
+    `• Lịch ${isToday ? "hôm nay" : scope === "month" ? mLabel : "hôm nay"}: ${scheduleNote}`,
     debt
-      ? `• **Công nợ:** ${debt.count ? `${debt.count} khách — ${formatVND(debt.totalDebt)}` : "không có"}`
-      : `• **Công nợ:** ${NO_DATA}`,
+      ? `• Công nợ: ${debt.count ? `${debt.count} khách — ${formatVND(debt.totalDebt)}` : "không có"}`
+      : `• Công nợ: ${NO_DATA}`,
     workload && overdue
-      ? `• **Hậu kỳ:** ${ptsActive} việc đang làm${overdue.count ? `, **${overdue.count} đơn trễ**` : ""}`
-      : `• **Hậu kỳ:** ${NO_DATA}`,
+      ? `• Hậu kỳ: ${ptsActive} việc đang làm${overdue.count ? `, ${overdue.count} đơn trễ` : ""}`
+      : `• Hậu kỳ: ${NO_DATA}`,
     workload
       ? workload.top
-        ? `• **Nhân sự HK:** ${workload.top.staff_name} nhiều việc nhất (${workload.top.job_count} job)`
-        : `• **Nhân sự HK:** không có việc tồn`
-      : `• **Nhân sự HK:** ${NO_DATA}`,
+        ? `• Nhân sự hậu kỳ: ${workload.top.staff_name} nhiều việc nhất (${workload.top.job_count} job)`
+        : `• Nhân sự hậu kỳ: không có việc tồn`
+      : `• Nhân sự hậu kỳ: ${NO_DATA}`,
     att
       ? att.lateLines.length
-        ? `• **Chấm công ${att.label}:** ${att.lateLines[0].replace("• ", "")}`
+        ? `• Chấm công ${att.label}: ${att.lateLines[0].replace("• ", "")}`
         : att.hasData
-          ? `• **Chấm công ${att.label}:** không ai đi trễ sau 08:10`
-          : `• **Chấm công:** chưa có dữ liệu check-in`
-      : `• **Chấm công:** ${NO_DATA}`,
+          ? `• Chấm công ${att.label}: không ai đi trễ sau 08:10`
+          : `• Chấm công: chưa có dữ liệu check-in`
+      : `• Chấm công: ${NO_DATA}`,
   ];
 
   const issues: string[] = [];
-  if (overdue && overdue.count > 0) issues.push(`🚨 **${overdue.count} đơn hậu kỳ trễ** — ${overdue.lines.slice(0, 2).map(l => l.replace("• ", "")).join("; ")}`);
-  if (debt && debt.count > 0) issues.push(`💰 Công nợ **${formatVND(debt.totalDebt)}** — ${debt.lines.slice(0, 2).map(l => l.replace("• ", "")).join("; ")}`);
-  if (isToday && today && today.count >= 3) issues.push(`📅 Hôm nay **${today.count} show** — cần sắp nhân sự & thiết bị`);
-  if (workload?.top && Number(workload.top.job_count) >= 5) issues.push(`👷 ${workload.top.staff_name} đang **${workload.top.job_count}** việc HK — cân tải`);
-  if (att && att.lateLines.length >= 2) issues.push(`⏰ Nhiều người đi trễ tháng này — xem module Chấm công`);
-  if (!rev || !debt || !today || !month || !overdue || !workload || !att) {
-    issues.push("⚠️ Một phần dữ liệu tạm không đọc được — số liệu phía trên có thể thiếu");
+  if (overdue && overdue.count > 0) issues.push(`• ${overdue.count} đơn hậu kỳ trễ — ${overdue.lines.slice(0, 2).map(l => l.replace("• ", "")).join("; ")}`);
+  if (debt && debt.count > 0) issues.push(`• Công nợ ${formatVND(debt.totalDebt)} — ${debt.lines.slice(0, 2).map(l => l.replace("• ", "")).join("; ")}`);
+  if (isToday && today && today.count >= 3) issues.push(`• Hôm nay ${today.count} show — cần sắp nhân sự và thiết bị sớm`);
+  if (workload?.top && Number(workload.top.job_count) >= 5) issues.push(`• ${workload.top.staff_name} đang ${workload.top.job_count} việc hậu kỳ — nên cân tải`);
+  if (att && att.lateLines.length >= 2) issues.push(`• Nhiều người đi trễ tháng này — anh xem thêm module Chấm công`);
+  if (partialMissing) {
+    issues.push("• Một phần dữ liệu tạm không đọc được — số liệu phía trên có thể thiếu");
   }
-  if (!issues.length) issues.push("✅ Không có vấn đề cấp bách — vận hành ổn định");
+  if (!issues.length) issues.push("• Không có vấn đề cấp bách — vận hành đang ổn định");
 
   const priorities: string[] = [];
-  if (overdue && overdue.count > 0) priorities.push(`1. Xử lý **${overdue.count} đơn trễ hậu kỳ** trước`);
+  if (overdue && overdue.count > 0) priorities.push(`1. Xử lý ${overdue.count} đơn trễ hậu kỳ trước`);
   if (debt && debt.count > 0) priorities.push(`${priorities.length + 1}. Nhắc thu công nợ — ưu tiên khách đầu danh sách`);
-  if (isToday && today && today.count > 0) priorities.push(`${priorities.length + 1}. Chuẩn bị **${today.count} show hôm nay**`);
-  else if (!isToday && month && month.count > 0) priorities.push(`${priorities.length + 1}. Rà soát lịch **${month.label}** (${month.count} buổi)`);
-  if (workload?.top && Number(workload.top.job_count) >= 4) priorities.push(`${priorities.length + 1}. Hỗ trợ **${workload.top.staff_name}** giảm tải hậu kỳ`);
-  if (!priorities.length) priorities.push("1. Chăm sóc khách mới & cập nhật tiến độ đơn đang làm");
+  if (isToday && today && today.count > 0) priorities.push(`${priorities.length + 1}. Chuẩn bị ${today.count} show hôm nay`);
+  else if (!isToday && month && month.count > 0) priorities.push(`${priorities.length + 1}. Rà soát lịch ${month.label} (${month.count} buổi)`);
+  if (workload?.top && Number(workload.top.job_count) >= 4) priorities.push(`${priorities.length + 1}. Hỗ trợ ${workload.top.staff_name} giảm tải hậu kỳ`);
+  if (!priorities.length) priorities.push("1. Chăm sóc khách mới và cập nhật tiến độ đơn đang làm");
 
-  return `📊 **Tổng quan ${label}**
+  const facts: CopilotFacts = {
+    intent: "overview",
+    period: isToday ? todayStr() : monthRange().period,
+    scopeDescription: `tổng quan vận hành ${label}, gom từ doanh thu/lịch/công nợ/hậu kỳ/chấm công`,
+    facts: {
+      revenue: rev ? { label: rev.label, collectedAmount: rev.revenue, bookingCount: rev.orderCount } : null,
+      todayShowCount: today?.count ?? null,
+      monthShowCount: month?.count ?? null,
+      debt: debt ? { customerCount: debt.count, totalDebt: debt.totalDebt } : null,
+      overdueJobCount: overdue?.count ?? null,
+      workloadTop: workload?.top ? { name: workload.top.staff_name, jobCount: Number(workload.top.job_count) } : null,
+      lateLines: att?.lateLines ?? null,
+      partialDataMissing: partialMissing,
+    },
+  };
 
-**Tóm tắt**
+  return {
+    text: `Tổng quan ${label} đây anh:
+
+Tóm tắt
 ${summaryLines.join("\n")}
 
-**Vấn đề cần chú ý**
+Cần chú ý
 ${issues.join("\n")}
 
-**Việc nên ưu tiên**
-${priorities.join("\n")}`;
+Nên ưu tiên
+${priorities.join("\n")}`,
+    facts,
+  };
 }
 
-async function answerAnalysis(): Promise<string> {
+async function answerAnalysis(): Promise<BuiltAnswer> {
   const [today, debt, overdue, workload, perf] = await Promise.all([
     safeTool("todaySchedule", getTodayBookings()),
     safeTool("debt", getUnpaidCustomers(3)),
@@ -660,21 +914,23 @@ async function answerAnalysis(): Promise<string> {
   ]);
 
   const priorities: string[] = [];
-  if (overdue && overdue.count > 0) priorities.push(`1. **Hậu kỳ trễ** (${overdue.count} đơn) — xử lý ngay: ${overdue.lines.slice(0, 2).join("; ")}`);
-  if (debt && debt.count > 0) priorities.push(`2. **Thu công nợ** — tổng ${formatVND(debt.totalDebt)}, ưu tiên: ${debt.lines.slice(0, 2).join("; ")}`);
-  if (today && today.count > 0) priorities.push(`3. **Lịch hôm nay** — ${today.count} show, chuẩn bị nhân sự & thiết bị`);
-  if (workload?.top) priorities.push(`4. **Cân tải hậu kỳ** — ${workload.top.staff_name} đang ${workload.top.job_count} việc`);
-  if (perf?.top) priorities.push(`5. **Gói bán chạy** — ${perf.top.package_name} (${perf.top.booking_count} đơn ${perf.label})`);
+  if (overdue && overdue.count > 0) priorities.push(`${priorities.length + 1}. Hậu kỳ trễ (${overdue.count} đơn) — xử lý ngay: ${overdue.lines.slice(0, 2).join("; ")}`);
+  if (debt && debt.count > 0) priorities.push(`${priorities.length + 1}. Thu công nợ — tổng ${formatVND(debt.totalDebt)}, ưu tiên: ${debt.lines.slice(0, 2).join("; ")}`);
+  if (today && today.count > 0) priorities.push(`${priorities.length + 1}. Lịch hôm nay — ${today.count} show, chuẩn bị nhân sự và thiết bị`);
+  if (workload?.top) priorities.push(`${priorities.length + 1}. Cân tải hậu kỳ — ${workload.top.staff_name} đang ${workload.top.job_count} việc`);
+  if (perf?.top) priorities.push(`${priorities.length + 1}. Gói bán chạy — ${perf.top.package_name} (${perf.top.booking_count} đơn ${perf.label})`);
 
   const degraded = !today || !debt || !overdue || !workload || !perf
-    ? "\n\n⚠️ Một phần dữ liệu tạm không đọc được — danh sách có thể thiếu mục."
+    ? "\n\nMột phần dữ liệu tạm không đọc được — danh sách có thể thiếu mục."
     : "";
 
   if (!priorities.length) {
-    return `📊 Tuần này hệ thống ít việc cấp bách — tập trung chăm sóc khách mới và cập nhật bảng giá.${degraded}`;
+    return { text: `Tuần này hệ thống ít việc cấp bách anh nha — anh có thể tập trung chăm sóc khách mới và cập nhật bảng giá.${degraded}` };
   }
 
-  return `📊 **Ưu tiên tuần này** (từ dữ liệu thật):\n\n${priorities.join("\n")}\n\n💡 Hỏi chi tiết từng mục: lịch hôm nay, công nợ, đơn trễ HK...${degraded}`;
+  return {
+    text: `Theo dữ liệu hiện tại, tuần này anh nên ưu tiên:\n\n${priorities.join("\n")}\n\nAnh muốn xem kỹ mục nào thì hỏi em thêm — lịch hôm nay, công nợ hay đơn trễ hậu kỳ đều được.${degraded}`,
+  };
 }
 
 /** Dữ liệu gộp cho LLM khi intent = analysis */
@@ -727,53 +983,53 @@ export async function answerStudioCopilot(
     if (intent === "unknown") {
       const customerHit = await searchCustomer(q);
       if (customerHit) {
-        return { answer: customerHit, fromData: true, intent: "customer" };
+        return { answer: customerHit.text, fromData: true, intent: "customer", facts: customerHit.facts };
       }
       if (q.length >= 4) {
-        return { answer: await answerOverview(q), fromData: true, intent: "overview" };
+        const built = await answerOverview(q);
+        return { answer: built.text, fromData: true, intent: "overview", facts: built.facts };
       }
       return { answer: unknownResponse(), fromData: false, intent };
     }
 
-    let answer: string;
+    let built: BuiltAnswer;
     switch (intent) {
       case "schedule":
-        answer = await answerSchedule(q);
+        built = await answerSchedule(q);
         break;
       case "debt":
-        answer = await answerDebt(q);
+        built = await answerDebt(q);
         break;
       case "revenue":
-        answer = await answerRevenue(q);
+        built = await answerRevenue(q);
         break;
       case "post_production":
-        answer = await answerPostProduction(q);
+        built = await answerPostProduction(q);
         break;
       case "staff":
-        answer = await answerStaff(q);
+        built = await answerStaff(q);
         break;
       case "customer":
-        answer = await answerCustomer(q);
+        built = await answerCustomer(q);
         break;
       case "pricing":
-        answer = await answerPricing();
+        built = await answerPricing();
         break;
       case "overview":
-        answer = await answerOverview(q);
+        built = await answerOverview(q);
         break;
       case "analysis":
-        answer = await answerAnalysis();
+        built = await answerAnalysis();
         break;
       default:
-        answer = unknownResponse();
-        return { answer, fromData: false, intent: "unknown" };
+        return { answer: unknownResponse(), fromData: false, intent: "unknown" };
     }
 
-    return { answer, fromData: true, intent };
+    return { answer: built.text, fromData: true, intent, facts: built.facts };
   } catch (err) {
     console.error("answerStudioCopilot error:", err);
     return {
-      answer: "❌ Không đọc được dữ liệu studio lúc này. Thử lại sau hoặc kiểm tra kết nối database.",
+      answer: "Em chưa đọc được dữ liệu studio lúc này, anh thử lại sau ít phút nha. Nếu vẫn lỗi thì nhờ kỹ thuật kiểm tra kết nối giúp em.",
       fromData: false,
       intent,
     };

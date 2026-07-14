@@ -24,7 +24,7 @@ export default function AiAssistantPage() {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "ai",
-      content: `Chào ${who}, em là **Amazing Studio Copilot** — trợ lý điều hành nội bộ.\n\nEm đọc dữ liệu thật từ hệ thống khi anh hỏi cụ thể. Thử: hôm nay có bao nhiêu show, khách nào đang nợ, hoặc đơn nào trễ hậu kỳ.`,
+      content: `Chào ${who}, em là Amazing Studio Copilot — trợ lý điều hành nội bộ.\n\nEm đọc dữ liệu thật từ hệ thống khi anh hỏi cụ thể. Thử: hôm nay có bao nhiêu show, khách nào đang nợ, hoặc đơn nào trễ hậu kỳ.`,
     },
   ]);
   const [input, setInput] = useState("");
@@ -157,21 +157,11 @@ export default function AiAssistantPage() {
   };
 
   return (
-    <div className="space-y-6 h-full flex flex-col max-h-[calc(100vh-120px)]">
+    <div className="space-y-4 h-full flex flex-col max-h-[calc(100vh-120px)]">
       <div>
-        <h1 className="text-3xl font-bold tracking-tight">Amazing Studio Copilot</h1>
-        <p className="text-muted-foreground mt-1">Trợ lý điều hành — đọc dữ liệu thật, trả lời đúng việc cần hỏi</p>
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Amazing Studio Copilot</h1>
+        <p className="text-muted-foreground mt-1 text-sm sm:text-base">Trợ lý điều hành — đọc dữ liệu thật, trả lời đúng việc cần hỏi</p>
       </div>
-
-      {aiKeyData && !aiKeyData.llmReady && (
-        <div className="bg-sky-50 border border-sky-200 rounded-lg p-4 flex items-start gap-3">
-          <Sparkles className="w-5 h-5 text-sky-600 flex-shrink-0 mt-0.5" />
-          <div>
-            <p className="font-semibold text-sky-900">Chế độ Copilot — dữ liệu studio</p>
-            <p className="text-sm text-sky-800 mt-1">Đang trả lời từ <strong>database thật</strong>. Cấu hình OpenAI trong <strong>Cài đặt</strong> để bật phân tích sâu hơn.</p>
-          </div>
-        </div>
-      )}
 
       <Card className="flex-1 flex flex-col overflow-hidden border-primary/20 shadow-lg shadow-primary/5">
         <div className="p-4 border-b bg-primary/5 flex items-center gap-3">
@@ -182,21 +172,21 @@ export default function AiAssistantPage() {
             <h3 className="font-bold text-primary">Amazing Studio Copilot</h3>
             <p className="text-xs text-muted-foreground flex items-center gap-1">
               <span className={`w-2 h-2 rounded-full inline-block ${isStreaming ? "bg-yellow-500 animate-pulse" : "bg-green-500 animate-pulse"}`}></span>
-              {isStreaming ? "Đang tra dữ liệu..." : (aiKeyData?.llmReady ? "Copilot + AI phân tích" : "Copilot — dữ liệu thật")}
+              {isStreaming ? "Đang tra dữ liệu..." : (aiKeyData?.llmReady ? "Dữ liệu trực tiếp · AI phân tích" : "Dữ liệu studio trực tiếp")}
             </p>
           </div>
         </div>
 
         <CardContent className="flex-1 p-0 flex flex-col overflow-hidden bg-gradient-to-b from-transparent to-muted/20">
-          <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-4 sm:space-y-6">
             {messages.map((msg, idx) => (
-              <div key={idx} className={`flex gap-4 ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div key={idx} className={`flex gap-2 sm:gap-4 ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
                 {msg.role === "ai" && (
                   <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0 mt-1">
                     <Bot className="w-4 h-4 text-primary" />
                   </div>
                 )}
-                <div className={`px-4 py-3 rounded-2xl max-w-[80%] ${
+                <div className={`px-4 py-3 rounded-2xl max-w-[88%] sm:max-w-[80%] ${
                   msg.role === "user"
                     ? "bg-primary text-primary-foreground rounded-tr-sm shadow-md"
                     : "bg-white dark:bg-card border shadow-sm rounded-tl-sm text-foreground"
@@ -220,12 +210,12 @@ export default function AiAssistantPage() {
           </div>
 
           <div className="p-4 bg-background border-t">
-            <div className="flex gap-2 overflow-x-auto pb-3 no-scrollbar">
+            <div className="flex gap-2 overflow-x-auto pb-3 no-scrollbar snap-x snap-mandatory">
               {suggestions.map((sug, idx) => (
                 <Badge
                   key={idx}
                   variant="outline"
-                  className="cursor-pointer hover:bg-primary/10 hover:text-primary whitespace-nowrap px-3 py-1.5 transition-colors"
+                  className="cursor-pointer hover:bg-primary/10 hover:text-primary whitespace-nowrap px-3 py-1.5 transition-colors snap-start"
                   onClick={() => handleSend(sug)}
                 >
                   <Sparkles className="w-3 h-3 mr-1 text-primary" /> {sug}

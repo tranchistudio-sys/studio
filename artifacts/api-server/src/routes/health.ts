@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
 import { HealthCheckResponse } from "@workspace/api-zod";
+import { isLlmConfigured } from "../lib/studio-copilot";
 
 const router: IRouter = Router();
 
@@ -9,9 +10,10 @@ router.get("/healthz", (_req, res) => {
 });
 
 router.get("/check-ai-key", (_req, res) => {
-  const base = (process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"] ?? "").trim();
-  const key = (process.env["AI_INTEGRATIONS_OPENAI_API_KEY"] ?? "").trim();
-  const llmReady = !!base && !!key && key !== "placeholder";
+  // Dùng CHUNG isLlmConfigured() với backend chat: trước đây endpoint này chỉ
+  // check OpenAI env → máy có ANTHROPIC_API_KEY vẫn bị báo "chưa có AI",
+  // frontend hiện banner sai sự thật.
+  const llmReady = isLlmConfigured();
   res.json({
     configured: true,
     mode: llmReady ? "llm" : "copilot",

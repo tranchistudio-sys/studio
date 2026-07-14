@@ -31,9 +31,21 @@ vi.mock("@workspace/db", () => {
       from: (table: unknown) => Promise.resolve(seeded.get(table) ?? []),
     }),
   };
-  // pool.query phải trả {rows: []} (convention repo): GĐ1b-1 route monthly gọi
-  // FINANCIAL ENGINE (schema-flags + receivable) qua pool — mock trần sẽ nổ 500.
-  return { db, pool: { query: vi.fn(async () => ({ rows: [] })) } };
+  // pool.query trả {rows: []} mặc định (convention repo — route gọi FINANCIAL
+  // ENGINE qua pool). GĐ1b-2: cast đọc từ sổ staff_job_earnings → seed cast của
+  // test qua NHÁNH mock này (giữ nguyên ngữ nghĩa cũ: booking 1 cast 1M, booking 4 cast 3M).
+  const pool = {
+    query: vi.fn(async (sql: string) => {
+      if (String(sql).includes("staff_job_earnings") && String(sql).includes("GROUP BY")) {
+        return { rows: [
+          { bid: 1, cast_total: "1000000", cnt: "1" },
+          { bid: 4, cast_total: "3000000", cnt: "1" },
+        ] };
+      }
+      return { rows: [] };
+    }),
+  };
+  return { db, pool };
 });
 
 vi.mock("drizzle-orm", () => ({

@@ -8,7 +8,7 @@ import { engineReceivableForRange, REVENUE_SCOPES } from "../../lib/finance/fina
 const router: IRouter = Router();
 
 router.get("/revenue/v2/monthly", async (req, res) => {
-  const { validBookings, castByBooking, payments, classifiedExpenses, fixedCostPerMonth } = await loadAllData();
+  const { validBookings, castByBooking, laborMeta, payments, classifiedExpenses, fixedCostPerMonth } = await loadAllData();
 
   const range = (req.query["range"] as string) || "6";
   const customFrom = req.query["from"] as string | undefined;
@@ -161,7 +161,9 @@ router.get("/revenue/v2/monthly", async (req, res) => {
   // đếm trùng đơn có show ở 2 tháng (shoot_date tháng này + occurrence tháng sau).
   totals.remaining = await engineReceivableForRange(dateFrom, dateTo);
 
-  res.json({ months: result, totals, dateFrom, dateTo, scopes: REVENUE_SCOPES });
+  // GĐ1b-2: metadata minh bạch — coverage cast còn partial thì KHÔNG được gọi
+  // đây là "lợi nhuận chính xác tuyệt đối"; hoa hồng sale chưa ghi sổ chưa gồm.
+  res.json({ months: result, totals, dateFrom, dateTo, scopes: REVENUE_SCOPES, labor: laborMeta });
 });
 
 export default router;

@@ -174,14 +174,8 @@ describe("TIER 2 — lệch ĐÃ BIẾT so với Engine (GĐ1 phải lật it.fa
     expect(c.pass, formatCheck(c)).toBe(true);
   });
 
-  // ⚠️ Quy tắc ④: màn Doanh thu dùng tasks.cost (thực tế = 0, không ai nhập) thay
-  // staff_job_earnings. GĐ1d (labor-service) sửa xong PHẢI lật → it.
-  it.fails("Lương cast trong kỳ: nguồn màn Doanh thu khớp Engine (quy tắc ④)", async () => {
-    const to = vnToday();
-    const from = `${to.slice(0, 7)}-01`;
-    const c = record(await verifyLaborSource(from, to));
-    expect(c.pass, formatCheck(c)).toBe(true);
-  });
+  // ✅ GĐ1b-2 (14/07): quy tắc ④ ĐÃ áp — cast từ sổ staff_job_earnings, gán theo
+  // booking bucket; tasks.cost đã bị loại. Test chuyển sang TIER 1e bên dưới.
 
   // ⚠️ NỢ DỮ LIỆU LỊCH SỬ (đo 14/07: 39 gia đình đơn): Σ paid_amount trên các
   // thành viên sống KHÔNG khớp Σ phiếu thu gốc — chủ yếu đếm TRÙNG cha+con
@@ -280,5 +274,105 @@ describe("TIER 1c — Còn có thể thu từ show của tháng (bắt buộc PA
       [from, to],
     );
     expect(Number((overlap.rows[0] as { c: string }).c)).toBe(0);
+  });
+});
+
+// ─── TIER 1e — GĐ1b-2: CAST theo show từ sổ staff_job_earnings (quy tắc ④) ─────
+
+describe("TIER 1e — Cast từ sổ earnings (bắt buộc PASS từ GĐ1b-2)", () => {
+  const ym = vnToday().slice(0, 7);
+
+  it("Engine cast (booking bucket) ↔ monthly HTTP staffCast ↔ custom-range HTTP: lệch 0", async () => {
+    const c = record(await verifyLaborSource(ym));
+    expect(c.pass, formatCheck(c)).toBe(true);
+    if (!process.env.TRUTH_API_BASE) {
+      console.warn("⚠️ TRUTH_API_BASE chưa bật — thiếu 2 surface HTTP.");
+    }
+  });
+
+  it("Metadata minh bạch: laborCoverage đúng số đếm thật + salesCommissionIncluded=false", async () => {
+    if (!process.env.TRUTH_API_BASE) {
+      console.warn("⚠️ Bỏ qua (cần TRUTH_API_BASE).");
+      return;
+    }
+    const base = process.env.TRUTH_API_BASE.replace(/\/$/, "");
+    const mj = (await (await fetch(`${base}/api/revenue/v2/monthly?range=1`)).json()) as {
+      labor?: {
+        laborSource: string;
+        salesCommissionIncluded: boolean;
+        laborCoverage: { earningCount: number; bookingCountWithEarnings: number; eligibleBookingCount: number; status: string };
+        notes: string[];
+      };
+    };
+    expect(mj.labor?.laborSource).toBe("staff_job_earnings");
+    expect(mj.labor?.salesCommissionIncluded).toBe(false);
+    // Đếm lại độc lập từ DB
+    const cnt = await pool.query(`
+      SELECT COUNT(*) AS ec, COUNT(DISTINCT e.booking_id) AS bc
+      FROM staff_job_earnings e JOIN bookings b ON b.id = e.booking_id
+      WHERE COALESCE(e.status,'') NOT IN ('voided','cancelled') AND ${COUNTABLE}`);
+    const row = cnt.rows[0] as { ec: string; bc: string };
+    expect(mj.labor?.laborCoverage.earningCount).toBe(Number(row.ec));
+    expect(mj.labor?.laborCoverage.bookingCountWithEarnings).toBe(Number(row.bc));
+    const eligible = await pool.query(`SELECT COUNT(*) AS v FROM bookings b WHERE ${COUNTABLE}`);
+    expect(mj.labor?.laborCoverage.eligibleBookingCount).toBe(Number((eligible.rows[0] as { v: string }).v));
+    const expectStatus =
+      Number(row.bc) >= Number((eligible.rows[0] as { v: string }).v) ? "full" : "partial";
+    expect(mj.labor?.laborCoverage.status).toBe(expectStatus);
+    if (expectStatus === "partial") {
+      expect((mj.labor?.notes ?? []).join(" ")).toContain("một số show cũ chưa có dữ liệu cast");
+    }
+    expect((mj.labor?.notes ?? []).join(" ")).toContain("Chưa bao gồm hoa hồng sale");
+    console.log(`INFO | coverage: ${row.bc} booking có earning / ${(eligible.rows[0] as { v: string }).v} đơn hợp lệ (${row.ec} khoản) — ${expectStatus}`);
+  });
+
+  it("Chống trừ trùng: voided bị loại; mỗi earning MỘT lần; payroll consumed vẫn là chi phí", async () => {
+    const { engineCastForCreatedCohort } = await import("../lib/finance/financial-engine");
+    // Tổng cast all-time qua Engine-cohort trên khoảng rất rộng
+    const engineAll = await engineCastForCreatedCohort("2000-01-01", "2100-01-01");
+
+    // (a) Bản tính lại độc lập theo TỪNG earning DISTINCT — không double-count
+    const indep = await pool.query(`
+      SELECT COALESCE(SUM(rate::numeric), 0) AS v FROM (
+        SELECT DISTINCT e.id, e.rate FROM staff_job_earnings e
+        JOIN bookings b ON b.id = e.booking_id
+        WHERE COALESCE(e.status,'') NOT IN ('voided','cancelled') AND ${COUNTABLE}) t`);
+    expect(Number((indep.rows[0] as { v: string }).v)).toBe(engineAll);
+
+    // (b) voided/cancelled bị loại: tổng KHÔNG lọc − tổng voided/cancelled = engine
+    const split = await pool.query(`
+      SELECT
+        COALESCE(SUM(e.rate::numeric), 0) AS all_sum,
+        COALESCE(SUM(e.rate::numeric) FILTER (WHERE COALESCE(e.status,'') IN ('voided','cancelled')), 0) AS bad_sum
+      FROM staff_job_earnings e JOIN bookings b ON b.id = e.booking_id WHERE ${COUNTABLE}`);
+    const sp = split.rows[0] as { all_sum: string; bad_sum: string };
+    expect(Number(sp.all_sum) - Number(sp.bad_sum)).toBe(engineAll);
+
+    // (c) earning đã bị payroll consume (payroll_id NOT NULL) VẪN là chi phí trong profit
+    const byPayroll = await pool.query(`
+      SELECT
+        COALESCE(SUM(e.rate::numeric) FILTER (WHERE e.payroll_id IS NOT NULL), 0) AS consumed,
+        COALESCE(SUM(e.rate::numeric) FILTER (WHERE e.payroll_id IS NULL), 0) AS pending
+      FROM staff_job_earnings e JOIN bookings b ON b.id = e.booking_id
+      WHERE COALESCE(e.status,'') NOT IN ('voided','cancelled') AND ${COUNTABLE}`);
+    const bp = byPayroll.rows[0] as { consumed: string; pending: string };
+    expect(Number(bp.consumed) + Number(bp.pending)).toBe(engineAll);
+    console.log(`INFO | cast đã qua payroll: ${bp.consumed} | chưa qua payroll: ${bp.pending} — cả hai đều nằm trong chi phí (payroll không phải chi phí mới)`);
+
+    // (d) audit: booking có CẢ earning lẫn expense direct — cảnh báo, KHÔNG tự loại
+    const audit = await pool.query(`
+      SELECT b.order_code, SUM(DISTINCT 0) AS zero
+      FROM bookings b
+      WHERE ${COUNTABLE}
+        AND EXISTS (SELECT 1 FROM staff_job_earnings e WHERE e.booking_id = b.id
+                    AND COALESCE(e.status,'') NOT IN ('voided','cancelled'))
+        AND EXISTS (SELECT 1 FROM expenses x WHERE x.booking_id = b.id
+                    AND x.status IN ('approved','paid') AND COALESCE(x.cost_class,'') = 'direct')
+      GROUP BY b.order_code LIMIT 10`);
+    if (audit.rows.length) {
+      console.warn(`⚠️ AUDIT | ${audit.rows.length} booking có CẢ earning lẫn expense direct — kiểm tra tay xem có trả cast 2 đường không: ${(audit.rows as Array<{ order_code: string }>).map(r => r.order_code).join(", ")}`);
+    } else {
+      console.log("INFO | audit: không có booking nào vừa earning vừa expense direct.");
+    }
   });
 });

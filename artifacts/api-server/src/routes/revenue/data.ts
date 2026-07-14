@@ -1,10 +1,14 @@
 import { db } from "@workspace/db";
-import { bookingsTable, expensesTable, tasksTable, paymentsTable, fixedCostsTable } from "@workspace/db/schema";
+import { bookingsTable, expensesTable, paymentsTable, fixedCostsTable } from "@workspace/db/schema";
 import { money, filterRevenueCountable } from "../../lib/booking-money";
 import { parentIdsWithActiveChild, isEmptyParentContract } from "../../lib/parent-contract";
+// GĐ1b-2 (quy tắc ④ chủ chốt 14/07): cast theo show đọc từ SỔ staff_job_earnings
+// qua FINANCIAL ENGINE — bỏ hẳn tasks.cost (toàn hệ thống 0 dòng có cost > 0,
+// nghĩa là lợi nhuận trước nay chưa từng trừ cast).
+import { engineCastLedger } from "../../lib/finance/financial-engine";
 
 export async function loadAllData() {
-  const [bookings, tasks, expenses, payments] = await Promise.all([
+  const [bookings, expenses, payments, castLedger] = await Promise.all([
     db.select({
       id: bookingsTable.id,
       totalAmount: bookingsTable.totalAmount,
@@ -24,14 +28,6 @@ export async function loadAllData() {
       // (isSelfLiveBooking đọc deletedAt) khỏi validBookings ⇒ báo cáo/lương vẫn không tính rác.
     }).from(bookingsTable),
     db.select({
-      id: tasksTable.id,
-      bookingId: tasksTable.bookingId,
-      cost: tasksTable.cost,
-      role: tasksTable.role,
-      taskType: tasksTable.taskType,
-      status: tasksTable.status,
-    }).from(tasksTable),
-    db.select({
       id: expensesTable.id,
       bookingId: expensesTable.bookingId,
       amount: expensesTable.amount,
@@ -48,15 +44,14 @@ export async function loadAllData() {
       paidAt: paymentsTable.paidAt,
       status: paymentsTable.status,
     }).from(paymentsTable),
+    engineCastLedger(),
   ]);
 
-  const castByBooking = new Map<number, number>();
-  for (const t of tasks) {
-    if (t.bookingId != null) {
-      const c = parseFloat(t.cost) || 0;
-      castByBooking.set(t.bookingId, (castByBooking.get(t.bookingId) ?? 0) + c);
-    }
-  }
+  // Cast per booking từ Engine (earnings hợp lệ, mỗi khoản đúng MỘT lần) — payroll
+  // đã thanh toán và salary advance KHÔNG cộng thêm (chỉ là thanh toán/ứng của
+  // nghĩa vụ đã ghi nhận). Lương CỨNG nằm riêng ở fixed_costs.
+  const castByBooking = castLedger.castByBooking;
+  const laborMeta = castLedger.meta;
 
   // Task #363: phân chia chi phí theo costClass theo mô hình tài chính chuẩn.
   // direct → gắn vào booking nếu có; operating/depreciation/interest → gom theo tháng;
@@ -139,5 +134,5 @@ export async function loadAllData() {
       && !(p.bookingId != null && zombieParentIds.has(p.bookingId)), // loại cọc của cha rỗng
   );
 
-  return { validBookings, castByBooking, directExpByBooking, directExpByDate, operatingExpByDate, depreciationByDate, interestByDate, payments: activePayments, classifiedExpenses, fixedCostPerMonth };
+  return { validBookings, castByBooking, laborMeta, directExpByBooking, directExpByDate, operatingExpByDate, depreciationByDate, interestByDate, payments: activePayments, classifiedExpenses, fixedCostPerMonth };
 }

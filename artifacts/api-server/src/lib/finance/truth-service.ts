@@ -22,7 +22,7 @@ import {
   engineCustomerDebt,
   engineCashIn,
   engineCashOut,
-  engineLaborCost,
+  engineCastForCreatedCohort,
   engineFamilyCashDrift,
   engineReceivableForRange,
 } from "./financial-engine";
@@ -186,21 +186,32 @@ export async function verifyCashOutRules(from: string, to: string): Promise<Trut
   return check;
 }
 
-// ─── Check: lương cast quy tắc ④ (consumer màn Doanh thu đang dùng tasks.cost) ─
+// ─── Check: lương cast quy tắc ④ — GĐ1b-2: sổ staff_job_earnings, gán booking bucket ─
 
-export async function verifyLaborSource(from: string, to: string): Promise<TruthCheck> {
-  const engine = await engineLaborCost(from, to);
-  const tasksCost = await pool.query(
-    `SELECT COALESCE(SUM(t.cost::numeric), 0) AS v
-     FROM tasks t JOIN bookings b ON b.id = t.booking_id
-     WHERE ${revenueCountableSql("b")}
-       AND b.shoot_date >= $1::date AND b.shoot_date <= $2::date`,
-    [from, to],
-  );
-  return compareAgainstEngine("luong_cast_ky", `${from}..${to}`, {
-    engine,
-    manDoanhThu_tasksCost: Number((tasksCost.rows[0] as { v?: string })?.v ?? 0),
-  });
+/**
+ * Engine cast (cohort đơn TẠO trong kỳ, từ sổ earnings) ↔ HTTP Revenue monthly
+ * staffCast ↔ HTTP custom-range staffCast. HTTP surface cần TRUTH_API_BASE.
+ */
+export async function verifyLaborSource(ym: string): Promise<TruthCheck> {
+  const [y, m] = ym.split("-").map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  const from = `${ym}-01`;
+  const to = `${ym}-${String(lastDay).padStart(2, "0")}`;
+  const surfaces: Record<string, number> & { engine: number } = {
+    engine: await engineCastForCreatedCohort(from, to),
+  };
+  const base = (process.env.TRUTH_API_BASE ?? "").replace(/\/$/, "");
+  if (base) {
+    const mj = (await (await fetch(`${base}/api/revenue/v2/monthly?from=${from}&to=${to}`)).json()) as {
+      months?: Array<{ month: string; staffCast: number }>;
+    };
+    surfaces.revenueMonthly_http = Number((mj.months ?? []).find(x => x.month === ym)?.staffCast ?? Number.NaN);
+    const cj = (await (await fetch(`${base}/api/revenue/v2/custom-range?from=${from}&to=${to}`)).json()) as {
+      staffCast?: number;
+    };
+    surfaces.revenueCustomRange_http = Number(cj.staffCast ?? Number.NaN);
+  }
+  return compareAgainstEngine("luong_cast_ky", ym, surfaces);
 }
 
 // ─── Check: toàn vẹn per-booking & theo gia đình đơn ───────────────────────────

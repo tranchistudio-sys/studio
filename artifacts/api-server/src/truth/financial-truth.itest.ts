@@ -116,46 +116,52 @@ describe("TIER 1 — consumer đã khớp ENGINE + toàn vẹn dữ liệu gốc
   });
 });
 
+// ✅ GĐ1a (14/07): màn Khách hàng ĐÃ chuyển sang engineCustomerFinance — 3 test
+// dưới lật it.fails → it, verify qua HTTP API THẬT (cần server chạy bản GĐ1a +
+// env TRUTH_API_BASE=http://localhost:3000; thiếu env thì skip kèm cảnh báo,
+// vì fallback legacy vẫn là công thức cũ đã bỏ).
+describe.skipIf(!process.env.TRUTH_API_BASE)(
+  "TIER 1b — màn Khách Hàng (HTTP API thật) khớp Engine (bắt buộc PASS từ GĐ1a)",
+  () => {
+    it("Top-20 khách nợ lớn nhất", async () => {
+      const cids = await ids(`
+        SELECT c.id FROM customers c JOIN bookings b ON b.customer_id = c.id
+        WHERE ${COUNTABLE} GROUP BY c.id ORDER BY SUM(${DEBT_SQL}) DESC LIMIT 20`);
+      const fails: string[] = [];
+      for (const id of cids) {
+        const c = record(await verifyCustomerDebt(id, "(top nợ)"));
+        if (!c.pass) fails.push(formatCheck(c));
+      }
+      expect(fails, `\n${fails.join("\n")}`).toEqual([]);
+    });
+
+    it("20 khách ngẫu nhiên (md5 ổn định)", async () => {
+      const cids = await ids(`SELECT id FROM customers ORDER BY md5(id::text) LIMIT 20`);
+      const fails: string[] = [];
+      for (const id of cids) {
+        const c = record(await verifyCustomerDebt(id, "(ngẫu nhiên)"));
+        if (!c.pass) fails.push(formatCheck(c));
+      }
+      expect(fails, `\n${fails.join("\n")}`).toEqual([]);
+    });
+
+    it("10 khách có hợp đồng CHA+CON (không cộng trùng)", async () => {
+      const cids = await ids(`
+        SELECT DISTINCT c.id FROM customers c
+        JOIN bookings p ON p.customer_id = c.id AND p.is_parent_contract = true
+        JOIN bookings ch ON ch.parent_id = p.id
+        ORDER BY c.id LIMIT 10`);
+      const fails: string[] = [];
+      for (const id of cids) {
+        const c = record(await verifyCustomerDebt(id, "(cha+con)"));
+        if (!c.pass) fails.push(formatCheck(c));
+      }
+      expect(fails, `\n${fails.join("\n")}`).toEqual([]);
+    });
+  },
+);
+
 describe("TIER 2 — lệch ĐÃ BIẾT so với Engine (GĐ1 phải lật it.fails → it)", () => {
-  // ⚠️ Màn Khách hàng (computeCustomerAggregate): KHÔNG trừ giảm giá, trừ bằng
-  // Σ phiếu thu thay cột paid_amount, clamp ở TỔNG → đo 14/07: 13/20 top nợ,
-  // 10/10 khách cha–con lệch (vd Trúc Ly KH#150: 43.299.994 vs Engine 42.799.994).
-  // GĐ1a (debt-service) sửa xong PHẢI đổi it.fails → it.
-  it.fails("Màn Khách Hàng khớp Engine: top-20 khách nợ lớn nhất", async () => {
-    const cids = await ids(`
-      SELECT c.id FROM customers c JOIN bookings b ON b.customer_id = c.id
-      WHERE ${COUNTABLE} GROUP BY c.id ORDER BY SUM(${DEBT_SQL}) DESC LIMIT 20`);
-    const fails: string[] = [];
-    for (const id of cids) {
-      const c = record(await verifyCustomerDebt(id, "(top nợ)"));
-      if (Math.abs(c.surfaces.manKhachHang - c.surfaces.engine) !== 0) fails.push(formatCheck(c));
-    }
-    expect(fails, `\n${fails.join("\n")}`).toEqual([]);
-  });
-
-  it.fails("Màn Khách Hàng khớp Engine: 20 khách ngẫu nhiên (md5 ổn định)", async () => {
-    const cids = await ids(`SELECT id FROM customers ORDER BY md5(id::text) LIMIT 20`);
-    const fails: string[] = [];
-    for (const id of cids) {
-      const c = record(await verifyCustomerDebt(id, "(ngẫu nhiên)"));
-      if (Math.abs(c.surfaces.manKhachHang - c.surfaces.engine) !== 0) fails.push(formatCheck(c));
-    }
-    expect(fails, `\n${fails.join("\n")}`).toEqual([]);
-  });
-
-  it.fails("Màn Khách Hàng khớp Engine: 10 khách có hợp đồng CHA+CON", async () => {
-    const cids = await ids(`
-      SELECT DISTINCT c.id FROM customers c
-      JOIN bookings p ON p.customer_id = c.id AND p.is_parent_contract = true
-      JOIN bookings ch ON ch.parent_id = p.id
-      ORDER BY c.id LIMIT 10`);
-    const fails: string[] = [];
-    for (const id of cids) {
-      const c = record(await verifyCustomerDebt(id, "(cha+con)"));
-      if (Math.abs(c.surfaces.manKhachHang - c.surfaces.engine) !== 0) fails.push(formatCheck(c));
-    }
-    expect(fails, `\n${fails.join("\n")}`).toEqual([]);
-  });
 
   // ⚠️ Quy tắc ②③: Dashboard /dashboard/simple đang đếm CẢ chi phí personal /
   // chưa duyệt / trả gốc vay. GĐ1b (cashflow-service) sửa xong PHẢI lật → it.

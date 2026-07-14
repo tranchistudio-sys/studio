@@ -59,6 +59,60 @@ export async function engineCustomerDebt(customerId: number): Promise<number> {
   );
 }
 
+export type CustomerFinance = {
+  /** Số show = số đơn countable (đơn con + đơn lẻ hợp lệ). */
+  totalBookings: number;
+  /** Tổng phải thu = Σ NET per-booking (tổng − giảm giá, không âm). */
+  totalOwed: number;
+  /** Đã trả = Σ paid_amount PHÂN BỔ trên các đơn countable. Tiền còn treo ở đơn
+   *  CHA chưa phân bổ xuống dịch vụ con sẽ KHÔNG hiện ở đây — chủ đích, để lộ
+   *  data cần làm sạch (xem engineFamilyCashDrift). */
+  totalPaid: number;
+  /** Còn nợ = quy tắc ①: Σ GREATEST(0, net − paid) per-booking. */
+  totalDebt: number;
+};
+
+const CUSTOMER_FINANCE_SELECT = `
+  COUNT(*)::int AS cnt,
+  COALESCE(SUM(GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0))), 0) AS owed,
+  COALESCE(SUM(COALESCE(b.paid_amount, 0)), 0) AS paid,
+  COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS debt`;
+
+function rowToCustomerFinance(row?: Record<string, unknown>): CustomerFinance {
+  return {
+    totalBookings: Number(row?.cnt ?? 0),
+    totalOwed: Number(row?.owed ?? 0),
+    totalPaid: Number(row?.paid ?? 0),
+    totalDebt: Number(row?.debt ?? 0),
+  };
+}
+
+/** Bộ số tài chính hồ sơ MỘT khách (màn Khách hàng chi tiết dùng). */
+export async function engineCustomerFinance(customerId: number): Promise<CustomerFinance> {
+  const r = await pool.query(
+    `SELECT ${CUSTOMER_FINANCE_SELECT}
+     FROM bookings b WHERE ${revenueCountableSql("b")} AND b.customer_id = $1`,
+    [customerId],
+  );
+  return rowToCustomerFinance(r.rows[0] as Record<string, unknown> | undefined);
+}
+
+/** Bộ số tài chính TOÀN BỘ khách trong MỘT query (màn danh sách Khách hàng dùng
+ *  — thay vòng lặp N+1 query + nạp toàn bộ payments vào RAM trước đây). */
+export async function engineAllCustomersFinance(): Promise<Map<number, CustomerFinance>> {
+  const r = await pool.query(
+    `SELECT b.customer_id AS cid, ${CUSTOMER_FINANCE_SELECT}
+     FROM bookings b
+     WHERE ${revenueCountableSql("b")} AND b.customer_id IS NOT NULL
+     GROUP BY b.customer_id`,
+  );
+  const map = new Map<number, CustomerFinance>();
+  for (const row of r.rows as Array<Record<string, unknown>>) {
+    map.set(Number(row.cid), rowToCustomerFinance(row));
+  }
+  return map;
+}
+
 // ─── Dòng tiền vào (từ bảng payments GỐC) ─────────────────────────────────────
 
 /** Tiền đã thu trong kỳ [from, to] (ngày, nửa đóng hai đầu theo ngày). */

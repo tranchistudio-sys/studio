@@ -282,3 +282,89 @@ export async function engineFamilyCashDrift(limit = 200): Promise<FamilyCashDrif
     drift: Number(x.paid_col) - Number(x.pay_sum),
   }));
 }
+
+// ─── GĐ1b-2: CAST theo show từ SỔ staff_job_earnings (quy tắc ④ + chốt 14/07) ──
+// Nguồn cast DUY NHẤT của Revenue/Profit. KHÔNG dùng tasks.cost. KHÔNG cộng thêm
+// payroll đã thanh toán (payroll chỉ là kỳ THANH TOÁN nghĩa vụ đã ghi nhận) và
+// KHÔNG cộng salary advance (ứng = dòng tiền, không phải chi phí mới). Lương CỨNG
+// nằm riêng ở fixed_costs — hai loại chi phí độc lập, nhân viên có cả hai chính
+// sách thì lợi nhuận trừ CẢ HAI. Không suy luận theo chức danh: chỉ tính khi có
+// earning hợp lệ trong sổ.
+
+export type LaborCoverage = {
+  earningCount: number;
+  bookingCountWithEarnings: number;
+  eligibleBookingCount: number;
+  status: "partial" | "full";
+};
+
+export type EngineLaborMeta = {
+  laborSource: "staff_job_earnings";
+  /** Hoa hồng sale runtime CHƯA được ghi sổ → chưa nằm trong lợi nhuận (GĐ1b-3). */
+  salesCommissionIncluded: false;
+  laborCoverage: LaborCoverage;
+  notes: string[];
+};
+
+export const LABOR_COVERAGE_NOTE =
+  "Lợi nhuận hiện được tính theo các khoản cast đã ghi nhận trong hệ thống; một số show cũ chưa có dữ liệu cast nên lợi nhuận có thể đang cao hơn thực tế.";
+export const SALES_COMMISSION_NOTE = "Chưa bao gồm hoa hồng sale chưa được ghi sổ.";
+
+const EARNING_VALID = `COALESCE(e.status, '') NOT IN ('voided', 'cancelled')`;
+
+/** Map bookingId → tổng cast từ sổ earnings hợp lệ (mỗi earning tính ĐÚNG MỘT lần). */
+export async function engineCastLedger(): Promise<{
+  castByBooking: Map<number, number>;
+  meta: EngineLaborMeta;
+}> {
+  const r = await pool.query(
+    `SELECT e.booking_id AS bid, SUM(e.rate::numeric) AS cast_total, COUNT(*) AS cnt
+     FROM staff_job_earnings e
+     JOIN bookings b ON b.id = e.booking_id
+     WHERE ${EARNING_VALID} AND ${revenueCountableSql("b")}
+     GROUP BY e.booking_id`,
+  );
+  const castByBooking = new Map<number, number>();
+  let earningCount = 0;
+  for (const row of r.rows as Array<{ bid: number; cast_total: string; cnt: string }>) {
+    castByBooking.set(Number(row.bid), Number(row.cast_total));
+    earningCount += Number(row.cnt);
+  }
+  const eligible = await num(
+    `SELECT COUNT(*) AS v FROM bookings b WHERE ${revenueCountableSql("b")}`,
+  );
+  const coverage: LaborCoverage = {
+    earningCount,
+    bookingCountWithEarnings: castByBooking.size,
+    eligibleBookingCount: eligible,
+    status: castByBooking.size >= eligible && eligible > 0 ? "full" : "partial",
+  };
+  return {
+    castByBooking,
+    meta: {
+      laborSource: "staff_job_earnings",
+      salesCommissionIncluded: false,
+      laborCoverage: coverage,
+      notes:
+        coverage.status === "partial"
+          ? [LABOR_COVERAGE_NOTE, SALES_COMMISSION_NOTE]
+          : [SALES_COMMISSION_NOTE],
+    },
+  };
+}
+
+/**
+ * Tổng cast của cohort đơn TẠO trong kỳ (gán theo BOOKING BUCKET — quyết định
+ * GĐ1b-2 mục 3, đồng bộ mô hình accrual màn Revenue; KHÔNG gán theo earned_date).
+ */
+export async function engineCastForCreatedCohort(from: string, to: string): Promise<number> {
+  return num(
+    `SELECT COALESCE(SUM(e.rate::numeric), 0) AS v
+     FROM staff_job_earnings e
+     JOIN bookings b ON b.id = e.booking_id
+     WHERE ${EARNING_VALID} AND ${revenueCountableSql("b")}
+       AND (b.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
+           BETWEEN $1::date AND $2::date`,
+    [from, to],
+  );
+}

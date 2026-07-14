@@ -12,7 +12,7 @@ router.get("/revenue/v2/custom-range", async (req, res) => {
   const to = req.query["to"] as string;
   if (!from || !to) return res.status(400).json({ error: "from and to required (YYYY-MM-DD)" });
 
-  const { validBookings, castByBooking, directExpByBooking, operatingExpByDate, payments, fixedCostPerMonth } = await loadAllData();
+  const { validBookings, castByBooking, laborMeta, directExpByBooking, operatingExpByDate, payments, fixedCostPerMonth } = await loadAllData();
 
   const rangeBookings = validBookings.filter(b => {
     const created = b.createdAt.toISOString().slice(0, 10);
@@ -62,6 +62,7 @@ router.get("/revenue/v2/custom-range", async (req, res) => {
     totalCost, realProfit,
     bookingCount: rangeBookings.length,
     scopes: REVENUE_SCOPES,
+    labor: laborMeta,
   });
 });
 

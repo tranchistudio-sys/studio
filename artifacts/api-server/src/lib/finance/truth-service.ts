@@ -1,35 +1,50 @@
 /**
- * truth-service — GĐ0 "Financial Truth Test" (chủ duyệt 14/07).
+ * truth-service — GĐ0 "Financial Truth Test" (chủ duyệt 14/07, chỉnh kiến trúc cùng ngày).
  *
- * Service này KHÔNG tính nghiệp vụ mới. Nó chỉ VERIFY: cùng một chỉ số tiền,
- * chạy qua NHIỀU đường code THẬT của hệ thống (màn Khách hàng / công thức
- * Dashboard / Copilot / booking-money) rồi so từng đồng. Lệch 1 đồng = FAIL,
- * log rõ surface nào lệch. Đây là chốt chặn của toàn bộ hệ thống tiền:
- * mọi PR về tài chính phải chạy `pnpm truth` PASS trước khi mở PR kế tiếp.
+ * Service này KHÔNG tính nghiệp vụ. Nó chỉ VERIFY theo mô hình:
+ *
+ *   FINANCIAL ENGINE (financial-engine.ts — tính từ bảng gốc + quy tắc đã chốt)
+ *        ↑ là CHUẨN duy nhất
+ *   mọi CONSUMER (màn Khách hàng / Dashboard / Revenue / Copilot) phải đọc ra ĐÚNG số Engine.
+ *
+ * KHÔNG phải "Dashboard đúng thì mọi nơi giống Dashboard" — Dashboard cũng chỉ là
+ * một consumer bị kiểm. Lệch 1 đồng so với Engine = FAIL, log rõ consumer nào lệch.
  */
 import { pool } from "@workspace/db";
-import { revenueCountableSql } from "../booking-money";
 import { computeCustomerAggregate, type AggBooking, type AggPayment } from "../customer-aggregate";
 import { computeBookingMoney } from "../booking-money";
+import { revenueCountableSql } from "../booking-money";
 import { getUnpaidCustomers, getRevenueSummary } from "../studio-copilot";
 import { getSimpleFinance } from "../finance-summary";
+import {
+  ENGINE_DEBT_SQL,
+  engineSystemDebt,
+  engineCustomerDebt,
+  engineCashIn,
+  engineCashOut,
+  engineLaborCost,
+  engineFamilyCashDrift,
+} from "./financial-engine";
 
 export type TruthCheck = {
   metric: string;
   entity: string;
-  /** Giá trị theo từng surface, vd { manKhachHang: 43299994, dashboardSql: 42799994, copilot: 42799994 }. */
+  /** surfaces.engine là CHUẨN; các key còn lại là consumer bị đối chiếu với engine. */
   surfaces: Record<string, number>;
   pass: boolean;
   maxDiff: number;
 };
 
-export function compareSurfaces(
+/** PASS khi MỌI consumer bằng đúng surfaces.engine (không so consumer với nhau). */
+export function compareAgainstEngine(
   metric: string,
   entity: string,
-  surfaces: Record<string, number>,
+  surfaces: Record<string, number> & { engine: number },
 ): TruthCheck {
-  const vals = Object.values(surfaces);
-  const maxDiff = vals.length ? Math.max(...vals) - Math.min(...vals) : 0;
+  const diffs = Object.entries(surfaces)
+    .filter(([k]) => k !== "engine")
+    .map(([, v]) => Math.abs(v - surfaces.engine));
+  const maxDiff = diffs.length ? Math.max(...diffs) : 0;
   return { metric, entity, surfaces, pass: maxDiff === 0, maxDiff };
 }
 
@@ -37,19 +52,15 @@ export function formatCheck(c: TruthCheck): string {
   const detail = Object.entries(c.surfaces)
     .map(([k, v]) => `${k}=${v}`)
     .join(" | ");
-  return `${c.pass ? "PASS" : "FAIL"} | ${c.metric} | ${c.entity} | ${detail} | lệch=${c.maxDiff}`;
+  return `${c.pass ? "PASS" : "FAIL"} | ${c.metric} | ${c.entity} | ${detail} | lệch-max-vs-engine=${c.maxDiff}`;
 }
 
-// Công thức nợ per-booking của Dashboard/Copilot (net − paid_amount, clamp từng đơn).
-const DEBT_SQL =
-  "GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0) - COALESCE(b.paid_amount, 0))";
+// ─── Consumer: màn Khách hàng (đường code THẬT của GET /customers/:id) ─────────
 
-// ─── Surface 1: màn Khách hàng (đường code THẬT của GET /customers/:id) ────────
-
-async function customerScreenDebt(customerId: number): Promise<number> {
-  // Route nạp TOÀN BỘ đơn của khách (kể cả đã xóa) + payments, rồi đưa qua
-  // computeCustomerAggregate — tái hiện y nguyên nhưng chỉ nạp payments của
-  // các đơn thuộc khách (liveIds ⊆ đơn của khách nên kết quả không đổi).
+async function consumerCustomerScreenDebt(customerId: number): Promise<number> {
+  // Route nạp TOÀN BỘ đơn của khách (kể cả đã xóa) + payments, đưa qua
+  // computeCustomerAggregate — tái hiện y nguyên (payments chỉ cần của các đơn
+  // thuộc khách vì liveIds ⊆ đơn của khách).
   const b = await pool.query(
     `SELECT id, total_amount AS "totalAmount", is_parent_contract AS "isParentContract",
             parent_id AS "parentId", status, deleted_at AS "deletedAt"
@@ -67,31 +78,20 @@ async function customerScreenDebt(customerId: number): Promise<number> {
   return computeCustomerAggregate(bookings, p.rows as AggPayment[]).totalDebt;
 }
 
-// ─── Surface 2: công thức Dashboard (SQL per-booking, chuẩn PR #65) ────────────
-
-async function dashboardSqlDebt(customerId: number): Promise<number> {
-  const r = await pool.query(
-    `SELECT COALESCE(SUM(${DEBT_SQL}), 0) AS v
-     FROM bookings b WHERE ${revenueCountableSql("b")} AND b.customer_id = $1`,
-    [customerId],
-  );
-  return Number((r.rows[0] as { v?: string })?.v ?? 0);
-}
-
-// ─── Surface 3: Copilot — đúng dạng query GROUP BY khách của getUnpaidCustomers ─
+// ─── Consumer: Copilot — đúng dạng query GROUP BY khách của getUnpaidCustomers ─
 // (tool thật trả line text theo tên+SĐT nên không tra id được; tái hiện đúng SQL
 //  grouped của tool, còn TOOL THẬT được đối chiếu tổng ở verifySystemDebt.)
 
 let copilotDebtMap: Map<string, number> | null = null;
 
-export async function copilotDebtByCustomer(customerId: number): Promise<number> {
+export async function consumerCopilotDebtByCustomer(customerId: number): Promise<number> {
   if (!copilotDebtMap) {
     copilotDebtMap = new Map();
     const r = await pool.query(
-      `SELECT c.id, SUM(${DEBT_SQL}) AS debt
+      `SELECT c.id, SUM(${ENGINE_DEBT_SQL}) AS debt
        FROM bookings b JOIN customers c ON c.id = b.customer_id
        WHERE ${revenueCountableSql("b")}
-       GROUP BY c.id HAVING SUM(${DEBT_SQL}) > 0`,
+       GROUP BY c.id HAVING SUM(${ENGINE_DEBT_SQL}) > 0`,
     );
     for (const row of r.rows as Array<{ id: number; debt: string }>) {
       copilotDebtMap.set(String(row.id), Number(row.debt));
@@ -104,38 +104,43 @@ export function _resetTruthCache(): void {
   copilotDebtMap = null;
 }
 
-// ─── Check tổng hợp ────────────────────────────────────────────────────────────
+// ─── Check: công nợ ────────────────────────────────────────────────────────────
 
 export async function verifyCustomerDebt(customerId: number, label: string): Promise<TruthCheck> {
-  const [screen, dash, copilot] = await Promise.all([
-    customerScreenDebt(customerId),
-    dashboardSqlDebt(customerId),
-    copilotDebtByCustomer(customerId),
+  const [engine, screen, copilot] = await Promise.all([
+    engineCustomerDebt(customerId),
+    consumerCustomerScreenDebt(customerId),
+    consumerCopilotDebtByCustomer(customerId),
   ]);
-  return compareSurfaces("no_khach", `KH#${customerId}${label ? ` ${label}` : ""}`, {
+  return compareAgainstEngine("no_khach", `KH#${customerId}${label ? ` ${label}` : ""}`, {
+    engine,
     manKhachHang: screen,
-    dashboardSql: dash,
     copilot,
   });
 }
 
 export async function verifySystemDebt(): Promise<TruthCheck> {
-  const dashR = await pool.query(
-    `SELECT COALESCE(SUM(${DEBT_SQL}), 0) AS v FROM bookings b WHERE ${revenueCountableSql("b")}`,
-  );
-  const copilot = await getUnpaidCustomers(100000);
-  return compareSurfaces("no_toan_he_thong", "ALL", {
-    dashboardSql: Number((dashR.rows[0] as { v?: string })?.v ?? 0),
+  const [engine, simple, copilot] = await Promise.all([
+    engineSystemDebt(),
+    // Consumer Dashboard: đúng code màn Tổng quan tài chính đang chạy.
+    // customerDebt của getSimpleFinance KHÔNG phụ thuộc kỳ — truyền kỳ giả cho gọn.
+    getSimpleFinance("2000-01-01", "2000-01-02").then(f => f.customerDebt),
+    getUnpaidCustomers(100000),
+  ]);
+  return compareAgainstEngine("no_toan_he_thong", "ALL", {
+    engine,
+    dashboardSimple: simple,
     copilotTool: copilot.totalDebt,
   });
 }
 
-/** Doanh thu kỳ: /dashboard/simple (qua getSimpleFinance — code màn thật) vs Copilot. */
-export async function verifyRevenue(from: string, to: string): Promise<TruthCheck> {
+// ─── Check: dòng tiền vào ──────────────────────────────────────────────────────
+
+export async function verifyCashIn(from: string, to: string): Promise<TruthCheck> {
+  const engine = await engineCashIn(from, to);
   const simple = await getSimpleFinance(from, to);
-  // Copilot getRevenueSummary tính TRỌN THÁNG theo giờ VN — để so cùng cửa sổ,
-  // chỉ hợp lệ khi [from,to] = [đầu tháng, hôm nay] và không có phiếu thu ghi
-  // ngày tương lai. Kiểm tra điều kiện đó luôn (phiếu tương lai > to = 0).
+  // Copilot getRevenueSummary tính TRỌN THÁNG theo giờ VN — quy về cùng cửa sổ
+  // bằng cách trừ phiếu thu sau `to` trong cùng tháng (nếu có).
   const future = await pool.query(
     `SELECT COALESCE(SUM(amount),0) AS v FROM payments
      WHERE paid_at >= ($1::date + INTERVAL '1 day') AND COALESCE(status,'active') != 'voided'
@@ -144,13 +149,48 @@ export async function verifyRevenue(from: string, to: string): Promise<TruthChec
     [to],
   );
   const rev = await getRevenueSummary();
-  return compareSurfaces("doanh_thu_thang", `${from}..${to}`, {
-    manTongQuanTaiChinh: simple.totalIncome,
+  return compareAgainstEngine("tien_da_thu_ky", `${from}..${to}`, {
+    engine,
+    dashboardSimple: simple.totalIncome,
     copilotTool: rev.revenue - Number((future.rows[0] as { v?: string })?.v ?? 0),
   });
 }
 
-/** Booking đơn lẻ: remaining theo lib booking-money (payments thật) vs cột paid_amount (màn dùng). */
+// ─── Check: chi phí studio theo quy tắc ②③ (consumer Dashboard đang đếm khác) ──
+
+export async function verifyCashOutRules(from: string, to: string): Promise<TruthCheck> {
+  const engine = await engineCashOut(from, to);
+  const simple = await getSimpleFinance(from, to);
+  const check = compareAgainstEngine("chi_phi_studio_ky", `${from}..${to}`, {
+    engine: engine.studioExpense,
+    dashboardSimple_directExpense: simple.directExpense,
+  });
+  // Đính kèm phần Engine loại ra để đọc log là hiểu ngay lệch nằm đâu.
+  check.surfaces["(engine loại: personal)"] = engine.excludedPersonal;
+  check.surfaces["(engine loại: chưa duyệt)"] = engine.excludedNotApproved;
+  check.surfaces["(engine loại: trả gốc vay)"] = engine.excludedLoanPrincipal;
+  return check;
+}
+
+// ─── Check: lương cast quy tắc ④ (consumer màn Doanh thu đang dùng tasks.cost) ─
+
+export async function verifyLaborSource(from: string, to: string): Promise<TruthCheck> {
+  const engine = await engineLaborCost(from, to);
+  const tasksCost = await pool.query(
+    `SELECT COALESCE(SUM(t.cost::numeric), 0) AS v
+     FROM tasks t JOIN bookings b ON b.id = t.booking_id
+     WHERE ${revenueCountableSql("b")}
+       AND b.shoot_date >= $1::date AND b.shoot_date <= $2::date`,
+    [from, to],
+  );
+  return compareAgainstEngine("luong_cast_ky", `${from}..${to}`, {
+    engine,
+    manDoanhThu_tasksCost: Number((tasksCost.rows[0] as { v?: string })?.v ?? 0),
+  });
+}
+
+// ─── Check: toàn vẹn per-booking & theo gia đình đơn ───────────────────────────
+
 export async function verifyBookingRemaining(bookingId: number): Promise<TruthCheck> {
   const b = await pool.query(
     `SELECT id, total_amount AS "totalAmount", discount_amount AS "discountAmount",
@@ -176,13 +216,23 @@ export async function verifyBookingRemaining(bookingId: number): Promise<TruthCh
     0,
     Number(row.totalAmount ?? 0) - Number(row.discountAmount ?? 0) - Number(row.paidAmount ?? 0),
   );
-  return compareSurfaces("booking_remaining", `DH#${bookingId}`, {
-    libBookingMoney_tuPhieuThu: viaPayments,
-    cotPaidAmount_manDung: viaPaidColumn,
+  return compareAgainstEngine("booking_remaining", `DH#${bookingId}`, {
+    engine: viaPaidColumn, // quy tắc ①: paid_amount là phân bổ chuẩn per-booking
+    tuPhieuThuGoc: viaPayments, // đối chiếu ngược về bảng payments gốc
   });
 }
 
-/** Nhóm bị loại (deleted/cancelled/temp_quote/orphan/cha tổng) phải đóng góp = 0 vào countable. */
+export async function verifyFamilyCashIntegrity(limit = 200): Promise<TruthCheck[]> {
+  const drifts = await engineFamilyCashDrift(limit);
+  return drifts.map(d =>
+    compareAgainstEngine("gia_dinh_don_phieu_thu_vs_phan_bo", `FAM#${d.familyRootId}`, {
+      engine: d.rawPaymentsSum,
+      cot_paid_amount: d.paidColumnSum,
+    }),
+  );
+}
+
+/** Nhóm bị loại (deleted/cancelled/temp_quote/cha tổng/mồ côi) phải đóng góp = 0 vào countable. */
 export async function verifyExcludedGroups(): Promise<TruthCheck[]> {
   const groups: Array<{ name: string; cond: string }> = [
     { name: "deleted", cond: "b.deleted_at IS NOT NULL" },
@@ -199,13 +249,13 @@ export async function verifyExcludedGroups(): Promise<TruthCheck[]> {
   const out: TruthCheck[] = [];
   for (const g of groups) {
     const r = await pool.query(
-      `SELECT COALESCE(SUM(${DEBT_SQL}), 0) AS v FROM bookings b
+      `SELECT COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS v FROM bookings b
        WHERE ${revenueCountableSql("b")} AND (${g.cond})`,
     );
     out.push(
-      compareSurfaces(`nhom_bi_loai_${g.name}`, "phải = 0 trong tập countable", {
-        dongGopVaoCountable: Number((r.rows[0] as { v?: string })?.v ?? 0),
-        kyVong: 0,
+      compareAgainstEngine(`nhom_bi_loai_${g.name}`, "trong tập countable", {
+        engine: 0,
+        dongGop: Number((r.rows[0] as { v?: string })?.v ?? 0),
       }),
     );
   }

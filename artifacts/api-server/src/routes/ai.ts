@@ -8,6 +8,7 @@ import {
   isLlmConfigured,
 } from "../lib/studio-copilot";
 import { callChat } from "../lib/ai-orchestrator";
+import { composeNaturalAnswer, stripMarkdownArtifacts } from "../lib/copilot-composer";
 
 const router: IRouter = Router();
 
@@ -69,43 +70,60 @@ router.post("/ai/chat", async (req, res) => {
 
     const copilot = await answerStudioCopilot(lastQuestion, staffName);
 
-    // Copilot xử lý mọi intent trừ phân tích khi có LLM
-    if (copilot.intent !== "analysis" || !isLlmConfigured()) {
+    // Chào hỏi/không hiểu, hoặc chưa cấu hình LLM → trả thẳng câu deterministic.
+    // Frontend hiển thị plain text nên câu deterministic đã không chứa markdown.
+    if (!copilot.fromData || !isLlmConfigured()) {
       streamCopilotAnswer(res, copilot.answer);
       return;
     }
 
-    const analysisContext = await buildAnalysisContext();
-    const systemInstruction = `${COPILOT_SYSTEM_PROMPT}
-
-## QUY TẮC TRẢ LỜI
-1. Chỉ dùng số liệu bên dưới — không bịa.
-2. Trả lời ngắn: tổng số → danh sách quan trọng → cảnh báo → gợi ý hành động.
-3. Không chào hỏi dài, không FAQ chung chung.
-
-## DỮ LIỆU THỰC TẾ
-${analysisContext}`;
-
-    // Qua TỔNG ĐÀI: Claude (chính) → OpenAI (dự phòng). Giữ NGUYÊN prompt nội bộ
-    // (COPILOT_SYSTEM_PROMPT) — KHÔNG giọng Hoa, KHÔNG playbook sale.
-    // Trả nguyên khối (không stream từng chữ) để hỗ trợ fallback nhiều provider;
-    // frontend đọc cùng định dạng SSE {content}+{done}.
+    // Hội thoại cho LLM (composer lẫn analysis) — tin đầu phải là 'user'.
     const convo = messages
       .filter((m) => m.role === "user" || m.role === "assistant")
       .map((m) => ({ role: m.role as "user" | "assistant", content: String(m.content ?? "") }));
     while (convo.length && convo[0].role === "assistant") convo.shift();
 
-    const result = await callChat({
-      system: systemInstruction,
-      messages: convo,
-      maxTokens: 4096,
-      label: "copilot",
-    });
+    if (copilot.intent === "analysis") {
+      const analysisContext = await buildAnalysisContext();
+      const systemInstruction = `${COPILOT_SYSTEM_PROMPT}
 
-    const answer = result.ok
-      ? result.text
-      : "Dạ trợ lý đang bận hoặc cấu hình AI gặp trục trặc, anh/chị thử lại sau ít phút giúp em nha.";
-    streamCopilotAnswer(res, answer);
+## QUY TẮC TRẢ LỜI
+1. Chỉ dùng số liệu bên dưới — không bịa.
+2. Trả lời ngắn: tổng số → danh sách quan trọng → cảnh báo → gợi ý hành động.
+3. Không chào hỏi dài, không FAQ chung chung.
+4. Không dùng markdown (không **, không #), hạn chế emoji.
+
+## DỮ LIỆU THỰC TẾ
+${analysisContext}`;
+
+      // Qua TỔNG ĐÀI: Claude (chính) → OpenAI (dự phòng). Giữ NGUYÊN prompt nội bộ
+      // (COPILOT_SYSTEM_PROMPT) — KHÔNG giọng Hoa, KHÔNG playbook sale.
+      // Trả nguyên khối (không stream từng chữ) để hỗ trợ fallback nhiều provider;
+      // frontend đọc cùng định dạng SSE {content}+{done}.
+      const result = await callChat({
+        system: systemInstruction,
+        messages: convo,
+        maxTokens: 4096,
+        label: "copilot",
+      });
+
+      // LLM lỗi → rơi về câu phân tích deterministic (vẫn từ dữ liệu thật),
+      // không trả câu "trợ lý đang bận" vô dụng.
+      const answer = result.ok ? stripMarkdownArtifacts(result.text) : copilot.answer;
+      streamCopilotAnswer(res, answer);
+      return;
+    }
+
+    // Intent dữ liệu khác: AI chỉ DIỄN ĐẠT lại facts đã xác minh — mọi lỗi
+    // (provider chết, trả rỗng...) đều rơi về câu deterministic.
+    const polished = copilot.facts
+      ? await composeNaturalAnswer({
+          facts: copilot.facts,
+          deterministicAnswer: copilot.answer,
+          messages: convo,
+        })
+      : null;
+    streamCopilotAnswer(res, polished ?? copilot.answer);
   } catch (err: unknown) {
     console.error("POST /ai/chat error:", err);
     const msg = err instanceof Error ? err.message : String(err);

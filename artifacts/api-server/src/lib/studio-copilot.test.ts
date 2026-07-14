@@ -13,6 +13,7 @@ import {
   getRevenueSummary,
   getTodayBookings,
   answerStudioCopilot,
+  buildFollowUp,
 } from "./studio-copilot";
 
 const q = pool.query as ReturnType<typeof vi.fn>;
@@ -250,5 +251,104 @@ describe("timezone VN — 01:30 sáng 01/08 VN (= 18:30 31/07 UTC)", () => {
     });
     await getTodayBookings();
     expect(params[0]).toEqual(["2026-08-01"]);
+  });
+});
+
+// ─── 7. Formatter tự nhiên (fallback không AI) — không markdown, không đổi số ──
+
+function mockRevenueMonth() {
+  q.mockImplementation(async (sql: string) => {
+    const s = String(sql);
+    if (s.includes("SUM(amount)")) return { rows: [{ total: "24699006" }] };
+    if (s.includes("FROM bookings")) return { rows: [{ cnt: "40" }] };
+    if (s.includes("FROM payments")) return { rows: [{ cnt: "24" }] };
+    return { rows: [] };
+  });
+}
+
+describe("deterministic formatter — câu văn tự nhiên ngay cả khi KHÔNG có AI", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-13T12:00:00+07:00"));
+  });
+
+  it("revenue: đúng số từ DB, không dấu **, không câu sáo rỗng 'mục tiêu'", async () => {
+    mockRevenueMonth();
+    const r = await answerStudioCopilot("Doanh thu tháng này bao nhiêu?");
+    expect(r.intent).toBe("revenue");
+    // Số liệu giữ NGUYÊN như DB trả về
+    expect(r.answer).toContain("24.699.006");
+    expect(r.answer).toContain("40 đơn");
+    expect(r.answer).toContain("24 phiếu thu");
+    // Không phát markdown (frontend render plain text)
+    expect(r.answer).not.toContain("**");
+    expect(r.answer).not.toContain("##");
+    // Không bịa fact ngoài dữ liệu (không có dữ liệu mục tiêu thì không nhắc mục tiêu)
+    expect(r.answer).not.toContain("mục tiêu");
+  });
+
+  it("revenue: facts đúng schema cho composer, số y nguyên", async () => {
+    mockRevenueMonth();
+    const r = await answerStudioCopilot("Doanh thu tháng này bao nhiêu?");
+    expect(r.facts?.intent).toBe("revenue");
+    expect(r.facts?.period).toBe("2026-07");
+    expect(r.facts?.scopeDescription).toContain("phiếu thu thực tế");
+    expect(r.facts?.facts).toEqual({
+      collectedAmount: 24699006,
+      bookingCount: 40,
+      paymentCount: 24,
+    });
+  });
+
+  it("debt: không markdown, tổng nợ giữ nguyên, có nhận xét theo khách nợ lớn nhất", async () => {
+    q.mockImplementation(async (sql: string) => {
+      const s = String(sql);
+      if (s.includes("total_debt")) return { rows: [{ order_cnt: "19", total_debt: "42798994" }] };
+      if (s.includes("HAVING SUM"))
+        return { rows: [{ name: "Khách A", phone: "0900000001", debt: "42798994" }] };
+      return { rows: [] };
+    });
+    const r = await answerStudioCopilot("khách nào đang nợ tiền?");
+    expect(r.intent).toBe("debt");
+    expect(r.answer).toContain("42.798.994");
+    expect(r.answer).not.toContain("**");
+    // follow-up công nợ dựa trên dữ liệu thật (khách đứng đầu), khác câu của revenue
+    expect(r.answer).toContain("Khách A");
+  });
+
+  it("overview: không còn dấu ** trong toàn bộ báo cáo", async () => {
+    q.mockImplementation(async () => ({ rows: [] }));
+    const r = await answerStudioCopilot("tình hình hôm nay thế nào");
+    expect(r.intent).toBe("overview");
+    expect(r.answer).toContain("Tổng quan");
+    expect(r.answer).not.toContain("**");
+  });
+});
+
+// ─── 8. Follow-up theo intent — mỗi loại câu hỏi một gợi ý riêng, có căn cứ ────
+
+describe("buildFollowUp — không dùng một câu chung cho mọi intent", () => {
+  it("revenue gợi ý đối chiếu phần chưa thu; debt nêu khách nợ lớn nhất — 2 câu KHÁC nhau", () => {
+    const rev = buildFollowUp("revenue", { bookingCount: 40 });
+    const debt = buildFollowUp("debt", { topDebtorName: "Khách A", topDebtorDebt: 42798994 });
+    expect(rev).toMatch(/chưa thu/);
+    expect(debt).toContain("Khách A");
+    expect(debt).toContain("42.798.994");
+    expect(rev).not.toBe(debt);
+  });
+
+  it("không có căn cứ dữ liệu → không gợi ý (null), tuyệt đối không câu chung chung", () => {
+    expect(buildFollowUp("revenue", { bookingCount: 0 })).toBeNull();
+    expect(buildFollowUp("debt", {})).toBeNull();
+    expect(buildFollowUp("schedule", { count: 1 })).toBeNull();
+    expect(buildFollowUp("post_production", { overdueCount: 0 })).toBeNull();
+    expect(buildFollowUp("staff", { topStaffName: "An", topJobCount: 2 })).toBeNull();
+    expect(buildFollowUp("pricing", {})).toBeNull();
+  });
+
+  it("schedule dày show / hậu kỳ trễ / nhân sự quá tải → có cảnh báo tương ứng", () => {
+    expect(buildFollowUp("schedule", { count: 4 })).toMatch(/nhân sự/);
+    expect(buildFollowUp("post_production", { overdueCount: 2 })).toMatch(/Tiến độ hậu kỳ/);
+    expect(buildFollowUp("staff", { topStaffName: "An", topJobCount: 6 })).toContain("An");
   });
 });

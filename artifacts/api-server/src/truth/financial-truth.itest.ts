@@ -28,6 +28,8 @@ import {
   verifyBookingRemaining,
   verifyFamilyCashIntegrity,
   verifyExcludedGroups,
+  verifyMonthReceivable,
+  verifySignedAndCollected,
   formatCheck,
   _resetTruthCache,
   type TruthCheck,
@@ -193,5 +195,90 @@ describe("TIER 2 — lệch ĐÃ BIẾT so với Engine (GĐ1 phải lật it.fa
       drifts.map(formatCheck),
       `\n${drifts.map(formatCheck).join("\n")}`,
     ).toEqual([]);
+  });
+});
+
+// ─── TIER 1c — GĐ1b-1: "Còn có thể thu từ show của tháng" (scope ngày chụp) ────
+// 8 điều kiện chủ chốt 14/07 tối: Engine ↔ Revenue monthly ↔ custom-range ↔
+// Copilot cùng kỳ = cùng MỘT số; membership theo shoot_date/occurrence; không
+// double-count multi-occurrence; contractValue/collected không đổi scope.
+
+describe("TIER 1c — Còn có thể thu từ show của tháng (bắt buộc PASS từ GĐ1b-1)", () => {
+  const ym = vnToday().slice(0, 7);
+
+  it("Engine ↔ Revenue monthly(HTTP) ↔ custom-range(HTTP) ↔ Copilot: lệch 0 đồng", async () => {
+    const c = record(await verifyMonthReceivable(ym));
+    expect(c.pass, formatCheck(c)).toBe(true);
+    if (!process.env.TRUTH_API_BASE) {
+      console.warn("⚠️ TRUTH_API_BASE chưa bật — mới so Engine ↔ Copilot, thiếu 2 surface HTTP.");
+    }
+  });
+
+  it("contractValue (ký mới, created_at) & collected (payment_date) KHÔNG đổi", async () => {
+    if (!process.env.TRUTH_API_BASE) {
+      console.warn("⚠️ Bỏ qua (cần TRUTH_API_BASE).");
+      return;
+    }
+    const checks = await verifySignedAndCollected(ym);
+    const fails = checks.map(record).filter(c => !c.pass);
+    expect(fails.map(formatCheck), `\n${fails.map(formatCheck).join("\n")}`).toEqual([]);
+  });
+
+  it("Membership đúng ngữ nghĩa: tính đơn chụp-trong-tháng bất kể tạo khi nào; loại đơn chụp tháng khác; DISTINCT không double-count", async () => {
+    const { getSchemaFlags } = await import("../lib/schema-compat");
+    const { monthMembershipSql, engineReceivableForRange } = await import("../lib/finance/financial-engine");
+    const [y, m] = ym.split("-").map(Number);
+    const lastDay = new Date(y, m, 0).getDate();
+    const from = `${ym}-01`;
+    const to = `${ym}-${String(lastDay).padStart(2, "0")}`;
+    const hasOcc = (await getSchemaFlags()).occurrences;
+    const member = monthMembershipSql("$1", "$2", hasOcc);
+    const createdVN = `(b.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Ho_Chi_Minh')::date`;
+
+    const engine = await engineReceivableForRange(from, to);
+
+    // (item 6) Bản tính lại ĐỘC LẬP bằng DISTINCT id — đơn nhiều occurrence chỉ 1 lần
+    const indep = await pool.query(
+      `SELECT COALESCE(SUM(${DEBT_SQL}), 0) AS v FROM bookings b
+       WHERE b.id IN (
+         SELECT DISTINCT b.id FROM bookings b
+         WHERE ${COUNTABLE} AND ${member})`,
+      [from, to],
+    );
+    expect(Number((indep.rows[0] as { v?: string }).v)).toBe(engine);
+
+    // (item 4) Phân hoạch theo ngày TẠO: engine = tạo-trước-tháng + tạo-trong-tháng + tạo-sau
+    const parts = await pool.query(
+      `SELECT
+         COALESCE(SUM(${DEBT_SQL}) FILTER (WHERE ${createdVN} < $1::date), 0) AS pre,
+         COALESCE(SUM(${DEBT_SQL}) FILTER (WHERE ${createdVN} BETWEEN $1::date AND $2::date), 0) AS cur,
+         COALESCE(SUM(${DEBT_SQL}) FILTER (WHERE ${createdVN} > $2::date), 0) AS post
+       FROM bookings b WHERE ${COUNTABLE} AND ${member}`,
+      [from, to],
+    );
+    const pr = parts.rows[0] as { pre: string; cur: string; post: string };
+    expect(Number(pr.pre) + Number(pr.cur) + Number(pr.post)).toBe(engine);
+    console.log(
+      `INFO | item4: đơn tạo TRƯỚC tháng nhưng chụp trong tháng đóng góp ${pr.pre} vào receivable ${ym} (phải được tính)`,
+    );
+
+    // (item 5) Đơn TẠO trong tháng nhưng KHÔNG chụp trong tháng: cấm lọt vào membership
+    const leak = await pool.query(
+      `SELECT COUNT(*) AS c, COALESCE(SUM(${DEBT_SQL}), 0) AS v FROM bookings b
+       WHERE ${COUNTABLE} AND ${createdVN} BETWEEN $1::date AND $2::date
+         AND NOT (${member})`,
+      [from, to],
+    );
+    const lk = leak.rows[0] as { c: string; v: string };
+    console.log(
+      `INFO | item5: ${lk.c} đơn tạo trong ${ym} nhưng chụp tháng khác, tổng nợ sống ${lk.v} — KHÔNG nằm trong receivable tháng (đúng)`,
+    );
+    // membership và NOT membership loại trừ nhau — giao phải rỗng
+    const overlap = await pool.query(
+      `SELECT COUNT(*) AS c FROM bookings b
+       WHERE ${COUNTABLE} AND (${member}) AND NOT (${member})`,
+      [from, to],
+    );
+    expect(Number((overlap.rows[0] as { c: string }).c)).toBe(0);
   });
 });

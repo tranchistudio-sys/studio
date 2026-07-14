@@ -31,7 +31,9 @@ vi.mock("@workspace/db", () => {
       from: (table: unknown) => Promise.resolve(seeded.get(table) ?? []),
     }),
   };
-  return { db, pool: { query: vi.fn() } };
+  // pool.query phải trả {rows: []} (convention repo): GĐ1b-1 route monthly gọi
+  // FINANCIAL ENGINE (schema-flags + receivable) qua pool — mock trần sẽ nổ 500.
+  return { db, pool: { query: vi.fn(async () => ({ rows: [] })) } };
 });
 
 vi.mock("drizzle-orm", () => ({

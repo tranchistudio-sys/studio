@@ -1,6 +1,9 @@
 import { Router, type IRouter } from "express";
 import { loadAllData } from "./data";
 import { generateMonthRange, getPaymentDate } from "./helpers";
+// GĐ1b-1: "còn có thể thu" đọc từ FINANCIAL ENGINE (scope ngày chụp/occurrence) —
+// CÙNG helper với revenue/monthly + Copilot, cấm mỗi route một công thức.
+import { engineReceivableForRange, REVENUE_SCOPES } from "../../lib/finance/financial-engine";
 
 const router: IRouter = Router();
 
@@ -29,12 +32,9 @@ router.get("/revenue/v2/custom-range", async (req, res) => {
   });
   const collected = rangePayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
 
-  const remaining = rangeBookings.reduce((s, b) => {
-    const total = parseFloat(b.totalAmount) || 0;
-    const disc = parseFloat(b.discountAmount) || 0;
-    const paid = parseFloat(b.paidAmount) || 0;
-    return s + Math.max(0, total - disc - paid);
-  }, 0);
+  // GĐ1b-1: trước đây tính công nợ sống nhưng trên cohort NGÀY TẠO (rangeBookings)
+  // → lệch với monthly và Copilot. Giờ cùng một helper Engine, scope ngày chụp.
+  const remaining = await engineReceivableForRange(from, to);
 
   let staffCast = 0;
   let directExp = 0;
@@ -61,6 +61,7 @@ router.get("/revenue/v2/custom-range", async (req, res) => {
     staffCast, directExpenses: directExp, operatingExpenses: operatingExp,
     totalCost, realProfit,
     bookingCount: rangeBookings.length,
+    scopes: REVENUE_SCOPES,
   });
 });
 

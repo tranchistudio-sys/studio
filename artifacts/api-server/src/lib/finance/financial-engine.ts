@@ -26,10 +26,56 @@
 import { pool } from "@workspace/db";
 import { revenueCountableSql } from "../booking-money";
 import { paymentNotOnEmptyParentSql } from "../parent-contract";
+import { getSchemaFlags } from "../schema-compat";
 
 /** Quy tắc ①: nợ sống per-booking. */
 export const ENGINE_DEBT_SQL =
   "GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0) - COALESCE(b.paid_amount, 0))";
+
+/**
+ * BA SCOPE CHÍNH THỨC của doanh thu tháng (chủ chốt 14/07 tối) — ba chỉ số là ba
+ * phạm vi KHÁC NHAU, cấm trộn (phép trộn contractValue(created_at) − payments(tháng)
+ * từng đẻ ra con số 175.748.994 vô nghĩa vận hành):
+ *  - Hợp đồng ký mới trong tháng   → scope booking_created_at (chỉ số bán hàng)
+ *  - Tiền thực thu trong tháng     → scope payment_date
+ *  - Còn có thể thu từ show của tháng → scope shoot_date_or_occurrence (công nợ sống)
+ */
+export const REVENUE_SCOPES = {
+  signedContractValue: { scope: "booking_created_at" },
+  collectedAmount: { scope: "payment_date" },
+  receivableAmount: { scope: "shoot_date_or_occurrence" },
+} as const;
+
+/**
+ * Membership "đơn thuộc kỳ" theo NGÀY THỰC HIỆN: shoot_date trong kỳ HOẶC có ngày
+ * thực hiện phụ (booking_occurrences) trong kỳ — mỗi đơn tính MỘT lần (EXISTS,
+ * không JOIN nên không thể double-count đơn nhiều occurrence). Bảng occurrences
+ * có thể chưa tồn tại trên DB chưa migrate → chỉ thêm vế EXISTS khi flag bật
+ * (cùng cơ chế chống sập PR #82).
+ */
+export function monthMembershipSql(p1: string, p2: string, hasOccurrences: boolean): string {
+  const byShootDate = `b.shoot_date >= ${p1}::date AND b.shoot_date <= ${p2}::date`;
+  if (!hasOccurrences) return `(${byShootDate})`;
+  return `((${byShootDate}) OR EXISTS (
+    SELECT 1 FROM booking_occurrences oc
+    WHERE oc.booking_id = b.id AND oc.shoot_date >= ${p1}::date AND oc.shoot_date <= ${p2}::date))`;
+}
+
+/**
+ * "Còn có thể thu" của các show trong kỳ [from, to]: công nợ sống per-booking
+ * (quy tắc ①) trên tập đơn hợp lệ có ngày chụp/occurrence trong kỳ.
+ * Đơn tạo tháng trước nhưng chụp trong kỳ → TÍNH; đơn tạo trong kỳ nhưng chụp
+ * kỳ sau → KHÔNG tính.
+ */
+export async function engineReceivableForRange(from: string, to: string): Promise<number> {
+  const hasOcc = (await getSchemaFlags()).occurrences;
+  return num(
+    `SELECT COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS v
+     FROM bookings b
+     WHERE ${revenueCountableSql("b")} AND ${monthMembershipSql("$1", "$2", hasOcc)}`,
+    [from, to],
+  );
+}
 
 /** Phiếu thu HỢP LỆ của dòng tiền: không voided, không refund, không nằm trên đơn cha rỗng. */
 function collectedPaymentCond(alias = "payments"): string {

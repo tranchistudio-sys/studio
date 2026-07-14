@@ -359,18 +359,33 @@ describe("TIER 1e — Cast từ sổ earnings (bắt buộc PASS từ GĐ1b-2)",
     expect(Number(bp.consumed) + Number(bp.pending)).toBe(engineAll);
     console.log(`INFO | cast đã qua payroll: ${bp.consumed} | chưa qua payroll: ${bp.pending} — cả hai đều nằm trong chi phí (payroll không phải chi phí mới)`);
 
-    // (d) audit: booking có CẢ earning lẫn expense direct — cảnh báo, KHÔNG tự loại
+    // (d) audit: booking có CẢ earning lẫn expense direct — cảnh báo CỤ THỂ từng
+    // booking (số tiền + mô tả chi), KHÔNG tự loại khi chưa đủ căn cứ.
     const audit = await pool.query(`
-      SELECT b.order_code, SUM(DISTINCT 0) AS zero
+      SELECT b.order_code,
+        (SELECT COALESCE(SUM(e.rate::numeric),0) FROM staff_job_earnings e
+          WHERE e.booking_id = b.id AND COALESCE(e.status,'') NOT IN ('voided','cancelled')) AS earning_total,
+        (SELECT COALESCE(SUM(x.amount::numeric),0) FROM expenses x
+          WHERE x.booking_id = b.id AND x.status IN ('approved','paid')
+            AND COALESCE(x.cost_class,'') = 'direct') AS expense_direct_total,
+        (SELECT string_agg(COALESCE(x.description, x.category, '?'), '; ') FROM expenses x
+          WHERE x.booking_id = b.id AND x.status IN ('approved','paid')
+            AND COALESCE(x.cost_class,'') = 'direct') AS expense_desc
       FROM bookings b
       WHERE ${COUNTABLE}
         AND EXISTS (SELECT 1 FROM staff_job_earnings e WHERE e.booking_id = b.id
                     AND COALESCE(e.status,'') NOT IN ('voided','cancelled'))
         AND EXISTS (SELECT 1 FROM expenses x WHERE x.booking_id = b.id
                     AND x.status IN ('approved','paid') AND COALESCE(x.cost_class,'') = 'direct')
-      GROUP BY b.order_code LIMIT 10`);
+      LIMIT 10`);
     if (audit.rows.length) {
-      console.warn(`⚠️ AUDIT | ${audit.rows.length} booking có CẢ earning lẫn expense direct — kiểm tra tay xem có trả cast 2 đường không: ${(audit.rows as Array<{ order_code: string }>).map(r => r.order_code).join(", ")}`);
+      for (const r of audit.rows as Array<{
+        order_code: string; earning_total: string; expense_direct_total: string; expense_desc: string;
+      }>) {
+        console.warn(
+          `⚠️ AUDIT | ${r.order_code}: earning=${r.earning_total} + expense_direct=${r.expense_direct_total} (${r.expense_desc}) — kiểm tra tay xem có trả cast 2 đường không`,
+        );
+      }
     } else {
       console.log("INFO | audit: không có booking nào vừa earning vừa expense direct.");
     }

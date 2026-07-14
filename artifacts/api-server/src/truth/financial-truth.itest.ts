@@ -165,13 +165,36 @@ describe.skipIf(!process.env.TRUTH_API_BASE)(
 
 describe("TIER 2 — lệch ĐÃ BIẾT so với Engine (GĐ1 phải lật it.fails → it)", () => {
 
-  // ⚠️ Quy tắc ②③: Dashboard /dashboard/simple đang đếm CẢ chi phí personal /
-  // chưa duyệt / trả gốc vay. GĐ1b (cashflow-service) sửa xong PHẢI lật → it.
-  it.fails("Chi phí studio trong kỳ: Dashboard(consumer) khớp Engine (quy tắc ②③)", async () => {
+  // ✅ GĐ1c (14/07): quy tắc ②③ ĐÃ áp vào getSimpleFinance (Dashboard + Copilot
+  // cùng đọc engineCashOut) — lật it.fails → it, kèm check BẢO TOÀN bên dưới.
+  it("Chi phí studio trong kỳ: Dashboard(consumer) khớp Engine (quy tắc ②③)", async () => {
     const to = vnToday();
     const from = `${to.slice(0, 7)}-01`;
     const c = record(await verifyCashOutRules(from, to));
     expect(c.pass, formatCheck(c)).toBe(true);
+    // HTTP surface: màn Tổng quan tài chính thật cũng phải ra đúng số Engine
+    if (process.env.TRUTH_API_BASE) {
+      const base = process.env.TRUTH_API_BASE.replace(/\/$/, "");
+      const dj = (await (await fetch(`${base}/api/dashboard/simple?from=${from}&to=${to}`)).json()) as {
+        directExpense?: number;
+      };
+      expect(Number(dj.directExpense), "HTTP /dashboard/simple directExpense").toBe(c.surfaces.engine);
+    }
+    // BẢO TOÀN: studio + personal + chưa-duyệt + trả-gốc-vay = TOÀN BỘ expense trong kỳ
+    // (không khoản nào bị rơi im lặng — chỉ được LOẠI CÓ TÊN).
+    const all = await pool.query(
+      `SELECT COALESCE(SUM(amount::numeric), 0) AS v FROM expenses
+       WHERE expense_date >= $1::date AND expense_date <= $2::date`,
+      [from, to],
+    );
+    const total =
+      c.surfaces.engine +
+      c.surfaces["(engine loại: personal)"] +
+      c.surfaces["(engine loại: chưa duyệt)"] +
+      c.surfaces["(engine loại: trả gốc vay)"];
+    expect(total, "studio + các khoản bị loại phải = tổng expense trong kỳ").toBe(
+      Number((all.rows[0] as { v: string }).v),
+    );
   });
 
   // ✅ GĐ1b-2 (14/07): quy tắc ④ ĐÃ áp — cast từ sổ staff_job_earnings, gán theo

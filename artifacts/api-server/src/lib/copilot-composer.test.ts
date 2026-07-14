@@ -63,6 +63,15 @@ describe("buildComposerSystemPrompt — facts vào prompt phải y nguyên, khô
     expect(prompt).toContain("không bịa");
     expect(prompt).toContain(DET_ANSWER);
   });
+
+  it("guardrail sự cố 14/07: cấm bịa khả năng + cấm lộ từ kỹ thuật nội bộ", () => {
+    const prompt = buildComposerSystemPrompt(FACTS, DET_ANSWER);
+    // AI từng trả lời "hỏi lại kiểu X để hệ thống lấy đủ dữ liệu" (khả năng không có)
+    expect(prompt).toContain("không hứa hẹn khả năng chưa tồn tại");
+    expect(prompt).toContain("KHÔNG gợi ý");
+    // AI từng lộ chữ "FACTS" ra câu trả lời cho chủ studio
+    expect(prompt).toContain("KHÔNG nhắc các từ kỹ thuật nội bộ");
+  });
 });
 
 describe("composeNaturalAnswer — fallback deterministic là hợp đồng bắt buộc", () => {

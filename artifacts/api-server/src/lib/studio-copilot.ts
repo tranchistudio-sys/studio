@@ -1,5 +1,7 @@
 import { pool } from "@workspace/db";
 import { revenueCountableSql } from "./booking-money";
+import { paymentNotOnEmptyParentSql } from "./parent-contract";
+import { getSimpleFinance } from "./finance-summary";
 
 // ─── Types & constants ───────────────────────────────────────────────────────
 
@@ -7,6 +9,7 @@ export type CopilotIntent =
   | "greeting"
   | "schedule"
   | "revenue"
+  | "finance"
   | "debt"
   | "post_production"
   | "staff"
@@ -146,6 +149,12 @@ export function classifyIntent(question: string): CopilotIntent {
     q === "xin chao ban";
   if (pureGreeting) return "greeting";
 
+  // Tài chính (thu − chi = lợi nhuận, hòa vốn) PHẢI đứng trước debt/revenue —
+  // cùng công thức màn "Tổng quan tài chính" (sự cố 14/07: câu "tổng quan tài
+  // chính" rơi vào overview, thiếu chi phí/lợi nhuận và lệch số với màn hình).
+  if (/(tai chinh|loi nhuan|lai lo|loi lo|hoa von|chi phi|da chi bao nhieu|chi het bao nhieu|tieu bao nhieu)/.test(q))
+    return "finance";
+
   // Nhánh debt PHẢI đứng trước revenue: câu chứa từ khóa cả 2 nhánh (vd "doanh thu
   // chưa thu") là hỏi tiền CHƯA thu về → debt. "(?!\s?xep)" chặn "chưa thu xếp".
   if (
@@ -153,7 +162,7 @@ export function classifyIntent(question: string): CopilotIntent {
     /(chua thu|phai thu|co the thu|con thu (dc|duoc))(?!\s?xep)/.test(q)
   )
     return "debt";
-  if (/(doanh thu|thu ve|da thu|tien ve|loi nhuan|loi lo)/.test(q)) return "revenue";
+  if (/(doanh thu|thu ve|da thu|tien ve)/.test(q)) return "revenue";
   if (/(di tre|tre gio|muon|cham cong|check in|checkin)/.test(q)) return "staff";
   if (/(tre|qua han|overdue)/.test(q) && /(hau ky|pts|photoshop|retouch|don)/.test(q)) return "post_production";
   if (/(hau ky|pts|photoshop|retouch)/.test(q)) return "post_production";
@@ -217,8 +226,12 @@ export async function getRevenueSummary(ref = new Date()) {
   const { start, end, nextStart, label } = monthRange(ref);
   // paid_at là timestamp naive-UTC → ranh giới tháng VN phải quy đổi + nửa mở,
   // nếu không phiếu thu từ 07:00 sáng ngày cuối tháng trở đi bị rớt khỏi tháng.
+  // Loại refund + phiếu thu trên đơn CHA rỗng — CÙNG lớp lọc với "Đã thu" của
+  // màn Tổng quan tài chính (sự cố 14/07: Copilot phồng 2.000.000 đ vì thiếu).
   const paidCond = `paid_at >= ${vnBoundToUtc("$1")} AND paid_at < ${vnBoundToUtc("$2")}
-     AND COALESCE(status, 'active') != 'voided'`;
+     AND payment_type != 'refund'
+     AND COALESCE(status, 'active') != 'voided'
+     AND ${paymentNotOnEmptyParentSql("payments")}`;
   const revR = await pool.query(
     `SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE ${paidCond}`,
     [start, nextStart],
@@ -661,6 +674,47 @@ async function answerRevenue(q: string): Promise<BuiltAnswer> {
   };
 }
 
+/**
+ * Tài chính thực tế = CÙNG hàm với màn "Tổng quan tài chính" (lib/finance-summary):
+ * đã thu − (chi trực tiếp + chi phí cố định) = lợi nhuận. Copilot và màn hình
+ * phải ra một con số — không tự chế công thức riêng ở đây.
+ */
+async function answerFinance(): Promise<BuiltAnswer> {
+  const m = monthRange();
+  const from = m.start;
+  const to = todayStr();
+  const f = await getSimpleFinance(from, to);
+  const facts: CopilotFacts = {
+    intent: "finance",
+    period: m.period,
+    scopeDescription: `tài chính thực tế từ ${formatDate(from)} đến ${formatDate(to)}, cùng công thức màn Tổng quan tài chính: đã thu − (chi trực tiếp + chi phí cố định) = lợi nhuận; công nợ là nợ tồn toàn hệ thống`,
+    facts: {
+      collectedAmount: f.totalIncome,
+      directExpense: f.directExpense,
+      fixedCostMonthly: f.fixedCostMonthly,
+      totalSpent: f.totalSpent,
+      realProfit: f.realProfit,
+      breakevenStatus: f.breakeven.status,
+      breakevenDelta: f.breakeven.delta,
+      customerDebt: f.customerDebt,
+    },
+  };
+  const profitStr =
+    f.realProfit < 0 ? `âm ${formatVND(Math.abs(f.realProfit))}` : `dương ${formatVND(f.realProfit)}`;
+  const breakevenLine =
+    f.breakeven.status === "over"
+      ? `Studio đã vượt điểm hòa vốn ${formatVND(f.breakeven.delta)}.`
+      : `Studio chưa đạt hòa vốn — còn thiếu ${formatVND(f.breakeven.delta)}.`;
+  const debtNote =
+    f.customerDebt > 0
+      ? `\n\nNgoài ra khách còn nợ ${formatVND(f.customerDebt)} chưa thu về — anh hỏi "khách nào đang nợ tiền" là em liệt kê chi tiết.`
+      : "";
+  return {
+    text: `Từ ${formatDate(from)} đến ${formatDate(to)} studio đã thu ${formatVND(f.totalIncome)}, đã chi ${formatVND(f.totalSpent)} (chi trực tiếp ${formatVND(f.directExpense)} + chi phí cố định ${formatVND(f.fixedCostMonthly)}). Lợi nhuận thực tế đang ${profitStr}. ${breakevenLine}${debtNote}`,
+    facts,
+  };
+}
+
 async function answerPostProduction(q: string): Promise<BuiltAnswer> {
   if (/(tre|qua han|overdue)/.test(q)) {
     const overdue = await getOverduePostProductionJobs();
@@ -1002,6 +1056,9 @@ export async function answerStudioCopilot(
         break;
       case "revenue":
         built = await answerRevenue(q);
+        break;
+      case "finance":
+        built = await answerFinance();
         break;
       case "post_production":
         built = await answerPostProduction(q);

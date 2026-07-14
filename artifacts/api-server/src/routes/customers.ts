@@ -1,10 +1,12 @@
 import { Router, type IRouter } from "express";
 import { db, pool } from "@workspace/db";
-import { customersTable, bookingsTable, paymentsTable } from "@workspace/db/schema";
+import { customersTable, bookingsTable } from "@workspace/db/schema";
 import { eq, desc, and, isNull } from "drizzle-orm";
 import { verifyToken } from "./auth";
 import { withStartupDdlLock } from "../lib/startup-ddl";
-import { computeCustomerAggregate, customerVisibleBookings } from "../lib/customer-aggregate";
+import { customerVisibleBookings } from "../lib/customer-aggregate";
+// GĐ1a (kiến trúc 14/07): tiền của khách đọc từ FINANCIAL ENGINE — route không tự tính.
+import { engineCustomerFinance, engineAllCustomersFinance } from "../lib/finance/financial-engine";
 import { bookingColumnsCompat } from "../lib/schema-compat";
 
 const router: IRouter = Router();
@@ -90,18 +92,12 @@ router.get("/customers", async (req, res) => {
   const rankFilter = req.query.rank as string | undefined;
   if (rankFilter) customers = customers.filter((c) => c.customerRank === rankFilter);
 
-  const allPayments = await db.select().from(paymentsTable);
-
-  const result = await Promise.all(
-    customers.map(async (c) => {
-      // Lấy TOÀN BỘ đơn của khách (kể cả đã xóa mềm) — helper tự lọc: bỏ đơn trong thùng rác,
-      // đơn hủy, báo giá tạm, đơn CHA tổng (chống cộng trùng cha-con) và con mồ côi của cha đã xóa;
-      // "đã thu" chỉ cộng phiếu thu còn hiệu lực trên đơn còn sống (kể cả đơn cha còn sống).
-      const bookings = await db.select(await bookingColumnsCompat()).from(bookingsTable).where(eq(bookingsTable.customerId, c.id as number));
-      const { totalBookings, totalOwed, totalPaid, totalDebt } = computeCustomerAggregate(bookings, allPayments);
-      return { ...c, totalBookings, totalOwed, totalPaid, totalDebt };
-    })
-  );
+  // FINANCIAL ENGINE: một query gộp cho TOÀN BỘ khách (thay N+1 query per khách
+  // + nạp toàn bộ payments vào RAM). Công thức chuẩn quy tắc ①: nợ sống per-booking
+  // (net − paid_amount, clamp từng đơn) trên tập countable — khớp Dashboard/Copilot.
+  const financeByCustomer = await engineAllCustomersFinance();
+  const zero = { totalBookings: 0, totalOwed: 0, totalPaid: 0, totalDebt: 0 };
+  const result = customers.map((c) => ({ ...c, ...(financeByCustomer.get(c.id as number) ?? zero) }));
 
   res.json(result);
   } catch (err) {
@@ -167,11 +163,12 @@ router.get("/customers/:id", async (req, res) => {
   const id = parseInt(req.params.id);
   const [customer] = await db.select().from(customersTable).where(eq(customersTable.id, id));
   if (!customer) return res.status(404).json({ error: "Không tìm thấy khách hàng" });
-  // Lấy TOÀN BỘ đơn của khách (kể cả đã xóa mềm) — cần đơn cha đã xóa trong danh sách
-  // để helper nhận diện con mồ côi; helper tự lọc toàn bộ (xem customer-aggregate.ts).
+  // Lấy TOÀN BỘ đơn của khách (kể cả đã xóa mềm) — cần đơn cha đã xóa để
+  // customerVisibleBookings nhận diện con mồ côi cho phần LỊCH SỬ hiển thị.
   const bookings = await db.select(await bookingColumnsCompat()).from(bookingsTable).where(eq(bookingsTable.customerId, id));
-  const allPayments = await db.select().from(paymentsTable);
-  const { totalBookings, totalOwed, totalPaid, totalDebt } = computeCustomerAggregate(bookings, allPayments);
+  // FINANCIAL ENGINE: tiền của khách KHÔNG tính tại route (kiến trúc 14/07) —
+  // quy tắc ① nợ sống per-booking, khớp Dashboard/Copilot (vd Trúc Ly 42.799.994).
+  const { totalBookings, totalOwed, totalPaid, totalDebt } = await engineCustomerFinance(id);
   // Lịch sử show: chỉ các đơn còn hiệu lực (đơn con + đơn lẻ) — bỏ đơn cha tổng (bản gộp
   // trùng của dịch vụ con), đơn trong thùng rác, đơn hủy, báo giá tạm. Dịch vụ con còn
   // hiệu lực vẫn giữ nguyên → không mất lịch sử; audit xóa/sửa vẫn nằm ở chi tiết đơn.

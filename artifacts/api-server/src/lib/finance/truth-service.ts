@@ -55,12 +55,22 @@ export function formatCheck(c: TruthCheck): string {
   return `${c.pass ? "PASS" : "FAIL"} | ${c.metric} | ${c.entity} | ${detail} | lệch-max-vs-engine=${c.maxDiff}`;
 }
 
-// ─── Consumer: màn Khách hàng (đường code THẬT của GET /customers/:id) ─────────
+// ─── Consumer: màn Khách hàng ──────────────────────────────────────────────────
+// GĐ1a: route /customers/:id ĐÃ chuyển sang engineCustomerFinance. Surface trung
+// thực nhất là HTTP API THẬT (server đang chạy) — bật bằng env TRUTH_API_BASE
+// (vd http://localhost:3000). Không có server → fallback legacyAggregate (đường
+// code CŨ computeCustomerAggregate) để ledger vẫn ghi được khoảng lệch dữ liệu cũ.
 
-async function consumerCustomerScreenDebt(customerId: number): Promise<number> {
-  // Route nạp TOÀN BỘ đơn của khách (kể cả đã xóa) + payments, đưa qua
-  // computeCustomerAggregate — tái hiện y nguyên (payments chỉ cần của các đơn
-  // thuộc khách vì liveIds ⊆ đơn của khách).
+async function consumerCustomerScreenDebt(
+  customerId: number,
+): Promise<{ surface: string; value: number }> {
+  const base = (process.env.TRUTH_API_BASE ?? "").replace(/\/$/, "");
+  if (base) {
+    const r = await fetch(`${base}/api/customers/${customerId}`);
+    if (!r.ok) throw new Error(`GET /api/customers/${customerId} → HTTP ${r.status}`);
+    const j = (await r.json()) as { totalDebt?: number };
+    return { surface: "manKhachHang_httpApi", value: Number(j.totalDebt ?? 0) };
+  }
   const b = await pool.query(
     `SELECT id, total_amount AS "totalAmount", is_parent_contract AS "isParentContract",
             parent_id AS "parentId", status, deleted_at AS "deletedAt"
@@ -68,14 +78,17 @@ async function consumerCustomerScreenDebt(customerId: number): Promise<number> {
     [customerId],
   );
   const bookings = b.rows as AggBooking[];
-  if (!bookings.length) return 0;
+  if (!bookings.length) return { surface: "manKhachHang_legacyAggregate", value: 0 };
   const ids = bookings.map(x => x.id);
   const p = await pool.query(
     `SELECT booking_id AS "bookingId", amount, status, payment_type AS "paymentType"
      FROM payments WHERE booking_id = ANY($1::int[])`,
     [ids],
   );
-  return computeCustomerAggregate(bookings, p.rows as AggPayment[]).totalDebt;
+  return {
+    surface: "manKhachHang_legacyAggregate",
+    value: computeCustomerAggregate(bookings, p.rows as AggPayment[]).totalDebt,
+  };
 }
 
 // ─── Consumer: Copilot — đúng dạng query GROUP BY khách của getUnpaidCustomers ─
@@ -114,9 +127,9 @@ export async function verifyCustomerDebt(customerId: number, label: string): Pro
   ]);
   return compareAgainstEngine("no_khach", `KH#${customerId}${label ? ` ${label}` : ""}`, {
     engine,
-    manKhachHang: screen,
+    [screen.surface]: screen.value,
     copilot,
-  });
+  } as Record<string, number> & { engine: number });
 }
 
 export async function verifySystemDebt(): Promise<TruthCheck> {

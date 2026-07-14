@@ -435,10 +435,10 @@ describe("answerFinance — số y hệt màn Tổng quan tài chính", () => {
     vi.setSystemTime(new Date("2026-07-14T12:00:00+07:00"));
     q.mockImplementation(async (sql: string) => {
       const s = String(sql);
-      if (s.includes("FROM payments")) return { rows: [{ total: "34198006" }] };
-      if (s.includes("FROM expenses")) return { rows: [{ total: "15310000" }] };
-      if (s.includes("FROM fixed_costs")) return { rows: [{ total: "37100000" }] };
-      if (s.includes("GREATEST")) return { rows: [{ total: "409927995" }] };
+      if (s.includes("FROM payments")) return { rows: [{ total: "34198006", v: "34198006" }] };
+      if (s.includes("FROM expenses")) return { rows: [{ total: "15310000", v: "15310000" }] };
+      if (s.includes("FROM fixed_costs")) return { rows: [{ total: "37100000", v: "37100000" }] };
+      if (s.includes("GREATEST")) return { rows: [{ total: "409927995", v: "409927995" }] };
       return { rows: [] };
     });
     const r = await answerStudioCopilot("tổng quan tài chính");

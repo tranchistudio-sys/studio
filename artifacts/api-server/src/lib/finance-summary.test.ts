@@ -15,13 +15,15 @@ beforeEach(() => {
   q.mockImplementation(async () => ({ rows: [] }));
 });
 
+// GĐ1c: chi phí/chi cố định đi qua engineCashOut (cột alias "v"); income/debt
+// vẫn là query nội bộ (cột "total") — mock trả CẢ HAI key cho gọn.
 function mockFinanceRows() {
   q.mockImplementation(async (sql: string) => {
     const s = String(sql);
-    if (s.includes("FROM payments")) return { rows: [{ total: "34198006" }] };
-    if (s.includes("FROM expenses")) return { rows: [{ total: "15310000" }] };
-    if (s.includes("FROM fixed_costs")) return { rows: [{ total: "37100000" }] };
-    if (s.includes("GREATEST")) return { rows: [{ total: "409927995" }] };
+    if (s.includes("FROM payments")) return { rows: [{ total: "34198006", v: "34198006" }] };
+    if (s.includes("FROM expenses")) return { rows: [{ total: "15310000", v: "15310000" }] };
+    if (s.includes("FROM fixed_costs")) return { rows: [{ total: "37100000", v: "37100000" }] };
+    if (s.includes("GREATEST")) return { rows: [{ total: "409927995", v: "409927995" }] };
     return { rows: [] };
   });
 }
@@ -44,8 +46,13 @@ describe("getSimpleFinance — đúng nguyên văn công thức /dashboard/simpl
     expect(income!.sql).toContain("INTERVAL '1 day'");
     expect(income!.params).toEqual(["2026-07-01", "2026-07-14"]);
 
-    const expense = calls.find(c => c.sql.includes("FROM expenses"));
+    // GĐ1c: chi phí qua engineCashOut — query CHI STUDIO phải lọc đủ quy tắc ②③
+    const expense = calls.find(
+      c => c.sql.includes("FROM expenses") && c.sql.includes("NOT IN ('personal','loan_principal')"),
+    );
+    expect(expense, "phải có query chi studio theo quy tắc ②③").toBeDefined();
     expect(expense!.sql).toContain("expense_date");
+    expect(expense!.sql).toContain("status IN ('approved','paid')");
     expect(expense!.params).toEqual(["2026-07-01", "2026-07-14"]);
 
     const debt = calls.find(c => c.sql.includes("GREATEST"));
@@ -70,10 +77,10 @@ describe("getSimpleFinance — đúng nguyên văn công thức /dashboard/simpl
   it("breakeven over khi thu vượt chi", async () => {
     q.mockImplementation(async (sql: string) => {
       const s = String(sql);
-      if (s.includes("FROM payments")) return { rows: [{ total: "60000000" }] };
-      if (s.includes("FROM expenses")) return { rows: [{ total: "10000000" }] };
-      if (s.includes("FROM fixed_costs")) return { rows: [{ total: "20000000" }] };
-      if (s.includes("GREATEST")) return { rows: [{ total: "0" }] };
+      if (s.includes("FROM payments")) return { rows: [{ total: "60000000", v: "60000000" }] };
+      if (s.includes("FROM expenses")) return { rows: [{ total: "10000000", v: "10000000" }] };
+      if (s.includes("FROM fixed_costs")) return { rows: [{ total: "20000000", v: "20000000" }] };
+      if (s.includes("GREATEST")) return { rows: [{ total: "0", v: "0" }] };
       return { rows: [] };
     });
     const f = await getSimpleFinance("2026-07-01", "2026-07-14");

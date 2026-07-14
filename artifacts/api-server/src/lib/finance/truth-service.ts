@@ -24,6 +24,7 @@ import {
   engineCashOut,
   engineLaborCost,
   engineFamilyCashDrift,
+  engineReceivableForRange,
 } from "./financial-engine";
 
 export type TruthCheck = {
@@ -273,4 +274,88 @@ export async function verifyExcludedGroups(): Promise<TruthCheck[]> {
     );
   }
   return out;
+}
+
+// ─── GĐ1b-1: "Còn có thể thu từ show của tháng" (scope ngày chụp/occurrence) ───
+
+/**
+ * Engine ↔ Revenue monthly (HTTP) ↔ Revenue custom-range (HTTP) ↔ Copilot tool
+ * thật — cùng kỳ phải cùng MỘT số. HTTP surface chỉ chạy khi TRUTH_API_BASE bật.
+ */
+export async function verifyMonthReceivable(ym: string): Promise<TruthCheck> {
+  const [y, m] = ym.split("-").map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  const from = `${ym}-01`;
+  const to = `${ym}-${String(lastDay).padStart(2, "0")}`;
+
+  const surfaces: Record<string, number> & { engine: number } = {
+    engine: await engineReceivableForRange(from, to),
+  };
+  const base = (process.env.TRUTH_API_BASE ?? "").replace(/\/$/, "");
+  if (base) {
+    const mj = (await (await fetch(`${base}/api/revenue/v2/monthly?from=${from}&to=${to}`)).json()) as {
+      months?: Array<{ month: string; remaining: number }>;
+    };
+    const bucket = (mj.months ?? []).find(x => x.month === ym);
+    surfaces.revenueMonthly_http = Number(bucket?.remaining ?? Number.NaN);
+    const cj = (await (await fetch(`${base}/api/revenue/v2/custom-range?from=${from}&to=${to}`)).json()) as {
+      remaining?: number;
+    };
+    surfaces.revenueCustomRange_http = Number(cj.remaining ?? Number.NaN);
+  }
+  const cop = await getUnpaidCustomers(100000, { start: from, end: to, label: ym });
+  surfaces.copilotTool = cop.totalDebt;
+  return compareAgainstEngine("con_co_the_thu_thang", ym, surfaces);
+}
+
+/**
+ * Bảo toàn phạm vi GĐ1b-1: contractValue (Hợp đồng ký mới, scope created_at) và
+ * collected (Tiền thực thu, scope payment_date) KHÔNG được đổi — đối chiếu HTTP
+ * với bản tính lại độc lập bằng SQL (đúng semantics getBookingDate/getPaymentDate).
+ */
+export async function verifySignedAndCollected(ym: string): Promise<TruthCheck[]> {
+  const base = (process.env.TRUTH_API_BASE ?? "").replace(/\/$/, "");
+  if (!base) return [];
+  const [y, m] = ym.split("-").map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  const from = `${ym}-01`;
+  const to = `${ym}-${String(lastDay).padStart(2, "0")}`;
+
+  const signedSql = await pool.query(
+    `SELECT COALESCE(SUM(GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0))), 0) AS v
+     FROM bookings b
+     WHERE ${revenueCountableSql("b")}
+       AND (b.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN $1::date AND $2::date`,
+    [from, to],
+  );
+  const collectedSql = await pool.query(
+    `SELECT COALESCE(SUM(p.amount::numeric), 0) AS v
+     FROM payments p
+     WHERE COALESCE(p.status,'active') != 'voided' AND COALESCE(p.payment_type,'') != 'refund'
+       AND NOT (p.booking_id IS NOT NULL AND EXISTS (
+         SELECT 1 FROM bookings zp WHERE zp.id = p.booking_id AND zp.is_parent_contract = true
+           AND NOT EXISTS (SELECT 1 FROM bookings zch WHERE zch.parent_id = zp.id
+             AND zch.deleted_at IS NULL AND COALESCE(zch.status,'') NOT IN ('cancelled','temp_quote'))))
+       AND (CASE WHEN p.paid_date IS NOT NULL AND length(p.paid_date) >= 10
+                 THEN substring(p.paid_date, 1, 10)
+                 ELSE to_char(p.paid_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Ho_Chi_Minh', 'YYYY-MM-DD')
+            END) BETWEEN $1 AND $2`,
+    [from, to],
+  );
+
+  const mj = (await (await fetch(`${base}/api/revenue/v2/monthly?from=${from}&to=${to}`)).json()) as {
+    months?: Array<{ month: string; contractValue: number; collected: number }>;
+  };
+  const bucket = (mj.months ?? []).find(x => x.month === ym);
+
+  return [
+    compareAgainstEngine("hop_dong_ky_moi_thang", ym, {
+      engine: Number((signedSql.rows[0] as { v?: string })?.v ?? 0),
+      revenueMonthly_http: Number(bucket?.contractValue ?? Number.NaN),
+    }),
+    compareAgainstEngine("tien_thuc_thu_thang", ym, {
+      engine: Number((collectedSql.rows[0] as { v?: string })?.v ?? 0),
+      revenueMonthly_http: Number(bucket?.collected ?? Number.NaN),
+    }),
+  ];
 }

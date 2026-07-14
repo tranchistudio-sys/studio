@@ -2,6 +2,8 @@ import { pool } from "@workspace/db";
 import { revenueCountableSql } from "./booking-money";
 import { paymentNotOnEmptyParentSql } from "./parent-contract";
 import { getSimpleFinance } from "./finance-summary";
+import { monthMembershipSql } from "./finance/financial-engine";
+import { getSchemaFlags } from "./schema-compat";
 
 // ─── Types & constants ───────────────────────────────────────────────────────
 
@@ -260,13 +262,15 @@ const BOOKING_DEBT_SQL =
 /**
  * Khách còn nợ trên tập đơn countable chuẩn (loại thùng rác/hủy/báo giá tạm/đơn CHA
  * tổng/con mồ côi — cùng predicate với dashboard, chống cộng trùng cha–con PR #65).
- * @param range giới hạn "đơn phát sinh trong tháng" theo shoot_date (mốc ngày VN).
+ * @param range giới hạn "đơn thuộc tháng" — GĐ1b-1: membership NGÀY CHỤP hoặc
+ * occurrence, dùng CHUNG monthMembershipSql của Financial Engine với màn Doanh thu.
  */
 export async function getUnpaidCustomers(
   limit = 15,
   range?: { start: string; end: string; label: string },
 ) {
-  const rangeCond = range ? ` AND b.shoot_date >= $2::date AND b.shoot_date <= $3::date` : "";
+  const hasOcc = range ? (await getSchemaFlags()).occurrences : false;
+  const rangeCond = range ? ` AND ${monthMembershipSql("$2", "$3", hasOcc)}` : "";
   const r = await pool.query(
     `SELECT c.name, c.phone, SUM(${BOOKING_DEBT_SQL}) AS debt
      FROM bookings b
@@ -284,7 +288,7 @@ export async function getUnpaidCustomers(
     `SELECT COUNT(*) FILTER (WHERE ${BOOKING_DEBT_SQL} > 0) AS order_cnt,
             COALESCE(SUM(${BOOKING_DEBT_SQL}), 0) AS total_debt
      FROM bookings b
-     WHERE ${revenueCountableSql("b")}${range ? " AND b.shoot_date >= $1::date AND b.shoot_date <= $2::date" : ""}`,
+     WHERE ${revenueCountableSql("b")}${range ? ` AND ${monthMembershipSql("$1", "$2", hasOcc)}` : ""}`,
     range ? [range.start, range.end] : [],
   );
   const totalRow = totalR.rows[0] as Record<string, unknown> | undefined;

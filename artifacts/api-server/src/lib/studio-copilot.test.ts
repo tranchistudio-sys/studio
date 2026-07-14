@@ -15,6 +15,7 @@ import {
   answerStudioCopilot,
   buildFollowUp,
 } from "./studio-copilot";
+import { _resetSchemaFlagsCache } from "./schema-compat";
 
 const q = pool.query as ReturnType<typeof vi.fn>;
 
@@ -164,10 +165,44 @@ describe("getUnpaidCustomers — loại thùng rác/hủy/báo giá tạm/đơn 
       return { rows: [] };
     });
     await getUnpaidCustomers(15, { start: "2026-07-01", end: "2026-07-31", label: "tháng 7/2026" });
-    expect(calls[0].sql).toContain("b.shoot_date >= $2::date AND b.shoot_date <= $3::date");
-    expect(calls[0].params).toEqual([15, "2026-07-01", "2026-07-31"]);
-    expect(calls[1].sql).toContain("b.shoot_date >= $1::date AND b.shoot_date <= $2::date");
-    expect(calls[1].params).toEqual(["2026-07-01", "2026-07-31"]);
+    // Bỏ query dò schema (to_regclass) — chỉ soi 2 query dữ liệu
+    const dataCalls = calls.filter(c => !c.sql.includes("to_regclass"));
+    expect(dataCalls[0].sql).toContain("b.shoot_date >= $2::date AND b.shoot_date <= $3::date");
+    expect(dataCalls[0].params).toEqual([15, "2026-07-01", "2026-07-31"]);
+    expect(dataCalls[1].sql).toContain("b.shoot_date >= $1::date AND b.shoot_date <= $2::date");
+    expect(dataCalls[1].params).toEqual(["2026-07-01", "2026-07-31"]);
+  });
+
+  it("month-scope KHÔNG có bảng occurrences (DB chưa migrate) → không thêm vế EXISTS", async () => {
+    const sqls: string[] = [];
+    q.mockImplementation(async (sql: string) => {
+      sqls.push(String(sql));
+      return { rows: [] }; // to_regclass rỗng → flags false
+    });
+    await getUnpaidCustomers(15, { start: "2026-07-01", end: "2026-07-31", label: "tháng 7/2026" });
+    for (const sq of sqls.filter(x => x.includes("shoot_date >="))) {
+      expect(sq).not.toContain("booking_occurrences");
+    }
+  });
+
+  it("month-scope CÓ occurrences → membership shoot_date HOẶC ngày phụ (GĐ1b-1, chung Engine với màn Doanh thu)", async () => {
+    const sqls: string[] = [];
+    q.mockImplementation(async (sql: string) => {
+      const sx = String(sql);
+      sqls.push(sx);
+      if (sx.includes("to_regclass")) {
+        return { rows: [{ occ: true, dw: true, wt: true, lc: true }] };
+      }
+      return { rows: [] };
+    });
+    await getUnpaidCustomers(15, { start: "2026-07-01", end: "2026-07-31", label: "tháng 7/2026" });
+    const dataSqls = sqls.filter(x => x.includes("shoot_date >=") && !x.includes("to_regclass"));
+    expect(dataSqls.length).toBe(2);
+    for (const sq of dataSqls) {
+      expect(sq).toContain("EXISTS");
+      expect(sq).toContain("booking_occurrences oc");
+      expect(sq).toContain("oc.booking_id = b.id");
+    }
   });
 });
 

@@ -370,3 +370,105 @@ export async function verifySignedAndCollected(ym: string): Promise<TruthCheck[]
     }),
   ];
 }
+
+// ─── GĐ1e-1: BUSINESS ENGINE = Financial Engine TỪNG ĐỒNG ─────────────────────
+// Business Engine chỉ được XẾP HẠNG/GẮN NHÃN — không được đổi bất kỳ số nào.
+
+import {
+  engineOverdueReceivables as _engOverdue,
+  engineBookingFinance as _engBookings,
+  engineServiceRollup as _engServices,
+  engineCastLedger as _engLedger,
+} from "./financial-engine";
+import {
+  bizMonthlyOverview,
+  bizDebtInsights,
+} from "./business-engine";
+
+export async function verifyBusinessMonthly(ym: string): Promise<TruthCheck[]> {
+  const o = await bizMonthlyOverview(ym);
+  if (!o.data) {
+    return [
+      compareAgainstEngine("business_monthly", ym, { engine: 0, businessDataNull: Number.NaN }),
+    ];
+  }
+  const w = o.data.window;
+  const [y, m] = ym.split("-").map(Number);
+  const monthEnd = `${ym}-${String(new Date(y, m, 0).getDate()).padStart(2, "0")}`;
+  const [simple, receivable, systemDebt] = await Promise.all([
+    getSimpleFinance(w.from, w.to),
+    engineReceivableForRange(w.from, monthEnd),
+    engineSystemDebt(),
+  ]);
+  return [
+    compareAgainstEngine("biz_thang_da_thu", ym, { engine: simple.totalIncome, business: o.data.collected }),
+    compareAgainstEngine("biz_thang_con_thu", ym, { engine: receivable, business: o.data.receivable }),
+    compareAgainstEngine("biz_thang_da_chi", ym, { engine: simple.totalSpent, business: o.data.spent.total }),
+    compareAgainstEngine("biz_thang_loi_nhuan", ym, { engine: simple.realProfit, business: o.data.actualProfit }),
+    compareAgainstEngine("biz_no_he_thong", ym, { engine: systemDebt, business: o.data.systemDebt }),
+    compareAgainstEngine("biz_du_kien_cong_thuc", ym, {
+      engine: simple.totalIncome + receivable - simple.totalSpent,
+      business: o.data.projectedProfitIfCollectAll,
+    }),
+  ];
+}
+
+export async function verifyBusinessDebt(): Promise<TruthCheck[]> {
+  const d = await bizDebtInsights(5);
+  const out: TruthCheck[] = [];
+  const systemDebt = await engineSystemDebt();
+  out.push(
+    compareAgainstEngine("biz_tong_con_thu", "ALL", {
+      engine: systemDebt,
+      business: d.data?.totalReceivable ?? Number.NaN,
+    }),
+  );
+  // Từng khách top nợ đối chiếu lại bằng query per-customer ĐỘC LẬP của Engine
+  for (const t of d.data?.topDebtors ?? []) {
+    out.push(
+      compareAgainstEngine("biz_top_no_khach", `KH#${t.customerId}`, {
+        engine: await engineCustomerDebt(t.customerId),
+        business: t.debt,
+      }),
+    );
+  }
+  const overdueSum = (d.data?.overdue ?? []).reduce((s, x) => s + x.receivable, 0);
+  out.push(
+    compareAgainstEngine("biz_tong_qua_han", "ALL", {
+      engine: overdueSum,
+      business: d.data?.overdueTotal ?? Number.NaN,
+    }),
+  );
+  return out;
+}
+
+/** Chéo sổ: per-booking ↔ per-service ↔ tổng hệ thống phải cùng một thế giới số. */
+export async function verifyBusinessCrossSums(): Promise<TruthCheck[]> {
+  const [bookings, services, systemDebt, ledger] = await Promise.all([
+    _engBookings(),
+    _engServices(),
+    engineSystemDebt(),
+    _engLedger(),
+  ]);
+  const sumB = (f: (b: { netValue: number; receivable: number; laborCost: number }) => number) =>
+    bookings.reduce((s, b) => s + f(b), 0);
+  const sumS = (f: (s: { contractValue: number; receivable: number; laborRecognized: number }) => number) =>
+    services.reduce((acc, s) => acc + f(s), 0);
+  const ledgerTotal = [...ledger.castByBooking.values()].reduce((s, v) => s + v, 0);
+  return [
+    compareAgainstEngine("cheo_so_no", "bookingFinance ↔ systemDebt ↔ serviceRollup", {
+      engine: systemDebt,
+      sumBookingFinance: sumB(b => b.receivable),
+      sumServiceRollup: sumS(s => s.receivable),
+    }),
+    compareAgainstEngine("cheo_so_net", "bookingFinance ↔ serviceRollup", {
+      engine: sumB(b => b.netValue),
+      sumServiceRollup: sumS(s => s.contractValue),
+    }),
+    compareAgainstEngine("cheo_so_cast", "bookingFinance ↔ castLedger ↔ serviceRollup", {
+      engine: ledgerTotal,
+      sumBookingFinance: sumB(b => b.laborCost),
+      sumServiceRollup: sumS(s => s.laborRecognized),
+    }),
+  ];
+}

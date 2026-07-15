@@ -102,3 +102,65 @@ describe("engineCastForCreatedCohort — gán theo BOOKING BUCKET (không phải
     expect(calls[0].params).toEqual(["2026-07-01", "2026-07-31"]);
   });
 });
+
+// ─── GĐ1e-1: 3 read model cho Business Engine ─────────────────────────────────
+
+import {
+  engineOverdueReceivables,
+  engineBookingFinance,
+  engineServiceRollup,
+} from "./financial-engine";
+
+describe("read models GĐ1e-1 — đúng quy tắc ①②③④, không nguồn cấm", () => {
+  it("engineOverdueReceivables: countable + show đã diễn ra + còn nợ; MAX occurrence (1 dòng/booking)", async () => {
+    const sqls: string[] = [];
+    q.mockImplementation(async (sql: string) => {
+      const s = String(sql);
+      sqls.push(s);
+      if (s.includes("to_regclass")) return { rows: [{ occ: true, dw: true, wt: true, lc: true }] };
+      return { rows: [] };
+    });
+    await engineOverdueReceivables();
+    const main = sqls.find(s => s.includes("days_overdue"));
+    expect(main).toBeDefined();
+    expect(main).toContain("deleted_at IS NULL");
+    expect(main).toContain("is_parent_contract = false");
+    expect(main).toContain("GREATEST(b.shoot_date, COALESCE((SELECT MAX(oc.shoot_date)"); // MAX — không JOIN nhân dòng
+    expect(main).toContain("Asia/Ho_Chi_Minh");
+    expect(main).toContain("> 0"); // còn nợ
+  });
+
+  it("engineBookingFinance: cast từ earnings (loại voided/cancelled), expense approved/paid direct — KHÔNG tasks/payroll/advance/personal", async () => {
+    const sqls: string[] = [];
+    q.mockImplementation(async (sql: string) => {
+      const s = String(sql);
+      sqls.push(s);
+      if (s.includes("to_regclass")) return { rows: [{ occ: false, dw: false, wt: false, lc: false }] };
+      return { rows: [] };
+    });
+    await engineBookingFinance();
+    const main = sqls.find(s => s.includes("net_value"));
+    expect(main).toBeDefined();
+    expect(main).toContain("staff_job_earnings");
+    expect(main).toContain("NOT IN ('voided','cancelled')");
+    expect(main).toContain("status IN ('approved','paid')");
+    expect(main).not.toContain("tasks");
+    expect(main).not.toContain("payroll_id IS NULL"); // consumed vẫn tính
+    expect(main).not.toContain("advance");
+  });
+
+  it("engineServiceRollup: gộp service_category, cùng bộ quy tắc", async () => {
+    const sqls: string[] = [];
+    q.mockImplementation(async (sql: string) => {
+      sqls.push(String(sql));
+      return { rows: [] };
+    });
+    await engineServiceRollup();
+    const main = sqls.find(s => s.includes("service_category"));
+    expect(main).toBeDefined();
+    expect(main).toContain("GROUP BY");
+    expect(main).toContain("staff_job_earnings");
+    expect(main).toContain("status IN ('approved','paid')");
+    expect(main).not.toContain("tasks");
+  });
+});

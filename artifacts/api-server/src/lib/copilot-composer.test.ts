@@ -11,6 +11,8 @@ import {
   composeNaturalAnswer,
   stripMarkdownArtifacts,
   buildComposerSystemPrompt,
+  extractNumberTokens,
+  aiNumbersWithinFacts,
 } from "./copilot-composer";
 import type { CopilotFacts } from "./studio-copilot";
 
@@ -108,5 +110,65 @@ describe("composeNaturalAnswer — fallback deterministic là hợp đồng bắ
     mockChat.mockResolvedValue({ ok: true, text: "**" });
     const r = await composeNaturalAnswer({ facts: FACTS, deterministicAnswer: DET_ANSWER, messages: MSGS });
     expect(r).toBeNull();
+  });
+});
+
+// ─── Chốt chặn CỨNG "AI không được đổi số" (GĐ1e-2, gộp từ WIP 14/07) ──────────
+
+describe("extractNumberTokens / aiNumbersWithinFacts", () => {
+  it("bóc số bỏ dấu phân tách: 24.699.006 và 24,699,006 là CÙNG một số", () => {
+    const t = extractNumberTokens("thu 24.699.006 đ qua 24 phiếu, kiểu Mỹ 24,699,006");
+    expect(t.has("24699006")).toBe(true);
+    expect(t.has("24")).toBe(true);
+  });
+
+  it("AI giữ nguyên số (đổi định dạng phân tách) → hợp lệ", () => {
+    expect(
+      aiNumbersWithinFacts("Em thu được 24,699,006 đ với 40 đơn anh nha.", FACTS, DET_ANSWER),
+    ).toBe(true);
+  });
+
+  it("AI bịa số tiền mới → không hợp lệ", () => {
+    expect(
+      aiNumbersWithinFacts("Em thu được 25.000.000 đ anh nha.", FACTS, DET_ANSWER),
+    ).toBe(false);
+  });
+
+  it("AI tự cộng/làm tròn ra số khác → không hợp lệ", () => {
+    // 24699006 làm tròn thành 24700000 — phải chặn
+    expect(
+      aiNumbersWithinFacts("Khoảng 24.700.000 đ anh nha.", FACTS, DET_ANSWER),
+    ).toBe(false);
+  });
+
+  it("số nhỏ (ngày/giờ/số đếm 1-3 chữ số) không bị chặn nhầm", () => {
+    expect(
+      aiNumbersWithinFacts("Ngày 15/8 em sẽ nhắc lại lúc 09:30 nha (99 việc).", FACTS, DET_ANSWER),
+    ).toBe(true);
+  });
+
+  it("số trong caveats của facts được coi là hợp lệ", () => {
+    const factsWithCaveat: CopilotFacts = {
+      ...FACTS,
+      caveats: ["Sổ cast mới phủ 118/256 đơn hợp lệ (409 khoản)."],
+    };
+    // 256 (3 chữ số, bỏ qua) + 118, 409 (3 chữ số) — không chặn; kiểm số ≥4 chữ số trong caveat
+    const factsBig: CopilotFacts = { ...FACTS, caveats: ["còn treo 1234567 đ chưa ghi sổ"] };
+    expect(aiNumbersWithinFacts("Còn 1.234.567 đ chưa ghi sổ anh nha.", factsBig, DET_ANSWER)).toBe(true);
+    expect(aiNumbersWithinFacts("phủ 118/256 đơn (409 khoản)", factsWithCaveat, DET_ANSWER)).toBe(true);
+  });
+});
+
+describe("composeNaturalAnswer — AI đổi số thì bị vứt, fallback deterministic", () => {
+  it("AI trả số không có trong facts → null (route sẽ dùng câu deterministic)", async () => {
+    mockChat.mockResolvedValue({ ok: true, text: "Tháng 7/2026 em thu 99.999.999 đ anh nha." });
+    const r = await composeNaturalAnswer({ facts: FACTS, deterministicAnswer: DET_ANSWER, messages: MSGS });
+    expect(r).toBeNull();
+  });
+
+  it("AI giữ đúng số → dùng bản AI", async () => {
+    mockChat.mockResolvedValue({ ok: true, text: "Tháng 7/2026 em thu 24.699.006 đ, đủ 24 phiếu thu anh nha." });
+    const r = await composeNaturalAnswer({ facts: FACTS, deterministicAnswer: DET_ANSWER, messages: MSGS });
+    expect(r).toBe("Tháng 7/2026 em thu 24.699.006 đ, đủ 24 phiếu thu anh nha.");
   });
 });

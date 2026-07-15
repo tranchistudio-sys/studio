@@ -538,3 +538,158 @@ export async function engineServiceRollup(): Promise<ServiceRollup[]> {
     };
   });
 }
+
+// ─── GĐ1e-2: READ cho Copilot (chủ duyệt 15/07) ────────────────────────────────
+// Copilot KHÔNG được tự SQL tài chính nữa — 4 hàm dưới đây là nơi DUY NHẤT tính
+// các số Copilot cần, cùng quy tắc tiền với phần trên (countable ①, phiếu thu hợp
+// lệ, nợ sống ①). Mọi số Copilot đọc ra vì thế bằng ĐÚNG số Engine/Dashboard.
+
+export type MonthlyRevenueActivity = {
+  /** Tiền thực thu trong kỳ (payment_date scope) — CÙNG cửa sổ & lọc với Dashboard. */
+  collected: number;
+  /** Số phiếu thu hợp lệ trong kỳ (cùng lớp lọc collected). */
+  paymentCount: number;
+  /** Số đơn hợp lệ có ngày chụp trong kỳ (shoot_date scope — chỉ số vận hành). */
+  bookingCount: number;
+};
+
+/**
+ * Bộ số cho câu "doanh thu tháng này" của Copilot. `collected` = engineCashIn nên
+ * KHỚP TỪNG ĐỒNG với màn Tổng quan tài chính (getSimpleFinance) và Truth Test.
+ */
+export async function engineMonthlyRevenueActivity(
+  from: string,
+  to: string,
+): Promise<MonthlyRevenueActivity> {
+  const [collected, paymentCount, bookingCount] = await Promise.all([
+    engineCashIn(from, to),
+    num(
+      `SELECT COUNT(*) AS v FROM payments
+       WHERE paid_at >= $1::date AND paid_at < ($2::date + INTERVAL '1 day')
+         AND ${collectedPaymentCond("payments")}`,
+      [from, to],
+    ),
+    num(
+      `SELECT COUNT(*) AS v FROM bookings b
+       WHERE b.shoot_date >= $1::date AND b.shoot_date <= $2::date AND ${revenueCountableSql("b")}`,
+      [from, to],
+    ),
+  ]);
+  return { collected, paymentCount, bookingCount };
+}
+
+export type ServicePerformanceRow = {
+  packageName: string;
+  bookingCount: number;
+  /** Doanh thu gói = Σ total_amount (giá trị hợp đồng gộp) của đơn hợp lệ chụp trong kỳ. */
+  revenue: number;
+};
+
+/** "Gói bán chạy tháng này": gom theo tên gói (fallback package_type), xếp theo số đơn. */
+export async function engineServicePerformance(
+  from: string,
+  to: string,
+  limit = 10,
+): Promise<ServicePerformanceRow[]> {
+  const r = await pool.query(
+    `SELECT COALESCE(sp.name, b.package_type, 'Khác') AS package_name,
+            COUNT(b.id) AS booking_count,
+            COALESCE(SUM(CAST(b.total_amount AS numeric)), 0) AS revenue
+     FROM bookings b
+     LEFT JOIN service_packages sp ON sp.id = b.service_package_id
+     WHERE b.shoot_date >= $1::date AND b.shoot_date <= $2::date
+       AND ${revenueCountableSql("b")}
+     GROUP BY COALESCE(sp.name, b.package_type, 'Khác')
+     ORDER BY booking_count DESC
+     LIMIT $3`,
+    [from, to, limit],
+  );
+  return (r.rows as Array<Record<string, unknown>>).map(x => ({
+    packageName: String(x.package_name),
+    bookingCount: Number(x.booking_count),
+    revenue: Number(x.revenue),
+  }));
+}
+
+export type UnpaidCustomerRow = { name: string | null; phone: string | null; debt: number };
+export type UnpaidCustomers = {
+  /** Khách còn nợ > 0, xếp theo nợ giảm dần (đã LIMIT). */
+  customers: UnpaidCustomerRow[];
+  /** Tổng nợ sống (quy tắc ①) trên phạm vi — khớp engineSystemDebt khi không giới hạn kỳ. */
+  totalDebt: number;
+  /** Số đơn còn nợ > 0 trên phạm vi. */
+  orderCount: number;
+};
+
+/**
+ * Danh sách khách còn nợ + tổng, cùng predicate countable & nợ sống ① với engineSystemDebt.
+ * @param range giới hạn "đơn thuộc kỳ": shoot_date HOẶC occurrence trong kỳ (chung
+ *  monthMembershipSql với màn Doanh thu — GĐ1b-1). Bỏ range = nợ tồn toàn hệ thống.
+ */
+export async function engineUnpaidCustomers(
+  limit = 15,
+  range?: { start: string; end: string },
+): Promise<UnpaidCustomers> {
+  const hasOcc = range ? (await getSchemaFlags()).occurrences : false;
+  const rangeCond = range ? ` AND ${monthMembershipSql("$2", "$3", hasOcc)}` : "";
+  const listR = await pool.query(
+    `SELECT c.name, c.phone, SUM(${ENGINE_DEBT_SQL}) AS debt
+     FROM bookings b
+     JOIN customers c ON c.id = b.customer_id
+     WHERE ${revenueCountableSql("b")}${rangeCond}
+     GROUP BY c.id, c.name, c.phone
+     HAVING SUM(${ENGINE_DEBT_SQL}) > 0
+     ORDER BY debt DESC
+     LIMIT $1`,
+    range ? [limit, range.start, range.end] : [limit],
+  );
+  const customers = (listR.rows as Array<Record<string, unknown>>).map(d => ({
+    name: (d.name as string) ?? null,
+    phone: (d.phone as string) ?? null,
+    debt: Number(d.debt),
+  }));
+  const totalR = await pool.query(
+    `SELECT COUNT(*) FILTER (WHERE ${ENGINE_DEBT_SQL} > 0) AS order_cnt,
+            COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS total_debt
+     FROM bookings b
+     WHERE ${revenueCountableSql("b")}${range ? ` AND ${monthMembershipSql("$1", "$2", hasOcc)}` : ""}`,
+    range ? [range.start, range.end] : [],
+  );
+  const totalRow = totalR.rows[0] as Record<string, unknown> | undefined;
+  return {
+    customers,
+    totalDebt: Number(totalRow?.total_debt ?? 0),
+    orderCount: Number(totalRow?.order_cnt ?? 0),
+  };
+}
+
+export type CustomerByPhone = {
+  name: string | null;
+  phone: string | null;
+  bookingCount: number;
+  debt: number;
+};
+
+/** Tra khách theo đuôi SĐT + nợ sống ① (Copilot dùng cho intent customer). */
+export async function engineCustomersByPhone(
+  phoneSuffix: string,
+  limit = 5,
+): Promise<CustomerByPhone[]> {
+  const r = await pool.query(
+    `SELECT c.name, c.phone,
+            COUNT(b.id) AS booking_count,
+            COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS debt
+     FROM customers c
+     LEFT JOIN bookings b ON b.customer_id = c.id AND ${revenueCountableSql("b")}
+     WHERE c.phone LIKE $1
+     GROUP BY c.id, c.name, c.phone
+     LIMIT $2`,
+    [`%${phoneSuffix}%`, limit],
+  );
+  return (r.rows as Array<Record<string, unknown>>).map(c => ({
+    name: (c.name as string) ?? null,
+    phone: (c.phone as string) ?? null,
+    bookingCount: Number(c.booking_count),
+    debt: Number(c.debt),
+  }));
+}

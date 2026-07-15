@@ -164,3 +164,107 @@ describe("read models GĐ1e-1 — đúng quy tắc ①②③④, không nguồn 
     expect(main).not.toContain("tasks");
   });
 });
+
+// ─── GĐ1e-2: read cho Copilot — số tiền Copilot đọc TỪ ĐÂY, khớp Engine/Dashboard ─
+
+import {
+  engineMonthlyRevenueActivity,
+  engineServicePerformance,
+  engineUnpaidCustomers,
+  engineCustomersByPhone,
+} from "./financial-engine";
+import { _resetSchemaFlagsCache } from "../schema-compat";
+
+describe("read models GĐ1e-2 — Copilot đọc số tiền, KHÔNG tự SQL nữa", () => {
+  it("engineMonthlyRevenueActivity: đã thu = engineCashIn (cùng lọc dashboard) + đếm phiếu/đơn, không trộn scope", async () => {
+    const sqls: string[] = [];
+    q.mockImplementation(async (sql: string) => {
+      sqls.push(String(sql));
+      return { rows: [{ v: "0" }] };
+    });
+    await engineMonthlyRevenueActivity("2026-07-01", "2026-07-31");
+    const collected = sqls.find(s => s.includes("SUM(amount"))!;
+    // Đã thu: cùng cửa sổ + lọc với Dashboard (nửa mở phải, loại voided/refund/cha rỗng)
+    expect(collected).toContain("paid_at < ($2::date + INTERVAL '1 day')");
+    expect(collected).toContain("!= 'voided'");
+    expect(collected).toContain("!= 'refund'");
+    expect(collected).toContain("is_parent_contract = true");
+    // Đếm đơn theo shoot_date (scope vận hành) — KHÔNG trộn với payment scope
+    const bookingCnt = sqls.find(s => s.includes("FROM bookings b") && s.includes("COUNT(*)"))!;
+    expect(bookingCnt).toContain("b.shoot_date >=");
+    expect(bookingCnt).toContain("deleted_at IS NULL"); // countable ①
+  });
+
+  it("engineMonthlyRevenueActivity: mapping số từ cột v (đã thu / phiếu / đơn)", async () => {
+    q.mockImplementation(async (sql: string) => {
+      const s = String(sql);
+      if (s.includes("SUM(amount")) return { rows: [{ v: "24699006" }] };
+      if (s.includes("FROM payments")) return { rows: [{ v: "24" }] };
+      return { rows: [{ v: "40" }] };
+    });
+    const r = await engineMonthlyRevenueActivity("2026-07-01", "2026-07-31");
+    expect(r).toEqual({ collected: 24699006, paymentCount: 24, bookingCount: 40 });
+  });
+
+  it("engineServicePerformance: gộp theo tên gói, countable, doanh thu = Σ total_amount, xếp theo số đơn", async () => {
+    const sqls: string[] = [];
+    q.mockImplementation(async (sql: string) => {
+      sqls.push(String(sql));
+      return { rows: [{ package_name: "Gói A", booking_count: "5", revenue: "12000000" }] };
+    });
+    const r = await engineServicePerformance("2026-07-01", "2026-07-31");
+    const main = sqls[0];
+    expect(main).toContain("service_packages");
+    expect(main).toContain("SUM(CAST(b.total_amount AS numeric))");
+    expect(main).toContain("deleted_at IS NULL"); // countable ①
+    expect(main).toContain("ORDER BY booking_count DESC");
+    expect(r[0]).toEqual({ packageName: "Gói A", bookingCount: 5, revenue: 12000000 });
+  });
+
+  it("engineUnpaidCustomers không range: nợ sống ① + countable, 2 query, tổng khớp system", async () => {
+    const sqls: string[] = [];
+    q.mockImplementation(async (sql: string) => {
+      const s = String(sql);
+      sqls.push(s);
+      if (s.includes("total_debt")) return { rows: [{ order_cnt: "19", total_debt: "42798994" }] };
+      return { rows: [{ name: "Khách A", phone: "0900000001", debt: "42798994" }] };
+    });
+    const r = await engineUnpaidCustomers();
+    expect(sqls).toHaveLength(2); // list + total, KHÔNG dò schema khi không có range
+    for (const s of sqls) {
+      expect(s).toContain("deleted_at IS NULL");
+      expect(s).toContain("GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0) - COALESCE(b.paid_amount, 0))");
+    }
+    expect(r.customers[0]).toEqual({ name: "Khách A", phone: "0900000001", debt: 42798994 });
+    expect(r.totalDebt).toBe(42798994);
+    expect(r.orderCount).toBe(19);
+  });
+
+  it("engineUnpaidCustomers có range: thêm membership shoot_date, tham số đúng vị trí", async () => {
+    _resetSchemaFlagsCache();
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    q.mockImplementation(async (sql: string, params: unknown[]) => {
+      calls.push({ sql: String(sql), params });
+      return { rows: [] }; // to_regclass rỗng → occurrences off
+    });
+    await engineUnpaidCustomers(15, { start: "2026-07-01", end: "2026-07-31" });
+    const data = calls.filter(c => !c.sql.includes("to_regclass"));
+    expect(data[0].sql).toContain("b.shoot_date >= $2::date AND b.shoot_date <= $3::date");
+    expect(data[0].params).toEqual([15, "2026-07-01", "2026-07-31"]);
+    expect(data[1].sql).toContain("b.shoot_date >= $1::date AND b.shoot_date <= $2::date");
+    expect(data[1].params).toEqual(["2026-07-01", "2026-07-31"]);
+  });
+
+  it("engineCustomersByPhone: tra đuôi SĐT + nợ sống ①, LIKE %suffix%", async () => {
+    const calls: Array<{ sql: string; params: unknown[] }> = [];
+    q.mockImplementation(async (sql: string, params: unknown[]) => {
+      calls.push({ sql: String(sql), params });
+      return { rows: [{ name: "Khách B", phone: "0912345678", booking_count: "3", debt: "500000" }] };
+    });
+    const r = await engineCustomersByPhone("123456789");
+    expect(calls[0].sql).toContain("c.phone LIKE $1");
+    expect(calls[0].sql).toContain("GREATEST(0, b.total_amount");
+    expect(calls[0].params).toEqual(["%123456789%", 5]);
+    expect(r[0]).toEqual({ name: "Khách B", phone: "0912345678", bookingCount: 3, debt: 500000 });
+  });
+});

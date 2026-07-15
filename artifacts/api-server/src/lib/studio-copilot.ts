@@ -1,9 +1,15 @@
 import { pool } from "@workspace/db";
 import { revenueCountableSql } from "./booking-money";
-import { paymentNotOnEmptyParentSql } from "./parent-contract";
-import { getSimpleFinance } from "./finance-summary";
-import { monthMembershipSql } from "./finance/financial-engine";
-import { getSchemaFlags } from "./schema-compat";
+// GĐ1e-2 (chủ duyệt 15/07): Copilot KHÔNG tự SQL tài chính nữa — mọi số tiền đọc
+// từ FINANCIAL ENGINE (số thô) + BUSINESS ENGINE (Insight có status/caveats). Các
+// query còn lại trong file này là VẬN HÀNH (lịch/nhân sự/chấm công/bảng giá/hậu kỳ).
+import {
+  engineMonthlyRevenueActivity,
+  engineServicePerformance,
+  engineUnpaidCustomers,
+  engineCustomersByPhone,
+} from "./finance/financial-engine";
+import { bizMonthlyOverview, type InsightStatus } from "./finance/business-engine";
 
 // ─── Types & constants ───────────────────────────────────────────────────────
 
@@ -39,6 +45,10 @@ export type CopilotFacts = {
   period?: string;
   /** Phạm vi số liệu bằng lời — composer phải giữ đúng phạm vi này khi diễn đạt. */
   scopeDescription: string;
+  /** Độ tin dữ liệu từ Business Engine Insight — "partial/missing/unknown" phải được nói ra. */
+  status?: InsightStatus;
+  /** Lưu ý bắt buộc (phủ sổ cast, hoa hồng sale…) — composer phải nêu ĐẦY ĐỦ, không giấu. */
+  caveats?: string[];
   facts: Record<string, unknown>;
 };
 
@@ -224,81 +234,35 @@ export async function getMonthBookings(ref = new Date()) {
   return { label, count: rows.length, lines, truncated: rows.length >= 50 };
 }
 
+/**
+ * Doanh thu tháng: đọc từ FINANCIAL ENGINE. `revenue` (đã thu) = engineCashIn nên
+ * KHỚP TỪNG ĐỒNG màn Tổng quan tài chính — thay cửa sổ vnBoundToUtc-trọn-tháng cũ
+ * bằng cùng cửa sổ Dashboard/Engine (hết lệch nhẹ ở ranh giới tháng, 4 surface = 1 số).
+ */
 export async function getRevenueSummary(ref = new Date()) {
-  const { start, end, nextStart, label } = monthRange(ref);
-  // paid_at là timestamp naive-UTC → ranh giới tháng VN phải quy đổi + nửa mở,
-  // nếu không phiếu thu từ 07:00 sáng ngày cuối tháng trở đi bị rớt khỏi tháng.
-  // Loại refund + phiếu thu trên đơn CHA rỗng — CÙNG lớp lọc với "Đã thu" của
-  // màn Tổng quan tài chính (sự cố 14/07: Copilot phồng 2.000.000 đ vì thiếu).
-  const paidCond = `paid_at >= ${vnBoundToUtc("$1")} AND paid_at < ${vnBoundToUtc("$2")}
-     AND payment_type != 'refund'
-     AND COALESCE(status, 'active') != 'voided'
-     AND ${paymentNotOnEmptyParentSql("payments")}`;
-  const revR = await pool.query(
-    `SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE ${paidCond}`,
-    [start, nextStart],
-  );
-  const ordR = await pool.query(
-    `SELECT COUNT(*) AS cnt FROM bookings b
-     WHERE b.shoot_date >= $1::date AND b.shoot_date <= $2::date AND ${revenueCountableSql("b")}`,
-    [start, end],
-  );
-  const paidR = await pool.query(
-    `SELECT COUNT(*) AS cnt FROM payments WHERE ${paidCond}`,
-    [start, nextStart],
-  );
-  return {
-    label,
-    revenue: Number((revR.rows[0] as Record<string, unknown>)?.total ?? 0),
-    orderCount: Number((ordR.rows[0] as Record<string, unknown>)?.cnt ?? 0),
-    paymentCount: Number((paidR.rows[0] as Record<string, unknown>)?.cnt ?? 0),
-  };
+  const { start, end, label } = monthRange(ref);
+  const a = await engineMonthlyRevenueActivity(start, end);
+  return { label, revenue: a.collected, orderCount: a.bookingCount, paymentCount: a.paymentCount };
 }
 
-// Nợ per-booking theo ĐÚNG chuẩn dashboard/simple (customerDebt): NET − đã thu.
-const BOOKING_DEBT_SQL =
-  "GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0) - COALESCE(b.paid_amount, 0))";
-
 /**
- * Khách còn nợ trên tập đơn countable chuẩn (loại thùng rác/hủy/báo giá tạm/đơn CHA
- * tổng/con mồ côi — cùng predicate với dashboard, chống cộng trùng cha–con PR #65).
- * @param range giới hạn "đơn thuộc tháng" — GĐ1b-1: membership NGÀY CHỤP hoặc
- * occurrence, dùng CHUNG monthMembershipSql của Financial Engine với màn Doanh thu.
+ * Khách còn nợ: đọc từ FINANCIAL ENGINE (engineUnpaidCustomers) — cùng nợ sống ①
+ * và predicate countable với engineSystemDebt/Dashboard. Wrapper chỉ định dạng dòng.
+ * @param range giới hạn "đơn thuộc tháng": shoot_date HOẶC occurrence trong tháng.
  */
 export async function getUnpaidCustomers(
   limit = 15,
   range?: { start: string; end: string; label: string },
 ) {
-  const hasOcc = range ? (await getSchemaFlags()).occurrences : false;
-  const rangeCond = range ? ` AND ${monthMembershipSql("$2", "$3", hasOcc)}` : "";
-  const r = await pool.query(
-    `SELECT c.name, c.phone, SUM(${BOOKING_DEBT_SQL}) AS debt
-     FROM bookings b
-     JOIN customers c ON c.id = b.customer_id
-     WHERE ${revenueCountableSql("b")}${rangeCond}
-     GROUP BY c.id, c.name, c.phone
-     HAVING SUM(${BOOKING_DEBT_SQL}) > 0
-     ORDER BY debt DESC
-     LIMIT $1`,
-    range ? [limit, range.start, range.end] : [limit],
-  );
-  const rows = r.rows as Record<string, unknown>[];
-  const lines = rows.map(d => `• ${d.name} (${d.phone}): còn nợ ${formatVND(Number(d.debt))}`);
-  const totalR = await pool.query(
-    `SELECT COUNT(*) FILTER (WHERE ${BOOKING_DEBT_SQL} > 0) AS order_cnt,
-            COALESCE(SUM(${BOOKING_DEBT_SQL}), 0) AS total_debt
-     FROM bookings b
-     WHERE ${revenueCountableSql("b")}${range ? ` AND ${monthMembershipSql("$1", "$2", hasOcc)}` : ""}`,
-    range ? [range.start, range.end] : [],
-  );
-  const totalRow = totalR.rows[0] as Record<string, unknown> | undefined;
+  const data = await engineUnpaidCustomers(limit, range ? { start: range.start, end: range.end } : undefined);
+  const lines = data.customers.map(d => `• ${d.name} (${d.phone}): còn nợ ${formatVND(d.debt)}`);
   return {
-    count: rows.length,
-    totalDebt: Number(totalRow?.total_debt ?? 0),
-    orderCount: Number(totalRow?.order_cnt ?? 0),
+    count: data.customers.length,
+    totalDebt: data.totalDebt,
+    orderCount: data.orderCount,
     lines,
     // Khách nợ lớn nhất (danh sách đã ORDER BY debt DESC) — cho follow-up có căn cứ.
-    top: rows[0] ? { name: String(rows[0].name), debt: Number(rows[0].debt) } : undefined,
+    top: data.customers[0] ? { name: String(data.customers[0].name), debt: data.customers[0].debt } : undefined,
   };
 }
 
@@ -387,24 +351,12 @@ export async function getAttendanceSummary(ref = new Date()) {
 
 export async function getServicePerformance(ref = new Date()) {
   const { start, end, label } = monthRange(ref);
-  const r = await pool.query(
-    `SELECT COALESCE(sp.name, b.package_type, 'Khác') AS package_name,
-            COUNT(b.id) AS booking_count,
-            COALESCE(SUM(CAST(b.total_amount AS numeric)), 0) AS revenue
-     FROM bookings b
-     LEFT JOIN service_packages sp ON sp.id = b.service_package_id
-     WHERE b.shoot_date >= $1::date AND b.shoot_date <= $2::date
-       AND ${revenueCountableSql("b")}
-     GROUP BY COALESCE(sp.name, b.package_type, 'Khác')
-     ORDER BY booking_count DESC
-     LIMIT 10`,
-    [start, end],
-  );
-  const rows = r.rows as Record<string, unknown>[];
-  const lines = rows.map(row =>
-    `• ${row.package_name}: ${row.booking_count} đơn — ${formatVND(Number(row.revenue))}`,
-  );
-  return { label, lines, top: rows[0] as Record<string, unknown> | undefined };
+  const rows = await engineServicePerformance(start, end);
+  const lines = rows.map(row => `• ${row.packageName}: ${row.bookingCount} đơn — ${formatVND(row.revenue)}`);
+  const top = rows[0]
+    ? { package_name: rows[0].packageName, booking_count: rows[0].bookingCount, revenue: rows[0].revenue }
+    : undefined;
+  return { label, lines, top };
 }
 
 export async function getPricingPackages(limit = 20) {
@@ -450,21 +402,11 @@ async function getWeekSchedule() {
 async function searchCustomer(q: string): Promise<BuiltAnswer | null> {
   const phone = q.replace(/\D/g, "");
   if (phone.length >= 9) {
-    const r = await pool.query(
-      `SELECT c.name, c.phone,
-              COUNT(b.id) AS booking_count,
-              COALESCE(SUM(${BOOKING_DEBT_SQL}), 0) AS debt
-       FROM customers c
-       LEFT JOIN bookings b ON b.customer_id = c.id AND ${revenueCountableSql("b")}
-       WHERE c.phone LIKE $1
-       GROUP BY c.id, c.name, c.phone
-       LIMIT 5`,
-      [`%${phone.slice(-9)}%`],
-    );
-    const rows = r.rows as Record<string, unknown>[];
+    // Nợ khách đọc từ FINANCIAL ENGINE (nợ sống ①); phần tra đuôi SĐT là vận hành.
+    const rows = await engineCustomersByPhone(phone.slice(-9));
     if (rows.length) {
       const lines = rows.map(c =>
-        `• ${c.name} (${c.phone}): ${c.booking_count} đơn, còn nợ ${formatVND(Number(c.debt))}`,
+        `• ${c.name} (${c.phone}): ${c.bookingCount} đơn, còn nợ ${formatVND(c.debt)}`,
       );
       return {
         text: `Em tìm thấy ${rows.length} khách theo số điện thoại này:\n\n${lines.join("\n")}`,
@@ -679,42 +621,67 @@ async function answerRevenue(q: string): Promise<BuiltAnswer> {
 }
 
 /**
- * Tài chính thực tế = CÙNG hàm với màn "Tổng quan tài chính" (lib/finance-summary):
- * đã thu − (chi trực tiếp + chi phí cố định) = lợi nhuận. Copilot và màn hình
- * phải ra một con số — không tự chế công thức riêng ở đây.
+ * Tài chính thực tế = BUSINESS ENGINE `bizMonthlyOverview` (bọc getSimpleFinance —
+ * CÙNG số màn "Tổng quan tài chính"): đã thu − (chi trực tiếp + chi phí cố định).
+ * Copilot chỉ ĐỌC Insight; status + caveats (phủ sổ cast, hoa hồng sale) được nói
+ * ra đầy đủ để chủ không hiểu nhầm lợi nhuận này là con số cuối cùng (chưa trừ cast).
  */
 async function answerFinance(): Promise<BuiltAnswer> {
   const m = monthRange();
-  const from = m.start;
-  const to = todayStr();
-  const f = await getSimpleFinance(from, to);
+  const overview = await bizMonthlyOverview(m.period);
+  const scope =
+    "tài chính thực tế tháng này, cùng công thức màn Tổng quan tài chính: đã thu − (chi trực tiếp + chi phí cố định) = lợi nhuận; công nợ là nợ tồn toàn hệ thống";
+
+  if (!overview.data) {
+    // Thiếu nguồn Engine → nói thẳng, KHÔNG bịa số (quy tắc F của Business Engine).
+    const facts: CopilotFacts = {
+      intent: "finance",
+      period: m.period,
+      scopeDescription: scope,
+      status: overview.status,
+      caveats: overview.caveats,
+      facts: {},
+    };
+    return {
+      text: overview.caveats[0] ?? "Em chưa đọc được số liệu tài chính tháng này, anh thử lại sau ít phút nha.",
+      facts,
+    };
+  }
+
+  const d = overview.data;
+  const from = d.window.from;
+  const to = d.window.to;
   const facts: CopilotFacts = {
     intent: "finance",
     period: m.period,
-    scopeDescription: `tài chính thực tế từ ${formatDate(from)} đến ${formatDate(to)}, cùng công thức màn Tổng quan tài chính: đã thu − (chi trực tiếp + chi phí cố định) = lợi nhuận; công nợ là nợ tồn toàn hệ thống`,
+    scopeDescription: scope,
+    status: overview.status,
+    caveats: overview.caveats,
     facts: {
-      collectedAmount: f.totalIncome,
-      directExpense: f.directExpense,
-      fixedCostMonthly: f.fixedCostMonthly,
-      totalSpent: f.totalSpent,
-      realProfit: f.realProfit,
-      breakevenStatus: f.breakeven.status,
-      breakevenDelta: f.breakeven.delta,
-      customerDebt: f.customerDebt,
+      collectedAmount: d.collected,
+      directExpense: d.spent.direct,
+      fixedCostMonthly: d.spent.fixedMonthly,
+      totalSpent: d.spent.total,
+      realProfit: d.actualProfit,
+      breakevenStatus: d.breakeven.status,
+      breakevenDelta: d.breakeven.delta,
+      customerDebt: d.systemDebt,
     },
   };
   const profitStr =
-    f.realProfit < 0 ? `âm ${formatVND(Math.abs(f.realProfit))}` : `dương ${formatVND(f.realProfit)}`;
+    d.actualProfit < 0 ? `âm ${formatVND(Math.abs(d.actualProfit))}` : `dương ${formatVND(d.actualProfit)}`;
   const breakevenLine =
-    f.breakeven.status === "over"
-      ? `Studio đã vượt điểm hòa vốn ${formatVND(f.breakeven.delta)}.`
-      : `Studio chưa đạt hòa vốn — còn thiếu ${formatVND(f.breakeven.delta)}.`;
+    d.breakeven.status === "over"
+      ? `Studio đã vượt điểm hòa vốn ${formatVND(d.breakeven.delta)}.`
+      : `Studio chưa đạt hòa vốn — còn thiếu ${formatVND(d.breakeven.delta)}.`;
   const debtNote =
-    f.customerDebt > 0
-      ? `\n\nNgoài ra khách còn nợ ${formatVND(f.customerDebt)} chưa thu về — anh hỏi "khách nào đang nợ tiền" là em liệt kê chi tiết.`
+    d.systemDebt > 0
+      ? `\n\nNgoài ra khách còn nợ ${formatVND(d.systemDebt)} chưa thu về — anh hỏi "khách nào đang nợ tiền" là em liệt kê chi tiết.`
       : "";
+  // Status/caveats phải được NÓI ĐẦY ĐỦ (lợi nhuận này CHƯA trừ cast → có thể cao hơn thực tế).
+  const caveatNote = overview.caveats.length ? `\n\nLưu ý: ${overview.caveats.join(" ")}` : "";
   return {
-    text: `Từ ${formatDate(from)} đến ${formatDate(to)} studio đã thu ${formatVND(f.totalIncome)}, đã chi ${formatVND(f.totalSpent)} (chi trực tiếp ${formatVND(f.directExpense)} + chi phí cố định ${formatVND(f.fixedCostMonthly)}). Lợi nhuận thực tế đang ${profitStr}. ${breakevenLine}${debtNote}`,
+    text: `Từ ${formatDate(from)} đến ${formatDate(to)} studio đã thu ${formatVND(d.collected)}, đã chi ${formatVND(d.spent.total)} (chi trực tiếp ${formatVND(d.spent.direct)} + chi phí cố định ${formatVND(d.spent.fixedMonthly)}). Lợi nhuận thực tế đang ${profitStr}. ${breakevenLine}${debtNote}${caveatNote}`,
     facts,
   };
 }

@@ -264,18 +264,20 @@ describe("timezone VN — 01:30 sáng 01/08 VN (= 18:30 31/07 UTC)", () => {
     vi.setSystemTime(new Date("2026-07-31T18:30:00Z"));
   });
 
-  it("getRevenueSummary tính tháng 8 (không phải tháng 7 theo UTC), ranh giới nửa mở", async () => {
+  it("getRevenueSummary tính tháng 8 (không phải tháng 7 theo UTC), cửa sổ đọc từ Engine", async () => {
     const calls: Array<{ sql: string; params: unknown[] }> = [];
     q.mockImplementation(async (sql: string, params: unknown[]) => {
       calls.push({ sql: String(sql), params });
-      return { rows: [{ total: "0", cnt: "0" }] };
+      return { rows: [{ v: "0" }] };
     });
     const r = await getRevenueSummary();
     expect(r.label).toBe("tháng 8/2026");
-    expect(calls[0].params).toEqual(["2026-08-01", "2026-09-01"]);
-    // paid_at naive-UTC: mốc VN phải quy đổi qua UTC + loại phiếu voided
-    expect(calls[0].sql).toContain("AT TIME ZONE 'Asia/Ho_Chi_Minh' AT TIME ZONE 'UTC'");
-    expect(calls[0].sql).toContain("!= 'voided'");
+    // GĐ1e-2: đã thu đọc qua Financial Engine (engineCashIn) — cửa sổ [đầu tháng,
+    // cuối tháng] theo NGÀY VN, nửa mở phải (paid_at < ngày+1). KHỚP Tổng quan tài chính.
+    const collectedCall = calls.find(c => c.sql.includes("SUM(amount"))!;
+    expect(collectedCall.params).toEqual(["2026-08-01", "2026-08-31"]);
+    expect(collectedCall.sql).toContain("paid_at < ($2::date + INTERVAL '1 day')");
+    expect(collectedCall.sql).toContain("!= 'voided'");
   });
 
   it("getTodayBookings lấy ngày VN 2026-08-01", async () => {
@@ -292,13 +294,14 @@ describe("timezone VN — 01:30 sáng 01/08 VN (= 18:30 31/07 UTC)", () => {
 // ─── 7. Formatter tự nhiên (fallback không AI) — không markdown, không đổi số ──
 
 function mockRevenueMonth() {
+  // GĐ1e-2: getRevenueSummary đọc từ Financial Engine — 3 query đều trả cột `v`.
   q.mockImplementation(async (sql: string) => {
     const s = String(sql);
-    if (s.includes("SUM(amount)")) return { rows: [{ total: "24699006" }] };
-    // COUNT phiếu thu phải check TRƯỚC "FROM bookings": predicate cha-rỗng mới
-    // chứa subquery "FROM bookings zp" ngay trong câu payments.
-    if (s.includes("FROM payments")) return { rows: [{ cnt: "24" }] };
-    if (s.includes("FROM bookings")) return { rows: [{ cnt: "40" }] };
+    if (s.includes("SUM(amount")) return { rows: [{ v: "24699006" }] }; // engineCashIn: đã thu
+    // COUNT phiếu thu (FROM payments) phải check TRƯỚC "FROM bookings b": câu
+    // payments chứa subquery cha-rỗng "FROM bookings zp" (không phải "bookings b").
+    if (s.includes("FROM payments")) return { rows: [{ v: "24" }] }; // paymentCount
+    if (s.includes("FROM bookings b")) return { rows: [{ v: "40" }] }; // bookingCount
     return { rows: [] };
   });
 }
@@ -411,18 +414,19 @@ describe("classifyIntent — finance (tài chính/lợi nhuận/hòa vốn/chi p
   });
 });
 
-describe("getRevenueSummary — khớp lớp lọc 'Đã thu' của /dashboard/simple", () => {
+describe("getRevenueSummary — khớp lớp lọc 'Đã thu' của Engine/Dashboard", () => {
   it("SQL loại refund + phiếu thu trên đơn CHA rỗng (khoản phồng 2.000.000 đ)", async () => {
     const sqls: string[] = [];
     q.mockImplementation(async (sql: string) => {
       sqls.push(String(sql));
-      return { rows: [{ total: "0", cnt: "0" }] };
+      return { rows: [{ v: "0" }] };
     });
     await getRevenueSummary();
+    // GĐ1e-2: cùng lớp lọc collectedPaymentCond của Financial Engine (engineCashIn).
     const paymentSqls = sqls.filter(s => s.includes("FROM payments"));
-    expect(paymentSqls.length).toBe(2); // SUM tiền + COUNT phiếu
+    expect(paymentSqls.length).toBe(2); // SUM tiền (engineCashIn) + COUNT phiếu
     for (const s of paymentSqls) {
-      expect(s).toContain("payment_type != 'refund'");
+      expect(s).toContain("!= 'refund'");
       expect(s).toContain("!= 'voided'");
       expect(s).toContain("is_parent_contract = true"); // predicate cha rỗng
     }

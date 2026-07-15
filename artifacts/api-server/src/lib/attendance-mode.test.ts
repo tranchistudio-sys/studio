@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+// attendance-mode.ts import `pool` từ @workspace/db (throw "DATABASE_URL must be set"
+// lúc import nếu thiếu env). Test chỉ dùng hàm THUẦN (so giờ trễ) → mock db cho gọn,
+// theo convention các unit test khác trong repo.
+vi.mock("@workspace/db", () => ({ pool: { query: vi.fn(async () => ({ rows: [] })) } }));
 import { staffAssignedToBooking, resolveAttendanceMode, studioLatePenaltyApplies, computeShowLateness, normalizeShootTime } from "./attendance-mode";
 
 // Seed late rules (giống ensureAttendanceSchema): mốc đúng giờ 08:10

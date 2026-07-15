@@ -22,6 +22,34 @@ export function stripMarkdownArtifacts(text: string): string {
     .trim();
 }
 
+/** Mọi cụm chữ số trong chuỗi, đã bỏ dấu phân tách nghìn (24.699.006 → "24699006"). */
+export function extractNumberTokens(s: string): Set<string> {
+  const out = new Set<string>();
+  for (const m of s.matchAll(/\d[\d.,]*\d|\d/g)) {
+    out.add(m[0].replace(/[.,]/g, ""));
+  }
+  return out;
+}
+
+/**
+ * Chốt chặn CỨNG "AI không được đổi số": mọi con số từ 4 chữ số trở lên (cỡ tiền)
+ * trong câu AI phải xuất hiện y nguyên trong facts hoặc câu deterministic. AI làm
+ * tròn/tự cộng/bịa số → false → route vứt câu AI, dùng câu deterministic.
+ * (Số ngắn 1–3 chữ số bỏ qua để không chặn nhầm ngày/giờ/số đếm.)
+ */
+export function aiNumbersWithinFacts(
+  aiText: string,
+  facts: CopilotFacts,
+  deterministicAnswer: string,
+): boolean {
+  const allow = extractNumberTokens(deterministicAnswer);
+  for (const t of extractNumberTokens(JSON.stringify(facts))) allow.add(t);
+  for (const token of extractNumberTokens(aiText)) {
+    if (token.length >= 4 && !allow.has(token)) return false;
+  }
+  return true;
+}
+
 export function buildComposerSystemPrompt(facts: CopilotFacts, deterministicAnswer: string): string {
   return `${COPILOT_SYSTEM_PROMPT}
 
@@ -37,6 +65,7 @@ Diễn đạt lại CÂU TRẢ LỜI THAM KHẢO bên dưới thành lời hội
 6. Ngắn gọn: ngoài phần liệt kê, tối đa khoảng 5 câu. Nếu FACTS ghi phạm vi số liệu (scopeDescription) thì diễn đạt đúng phạm vi đó.
 7. KHÔNG nhắc các từ kỹ thuật nội bộ trong câu trả lời: "FACTS", "database", "SQL", "intent", "hệ thống truy vấn".
 8. Nếu câu hỏi vượt phạm vi FACTS: trả lời phần CÓ số liệu và nói thẳng phần còn lại em chưa theo dõi được — TUYỆT ĐỐI KHÔNG gợi ý "hỏi lại theo cách khác để lấy thêm dữ liệu", không hứa hẹn khả năng chưa tồn tại, không bảo người dùng đổi cách hỏi.
+9. Nếu FACTS có "caveats" thì PHẢI nói ĐẦY ĐỦ các lưu ý đó bằng lời tự nhiên (vd lợi nhuận chưa trừ hết cast, chưa gồm hoa hồng sale) — không được giấu, bỏ bớt hay giảm nhẹ. Nếu "status" là "partial"/"missing"/"unknown" thì nói rõ số liệu chưa đầy đủ/chưa chốt, không trình bày như con số cuối cùng.
 
 ## FACTS (JSON — nguồn số liệu duy nhất)
 ${JSON.stringify(facts, null, 2)}
@@ -61,7 +90,14 @@ export async function composeNaturalAnswer(opts: {
     });
     if (!result.ok) return null;
     const text = stripMarkdownArtifacts(result.text);
-    return text || null;
+    if (!text) return null;
+    // AI đổi/bịa/làm tròn số so với facts → vứt bản AI, dùng câu deterministic
+    // (độ chính xác tài chính đặt trên độ mượt câu chữ — yêu cầu chủ 14/07).
+    if (!aiNumbersWithinFacts(text, opts.facts, opts.deterministicAnswer)) {
+      console.warn("[copilot-composer] AI đổi số so với facts — fallback deterministic");
+      return null;
+    }
+    return text;
   } catch (err) {
     console.error("copilot-composer error:", err);
     return null;

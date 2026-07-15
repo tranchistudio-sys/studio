@@ -3,7 +3,7 @@ import { bookingColumnsCompat } from "../lib/schema-compat";
 import { db, pool } from "@workspace/db";
 import {
   bookingsTable, customersTable, dressesTable, rentalsTable,
-  paymentsTable, tasksTable, transactionsTable, expensesTable,
+  paymentsTable, tasksTable, expensesTable,
 } from "@workspace/db/schema";
 import { eq, and, gte, lte, count, sum, ne, sql, isNull } from "drizzle-orm";
 import { getCallerRole } from "./auth";
@@ -46,11 +46,11 @@ router.get("/dashboard/stats", async (_req, res) => {
   const [overdueRentals] = await db.select({ count: count() }).from(rentalsTable).where(eq(rentalsTable.status, "overdue"));
   const [pendingTasks] = await db.select({ count: count() }).from(tasksTable).where(eq(tasksTable.status, "todo"));
 
-  const monthTransactions = await db.select().from(transactionsTable)
-    .where(and(gte(transactionsTable.transactionDate, startOfMonth), lte(transactionsTable.transactionDate, endOfMonth)));
-  const totalIncomeThisMonth = monthTransactions.filter(t => t.type === "income").reduce((s, t) => s + parseFloat(t.amount), 0);
-  const totalExpenseThisMonth = monthTransactions.filter(t => t.type === "expense").reduce((s, t) => s + parseFloat(t.amount), 0);
-  const profitThisMonth = totalIncomeThisMonth - totalExpenseThisMonth;
+  // GĐ2⑤ (chủ chốt 14/07): bảng `transactions` là SỔ TAY thủ công, KHÔNG phải nguồn
+  // tiền của hệ thống (chỉ có MỘT pipeline: payments/expenses/bookings). Đã bỏ P&L
+  // suy từ transactions (profit/income/expense THIS_MONTH) khỏi /dashboard/stats —
+  // frontend KHÔNG hiển thị, và lợi nhuận/thu-chi thật đọc từ FINANCIAL ENGINE ở màn
+  // Tổng quan tài chính. Sổ tay transactions vẫn còn ở màn Kế toán (/accounting).
 
   // A2: "đã thu / doanh thu" KHÔNG tính phiếu đã hủy (voided) và KHÔNG cộng refund như tiền thu.
   const [allPaymentsSum] = await db.select({ total: sum(paymentsTable.amount) }).from(paymentsTable)
@@ -121,9 +121,6 @@ router.get("/dashboard/stats", async (_req, res) => {
     overdueRentals: overdueRentals.count,
     revenueThisMonth,
     totalRevenue,
-    profitThisMonth,
-    totalExpenseThisMonth,
-    totalIncomeThisMonth,
     upcomingBookings,
     pendingTasks: pendingTasks.count,
     totalDebt,

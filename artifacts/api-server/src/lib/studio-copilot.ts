@@ -1,8 +1,6 @@
-import { pool } from "@workspace/db";
-import { revenueCountableSql } from "./booking-money";
-// GĐ1e-2 (chủ duyệt 15/07): Copilot KHÔNG tự SQL tài chính nữa — mọi số tiền đọc
-// từ FINANCIAL ENGINE (số thô) + BUSINESS ENGINE (Insight có status/caveats). Các
-// query còn lại trong file này là VẬN HÀNH (lịch/nhân sự/chấm công/bảng giá/hậu kỳ).
+// GĐ1e-3 (chủ duyệt workflow 15/07): Copilot ZERO-SQL tuyệt đối — file này KHÔNG còn
+// `pool`/SQL. Tiền đọc từ FINANCIAL ENGINE (số thô) + BUSINESS ENGINE (Insight có
+// status/caveats); vận hành (lịch/hậu kỳ/nhân sự/chấm công/bảng giá) đọc OPERATIONS ENGINE.
 import {
   engineMonthlyRevenueActivity,
   engineServicePerformance,
@@ -10,6 +8,14 @@ import {
   engineCustomersByPhone,
 } from "./finance/financial-engine";
 import { bizMonthlyOverview, type InsightStatus } from "./finance/business-engine";
+import {
+  opsBookingsOnDate,
+  opsBookingsInRange,
+  opsOverduePostProductionJobs,
+  opsStaffWorkload,
+  opsAttendance,
+  opsPricingPackages,
+} from "./operations/operations-engine";
 
 // ─── Types & constants ───────────────────────────────────────────────────────
 
@@ -78,14 +84,6 @@ const APP_TZ = "Asia/Ho_Chi_Minh";
 
 function toVNDateStr(d: Date): string {
   return d.toLocaleDateString("en-CA", { timeZone: APP_TZ }); // "YYYY-MM-DD"
-}
-
-/**
- * Cột timestamp naive (paid_at, created_at) đang lưu wall-clock UTC → quy đổi
- * mốc ngày VN ($n dạng 'YYYY-MM-DD') sang UTC trước khi so sánh, độc lập session TZ.
- */
-function vnBoundToUtc(param: string): string {
-  return `(${param}::timestamp AT TIME ZONE '${APP_TZ}' AT TIME ZONE 'UTC')`;
 }
 
 function monthRange(ref = new Date()) {
@@ -193,43 +191,22 @@ export function classifyIntent(question: string): CopilotIntent {
 
 export async function getTodayBookings() {
   const today = todayStr();
-  const r = await pool.query(
-    `SELECT b.shoot_date, b.shoot_time, b.order_code, b.package_type,
-            c.name AS customer_name, c.phone AS customer_phone
-     FROM bookings b
-     LEFT JOIN customers c ON c.id = b.customer_id
-     WHERE b.shoot_date = $1::date AND ${revenueCountableSql("b")}
-     ORDER BY b.shoot_time NULLS LAST, b.id
-     LIMIT 30`,
-    [today],
-  );
-  const rows = r.rows as Record<string, unknown>[];
+  const rows = await opsBookingsOnDate(today);
   const lines = rows.map(b => {
-    const time = b.shoot_time ? ` ${b.shoot_time}` : "";
-    const code = b.order_code ? `[${b.order_code}] ` : "";
-    return `• ${code}${b.customer_name} (${b.customer_phone}) — ${b.package_type || "—"}${time}`;
+    const time = b.shootTime ? ` ${b.shootTime}` : "";
+    const code = b.orderCode ? `[${b.orderCode}] ` : "";
+    return `• ${code}${b.customerName} (${b.customerPhone}) — ${b.packageType || "—"}${time}`;
   });
   return { date: today, count: rows.length, lines };
 }
 
 export async function getMonthBookings(ref = new Date()) {
   const { start, end, label } = monthRange(ref);
-  const r = await pool.query(
-    `SELECT b.shoot_date, b.shoot_time, b.order_code, b.package_type, b.status,
-            c.name AS customer_name
-     FROM bookings b
-     LEFT JOIN customers c ON c.id = b.customer_id
-     WHERE b.shoot_date >= $1::date AND b.shoot_date <= $2::date
-       AND ${revenueCountableSql("b")}
-     ORDER BY b.shoot_date, b.shoot_time NULLS LAST
-     LIMIT 50`,
-    [start, end],
-  );
-  const rows = r.rows as Record<string, unknown>[];
+  const rows = await opsBookingsInRange(start, end, 50);
   const lines = rows.map(b => {
-    const time = b.shoot_time ? ` ${b.shoot_time}` : "";
-    const code = b.order_code ? `[${b.order_code}] ` : "";
-    return `• ${formatDate(b.shoot_date as string)}${time}: ${code}${b.customer_name} — ${b.package_type || "—"}`;
+    const time = b.shootTime ? ` ${b.shootTime}` : "";
+    const code = b.orderCode ? `[${b.orderCode}] ` : "";
+    return `• ${formatDate(b.shootDate as string)}${time}: ${code}${b.customerName} — ${b.packageType || "—"}`;
   });
   return { label, count: rows.length, lines, truncated: rows.length >= 50 };
 }
@@ -266,86 +243,33 @@ export async function getUnpaidCustomers(
   };
 }
 
-/**
- * customer_deadline / deadline_system là cột TEXT default '' — dữ liệu thật lẫn '',
- * 'YYYY-MM-DD' và 'YYYY-MM-DD HH:MM:SS'. Cast thẳng ::date nổ 22007 với '' (sự cố
- * Copilot "Không đọc được dữ liệu studio") → chỉ cast phần khớp dạng ngày, mọi giá
- * trị khác thành NULL (NULL so sánh = false, không crash).
- */
-function safeDateSql(col: string): string {
-  return `substring(${col} from '^\\d{4}-\\d{2}-\\d{2}')`;
-}
-
 export async function getOverduePostProductionJobs(limit = 15) {
-  const cd = safeDateSql("pj.customer_deadline");
-  const ds = safeDateSql("pj.deadline_system");
-  const vnToday = `(NOW() AT TIME ZONE '${APP_TZ}')::date`;
-  const r = await pool.query(
-    `SELECT pj.job_code, b.order_code, c.name AS customer_name,
-            pj.customer_deadline, pj.deadline_system, pj.status,
-            COALESCE(NULLIF(TRIM(pj.assigned_staff_name), ''), 'Chưa giao') AS staff_name
-     FROM photoshop_jobs pj
-     LEFT JOIN bookings b ON b.id = pj.booking_id
-     LEFT JOIN customers c ON c.id = b.customer_id
-     WHERE pj.is_active = true
-       AND pj.status NOT IN ('xong_show', 'hoan_thanh')
-       AND (${cd}::date < ${vnToday} OR ${ds}::date < ${vnToday})
-     ORDER BY COALESCE(${cd}, ${ds}) NULLS LAST
-     LIMIT $1`,
-    [limit],
-  );
-  const rows = r.rows as Record<string, unknown>[];
+  const rows = await opsOverduePostProductionJobs(limit);
   const lines = rows.map(j => {
-    const code = j.order_code || j.job_code || "—";
-    const dl = j.customer_deadline || j.deadline_system;
+    const code = j.orderCode || j.jobCode || "—";
+    const dl = j.customerDeadline || j.deadlineSystem;
     const dlStr = dl ? formatDate(String(dl).slice(0, 10)) : "—";
-    return `• [${code}] ${j.customer_name} — hạn ${dlStr}, ${j.staff_name} (${j.status})`;
+    return `• [${code}] ${j.customerName} — hạn ${dlStr}, ${j.staffName} (${j.status})`;
   });
   return { count: rows.length, lines };
 }
 
 export async function getStaffWorkload(limit = 10) {
-  const r = await pool.query(
-    `SELECT COALESCE(NULLIF(TRIM(assigned_staff_name), ''), 'Chưa giao') AS staff_name,
-            COUNT(*) AS job_count
-     FROM photoshop_jobs
-     WHERE is_active = true
-       AND status NOT IN ('xong_show', 'hoan_thanh')
-     GROUP BY assigned_staff_id, assigned_staff_name
-     ORDER BY job_count DESC
-     LIMIT $1`,
-    [limit],
-  );
-  const rows = r.rows as Record<string, unknown>[];
-  const lines = rows.map(row => `• ${row.staff_name}: ${row.job_count} việc đang làm`);
-  return { count: rows.length, lines, top: rows[0] as Record<string, unknown> | undefined };
+  const rows = await opsStaffWorkload(limit);
+  const lines = rows.map(row => `• ${row.staffName}: ${row.jobCount} việc đang làm`);
+  // Giữ khóa snake_case cho `top` — consumer (answerOverview/answerStaff) đang đọc
+  // top.staff_name / top.job_count.
+  const top = rows[0] ? { staff_name: rows[0].staffName, job_count: rows[0].jobCount } : undefined;
+  return { count: rows.length, lines, top };
 }
 
 export async function getAttendanceSummary(ref = new Date()) {
   const { start, nextStart, label } = monthRange(ref);
-  // created_at naive-UTC: đổi sang giờ VN phải qua 'UTC' trước ('AT TIME ZONE VN'
-  // trực tiếp là SAI CHIỀU — check-in buổi sáng bị đếm nhầm thành đi trễ).
-  const r = await pool.query(
-    `SELECT s.name,
-            COUNT(*) FILTER (
-              WHERE al.type = 'check_in'
-                AND (al.created_at AT TIME ZONE 'UTC' AT TIME ZONE '${APP_TZ}')::time > TIME '08:10:00'
-            ) AS late_count,
-            COUNT(*) FILTER (WHERE al.type = 'check_in') AS checkins
-     FROM attendance_logs al
-     JOIN staff s ON s.id = al.staff_id
-     WHERE al.created_at >= ${vnBoundToUtc("$1")} AND al.created_at < ${vnBoundToUtc("$2")}
-     GROUP BY s.id, s.name
-     HAVING COUNT(*) FILTER (WHERE al.type = 'check_in') > 0
-     ORDER BY late_count DESC, checkins DESC
-     LIMIT 10`,
-    [start, nextStart],
-  );
-  const rows = r.rows as Record<string, unknown>[];
+  const rows = await opsAttendance(start, nextStart);
   const lateLines = rows
-    .filter(row => Number(row.late_count) > 0)
-    .map(row => `• ${row.name}: ${row.late_count} lần đi trễ / ${row.checkins} lần check-in`);
-  const totalCheckins = rows.reduce((s, row) => s + Number(row.checkins), 0);
+    .filter(row => row.lateCount > 0)
+    .map(row => `• ${row.name}: ${row.lateCount} lần đi trễ / ${row.checkins} lần check-in`);
+  const totalCheckins = rows.reduce((s, row) => s + row.checkins, 0);
   return { label, totalCheckins, lateLines, hasData: rows.length > 0 };
 }
 
@@ -360,41 +284,21 @@ export async function getServicePerformance(ref = new Date()) {
 }
 
 export async function getPricingPackages(limit = 20) {
-  const r = await pool.query(
-    `SELECT p.code, p.name, p.price, p.short_description AS description, g.name AS group_name
-     FROM service_packages p
-     LEFT JOIN service_groups g ON g.id = p.group_id
-     WHERE p.deleted_at IS NULL
-     ORDER BY g.sort_order ASC NULLS LAST, p.sort_order ASC, p.name
-     LIMIT $1`,
-    [limit],
-  );
-  const rows = r.rows as Record<string, unknown>[];
+  const rows = await opsPricingPackages(limit);
   const lines = rows.map(p => {
-    const price = formatVND(Number(p.price ?? 0));
-    const grp = p.group_name ? ` (${p.group_name})` : "";
+    const price = formatVND(p.price);
+    const grp = p.groupName ? ` (${p.groupName})` : "";
     return `• ${p.name}${grp}: ${price}`;
   });
   return { count: rows.length, lines };
 }
 
 async function getWeekSchedule() {
-  const today = todayStr();
-  const end = weekEnd();
-  const r = await pool.query(
-    `SELECT b.shoot_date, b.shoot_time, b.order_code, b.package_type, c.name AS customer_name
-     FROM bookings b
-     LEFT JOIN customers c ON c.id = b.customer_id
-     WHERE b.shoot_date BETWEEN $1::date AND $2::date AND ${revenueCountableSql("b")}
-     ORDER BY b.shoot_date, b.shoot_time NULLS LAST
-     LIMIT 40`,
-    [today, end],
-  );
-  const rows = r.rows as Record<string, unknown>[];
+  const rows = await opsBookingsInRange(todayStr(), weekEnd(), 40);
   const lines = rows.map(b => {
-    const time = b.shoot_time ? ` ${b.shoot_time}` : "";
-    const code = b.order_code ? `[${b.order_code}] ` : "";
-    return `• ${formatDate(b.shoot_date as string)}${time}: ${code}${b.customer_name} — ${b.package_type || "—"}`;
+    const time = b.shootTime ? ` ${b.shootTime}` : "";
+    const code = b.orderCode ? `[${b.orderCode}] ` : "";
+    return `• ${formatDate(b.shootDate as string)}${time}: ${code}${b.customerName} — ${b.packageType || "—"}`;
   });
   return { count: rows.length, lines };
 }

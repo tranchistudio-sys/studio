@@ -543,6 +543,10 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
       );
 
     // ── 5. Expenses in period (by expenseDate) ─────────────────────────────
+    // GĐ1c quy tắc ②③ (chủ chốt 14/07): CHỈ chi phí studio thật — approved/paid, loại
+    // cost_class 'personal' (chi cá nhân) + 'loan_principal' (trả gốc vay). CÙNG lớp lọc
+    // engineCashOut/getSimpleFinance → totalExpenses & profit khớp màn Tổng quan tài chính
+    // (trước: đếm mọi status + mọi cost_class nên chi cá nhân/chưa duyệt bị trừ nhầm lợi nhuận).
     const expensesInPeriod = await db
       .select({
         id: expensesTable.id,
@@ -555,6 +559,8 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
         and(
           gte(expensesTable.expenseDate, startDate),
           lte(expensesTable.expenseDate, endDate),
+          sql`${expensesTable.status} IN ('approved', 'paid')`,
+          sql`COALESCE(${expensesTable.costClass}, '') NOT IN ('personal', 'loan_principal')`,
         ),
       );
 

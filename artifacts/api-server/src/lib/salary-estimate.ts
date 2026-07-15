@@ -760,7 +760,9 @@ export async function computeMonthEstimate(
        WHERE staff_id = $1 AND type = 'advance' AND to_char(date::timestamp, 'YYYY-MM') = $2`,
       [staffId, `${year}-${String(month).padStart(2, "0")}`],
     );
-    advance = parseFloat(String((advR.rows[0] as { total: string }).total)) || 0;
+    // Aggregate COALESCE(SUM,0) luôn trả 1 dòng trên DB thật; guard rows[0] rỗng cho
+    // an toàn (không đổi hành vi prod, tránh crash khi nguồn trả rỗng bất thường).
+    advance = parseFloat(String((advR.rows[0] as { total?: string } | undefined)?.total ?? "0")) || 0;
   }
 
   const cap = 2;

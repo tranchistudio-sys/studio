@@ -2277,7 +2277,12 @@ function ShowFormPanel({
         // hiện dữ liệu cũ tới 5 phút vì staleTime toàn cục).
         invalidateBookingRelated(qc);
         if (isEdit && tempQuoteMode !== initialTempQuoteRef.current) {
-          toast({ title: tempQuoteMode ? "Đã chuyển sang Báo giá tạm tính" : "Đã chuyển sang Booking chính thức" });
+          // UX như xóa/phục hồi mềm — nhưng kỹ thuật chỉ là flip status, không xóa gì.
+          toast({
+            title: tempQuoteMode
+              ? "Đã chuyển sang báo giá tạm — đơn đã được loại khỏi số liệu chính thức."
+              : "Đã chuyển thành booking chính thức — đơn đã được đưa trở lại hệ thống.",
+          });
         }
         orderCreatedFeedback();
         onSaved(subDrafts[0]?.shootDate || shootDate);
@@ -2564,7 +2569,12 @@ function ShowFormPanel({
 
       invalidateBookingRelated(qc);
       if (isEdit && tempQuoteMode !== initialTempQuoteRef.current) {
-        toast({ title: tempQuoteMode ? "Đã chuyển sang Báo giá tạm tính" : "Đã chuyển sang Booking chính thức" });
+        // UX như xóa/phục hồi mềm — nhưng kỹ thuật chỉ là flip status, không xóa gì.
+        toast({
+          title: tempQuoteMode
+            ? "Đã chuyển sang báo giá tạm — đơn đã được loại khỏi số liệu chính thức."
+            : "Đã chuyển thành booking chính thức — đơn đã được đưa trở lại hệ thống.",
+        });
       }
       orderCreatedFeedback();
       if (singleProofUploadFailed) {

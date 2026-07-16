@@ -43,6 +43,7 @@ import { StaffAssignmentEditor, type StaffAssignment, newStaffAssignment } from 
 import { castAmountFromResult, lookupCastByPkg, resolveCastAmount } from "@/lib/resolve-cast";
 import { reflowDescriptionLines, firstDescriptionLine, parseDescriptionBlocks } from "@/lib/package-description";
 import { buildDressWarningsByDate, type DressWarnRow, type DressWarnChip } from "@/lib/dress-warnings";
+import { invalidateBookingRelated } from "@/lib/booking-cache";
 import OutfitBookingSection, { type OutfitDraft } from "@/components/outfit-booking-section";
 import { splitOutfitsBySub, planOutfitSync, mapDressRowToDraft, dedupeParentOutfits, moveOutfitsOnSubRemove } from "@/lib/outfit-per-service";
 import AdditionalServicesSection, { validateAdditionalServicesForm, type AdditionalServiceLine, newAdditionalServiceLine } from "@/components/additional-services-section";
@@ -558,6 +559,16 @@ async function syncOccurrences(bookingId: number, drafts: OccurrenceDraft[]) {
       if (!r.ok) throw new Error("Lỗi gỡ ngày thực hiện cũ");
     }
   }
+}
+
+// Ngày phụ gửi KÈM body PUT /bookings/:id — backend diff + ghi trong CÙNG
+// transaction với booking (atomic save). syncOccurrences ở trên chỉ còn dùng cho
+// nhánh TẠO MỚI (booking chưa có id lúc build body, chưa có card nào trên lịch
+// nên không có rủi ro "mất tạm").
+function occurrencesPayload(drafts: OccurrenceDraft[] | undefined) {
+  return (drafts ?? [])
+    .filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d.shootDate))
+    .map(d => ({ id: d.id, shootDate: d.shootDate, shootTime: d.shootTime || null, label: d.label?.trim() || null }));
 }
 
 // "Bung" 1 booking thành các event theo ngày để vẽ lên lịch. Đơn 1 ngày → [b] (giữ
@@ -1376,7 +1387,8 @@ function ShowFormPanel({
   onDateChange: (d: Date) => void;
   booking: Booking | null;
   onClose: () => void;
-  onSaved: () => void;
+  /** savedDate (YYYY-MM-DD) = ngày chính vừa lưu — calendar nhảy thẳng tới ngày đó. */
+  onSaved: (savedDate?: string) => void;
   siblingBookings?: Booking[];
   isAdmin: boolean;
   viewerId?: number | null;
@@ -2120,8 +2132,9 @@ function ShowFormPanel({
       try {
         // Giải quyết khách cho hợp đồng gộp (cập nhật khách cũ / tạo khách mới) — placeholder-safe.
         // cidResolved sẽ được gán cho cha + tất cả dịch vụ con để show hiển thị đúng tên.
+        // KHÔNG invalidate giữa chừng — mọi cache refetch MỘT LẦN sau khi cả chuỗi lưu xong
+        // (invalidate sớm làm list repaint khi gia đình booking mới cập nhật một nửa).
         const cidResolved = await resolveCustomerForSave();
-        qc.invalidateQueries({ queryKey: ["customers"] });
         // Map sub.id → booking id THẬT của dịch vụ (sibling cũ giữ id, dịch vụ mới lấy id từ
         // response add-child) — để sync trang phục vào ĐÚNG child booking.
         const subBookingIds: Record<string, number> = {};
@@ -2145,9 +2158,15 @@ function ShowFormPanel({
                 totalAmount: subTotal,
                 additionalServices: cleanAdditionalServicesForSave(sub.additionalServices || []),
                 servicePackageId,
+                // Ngày phụ đi CÙNG transaction với booking — đổi ngày là atomic,
+                // hết cảnh booking mới mà ngày phụ cũ khi lỗi giữa chừng.
+                occurrences: occurrencesPayload(sub.occurrences),
               }),
             });
-            if (!res.ok) throw new Error("Lỗi lưu dịch vụ");
+            if (!res.ok) {
+              const errBody = await res.json().catch(() => null);
+              throw new Error(errBody?.error || "Lỗi lưu dịch vụ");
+            }
             subBookingIds[sub.id] = sub.siblingId;
           } else if (booking?.id) {
             const res = await authFetch(`${BASE}/api/bookings/${booking.id}/add-child`, {
@@ -2196,7 +2215,6 @@ function ShowFormPanel({
               const errBody = await delRes.json().catch(() => null);
               throw new Error(errBody?.error || "Lỗi xoá dịch vụ đã gỡ khỏi hợp đồng");
             }
-            qc.invalidateQueries({ queryKey: ["booking-full", childId] });
           }
         }
         // Sync booking-dresses THEO TỪNG DỊCH VỤ (child booking id) — hết cảnh dồn chung vào cha.
@@ -2214,10 +2232,11 @@ function ShowFormPanel({
             await syncOutfitDrafts(booking.id, []);
           }
         }
-        // Sync ngày thực hiện phụ theo từng dịch vụ con (thuần lịch, không đụng tiền).
+        // Ngày phụ của dịch vụ CŨ đã đi kèm PUT ở trên (atomic). Chỉ còn dịch vụ
+        // MỚI tạo qua add-child (chưa có id lúc build body) là sync sau khi có id.
         for (const sub of subDrafts) {
           const bid = subBookingIds[sub.id];
-          if (bid) await syncOccurrences(bid, sub.occurrences ?? []);
+          if (bid && !sub.siblingId) await syncOccurrences(bid, sub.occurrences ?? []);
         }
         if (booking?.id) {
           const editMultiAssignedStaff: { id: string; role: string; staffId: number; staffName: string; castAmount: number; taskKey: string }[] = [];
@@ -2245,13 +2264,12 @@ function ShowFormPanel({
             }),
           });
         }
-        qc.invalidateQueries({ queryKey: ["bookings"] });
-        if (booking?.id) qc.invalidateQueries({ queryKey: ["booking-full", booking.id] });
-        for (const sub of subDrafts) {
-          if (sub.siblingId) qc.invalidateQueries({ queryKey: ["booking-full", sub.siblingId] });
-        }
+        // Invalidate MỘT LẦN sau khi toàn bộ chuỗi lưu xong — phủ cả hợp đồng,
+        // khách hàng, thu tiền, tìm kiếm, dashboard (trước đây thiếu → màn khác
+        // hiện dữ liệu cũ tới 5 phút vì staleTime toàn cục).
+        invalidateBookingRelated(qc);
         orderCreatedFeedback();
-        onSaved();
+        onSaved(subDrafts[0]?.shootDate || shootDate);
         return;
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : "Lỗi lưu hợp đồng");
@@ -2379,15 +2397,14 @@ function ShowFormPanel({
           }
         }
 
-        qc.invalidateQueries({ queryKey: ["bookings"] });
-        qc.invalidateQueries({ queryKey: ["customers"] });
+        invalidateBookingRelated(qc);
         orderCreatedFeedback();
         if (proofUploadFailed) {
           setSaving(false);
           setProofWarning("Ảnh cọc chưa lưu được — đơn đã tạo thành công. Bạn có thể đóng form.");
           return;
         }
-        onSaved();
+        onSaved(subDrafts[0]?.shootDate || shootDate);
         return;
       }
 
@@ -2481,11 +2498,20 @@ function ShowFormPanel({
       body.dressWarnReturnDays = parseWarnDays(dressWarnReturnDays);
       // Báo giá tạm tính (chỉ khi tạo mới): backend lưu status temp_quote + mã BG
       if (!isEdit) body.isTempQuote = tempQuoteMode;
+      // EDIT: ngày phụ đi cùng transaction PUT (atomic). CREATE: booking chưa có id
+      // → vẫn sync sau khi tạo (chưa có card trên lịch, không có rủi ro mất tạm).
+      if (isEdit) body.occurrences = occurrencesPayload(subDrafts[0]?.occurrences);
 
       if (isEdit && booking) {
         saved = await authFetch(`${BASE}/api/bookings/${booking.id}`, {
           method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-        }).then(r => { if (!r.ok) throw new Error("Lỗi cập nhật"); return r.json(); });
+        }).then(async r => {
+          if (!r.ok) {
+            const errBody = await r.json().catch(() => null);
+            throw new Error(errBody?.error || "Lỗi cập nhật");
+          }
+          return r.json();
+        });
       } else {
         saved = await authFetch(`${BASE}/api/bookings`, {
           method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
@@ -2498,8 +2524,8 @@ function ShowFormPanel({
       if (bookingIdToSync && outfitsLoaded) {
         await syncOutfitDrafts(bookingIdToSync, outfitsBySub[subDrafts[0]?.id] ?? []);
       }
-      // Sync ngày thực hiện phụ (không phụ thuộc outfitsLoaded — bảng riêng, thuần lịch).
-      if (bookingIdToSync) await syncOccurrences(bookingIdToSync, subDrafts[0]?.occurrences ?? []);
+      // Ngày phụ: EDIT đã đi kèm PUT (atomic) — chỉ nhánh TẠO MỚI còn sync sau khi có id.
+      if (!isEdit && bookingIdToSync) await syncOccurrences(bookingIdToSync, subDrafts[0]?.occurrences ?? []);
 
       // Upload ảnh cọc riêng sau khi booking tạo xong (tách luồng, không làm fail booking)
       let singleProofUploadFailed = false;
@@ -2524,15 +2550,14 @@ function ShowFormPanel({
         }
       }
 
-      qc.invalidateQueries({ queryKey: ["bookings"] });
-      qc.invalidateQueries({ queryKey: ["customers"] });
+      invalidateBookingRelated(qc);
       orderCreatedFeedback();
       if (singleProofUploadFailed) {
         setSaving(false);
         setProofWarning("Ảnh cọc chưa lưu được — đơn đã tạo thành công. Bạn có thể đóng form.");
         return;
       }
-      onSaved();
+      onSaved(effectiveShootDate);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Có lỗi, thử lại");
     } finally { setSaving(false); }
@@ -2551,7 +2576,7 @@ function ShowFormPanel({
       }
       return res;
     },
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["bookings"] }); onSaved(); },
+    onSuccess: () => { invalidateBookingRelated(qc); onSaved(); },
     onError: (err: unknown) => {
       console.error("[deleteBooking editor] error:", err);
       alert(err instanceof Error ? err.message : String(err));
@@ -3878,7 +3903,7 @@ function ShowDetailPanel({
         alert(msg);
         return;
       }
-      qc.invalidateQueries({ queryKey: ["bookings"] });
+      invalidateBookingRelated(qc);
       onDeleteDone();
     } catch (err) {
       console.error("[deleteBooking] error:", err);
@@ -3901,12 +3926,7 @@ function ShowDetailPanel({
         alert(msg);
         return;
       }
-      qc.invalidateQueries({ queryKey: ["bookings"] });
-      qc.invalidateQueries({ queryKey: ["booking-full", parentId] });
-      qc.invalidateQueries({ queryKey: ["child-removal-log", parentId] });
-      for (const sib of siblings) {
-        qc.invalidateQueries({ queryKey: ["booking-full", sib.id] });
-      }
+      invalidateBookingRelated(qc);
       if (childId === booking.id) {
         const otherSib = siblings.find(s => s.id !== childId);
         if (otherSib) onNavigate?.(otherSib);
@@ -5087,8 +5107,7 @@ function ShowDetailPanel({
                         setRescheduleError(data.error || "Lỗi đổi lịch");
                       }
                     } else {
-                      qc.invalidateQueries({ queryKey: ["bookings"] });
-                      qc.invalidateQueries({ queryKey: ["booking-full", booking.id] });
+                      invalidateBookingRelated(qc);
                       setShowReschedule(false);
                     }
                   } catch {
@@ -7150,7 +7169,13 @@ function CalendarPageInner() {
     setViewingBooking(null);
   }, []);
 
-  const handleFormSaved = useCallback(() => {
+  const handleFormSaved = useCallback((savedDate?: string) => {
+    // Nhảy thẳng tới ngày vừa lưu — đổi ngày chụp xong card phải hiện ngay trước
+    // mắt, không bắt người dùng tự lật lịch đi tìm (test mobile: save là thấy).
+    if (savedDate && /^\d{4}-\d{2}-\d{2}$/.test(savedDate)) {
+      const jump = new Date(`${savedDate}T12:00:00`);
+      if (!isNaN(jump.getTime())) setCurrentDate(jump);
+    }
     setCalView("day");
     setEditingBooking(null);
     setEditingSiblings([]);

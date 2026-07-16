@@ -227,6 +227,9 @@ function buildService(
 
 // ─── Snapshot "field quan trọng" lúc khách ký ────────────────────────────────
 // KHÔNG gồm paidAmount/ảnh cọc: đóng thêm tiền là bình thường, không tính là sửa hợp đồng.
+// v2: thêm customer + schedule + location/description để bản ĐÃ KÝ render lại được
+// nguyên vẹn từ snapshot (đóng băng bản pháp lý). Snapshot v1 cũ vẫn đọc được —
+// so sánh sửa-sau-ký chỉ chiếu theo key CÓ TRONG snapshot đã lưu (projectToShape).
 export function buildSignedSnapshot(payload: ContractPayload): Record<string, unknown> {
   return {
     title: payload.contract.title,
@@ -234,15 +237,19 @@ export function buildSignedSnapshot(payload: ContractPayload): Record<string, un
     totalValue: payload.contract.totalValue,
     totalAmount: payload.money.totalAmount,
     discountAmount: payload.money.discountAmount,
+    customer: { name: payload.customer.name, phone: payload.customer.phone },
+    schedule: payload.schedule.map((s) => ({ date: s.date, time: s.time, label: s.label })),
     services: payload.services.map((s) => ({
       bookingId: s.bookingId,
       shootDate: s.shootDate,
       shootTime: s.shootTime,
       serviceLabel: s.serviceLabel,
+      location: s.location,
       totalAmount: s.totalAmount,
       surcharges: s.surcharges,
       items: s.items.map((i) => ({
         name: i.name,
+        description: i.description,
         price: i.price,
         deductions: i.deductions,
         surcharges: i.surcharges,
@@ -264,10 +271,148 @@ export function snapshotsDiffer(a: unknown, b: unknown): boolean {
   return stableStringify(a) !== stableStringify(b);
 }
 
+/**
+ * Chiếu `fresh` theo ĐÚNG hình dạng key của `shape` (đệ quy): chỉ giữ các key có
+ * trong shape. Dùng để so sánh sửa-sau-ký legacy-safe — snapshot v1 (thiếu
+ * customer/schedule/description) không bị báo "đã sửa" chỉ vì code mới thêm field.
+ * Mảng: từng phần tử của fresh chiếu theo phần tử tương ứng (hết thì theo phần tử
+ * cuối của shape); lệch SỐ LƯỢNG phần tử vẫn tạo diff — đúng (thêm/bớt dịch vụ).
+ */
+export function projectToShape(fresh: unknown, shape: unknown): unknown {
+  if (shape === null || typeof shape !== "object" || fresh === null || typeof fresh !== "object") {
+    return fresh;
+  }
+  if (Array.isArray(shape)) {
+    if (!Array.isArray(fresh)) return fresh;
+    if (shape.length === 0) return fresh;
+    return fresh.map((item, i) => projectToShape(item, shape[Math.min(i, shape.length - 1)]));
+  }
+  if (Array.isArray(fresh)) return fresh;
+  const shapeObj = shape as Record<string, unknown>;
+  const freshObj = fresh as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const k of Object.keys(shapeObj)) {
+    if (k in freshObj) out[k] = projectToShape(freshObj[k], shapeObj[k]);
+  }
+  return out;
+}
+
+/** Booking đã lệch khỏi bản ký chưa? So sánh chỉ trên các key snapshot ĐÃ LƯU có. */
+export function signedSnapshotChanged(stored: unknown, livePayload: ContractPayload): boolean {
+  const fresh = buildSignedSnapshot(livePayload);
+  return snapshotsDiffer(projectToShape(fresh, stored), stored);
+}
+
+// ─── Đóng băng bản ĐÃ KÝ ─────────────────────────────────────────────────────
+type SnapshotService = {
+  bookingId?: number;
+  shootDate?: string | null;
+  shootTime?: string | null;
+  serviceLabel?: string | null;
+  location?: string | null;
+  totalAmount?: number;
+  surcharges?: { name?: string; amount?: number }[];
+  items?: {
+    name?: string;
+    description?: string | null;
+    price?: number;
+    deductions?: { label?: string; amount?: number }[];
+    surcharges?: { name?: string; amount?: number }[];
+  }[];
+};
+
+/**
+ * Render hợp đồng ĐÃ KÝ từ signed_snapshot thay vì booking hiện tại (quy tắc:
+ * không âm thầm ghi đè bản pháp lý đã ký). Chỉ gọi khi booking ĐÃ LỆCH snapshot —
+ * bản chưa lệch render live như cũ (giữ nguyên mô tả gói cho snapshot v1 thiếu field).
+ * - Tiền đã trả (payments) vẫn LIVE — đóng thêm tiền không phải là sửa hợp đồng.
+ * - remaining tính lại từ tổng TIỀN THEO BẢN KÝ − đã trả live.
+ * - Field snapshot v1 không có (location/description/customer/schedule): mượn từ
+ *   live theo bookingId/tên item — thuần hiển thị, không đụng số tiền.
+ */
+export function applySignedSnapshotForDisplay(
+  live: ContractPayload,
+  stored: Record<string, unknown>,
+): ContractPayload {
+  const snapServices = Array.isArray(stored.services) ? (stored.services as SnapshotService[]) : null;
+  const liveByBookingId = new Map(live.services.map((s) => [s.bookingId, s]));
+
+  const services: ContractService[] = snapServices
+    ? snapServices.map((snap) => {
+        const liveSvc = snap.bookingId != null ? liveByBookingId.get(snap.bookingId) : undefined;
+        const liveItemsByName = new Map((liveSvc?.items ?? []).map((i) => [i.name, i]));
+        return {
+          bookingId: snap.bookingId ?? liveSvc?.bookingId ?? 0,
+          orderCode: liveSvc?.orderCode ?? null,
+          serviceLabel: snap.serviceLabel ?? liveSvc?.serviceLabel ?? null,
+          shootDate: snap.shootDate ?? null,
+          shootTime: snap.shootTime ?? null,
+          location: snap.location !== undefined ? (snap.location ?? null) : (liveSvc?.location ?? null),
+          totalAmount: money(snap.totalAmount),
+          surcharges: (snap.surcharges ?? []).map((s) => ({ name: s.name ?? "Phụ thu", amount: money(s.amount) })),
+          items: (snap.items ?? []).map((it) => {
+            const liveItem = it.name ? liveItemsByName.get(it.name) : undefined;
+            return {
+              name: it.name ?? "—",
+              description:
+                it.description !== undefined ? (it.description ?? null) : (liveItem?.description ?? null),
+              price: money(it.price),
+              deductions: (it.deductions ?? []).map((d) => ({ label: d.label ?? "Giảm trừ", amount: money(d.amount) })),
+              surcharges: (it.surcharges ?? []).map((s) => ({ name: s.name ?? "Phụ thu", amount: money(s.amount) })),
+              photoName: liveItem?.photoName ?? null,
+              makeupName: liveItem?.makeupName ?? null,
+            };
+          }),
+        };
+      })
+    : live.services;
+
+  const snapTotal = typeof stored.totalAmount === "number" ? stored.totalAmount : live.money.totalAmount;
+  const snapDiscount = typeof stored.discountAmount === "number" ? stored.discountAmount : live.money.discountAmount;
+  const snapCustomer =
+    stored.customer && typeof stored.customer === "object"
+      ? (stored.customer as { name?: string; phone?: string | null })
+      : null;
+  const snapSchedule = Array.isArray(stored.schedule)
+    ? (stored.schedule as { date?: string; time?: string | null; label?: string | null }[])
+        .filter((s) => typeof s.date === "string")
+        .map((s) => ({ date: s.date as string, time: s.time ?? null, label: s.label ?? null }))
+    : services
+        .filter((s) => s.shootDate)
+        .map((s) => ({ date: s.shootDate as string, time: s.shootTime, label: s.serviceLabel }));
+
+  return {
+    ...live,
+    contract: {
+      ...live.contract,
+      title: typeof stored.title === "string" ? stored.title : live.contract.title,
+      content: typeof stored.content === "string" ? stored.content : live.contract.content,
+      totalValue: typeof stored.totalValue === "number" ? stored.totalValue : live.contract.totalValue,
+    },
+    customer: snapCustomer?.name
+      ? { name: snapCustomer.name, phone: snapCustomer.phone ?? live.customer.phone }
+      : live.customer,
+    services,
+    schedule: snapSchedule,
+    money: {
+      totalAmount: snapTotal,
+      discountAmount: snapDiscount,
+      paidAmount: live.money.paidAmount,
+      remainingAmount: Math.max(0, snapTotal - snapDiscount - live.money.paidAmount),
+    },
+  };
+}
+
 // ─── Assembler chính ─────────────────────────────────────────────────────────
+/**
+ * opts.forSnapshot: trả bản LIVE thuần (bỏ qua đóng băng theo signed_snapshot).
+ * Dùng khi CHỤP snapshot lúc ký/ký lại — nếu không, ký lại sẽ chụp nhầm chính
+ * bản đóng băng cũ thay vì hiện trạng booking mà khách vừa xác nhận.
+ */
 export async function buildContractPayload(
   contractId: number,
   mode: "internal" | "public",
+  opts?: { forSnapshot?: boolean },
 ): Promise<ContractPayload | null> {
   const [c] = await db
     .select({
@@ -304,6 +449,10 @@ export async function buildContractPayload(
   let serviceRows: BookingRow[] = [];
   let moneyBase: { totalAmount: number; discountAmount: number } | null = null;
   let paymentTargetId: number | null = null;
+  // Khách hiển thị đọc LIVE theo booking hiện tại (booking = source of truth).
+  // contracts.customer_id chỉ là fallback khi hợp đồng không gắn đơn — trước đây
+  // đơn đổi khách xong hợp đồng vẫn hiện khách cũ vì join cứng theo cột này.
+  let liveCustomerId: number | null = null;
 
   if (c.bookingId) {
     const [b] = await db.select(bookingCols).from(bookingsTable).where(eq(bookingsTable.id, c.bookingId));
@@ -319,6 +468,7 @@ export async function buildContractPayload(
         const base = parent ?? b;
         moneyBase = { totalAmount: money(base.totalAmount), discountAmount: money(base.discountAmount) };
         paymentTargetId = b.parentId;
+        liveCustomerId = base.customerId ?? b.customerId;
       } else if (b.isParentContract) {
         const children = await db
           .select(bookingCols)
@@ -328,11 +478,27 @@ export async function buildContractPayload(
         serviceRows = children.length > 0 ? children : [b];
         moneyBase = { totalAmount: money(b.totalAmount), discountAmount: money(b.discountAmount) };
         paymentTargetId = b.id;
+        liveCustomerId = b.customerId;
       } else {
         serviceRows = [b];
         moneyBase = { totalAmount: money(b.totalAmount), discountAmount: money(b.discountAmount) };
         paymentTargetId = b.id;
+        liveCustomerId = b.customerId;
       }
+    }
+  }
+
+  // Khách live theo booking; khác contracts.customer_id vẫn ưu tiên booking.
+  let customerName = c.customerName;
+  let customerPhone = c.customerPhone ?? null;
+  if (liveCustomerId != null && liveCustomerId !== c.customerId) {
+    const [liveCust] = await db
+      .select({ name: customersTable.name, phone: customersTable.phone })
+      .from(customersTable)
+      .where(eq(customersTable.id, liveCustomerId));
+    if (liveCust) {
+      customerName = liveCust.name;
+      customerPhone = liveCust.phone ?? null;
     }
   }
 
@@ -433,7 +599,7 @@ export async function buildContractPayload(
       totalValue: money(c.totalValue),
     },
     studio: STUDIO_INFO,
-    customer: { name: c.customerName, phone: c.customerPhone ?? null },
+    customer: { name: customerName, phone: customerPhone },
     services,
     schedule,
     money: { totalAmount, discountAmount, paidAmount, remainingAmount },
@@ -441,7 +607,7 @@ export async function buildContractPayload(
     signatures: {
       customer: {
         imageUrl: c.signatureImageUrl,
-        name: c.signerName ?? c.customerName,
+        name: c.signerName ?? customerName,
         phone: c.signerPhone,
         signedAt: c.signedAt,
       },
@@ -456,14 +622,26 @@ export async function buildContractPayload(
     internal: null,
   };
 
+  // Sửa-sau-ký: diff live vs snapshot lúc ký, CHỈ chiếu theo key snapshot đã lưu
+  // (legacy-safe với snapshot v1). signedSnapshot null → không cảnh báo.
+  const storedSnapshot =
+    signState === "signed" && c.signedSnapshot != null && typeof c.signedSnapshot === "object"
+      ? (c.signedSnapshot as Record<string, unknown>)
+      : null;
+  const updatedAfterSign = storedSnapshot != null ? signedSnapshotChanged(storedSnapshot, payload) : false;
+
+  // ĐÃ KÝ + booking đã lệch → hiển thị theo BẢN KÝ (đóng băng bản pháp lý, cả
+  // public lẫn nội bộ). Booking vận hành (lịch/đơn/tiền) vẫn chạy theo dữ liệu mới.
+  // Ngoại lệ: admin đang "Yêu cầu khách ký lại" → hiện bản MỚI (live) để khách
+  // xác nhận đúng phần thay đổi; ký xong snapshot chốt lại theo bản mới.
+  // forSnapshot bỏ qua đóng băng — dùng khi chụp snapshot lúc ký/ký lại.
+  const display =
+    !opts?.forSnapshot && storedSnapshot != null && updatedAfterSign && c.resignRequestedAt == null
+      ? applySignedSnapshotForDisplay(payload, storedSnapshot)
+      : payload;
+
   if (mode === "internal") {
-    // Cảnh báo NỘI BỘ "sửa sau khi ký": diff snapshot lúc ký vs hiện tại.
-    // signedSnapshot null (hợp đồng ký trước khi có tính năng) → không cảnh báo.
-    const updatedAfterSign =
-      signState === "signed" && c.signedSnapshot != null
-        ? snapshotsDiffer(buildSignedSnapshot(payload), c.signedSnapshot)
-        : false;
-    payload.internal = {
+    display.internal = {
       notes: c.notes,
       bookingId: c.bookingId,
       customerId: c.customerId,
@@ -472,5 +650,5 @@ export async function buildContractPayload(
     };
   }
 
-  return payload;
+  return display;
 }

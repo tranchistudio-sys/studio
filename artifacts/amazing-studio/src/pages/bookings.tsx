@@ -20,6 +20,7 @@ import { SurchargeEditor, type SurchargeItem } from "@/components/surcharge-edit
 import { DeductionEditor, type DeductionItem } from "@/components/deduction-editor";
 import { ServiceBreakdownCard } from "@/components/ServiceBreakdownCard";
 import { computeServiceGroupStats } from "@/lib/service-group-stats";
+import { invalidateBookingRelated } from "@/lib/booking-cache";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -210,17 +211,17 @@ export default function BookingsPage() {
 
   const addPayment = useMutation({
     mutationFn: (data: Record<string, unknown>) => fetchJson("/api/payments", { method: "POST", body: JSON.stringify(data) }),
-    onSuccess: () => { paymentFeedback(); qc.invalidateQueries({ queryKey: ["booking", selectedId] }); qc.invalidateQueries({ queryKey: ["bookings"] }); setShowPayForm(false); setPayForm({ amount: "", paymentMethod: "transfer", paymentType: "payment", notes: "" }); },
+    onSuccess: () => { paymentFeedback(); invalidateBookingRelated(qc); setShowPayForm(false); setPayForm({ amount: "", paymentMethod: "transfer", paymentType: "payment", notes: "" }); },
   });
 
   const deletePayment = useMutation({
     mutationFn: (id: number) => fetch(`${BASE}/api/payments/${id}`, { method: "DELETE" }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["booking", selectedId] }); qc.invalidateQueries({ queryKey: ["bookings"] }); },
+    onSuccess: () => invalidateBookingRelated(qc),
   });
 
   const updateStatus = useMutation({
     mutationFn: ({ id, status }: { id: number; status: string }) => fetchJson(`/api/bookings/${id}`, { method: "PUT", body: JSON.stringify({ status }) }),
-    onSuccess: () => { qc.invalidateQueries({ queryKey: ["booking", selectedId] }); qc.invalidateQueries({ queryKey: ["bookings"] }); },
+    onSuccess: () => invalidateBookingRelated(qc),
   });
 
   const [trashDialog, setTrashDialog] = useState<number | null>(null);
@@ -228,7 +229,7 @@ export default function BookingsPage() {
   const deleteBooking = useMutation({
     mutationFn: ({ id, reason }: { id: number; reason?: string }) =>
       fetch(`${BASE}/api/bookings/${id}`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: reason || null }) }),
-    onSuccess: () => { setSelectedId(null); setTrashDialog(null); setTrashReason(""); qc.invalidateQueries({ queryKey: ["bookings"] }); qc.invalidateQueries({ queryKey: ["dashboard"] }); },
+    onSuccess: () => { setSelectedId(null); setTrashDialog(null); setTrashReason(""); invalidateBookingRelated(qc); },
   });
 
   // ── Task #10: Booking items ──────────────────────────────────────────────
@@ -256,9 +257,7 @@ export default function BookingsPage() {
   const upgradePackage = useMutation({
     mutationFn: (data: Record<string, unknown>) => fetchJsonAuth(`/api/bookings/${selectedId}/upgrade`, { method: "POST", body: JSON.stringify(data) }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["booking-items", selectedId] });
-      qc.invalidateQueries({ queryKey: ["booking", selectedId] });
-      qc.invalidateQueries({ queryKey: ["bookings"] });
+      invalidateBookingRelated(qc);
       setShowUpgrade(false);
       setUpgradeForm({ newPackageName: "", newPrice: "", notes: "" });
     },
@@ -268,8 +267,7 @@ export default function BookingsPage() {
   const reschedule = useMutation({
     mutationFn: (data: Record<string, unknown>) => fetchJsonAuth(`/api/bookings/${selectedId}/reschedule`, { method: "PATCH", body: JSON.stringify(data) }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["booking", selectedId] });
-      qc.invalidateQueries({ queryKey: ["bookings"] });
+      invalidateBookingRelated(qc);
       setShowReschedule(false);
       setRescheduleForm({ newDate: "", newTime: "", reason: "" });
     },
@@ -1111,7 +1109,7 @@ export default function BookingsPage() {
           </DialogHeader>
           <CreateBookingForm
             customers={customers}
-            onSuccess={() => { setShowCreateForm(false); qc.invalidateQueries({ queryKey: ["bookings"] }); }}
+            onSuccess={() => { setShowCreateForm(false); invalidateBookingRelated(qc); }}
             onCancel={() => setShowCreateForm(false)}
           />
         </DialogContent>
@@ -1159,8 +1157,7 @@ export default function BookingsPage() {
               booking={detail}
               onSuccess={() => {
                 setShowEditBooking(false);
-                qc.invalidateQueries({ queryKey: ["booking", selectedId] });
-                qc.invalidateQueries({ queryKey: ["bookings"] });
+                invalidateBookingRelated(qc);
               }}
               onCancel={() => setShowEditBooking(false)}
             />

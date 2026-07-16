@@ -76,6 +76,10 @@ export default function ContractDetailPage() {
       return r.json();
     },
     enabled: Number.isFinite(contractId),
+    // Hợp đồng là VĂN BẢN pháp lý đọc live từ booking — mở trang là phải fetch
+    // mới, không nhận cache 5 phút toàn cục (chống hiện bản cũ sau khi sửa đơn).
+    staleTime: 0,
+    refetchOnMount: "always",
   });
 
   const { data: changeLog = [], isLoading: logLoading } = useQuery<ContractChangeLogRow[]>({

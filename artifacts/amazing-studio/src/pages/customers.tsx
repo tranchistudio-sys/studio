@@ -3,6 +3,7 @@ import { useSearch } from "wouter";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { formatVND, formatDate } from "@/lib/utils";
+import { invalidateBookingRelated } from "@/lib/booking-cache";
 import { OpenCalendarButton } from "@/components/OpenCalendarButton";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { Button, Input, Select, Textarea, Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui";
@@ -198,8 +199,9 @@ export default function CustomersPage() {
     mutationFn: ({ id, data }: { id: number; data: typeof form }) =>
       fetchJson<Customer>(`/api/customers/${id}`, { method: "PUT", body: JSON.stringify(data) }),
     onSuccess: (updated) => {
-      qc.invalidateQueries({ queryKey: ["customers"] });
-      qc.invalidateQueries({ queryKey: ["customer-detail", editingId] });
+      // Tên/SĐT khách hiện trên card lịch, đơn hàng, hợp đồng, tìm kiếm — phải
+      // invalidate hết, không riêng màn Khách hàng (staleTime toàn cục 5 phút).
+      invalidateBookingRelated(qc);
       setFormSuccess(`Đã cập nhật "${updated.name}" thành công!`);
       setTimeout(() => { setIsOpen(false); setFormSuccess(""); }, 1200);
     },

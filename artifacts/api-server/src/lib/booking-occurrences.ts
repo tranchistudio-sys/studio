@@ -54,3 +54,100 @@ export function occurrenceDayLabel(index1Based: number, total: number, label?: s
   const l = (label ?? "").trim();
   return l ? `${base} — ${l}` : base;
 }
+
+// ─── Sync ngày phụ TRONG transaction PUT /bookings/:id ───────────────────────
+// Trước đây frontend tự sync bằng nhiều request rời (GET + PUT/POST/DELETE từng
+// ngày) SAU khi booking đã lưu → lỗi giữa chừng là booking mới nhưng ngày phụ cũ.
+// Giờ payload Lưu gửi kèm `occurrences`, backend diff + ghi trong CÙNG transaction.
+
+export type OccurrenceDraftSanitized = {
+  id: number | null;
+  shootDate: string;
+  shootTime: string | null;
+  label: string | null;
+};
+
+export const MAX_OCCURRENCES_PER_BOOKING = 30;
+
+/**
+ * Validate + chuẩn hóa mảng occurrences từ body PUT /bookings/:id.
+ * Trả lỗi CỤ THỂ để route 400 TRƯỚC khi mở transaction — payload sai thì không
+ * ghi gì hết (atomic save: validate toàn bộ rồi mới đụng DB).
+ */
+export function sanitizeOccurrenceDrafts(
+  raw: unknown,
+): { ok: true; drafts: OccurrenceDraftSanitized[] } | { ok: false; error: string } {
+  if (!Array.isArray(raw)) return { ok: false, error: "occurrences phải là mảng" };
+  if (raw.length > MAX_OCCURRENCES_PER_BOOKING) {
+    return { ok: false, error: `Tối đa ${MAX_OCCURRENCES_PER_BOOKING} ngày thực hiện phụ cho một dịch vụ` };
+  }
+  const drafts: OccurrenceDraftSanitized[] = [];
+  for (const item of raw) {
+    if (item == null || typeof item !== "object") return { ok: false, error: "Ngày thực hiện không hợp lệ" };
+    const o = item as Record<string, unknown>;
+    const shootDate = typeof o.shootDate === "string" ? o.shootDate.slice(0, 10) : "";
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(shootDate)) {
+      return { ok: false, error: "Ngày thực hiện phụ không hợp lệ (YYYY-MM-DD)" };
+    }
+    const rawTime = o.shootTime;
+    const shootTime =
+      typeof rawTime === "string" && rawTime.trim() ? normalizeTime(rawTime) : null;
+    if (shootTime !== null && !/^\d{2}:\d{2}$/.test(shootTime)) {
+      return { ok: false, error: "Giờ thực hiện phụ không hợp lệ (HH:MM)" };
+    }
+    const label =
+      typeof o.label === "string" && o.label.trim() ? o.label.trim().slice(0, 120) : null;
+    const idNum = typeof o.id === "number" && Number.isInteger(o.id) && o.id > 0 ? o.id : null;
+    drafts.push({ id: idNum, shootDate, shootTime, label });
+  }
+  return { ok: true, drafts };
+}
+
+export type OccurrenceSyncPlan = {
+  toUpdate: { id: number; shootDate: string; shootTime: string | null; label: string | null }[];
+  toInsert: { shootDate: string; shootTime: string | null; label: string | null }[];
+  deleteIds: number[];
+};
+
+/**
+ * Diff drafts (form) với rows hiện có (DB) → kế hoạch update/insert/delete.
+ * - Draft có id khớp row hiện có → update row đó (đổi ngày = UPDATE in-place,
+ *   KHÔNG delete-rồi-create → card lịch không bao giờ "mất tạm").
+ * - Draft có id lạ (row đã bị xóa bởi người khác) → hạ xuống insert, không văng lỗi.
+ * - Row hiện có không còn trong drafts → delete.
+ * Trả lỗi khi 2 draft trùng hoàn toàn ngày+giờ, hoặc trùng với ngày chính của đơn.
+ */
+export function planOccurrencesSync(
+  existing: { id: number }[],
+  drafts: OccurrenceDraftSanitized[],
+  mainDate: string | Date | null | undefined,
+  mainTime: string | null | undefined,
+): { ok: true; plan: OccurrenceSyncPlan } | { ok: false; error: string } {
+  const seen = new Set<string>();
+  const mainKey = `${normalizeDate(mainDate)}|${normalizeTime(mainTime)}`;
+  for (const d of drafts) {
+    const key = `${d.shootDate}|${normalizeTime(d.shootTime)}`;
+    if (key === mainKey) {
+      return { ok: false, error: "Ngày thực hiện phụ trùng hoàn toàn với ngày chính của dịch vụ" };
+    }
+    if (seen.has(key)) {
+      return { ok: false, error: "Hai ngày thực hiện phụ trùng hoàn toàn ngày + giờ" };
+    }
+    seen.add(key);
+  }
+  const existingIds = new Set(existing.map((r) => r.id));
+  const keptIds = new Set<number>();
+  const plan: OccurrenceSyncPlan = { toUpdate: [], toInsert: [], deleteIds: [] };
+  for (const d of drafts) {
+    if (d.id != null && existingIds.has(d.id)) {
+      keptIds.add(d.id);
+      plan.toUpdate.push({ id: d.id, shootDate: d.shootDate, shootTime: d.shootTime, label: d.label });
+    } else {
+      plan.toInsert.push({ shootDate: d.shootDate, shootTime: d.shootTime, label: d.label });
+    }
+  }
+  for (const r of existing) {
+    if (!keptIds.has(r.id)) plan.deleteIds.push(r.id);
+  }
+  return { ok: true, plan };
+}

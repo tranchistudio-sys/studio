@@ -79,7 +79,9 @@ interface StaffAssignmentEditorProps {
 }
 
 export function StaffAssignmentEditor({
-  value,
+  // Item legacy (nhập qua API/import) có thể THIẾU hẳn key assignedStaff —
+  // default [] để form sửa show không crash trắng cả trang lịch.
+  value = [],
   onChange,
   staffOptions,
   allStaffRates,

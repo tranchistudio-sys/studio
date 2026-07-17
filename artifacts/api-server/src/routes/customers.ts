@@ -211,8 +211,11 @@ router.put("/customers/:id", async (req, res) => {
   const rawPhone = phone !== undefined ? String(phone) : undefined;
   try {
     const setFields: Record<string, unknown> = {
-      name, email, address, notes, facebook, zalo, source, tags: tags || [], gender, avatar,
+      name, email, address, notes, facebook, zalo, source, gender, avatar,
     };
+    // tags chỉ được ghi khi body THẬT SỰ gửi tags — PUT một phần ({name}, {phone},
+    // {avatar}…) mà ép tags||[] sẽ xóa sạch tags của khách một cách lặng lẽ.
+    if (tags !== undefined) setFields.tags = tags || [];
     if (customerRank !== undefined) setFields.customerRank = normalizeRank(customerRank);
     if (rawPhone !== undefined) {
       setFields.phone = normalizePhoneOrNull(rawPhone);

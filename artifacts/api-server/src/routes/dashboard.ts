@@ -12,7 +12,7 @@ import { paymentNotOnEmptyParentSql } from "../lib/parent-contract";
 import { getSimpleFinance } from "../lib/finance-summary";
 // PR #102: "đã thu"/"còn nợ" per-booking đọc từ ENGINE (phân bổ tiền gia đình
 // LIVE từ payments gốc) — dashboard là consumer, không tự tính từ paid_amount.
-import { ENGINE_ALLOC_PAID_SQL, ENGINE_DEBT_SQL } from "../lib/finance/financial-engine";
+import { engineAllocationSnapshot } from "../lib/finance/financial-engine";
 
 // PR D (read-layer): loại phiếu cọc nằm ở CHA RỖNG/ZOMBIE (hợp đồng cha hết dịch vụ con hiệu lực)
 // khỏi các tổng "đã thu" active — dùng cho query tiền cash-basis của dashboard.
@@ -345,22 +345,27 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
       const today = new Date().toISOString().slice(0, 10);
 
       // Đơn CÒN HIỆU LỰC trong tháng chụp (loại thùng rác/hủy/báo giá tạm/đơn cha/con mồ côi)
-      // PR #102: "đã thu"/"còn nợ" per-row đọc từ ENGINE (đã thu PHÂN BỔ theo gia
-      // đình từ payments gốc) — không tự tính từ cột paid_amount nữa.
-      const bkResult = await pool.query(`
+      // Chốt 17/07: "đã thu"/"còn nợ" per-row đọc từ SNAPSHOT allocator chung của
+      // ENGINE (cọc chia đều + thu trực tiếp + FIFO) — không tự tính từ cột paid_amount.
+      const [bkResult, allocSnap] = await Promise.all([
+        pool.query(`
         SELECT b.id, b.order_code, b.shoot_date, b.status, b.service_category, b.package_type,
                b.service_label, b.total_amount, b.discount_amount,
-               ${ENGINE_ALLOC_PAID_SQL} AS alloc_paid,
-               ${ENGINE_DEBT_SQL} AS row_debt,
                c.name AS customer_name, c.phone AS customer_phone
         FROM bookings b
         JOIN customers c ON c.id = b.customer_id
         WHERE b.shoot_date >= $1 AND b.shoot_date <= $2
           AND ${revenueCountableSql("b")}
         ORDER BY b.shoot_date
-      `, [startDate, endOfMonth]);
+      `, [startDate, endOfMonth]),
+        engineAllocationSnapshot(),
+      ]);
 
-      const bookingsInMonth = bkResult.rows as Array<Record<string, string>>;
+      const bookingsInMonth = (bkResult.rows as Array<Record<string, string>>).map(b => ({
+        ...b,
+        alloc_paid: String(allocSnap.byId.get(Number(b.id))?.allocPaid ?? 0),
+        row_debt: String(allocSnap.byId.get(Number(b.id))?.debt ?? 0),
+      }));
       const bookingIds = bookingsInMonth.map(b => Number(b.id));
       const bookedCount = bookingsInMonth.length;
       const bookedAmount = bookingsInMonth.reduce((s, b) => s + parseFloat(b.total_amount), 0);

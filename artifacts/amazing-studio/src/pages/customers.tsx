@@ -104,6 +104,8 @@ type Customer = {
   address?: string; gender?: string; facebook?: string; zalo?: string;
   source?: string; tags?: string; notes?: string; createdAt: string;
   avatar?: string; totalBookings?: number; totalOwed?: number; totalPaid?: number; totalDebt?: number;
+  /** "Khách trả dư" — tiền thật vượt tổng hợp đồng (chốt 17/07, không mất, không nợ âm). */
+  totalOverpaid?: number;
   customerRank?: string;
 };
 
@@ -515,10 +517,16 @@ export default function CustomersPage() {
                   <div className="bg-white/60 dark:bg-black/10 rounded-xl p-2 text-center">
                     <p className="text-[10px] text-muted-foreground">Đã trả</p>
                     <p className="font-bold text-sm text-green-600">
-                      {/* Dùng totalPaid từ BE (nguồn phiếu thu chuẩn): đơn cha tổng — nơi ghi
-                          tiền cọc/thu của hợp đồng nhiều dịch vụ — đã bị loại khỏi mảng bookings. */}
+                      {/* totalPaid = tiền ĐƯỢC TÍNH vào các dịch vụ (cọc chia đều + thu trực
+                          tiếp + FIFO, cap tại NET). Phần khách trả VƯỢT hợp đồng hiện riêng
+                          bên dưới — không mất, không tạo nợ âm (chốt 17/07). */}
                       {formatVND(customerDetail.totalPaid ?? 0)}
                     </p>
+                    {(customerDetail.totalOverpaid ?? 0) > 0 && (
+                      <p className="text-[10px] font-semibold text-amber-600">
+                        + Khách trả dư {formatVND(customerDetail.totalOverpaid ?? 0)}
+                      </p>
+                    )}
                   </div>
                   <div className="bg-white/60 dark:bg-black/10 rounded-xl p-2 text-center">
                     <p className="text-[10px] text-muted-foreground">Còn nợ</p>

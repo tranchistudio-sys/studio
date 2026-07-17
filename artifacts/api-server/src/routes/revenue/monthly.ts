@@ -3,7 +3,7 @@ import { loadAllData } from "./data";
 import { generateMonthRange, monthLabel } from "./helpers";
 // GĐ1b-1 (kiến trúc 14/07): "Còn nợ tháng" đọc từ FINANCIAL ENGINE theo NGÀY CHỤP —
 // route không tự tính công nợ nữa.
-import { engineReceivableForRange, REVENUE_SCOPES } from "../../lib/finance/financial-engine";
+import { engineReceivableForRange, engineAllocationSnapshot, REVENUE_SCOPES } from "../../lib/finance/financial-engine";
 // PR Financial Evidence: logic tính bucket tách sang monthly-core (MỘT nguồn sự thật,
 // route /evidence dùng chung) — hành vi giữ NGUYÊN.
 import { computeBucketStats, deriveMoney, bucketRanges } from "./monthly-core";
@@ -41,6 +41,10 @@ router.get("/revenue/v2/monthly", async (req, res) => {
     return `${last}-${String(lastDay).padStart(2, "0")}`;
   })();
 
+  // MỘT snapshot allocator cho cả request — tránh N+1 nạp bookings+payments
+  // theo từng bucket tháng (13 bucket = 13 lần nạp trước đây).
+  const allocSnap = await engineAllocationSnapshot();
+
   const result = [];
   for (const { ym, effFrom, effTo } of bucketRanges(months, customFrom, customTo)) {
     // Task #363: với từng tháng, range hiệu lực là giao của [dateFrom,dateTo] và [ymStart,ymEnd].
@@ -51,7 +55,7 @@ router.get("/revenue/v2/monthly", async (req, res) => {
     // công nợ sống per-booking, đọc từ FINANCIAL ENGINE (đồng bộ Copilot 3B +
     // custom-range). Thay hẳn công thức trộn scope #394 (contractValue − cohort
     // cashIn) từng đẻ ra số 175.748.994 vô nghĩa vận hành.
-    const remaining = await engineReceivableForRange(effFrom, effTo);
+    const remaining = await engineReceivableForRange(effFrom, effTo, allocSnap);
 
     const derived = deriveMoney(stats);
 
@@ -102,7 +106,7 @@ router.get("/revenue/v2/monthly", async (req, res) => {
 
   // Tổng "còn có thể thu" tính MỘT lần trên cả khoảng — cộng từng bucket có thể
   // đếm trùng đơn có show ở 2 tháng (shoot_date tháng này + occurrence tháng sau).
-  totals.remaining = await engineReceivableForRange(dateFrom, dateTo);
+  totals.remaining = await engineReceivableForRange(dateFrom, dateTo, allocSnap);
 
   // GĐ1b-2: metadata minh bạch — coverage cast còn partial thì KHÔNG được gọi
   // đây là "lợi nhuận chính xác tuyệt đối"; hoa hồng sale chưa ghi sổ chưa gồm.

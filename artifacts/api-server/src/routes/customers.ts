@@ -96,7 +96,7 @@ router.get("/customers", async (req, res) => {
   // + nạp toàn bộ payments vào RAM). Công thức chuẩn quy tắc ①: nợ sống per-booking
   // (net − paid_amount, clamp từng đơn) trên tập countable — khớp Dashboard/Copilot.
   const financeByCustomer = await engineAllCustomersFinance();
-  const zero = { totalBookings: 0, totalOwed: 0, totalPaid: 0, totalDebt: 0 };
+  const zero = { totalBookings: 0, totalOwed: 0, totalPaid: 0, totalDebt: 0, totalOverpaid: 0 };
   const result = customers.map((c) => ({ ...c, ...(financeByCustomer.get(c.id as number) ?? zero) }));
 
   res.json(result);
@@ -168,12 +168,12 @@ router.get("/customers/:id", async (req, res) => {
   const bookings = await db.select(await bookingColumnsCompat()).from(bookingsTable).where(eq(bookingsTable.customerId, id));
   // FINANCIAL ENGINE: tiền của khách KHÔNG tính tại route (kiến trúc 14/07) —
   // quy tắc ① nợ sống per-booking, khớp Dashboard/Copilot (vd Trúc Ly 42.799.994).
-  const { totalBookings, totalOwed, totalPaid, totalDebt } = await engineCustomerFinance(id);
+  const { totalBookings, totalOwed, totalPaid, totalDebt, totalOverpaid } = await engineCustomerFinance(id);
   // Lịch sử show: chỉ các đơn còn hiệu lực (đơn con + đơn lẻ) — bỏ đơn cha tổng (bản gộp
   // trùng của dịch vụ con), đơn trong thùng rác, đơn hủy, báo giá tạm. Dịch vụ con còn
   // hiệu lực vẫn giữ nguyên → không mất lịch sử; audit xóa/sửa vẫn nằm ở chi tiết đơn.
   const historyBookings = customerVisibleBookings(bookings);
-  res.json({ ...customer, totalBookings, totalOwed, totalPaid, totalDebt, bookings: historyBookings });
+  res.json({ ...customer, totalBookings, totalOwed, totalPaid, totalDebt, totalOverpaid, bookings: historyBookings });
   } catch (err) {
     console.error("GET /customers/:id error:", err);
     res.status(500).json({ error: "Lỗi hệ thống" });

@@ -216,35 +216,54 @@ export async function verifyLaborSource(ym: string): Promise<TruthCheck> {
 
 // ─── Check: toàn vẹn per-booking & theo gia đình đơn ───────────────────────────
 
+/**
+ * PR #102 — bất biến GIA ĐÌNH của phân bổ pro-rata:
+ *   Σ nợ per-booking (Engine, "đã thu PHÂN BỔ") trên các thành viên countable
+ *   = max(0, Σ net gia đình − Σ phiếu thu gốc của gia đình)
+ * Vế phải là ĐÚNG con số màn Booking detail / Hợp đồng hiển thị (tổng gia đình −
+ * phiếu thu trên đơn đích) — tức Booking screen ↔ Engine phải ra cùng một số.
+ */
 export async function verifyBookingRemaining(bookingId: number): Promise<TruthCheck> {
-  const b = await pool.query(
-    `SELECT id, total_amount AS "totalAmount", discount_amount AS "discountAmount",
-            paid_amount AS "paidAmount"
-     FROM bookings WHERE id = $1`,
+  const rootR = await pool.query(
+    `SELECT COALESCE(parent_id, id) AS root FROM bookings WHERE id = $1`,
     [bookingId],
   );
-  const row = b.rows[0] as Record<string, unknown>;
+  const root = Number((rootR.rows[0] as { root?: number } | undefined)?.root ?? bookingId);
+
+  const engineR = await pool.query(
+    `SELECT COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS v
+     FROM bookings b
+     WHERE COALESCE(b.parent_id, b.id) = $1 AND ${revenueCountableSql("b")}`,
+    [root],
+  );
+  const engine = Number((engineR.rows[0] as { v?: string })?.v ?? 0);
+
+  // Độc lập với Engine: net gia đình từ bảng bookings + phiếu gốc từ bảng payments.
+  const famR = await pool.query(
+    `SELECT COALESCE(SUM(GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0))), 0) AS net
+     FROM bookings b
+     WHERE COALESCE(b.parent_id, b.id) = $1 AND ${revenueCountableSql("b")}`,
+    [root],
+  );
   const p = await pool.query(
-    `SELECT amount, status, payment_type AS "paymentType" FROM payments WHERE booking_id = $1`,
-    [bookingId],
+    `SELECT p.amount, p.status, p.payment_type AS "paymentType"
+     FROM payments p JOIN bookings pb ON pb.id = p.booking_id
+     WHERE COALESCE(pb.parent_id, pb.id) = $1`,
+    [root],
   );
-  // additionalServicesTotal bỏ qua (0): mọi đường nợ production đều tính
-  // total − discount − paid, không có term dịch vụ thêm riêng.
+  const familyNet = Number((famR.rows[0] as { net?: string })?.net ?? 0);
   const viaPayments = computeBookingMoney(
-    {
-      totalAmount: row.totalAmount as string,
-      discountAmount: row.discountAmount as string,
-    },
+    { totalAmount: String(familyNet), discountAmount: "0" },
     p.rows as AggPayment[],
   ).remaining;
-  const viaPaidColumn = Math.max(
-    0,
-    Number(row.totalAmount ?? 0) - Number(row.discountAmount ?? 0) - Number(row.paidAmount ?? 0),
-  );
-  return compareAgainstEngine("booking_remaining", `DH#${bookingId}`, {
-    engine: viaPaidColumn, // quy tắc ①: paid_amount là phân bổ chuẩn per-booking
-    tuPhieuThuGoc: viaPayments, // đối chiếu ngược về bảng payments gốc
+
+  const check = compareAgainstEngine("booking_remaining_family", `DH#${bookingId} (FAM#${root})`, {
+    engine,
+    manBooking_tuPhieuThuGoc: viaPayments,
   });
+  // Phép chia pro-rata có thể lệch phần lẻ cực nhỏ của numeric — dưới 1 đồng coi là khớp.
+  if (!check.pass && check.maxDiff < 1) return { ...check, pass: true };
+  return check;
 }
 
 export async function verifyFamilyCashIntegrity(limit = 200): Promise<TruthCheck[]> {

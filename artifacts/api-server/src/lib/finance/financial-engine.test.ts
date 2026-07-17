@@ -233,7 +233,11 @@ describe("read models GĐ1e-2 — Copilot đọc số tiền, KHÔNG tự SQL n�
     expect(sqls).toHaveLength(2); // list + total, KHÔNG dò schema khi không có range
     for (const s of sqls) {
       expect(s).toContain("deleted_at IS NULL");
-      expect(s).toContain("GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0) - COALESCE(b.paid_amount, 0))");
+      // PR #102: nợ sống ① dùng "đã thu PHÂN BỔ" từ payments gốc theo gia đình —
+      // không còn tin cột paid_amount.
+      expect(s).toContain("GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0) - (");
+      expect(s).toContain("AS family_paid");
+      expect(s).not.toContain("COALESCE(b.paid_amount, 0)");
     }
     expect(r.customers[0]).toEqual({ name: "Khách A", phone: "0900000001", debt: 42798994 });
     expect(r.totalDebt).toBe(42798994);

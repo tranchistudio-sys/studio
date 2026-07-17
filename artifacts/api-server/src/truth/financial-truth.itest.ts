@@ -47,6 +47,9 @@ async function ids(sql: string): Promise<number[]> {
   return (r.rows as Array<{ id: number }>).map(x => Number(x.id));
 }
 
+// Bản LEGACY (cột paid_amount) — CHỈ dùng để ORDER BY chọn mẫu khách/booking,
+// KHÔNG dùng làm expected: từ PR #102 Engine tính "đã thu" PHÂN BỔ LIVE theo gia
+// đình từ payments gốc (xem family-allocation.itest.ts cho bản đối chiếu độc lập).
 const DEBT_SQL =
   "GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0) - COALESCE(b.paid_amount, 0))";
 const COUNTABLE = `b.deleted_at IS NULL AND b.is_parent_contract = false
@@ -243,7 +246,7 @@ describe("TIER 1c — Còn có thể thu từ show của tháng (bắt buộc PA
 
   it("Membership đúng ngữ nghĩa: tính đơn chụp-trong-tháng bất kể tạo khi nào; loại đơn chụp tháng khác; DISTINCT không double-count", async () => {
     const { getSchemaFlags } = await import("../lib/schema-compat");
-    const { monthMembershipSql, engineReceivableForRange } = await import("../lib/finance/financial-engine");
+    const { monthMembershipSql, engineReceivableForRange, ENGINE_DEBT_SQL } = await import("../lib/finance/financial-engine");
     const [y, m] = ym.split("-").map(Number);
     const lastDay = new Date(y, m, 0).getDate();
     const from = `${ym}-01`;
@@ -254,9 +257,11 @@ describe("TIER 1c — Còn có thể thu từ show của tháng (bắt buộc PA
 
     const engine = await engineReceivableForRange(from, to);
 
-    // (item 6) Bản tính lại ĐỘC LẬP bằng DISTINCT id — đơn nhiều occurrence chỉ 1 lần
+    // (item 6) Bản tính lại ĐỘC LẬP bằng DISTINCT id — đơn nhiều occurrence chỉ 1 lần.
+    // Dùng ENGINE_DEBT_SQL (phân bổ #102): test này kiểm MEMBERSHIP/set-logic, còn
+    // công thức phân bổ được đối chiếu độc lập ở family-allocation.itest.ts.
     const indep = await pool.query(
-      `SELECT COALESCE(SUM(${DEBT_SQL}), 0) AS v FROM bookings b
+      `SELECT COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS v FROM bookings b
        WHERE b.id IN (
          SELECT DISTINCT b.id FROM bookings b
          WHERE ${COUNTABLE} AND ${member})`,
@@ -267,9 +272,9 @@ describe("TIER 1c — Còn có thể thu từ show của tháng (bắt buộc PA
     // (item 4) Phân hoạch theo ngày TẠO: engine = tạo-trước-tháng + tạo-trong-tháng + tạo-sau
     const parts = await pool.query(
       `SELECT
-         COALESCE(SUM(${DEBT_SQL}) FILTER (WHERE ${createdVN} < $1::date), 0) AS pre,
-         COALESCE(SUM(${DEBT_SQL}) FILTER (WHERE ${createdVN} BETWEEN $1::date AND $2::date), 0) AS cur,
-         COALESCE(SUM(${DEBT_SQL}) FILTER (WHERE ${createdVN} > $2::date), 0) AS post
+         COALESCE(SUM(${ENGINE_DEBT_SQL}) FILTER (WHERE ${createdVN} < $1::date), 0) AS pre,
+         COALESCE(SUM(${ENGINE_DEBT_SQL}) FILTER (WHERE ${createdVN} BETWEEN $1::date AND $2::date), 0) AS cur,
+         COALESCE(SUM(${ENGINE_DEBT_SQL}) FILTER (WHERE ${createdVN} > $2::date), 0) AS post
        FROM bookings b WHERE ${COUNTABLE} AND ${member}`,
       [from, to],
     );
@@ -281,7 +286,7 @@ describe("TIER 1c — Còn có thể thu từ show của tháng (bắt buộc PA
 
     // (item 5) Đơn TẠO trong tháng nhưng KHÔNG chụp trong tháng: cấm lọt vào membership
     const leak = await pool.query(
-      `SELECT COUNT(*) AS c, COALESCE(SUM(${DEBT_SQL}), 0) AS v FROM bookings b
+      `SELECT COUNT(*) AS c, COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS v FROM bookings b
        WHERE ${COUNTABLE} AND ${createdVN} BETWEEN $1::date AND $2::date
          AND NOT (${member})`,
       [from, to],

@@ -18,19 +18,72 @@
  *   ⑤ Hệ thống chỉ có MỘT pipeline tiền — bảng transactions (accounting) không phải nguồn.
  *
  * GĐ0: engine phục vụ Financial Truth Test (read-only). GĐ1: các consumer chuyển
- * sang gọi engine. Ghi chú paid: cột bookings.paid_amount là KẾT QUẢ PHÂN BỔ phiếu
- * thu của hệ thống (tiền hợp đồng cha–con ghi ở cha rồi phân bổ) — engine dùng nó
- * cho công nợ per-booking (quy tắc ①) và VERIFY tính toàn vẹn ở mức GIA ĐÌNH đơn
- * bằng engineFamilyCashDrift (Σ phiếu thu gốc = Σ paid_amount phân bổ).
+ * sang gọi engine.
+ *
+ * GĐ3 — FAMILY CASH ALLOCATION (PR #102): engine KHÔNG còn tin cột
+ * bookings.paid_amount (bản phân bổ ghi sẵn — thực tế phân bổ hỏng: phiếu thu
+ * hợp đồng gộp nằm ở đơn CHA, đơn CON không nhận được phần tiền → màn Khách/
+ * Dashboard/Copilot báo nợ sai). "Đã thu" của MỖI booking giờ được PHÂN BỔ LIVE
+ * từ bảng payments GỐC theo gia đình đơn:
+ *
+ *   family_paid = Σ phiếu thu hợp lệ (không voided/refund/ad_hoc) ghi trên BẤT KỲ
+ *                 thành viên nào của gia đình (cha hoặc con)
+ *   phân bổ pro-rata theo GIÁ TRỊ HỢP ĐỒNG (net) của từng thành viên countable:
+ *   alloc(b) = family_paid × net(b) / Σ net(thành viên countable)
+ *   (Σ net = 0 → dồn toàn bộ vào thành viên countable id nhỏ nhất — deterministic)
+ *
+ * Tính chất then chốt của pro-rata: nếu family_paid ≤ family_net thì
+ * Σ per-booking GREATEST(0, net−alloc) = family_net − family_paid — tức tổng nợ
+ * per-booking (①) LUÔN bằng nợ mức gia đình mà màn Booking/Hợp đồng hiển thị.
+ * Không copy dữ liệu, không sửa/tạo payment — chỉ đổi cách ĐỌC.
+ * engineFamilyCashDrift giữ nguyên vai trò cảnh báo vệ sinh cột paid_amount cũ.
  */
 import { pool } from "@workspace/db";
 import { revenueCountableSql } from "../booking-money";
 import { paymentNotOnEmptyParentSql } from "../parent-contract";
 import { getSchemaFlags } from "../schema-compat";
 
-/** Quy tắc ①: nợ sống per-booking. */
+/**
+ * SQL "đã thu PHÂN BỔ" của một dòng booking `alias` (correlated subquery).
+ * Nguồn: bảng payments GỐC của CẢ GIA ĐÌNH đơn, pro-rata theo net từng thành viên.
+ * Booking không countable (cha tổng/hủy/tạm/xóa/mồ côi) nhận 0 — nhất quán với
+ * tập tính nợ; phiếu trên "cha rỗng" (không còn con hiệu lực) → không ai nhận
+ * (mirror paymentNotOnEmptyParentSql: tiền treo, không tính vào Đã thu active).
+ */
+export function engineAllocPaidSql(alias = "b"): string {
+  const a = alias;
+  return `(
+    SELECT CASE
+      WHEN NOT (${revenueCountableSql(a)}) THEN 0
+      WHEN fam.family_net > 0
+        THEN fam.family_paid * GREATEST(0, ${a}.total_amount - COALESCE(${a}.discount_amount, 0)) / fam.family_net
+      WHEN fam.first_countable_id = ${a}.id THEN fam.family_paid
+      ELSE 0
+    END
+    FROM (
+      SELECT
+        COALESCE(SUM(GREATEST(0, fm.total_amount - COALESCE(fm.discount_amount, 0)))
+          FILTER (WHERE ${revenueCountableSql("fm")}), 0) AS family_net,
+        MIN(fm.id) FILTER (WHERE ${revenueCountableSql("fm")}) AS first_countable_id,
+        COALESCE((
+          SELECT SUM(p.amount::numeric)
+          FROM payments p JOIN bookings pb ON pb.id = p.booking_id
+          WHERE COALESCE(pb.parent_id, pb.id) = COALESCE(${a}.parent_id, ${a}.id)
+            AND COALESCE(p.status, 'active') != 'voided'
+            AND COALESCE(p.payment_type, '') NOT IN ('refund', 'ad_hoc')
+        ), 0) AS family_paid
+      FROM bookings fm
+      WHERE COALESCE(fm.parent_id, fm.id) = COALESCE(${a}.parent_id, ${a}.id)
+    ) fam
+  )`;
+}
+
+/** "Đã thu phân bổ" cho alias mặc định b — dùng trong mọi SELECT của engine. */
+export const ENGINE_ALLOC_PAID_SQL = engineAllocPaidSql("b");
+
+/** Quy tắc ①: nợ sống per-booking = max(0, net − đã thu PHÂN BỔ từ payments gốc). */
 export const ENGINE_DEBT_SQL =
-  "GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0) - COALESCE(b.paid_amount, 0))";
+  `GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0) - ${ENGINE_ALLOC_PAID_SQL})`;
 
 /**
  * BA SCOPE CHÍNH THỨC của doanh thu tháng (chủ chốt 14/07 tối) — ba chỉ số là ba
@@ -110,9 +163,9 @@ export type CustomerFinance = {
   totalBookings: number;
   /** Tổng phải thu = Σ NET per-booking (tổng − giảm giá, không âm). */
   totalOwed: number;
-  /** Đã trả = Σ paid_amount PHÂN BỔ trên các đơn countable. Tiền còn treo ở đơn
-   *  CHA chưa phân bổ xuống dịch vụ con sẽ KHÔNG hiện ở đây — chủ đích, để lộ
-   *  data cần làm sạch (xem engineFamilyCashDrift). */
+  /** Đã trả = Σ "đã thu PHÂN BỔ LIVE" (từ payments gốc, pro-rata theo gia đình)
+   *  trên các đơn countable — tiền ghi ở đơn CHA giờ TỰ chảy xuống các dịch vụ
+   *  con theo giá trị hợp đồng (PR #102). */
   totalPaid: number;
   /** Còn nợ = quy tắc ①: Σ GREATEST(0, net − paid) per-booking. */
   totalDebt: number;
@@ -121,7 +174,7 @@ export type CustomerFinance = {
 const CUSTOMER_FINANCE_SELECT = `
   COUNT(*)::int AS cnt,
   COALESCE(SUM(GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0))), 0) AS owed,
-  COALESCE(SUM(COALESCE(b.paid_amount, 0)), 0) AS paid,
+  COALESCE(SUM(${ENGINE_ALLOC_PAID_SQL}), 0) AS paid,
   COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS debt`;
 
 function rowToCustomerFinance(row?: Record<string, unknown>): CustomerFinance {
@@ -452,7 +505,7 @@ export async function engineBookingFinance(): Promise<BookingFinance[]> {
             COALESCE(b.service_label, b.package_type, b.service_category) AS service,
             b.shoot_date, ${occSelect} AS occ_dates,
             GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0)) AS net_value,
-            COALESCE(b.paid_amount, 0) AS paid,
+            ${ENGINE_ALLOC_PAID_SQL} AS paid,
             ${ENGINE_DEBT_SQL} AS receivable,
             COALESCE((SELECT SUM(e.rate::numeric) FROM staff_job_earnings e
               WHERE e.booking_id = b.id
@@ -506,7 +559,7 @@ export async function engineServiceRollup(): Promise<ServiceRollup[]> {
     `SELECT COALESCE(NULLIF(TRIM(b.service_category), ''), 'khac') AS service,
             COUNT(*)::int AS booking_count,
             COALESCE(SUM(GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0))), 0) AS contract_value,
-            COALESCE(SUM(COALESCE(b.paid_amount, 0)), 0) AS collected,
+            COALESCE(SUM(${ENGINE_ALLOC_PAID_SQL}), 0) AS collected,
             COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS receivable,
             COALESCE(SUM((SELECT COALESCE(SUM(e.rate::numeric), 0) FROM staff_job_earnings e
               WHERE e.booking_id = b.id

@@ -141,7 +141,9 @@ describe("getUnpaidCustomers — loại thùng rác/hủy/báo giá tạm/đơn 
       expect(s).toContain("is_parent_contract = false");
       expect(s).toContain("parent_id IS NULL"); // orphan-check (NOT EXISTS cha chết)
       expect(s).toContain("COALESCE(b.discount_amount, 0)");
-      expect(s).toContain("COALESCE(b.paid_amount, 0)");
+      // PR #102: "đã thu" = phân bổ LIVE theo gia đình từ payments gốc — không còn cột paid_amount.
+      expect(s).toContain("AS family_paid");
+      expect(s).not.toContain("COALESCE(b.paid_amount, 0)");
     }
   });
 

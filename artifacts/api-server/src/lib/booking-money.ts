@@ -262,3 +262,76 @@ export function revenueCountableSql(alias = "bookings"): string {
     AND COALESCE(${a}.status, '') NOT IN ('cancelled', 'temp_quote')
     AND ${notOrphanSqlFragment(a)}`;
 }
+
+// ─── FAMILY CASH ALLOCATION (PR #102) — bản JS thuần, mirror engineAllocPaidSql ──
+// Phiếu thu hợp đồng gộp nằm ở đơn CHA; "đã thu" của TỪNG booking = phân bổ
+// pro-rata theo GIÁ TRỊ HỢP ĐỒNG (net) trên các thành viên countable của gia đình.
+// Σ net = 0 → dồn hết vào thành viên countable id nhỏ nhất (deterministic).
+// Gia đình không còn thành viên countable (cha rỗng/cả nhà hủy) → không ai nhận.
+
+export type AllocBookingInput = CountableBookingInput & {
+  id: number;
+  totalAmount?: number | string | null;
+  discountAmount?: number | string | null;
+};
+
+export type AllocPaymentInput = {
+  bookingId?: number | null;
+  amount?: number | string | null;
+  status?: string | null;
+  paymentType?: string | null;
+};
+
+/**
+ * Map bookingId → "đã thu PHÂN BỔ" từ payments gốc theo gia đình đơn.
+ * @param allBookings TOÀN BỘ đơn của tập (kể cả cha/hủy/xóa) — cần đủ để gom gia đình.
+ * @param payments    phiếu thu (loại voided/refund/ad_hoc tại đây — truyền thô).
+ */
+export function allocateFamilyPaid(
+  allBookings: readonly AllocBookingInput[],
+  payments: readonly AllocPaymentInput[],
+): Map<number, number> {
+  const byId = new Map(allBookings.map((b) => [b.id, b]));
+  const rootOf = (b: AllocBookingInput): number => b.parentId ?? b.id;
+  const parentById = buildParentContractMap(allBookings);
+
+  // Tiền gia đình từ payments gốc (phiếu ghi trên cha HOẶC con đều gom về root).
+  const familyPaid = new Map<number, number>();
+  for (const p of payments) {
+    if (p.bookingId == null) continue;
+    if ((p.status ?? "active") === "voided") continue;
+    const t = p.paymentType ?? "";
+    if (t === "refund" || t === "ad_hoc") continue;
+    const owner = byId.get(p.bookingId);
+    if (!owner) continue;
+    const root = rootOf(owner);
+    familyPaid.set(root, (familyPaid.get(root) ?? 0) + money(p.amount));
+  }
+
+  // Thành viên countable + net theo gia đình.
+  const familyNet = new Map<number, number>();
+  const familyFirstId = new Map<number, number>();
+  const netOf = (b: AllocBookingInput): number =>
+    clampMin0(money(b.totalAmount) - money(b.discountAmount));
+  for (const b of allBookings) {
+    if (!isRevenueCountable(b, parentById)) continue;
+    const root = rootOf(b);
+    familyNet.set(root, (familyNet.get(root) ?? 0) + netOf(b));
+    const first = familyFirstId.get(root);
+    if (first === undefined || b.id < first) familyFirstId.set(root, b.id);
+  }
+
+  const alloc = new Map<number, number>();
+  for (const b of allBookings) {
+    if (!isRevenueCountable(b, parentById)) {
+      alloc.set(b.id, 0);
+      continue;
+    }
+    const root = rootOf(b);
+    const paid = familyPaid.get(root) ?? 0;
+    const net = familyNet.get(root) ?? 0;
+    if (net > 0) alloc.set(b.id, (paid * netOf(b)) / net);
+    else alloc.set(b.id, familyFirstId.get(root) === b.id ? paid : 0);
+  }
+  return alloc;
+}

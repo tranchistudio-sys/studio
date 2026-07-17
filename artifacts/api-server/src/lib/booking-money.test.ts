@@ -282,3 +282,69 @@ describe("liveBookingSql — đơn còn hiệu lực GIỮ đơn cha (ngữ cả
     expect(liveBookingSql("b")).toContain("b.deleted_at IS NULL");
   });
 });
+
+// ─── PR #102: FAMILY CASH ALLOCATION (bản JS thuần, mirror engineAllocPaidSql) ──
+import { allocateFamilyPaid } from "./booking-money.js";
+
+describe("allocateFamilyPaid — tiền ở CHA chảy xuống con pro-rata theo giá trị hợp đồng", () => {
+  const fam = [
+    { id: 1, isParentContract: true, parentId: null, status: "confirmed", deletedAt: null, totalAmount: "10000000", discountAmount: "0" },
+    { id: 2, isParentContract: false, parentId: 1, status: "confirmed", deletedAt: null, totalAmount: "3000000", discountAmount: "0" },
+    { id: 3, isParentContract: false, parentId: 1, status: "confirmed", deletedAt: null, totalAmount: "7000000", discountAmount: "0" },
+  ];
+  const pay4onParent = [{ bookingId: 1, amount: "4000000", status: "active", paymentType: "payment" }];
+
+  it("phiếu 4tr ở CHA → con A 1,2tr / con B 2,8tr; CHA (đơn tổng) = 0", () => {
+    const m = allocateFamilyPaid(fam, pay4onParent);
+    expect(m.get(2)).toBeCloseTo(1_200_000, 6);
+    expect(m.get(3)).toBeCloseTo(2_800_000, 6);
+    expect(m.get(1)).toBe(0);
+  });
+
+  it("voided/refund/ad_hoc KHÔNG tính; phiếu ghi ở CON vẫn gom về gia đình", () => {
+    const m = allocateFamilyPaid(fam, [
+      { bookingId: 2, amount: "1000000", status: "active", paymentType: "payment" }, // ở con → vẫn tiền gia đình
+      { bookingId: 1, amount: "999", status: "voided", paymentType: "payment" },
+      { bookingId: 1, amount: "888", status: "active", paymentType: "refund" },
+      { bookingId: 1, amount: "777", status: "active", paymentType: "ad_hoc" },
+    ]);
+    expect((m.get(2) ?? 0) + (m.get(3) ?? 0)).toBeCloseTo(1_000_000, 6);
+  });
+
+  it("đơn lẻ: nhận đúng phiếu của chính nó", () => {
+    const solo = [{ id: 9, isParentContract: false, parentId: null, status: "confirmed", deletedAt: null, totalAmount: "2000000", discountAmount: "0" }];
+    const m = allocateFamilyPaid(solo, [{ bookingId: 9, amount: "500000", status: "active", paymentType: "payment" }]);
+    expect(m.get(9)).toBe(500_000);
+  });
+
+  it("con bị hủy/xóa/temp không nhận phân bổ; net=0 cả nhà → dồn về thành viên id nhỏ nhất", () => {
+    const famB = [
+      { id: 1, isParentContract: true, parentId: null, status: "confirmed", deletedAt: null, totalAmount: "0", discountAmount: "0" },
+      { id: 2, isParentContract: false, parentId: 1, status: "cancelled", deletedAt: null, totalAmount: "3000000", discountAmount: "0" },
+      { id: 3, isParentContract: false, parentId: 1, status: "confirmed", deletedAt: null, totalAmount: "0", discountAmount: "0" },
+      { id: 4, isParentContract: false, parentId: 1, status: "confirmed", deletedAt: null, totalAmount: "0", discountAmount: "0" },
+    ];
+    const m = allocateFamilyPaid(famB, pay4onParent);
+    expect(m.get(2)).toBe(0);          // cancelled — không nhận
+    expect(m.get(3)).toBe(4_000_000);  // net=0 → dồn về id countable nhỏ nhất
+    expect(m.get(4)).toBe(0);
+  });
+
+  it("bất biến gia đình: Σ nợ per-booking = max(0, net gia đình − tiền gia đình) (kể cả giảm giá)", () => {
+    const famC = [
+      { id: 1, isParentContract: true, parentId: null, status: "confirmed", deletedAt: null, totalAmount: "10000000", discountAmount: "0" },
+      { id: 2, isParentContract: false, parentId: 1, status: "confirmed", deletedAt: null, totalAmount: "3000000", discountAmount: "0" },
+      { id: 3, isParentContract: false, parentId: 1, status: "confirmed", deletedAt: null, totalAmount: "7000000", discountAmount: "1000000" },
+    ];
+    const m = allocateFamilyPaid(famC, pay4onParent);
+    const debt2 = Math.max(0, 3_000_000 - (m.get(2) ?? 0));
+    const debt3 = Math.max(0, 6_000_000 - (m.get(3) ?? 0));
+    expect(debt2 + debt3).toBeCloseTo(Math.max(0, 9_000_000 - 4_000_000), 6);
+  });
+
+  it("trả dư: phân bổ vượt net theo tỷ lệ, nợ clamp 0, tổng phân bổ = tổng phiếu", () => {
+    const m = allocateFamilyPaid(fam, [{ bookingId: 1, amount: "24000000", status: "active", paymentType: "payment" }]);
+    expect((m.get(2) ?? 0) + (m.get(3) ?? 0)).toBeCloseTo(24_000_000, 6);
+    expect(Math.max(0, 3_000_000 - (m.get(2) ?? 0))).toBe(0);
+  });
+});

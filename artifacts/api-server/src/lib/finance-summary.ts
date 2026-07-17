@@ -1,10 +1,11 @@
 import { pool } from "@workspace/db";
-import { revenueCountableSql } from "./booking-money";
 import { paymentNotOnEmptyParentSql } from "./parent-contract";
 // GĐ1c (quy tắc ②③ chủ chốt 14/07): chi phí studio đọc từ FINANCIAL ENGINE —
 // chỉ approved/paid, LOẠI cost_class 'personal' (chi tiêu cá nhân không phải chi
 // phí studio) và 'loan_principal' (trả gốc vay là dòng tiền, không phải chi phí).
-import { engineCashOut } from "./finance/financial-engine";
+// PR #102: công nợ cũng đọc thẳng engineSystemDebt (phân bổ tiền gia đình LIVE)
+// — hết bản copy công thức nợ riêng trong file này.
+import { engineCashOut, engineSystemDebt } from "./finance/financial-engine";
 
 /**
  * Tài chính "thực tế" dùng CHUNG cho màn Tổng quan tài chính (GET /dashboard/simple)
@@ -30,7 +31,7 @@ export type SimpleFinance = {
 };
 
 export async function getSimpleFinance(from: string, to: string): Promise<SimpleFinance> {
-  const [incomeRow, cashOut, debtRow] = await Promise.all([
+  const [incomeRow, cashOut, customerDebt] = await Promise.all([
     pool.query(
       `
         SELECT COALESCE(SUM(amount::numeric), 0) AS total
@@ -47,16 +48,13 @@ export async function getSimpleFinance(from: string, to: string): Promise<Simple
     // đếm MỌI status + mọi cost_class nên chi tiêu cá nhân (đi nhậu, làm răng...)
     // và khoản chưa duyệt bị trừ nhầm vào lợi nhuận studio.
     engineCashOut(from, to),
-    pool.query(`
-        SELECT COALESCE(SUM(GREATEST(0, total_amount - COALESCE(discount_amount, 0) - COALESCE(paid_amount, 0))), 0) AS total
-        FROM bookings
-        WHERE ${revenueCountableSql("bookings")}
-      `),
+    // PR #102: nợ khách = engineSystemDebt (nợ sống ① trên "đã thu PHÂN BỔ" theo
+    // gia đình đơn) — Dashboard/Copilot/Khách hàng cùng một con số engine.
+    engineSystemDebt(),
   ]);
 
   const totalIncome = parseFloat((incomeRow.rows[0] as { total?: string } | undefined)?.total ?? "0");
   const directExpense = cashOut.studioExpense;
-  const customerDebt = parseFloat((debtRow.rows[0] as { total?: string } | undefined)?.total ?? "0");
   const fixedCostMonthly = cashOut.fixedMonthly;
   const totalSpent = directExpense + fixedCostMonthly;
   const realProfit = totalIncome - totalSpent;

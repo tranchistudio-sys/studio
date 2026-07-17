@@ -10,6 +10,9 @@ import { getCallerRole } from "./auth";
 import { revenueCountableSql } from "../lib/booking-money";
 import { paymentNotOnEmptyParentSql } from "../lib/parent-contract";
 import { getSimpleFinance } from "../lib/finance-summary";
+// PR #102: "đã thu"/"còn nợ" per-booking đọc từ ENGINE (phân bổ tiền gia đình
+// LIVE từ payments gốc) — dashboard là consumer, không tự tính từ paid_amount.
+import { ENGINE_ALLOC_PAID_SQL, ENGINE_DEBT_SQL } from "../lib/finance/financial-engine";
 
 // PR D (read-layer): loại phiếu cọc nằm ở CHA RỖNG/ZOMBIE (hợp đồng cha hết dịch vụ con hiệu lực)
 // khỏi các tổng "đã thu" active — dùng cho query tiền cash-basis của dashboard.
@@ -342,9 +345,13 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
       const today = new Date().toISOString().slice(0, 10);
 
       // Đơn CÒN HIỆU LỰC trong tháng chụp (loại thùng rác/hủy/báo giá tạm/đơn cha/con mồ côi)
+      // PR #102: "đã thu"/"còn nợ" per-row đọc từ ENGINE (đã thu PHÂN BỔ theo gia
+      // đình từ payments gốc) — không tự tính từ cột paid_amount nữa.
       const bkResult = await pool.query(`
         SELECT b.id, b.order_code, b.shoot_date, b.status, b.service_category, b.package_type,
-               b.service_label, b.total_amount, b.discount_amount, b.paid_amount,
+               b.service_label, b.total_amount, b.discount_amount,
+               ${ENGINE_ALLOC_PAID_SQL} AS alloc_paid,
+               ${ENGINE_DEBT_SQL} AS row_debt,
                c.name AS customer_name, c.phone AS customer_phone
         FROM bookings b
         JOIN customers c ON c.id = b.customer_id
@@ -357,7 +364,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
       const bookingIds = bookingsInMonth.map(b => Number(b.id));
       const bookedCount = bookingsInMonth.length;
       const bookedAmount = bookingsInMonth.reduce((s, b) => s + parseFloat(b.total_amount), 0);
-      const owedList = bookingsInMonth.map(b => Math.max(0, parseFloat(b.total_amount) - parseFloat(b.discount_amount || "0") - parseFloat(b.paid_amount)));
+      const owedList = bookingsInMonth.map(b => Math.max(0, parseFloat(b.row_debt)));
       const owedTotal = owedList.reduce((s, v) => s + v, 0);
       const owedCount = owedList.filter(v => v > 0).length;
 
@@ -398,7 +405,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
         .map((b, i) => ({
           bookingId: Number(b.id), bookingCode: b.order_code || `DH${String(b.id).padStart(4, "0")}`,
           customerName: b.customer_name || "—", customerPhone: b.customer_phone || "",
-          totalAmount: parseFloat(b.total_amount), paidAmount: parseFloat(b.paid_amount),
+          totalAmount: parseFloat(b.total_amount), paidAmount: parseFloat(b.alloc_paid),
           remainingAmount: owedList[i], shootDate: b.shoot_date, status: b.status,
         }))
         .filter(b => b.remainingAmount > 0)

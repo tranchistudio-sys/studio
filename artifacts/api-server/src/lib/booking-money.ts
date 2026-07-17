@@ -294,6 +294,8 @@ export type FamilyMemberAllocation = {
   equalDeposit: number;
   /** Tổng phiếu gắn THẲNG dịch vụ này (gồm cọc legacy trên con, payment/partial/full). */
   directPaid: number;
+  /** Phần của directPaid là phiếu 'deposit' LEGACY trên đơn con (Q2 — nhãn riêng, admin rà). */
+  legacyDepositPaid: number;
   /** Phần direct được tính vào nợ của CHÍNH nó = min(direct, NET − cọc đều). */
   directCredited: number;
   /** Phân bổ FIFO từ pool trên cha (thu thêm legacy + tiền thừa dịch vụ khác). */
@@ -386,12 +388,16 @@ export function allocateFamilies(
 
     // 2) Phiếu gắn thẳng dịch vụ countable = thu riêng; mọi phiếu hợp lệ khác → pool.
     const directPaid = new Map<number, number>();
+    const legacyDeposit = new Map<number, number>();
     let pool = 0;
     const eligibleIds = new Set(eligible.map((b) => b.id));
     for (const p of pays) {
       if (p === canonical) continue;
       if (p.bookingId != null && eligibleIds.has(p.bookingId)) {
         directPaid.set(p.bookingId, (directPaid.get(p.bookingId) ?? 0) + money(p.amount));
+        if ((p.paymentType ?? "") === "deposit") {
+          legacyDeposit.set(p.bookingId, (legacyDeposit.get(p.bookingId) ?? 0) + money(p.amount));
+        }
       } else {
         pool += money(p.amount); // thu thêm trên cha / phiếu trên thành viên không-countable
       }
@@ -468,7 +474,8 @@ export function allocateFamilies(
       const pf = fifo.get(b.id) ?? 0;
       const allocated = equalDeposit + credited + pf;
       return {
-        bookingId: b.id, net, equalDeposit, directPaid: direct, directCredited: credited,
+        bookingId: b.id, net, equalDeposit, directPaid: direct,
+        legacyDepositPaid: legacyDeposit.get(b.id) ?? 0, directCredited: credited,
         parentFifo: pf, allocated, remaining: clampMin0(net - allocated),
       };
     });

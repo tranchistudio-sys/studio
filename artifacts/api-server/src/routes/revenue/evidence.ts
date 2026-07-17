@@ -428,19 +428,31 @@ export function fixedCostGroup(items: FixedCostItem[], bucketCount: number, card
 }
 
 function receivableGroup(list: ReceivableEvidenceRow[]): EvidenceGroup {
-  const rows: EvidenceRow[] = list.map(r => ({
-    date: r.shootDate,
-    code: r.orderCode ?? `#${r.bookingId}`,
-    name: r.customerName,
-    kind: r.serviceLabel ?? "Đơn còn nợ",
-    detail: `Giá trị NET ${vndText(r.net)} − đã thu phân bổ ${vndText(r.allocPaid)}`,
-    status: null,
-    by: null,
-    amount: r.debt,
-    bookingId: r.bookingId,
-    paymentId: null,
-    expenseId: null,
-  }));
+  // Format bằng chứng CHỐT 17/07: mỗi dịch vụ hiện RÕ 4 thành phần tiền —
+  // NET / Cọc chung chia đều / Thu trực tiếp / Thu từ đơn cha phân bổ (FIFO)
+  // → admin nhìn được như Excel, biết chính xác tiền đi đâu.
+  const rows: EvidenceRow[] = list.map(r => {
+    const parts = [
+      `NET ${vndText(r.net)}`,
+      `Cọc chung chia đều ${vndText(r.equalDeposit)}`,
+      `Thu trực tiếp ${vndText(r.directPaid)}${r.legacyDepositPaid > 0 ? ` (trong đó phiếu cọc legacy trên dịch vụ ${vndText(r.legacyDepositPaid)})` : ""}`,
+      `Thu từ đơn cha phân bổ ${vndText(r.parentFifo)}`,
+      `Còn phải thu ${vndText(r.debt)}`,
+    ];
+    return {
+      date: r.shootDate,
+      code: r.orderCode ?? `#${r.bookingId}`,
+      name: r.customerName,
+      kind: r.serviceLabel ?? "Đơn còn nợ",
+      detail: parts.join(" · "),
+      status: null,
+      by: null,
+      amount: r.debt,
+      bookingId: r.bookingId,
+      paymentId: null,
+      expenseId: null,
+    };
+  });
   return { key: "receivables", label: "Đơn còn nợ có show trong kỳ", sign: 1, rows, subtotal: sum(rows) };
 }
 

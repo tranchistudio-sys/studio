@@ -78,6 +78,8 @@ export type AllocatedBooking = {
   equalDeposit: number;
   /** Phiếu gắn thẳng dịch vụ này (gồm cọc legacy trên con). */
   directPaid: number;
+  /** Phần directPaid là phiếu 'deposit' LEGACY trên đơn con (nhãn riêng để admin rà). */
+  legacyDepositPaid: number;
   directCredited: number;
   /** Phân bổ FIFO từ pool trên cha (thu thêm legacy + tiền thừa dịch vụ khác). */
   parentFifo: number;
@@ -165,6 +167,7 @@ export async function engineAllocationSnapshot(): Promise<AllocationSnapshot> {
         net: m.net,
         equalDeposit: m.equalDeposit,
         directPaid: m.directPaid,
+        legacyDepositPaid: m.legacyDepositPaid,
         directCredited: m.directCredited,
         parentFifo: m.parentFifo,
         allocPaid: m.allocated,
@@ -250,6 +253,7 @@ export type ReceivableEvidenceRow = {
   /** Breakdown chia đều (chốt 17/07) — cho bảng bằng chứng 6 dòng. */
   equalDeposit: number;
   directPaid: number;
+  legacyDepositPaid: number;
   parentFifo: number;
 };
 
@@ -291,6 +295,7 @@ export async function engineReceivableRowsForRange(
       debt: m.debt,
       equalDeposit: m.equalDeposit,
       directPaid: m.directPaid,
+      legacyDepositPaid: m.legacyDepositPaid,
       parentFifo: m.parentFifo,
     }));
   return { rows, total: inRange.reduce((s, m) => s + m.debt, 0) };

@@ -15,7 +15,7 @@ import { pool } from "@workspace/db";
 import revenueRouter from "../routes/revenue/index";
 import {
   engineReceivableForRange,
-  ENGINE_DEBT_SQL,
+  engineAllocationSnapshot,
 } from "../lib/finance/financial-engine";
 import { revenueCountableSql } from "../lib/booking-money";
 
@@ -166,13 +166,12 @@ describe("Phân bổ gia đình hợp đồng gộp (spec #2) — phiếu ở CH
     );
     const { lo, hi, ids } = range.rows[0] as { lo: string; hi: string; ids: number[] };
 
-    // Đối chiếu 1: Engine debt per-member (không qua HTTP).
-    const eng = await pool.query(
-      `SELECT COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS v
-       FROM bookings b WHERE COALESCE(b.parent_id, b.id) = $1 AND ${revenueCountableSql("b")}`,
-      [root],
+    // Đối chiếu 1: Engine debt per-member từ snapshot allocator (không qua HTTP).
+    const snap = await engineAllocationSnapshot();
+    const engineFamilyDebt = snap.members.reduce(
+      (s, m) => (m.rootId === root ? s + m.debt : s),
+      0,
     );
-    const engineFamilyDebt = Number((eng.rows[0] as { v: string }).v);
     expect(Math.abs(engineFamilyDebt - expectedFamilyDebt),
       `Engine ${engineFamilyDebt} ≠ độc lập ${expectedFamilyDebt} (gia đình #${root})`).toBeLessThan(EPS);
 

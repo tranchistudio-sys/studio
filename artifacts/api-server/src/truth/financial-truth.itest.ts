@@ -246,7 +246,7 @@ describe("TIER 1c — Còn có thể thu từ show của tháng (bắt buộc PA
 
   it("Membership đúng ngữ nghĩa: tính đơn chụp-trong-tháng bất kể tạo khi nào; loại đơn chụp tháng khác; DISTINCT không double-count", async () => {
     const { getSchemaFlags } = await import("../lib/schema-compat");
-    const { monthMembershipSql, engineReceivableForRange, ENGINE_DEBT_SQL } = await import("../lib/finance/financial-engine");
+    const { monthMembershipSql, engineReceivableForRange, engineAllocationSnapshot } = await import("../lib/finance/financial-engine");
     const [y, m] = ym.split("-").map(Number);
     const lastDay = new Date(y, m, 0).getDate();
     const from = `${ym}-01`;
@@ -256,42 +256,48 @@ describe("TIER 1c — Còn có thể thu từ show của tháng (bắt buộc PA
     const createdVN = `(b.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Ho_Chi_Minh')::date`;
 
     const engine = await engineReceivableForRange(from, to);
+    // Chốt 17/07: nợ per-booking đọc từ snapshot allocator chung — test này kiểm
+    // MEMBERSHIP/set-logic, công thức phân bổ được gác ở family-allocation.itest.ts.
+    const snap = await engineAllocationSnapshot();
+    const debtOfIds = (ids: number[]) =>
+      ids.reduce((s, id) => s + (snap.byId.get(id)?.debt ?? 0), 0);
 
     // (item 6) Bản tính lại ĐỘC LẬP bằng DISTINCT id — đơn nhiều occurrence chỉ 1 lần.
-    // Dùng ENGINE_DEBT_SQL (phân bổ #102): test này kiểm MEMBERSHIP/set-logic, còn
-    // công thức phân bổ được đối chiếu độc lập ở family-allocation.itest.ts.
     const indep = await pool.query(
-      `SELECT COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS v FROM bookings b
-       WHERE b.id IN (
-         SELECT DISTINCT b.id FROM bookings b
-         WHERE ${COUNTABLE} AND ${member})`,
+      `SELECT DISTINCT b.id FROM bookings b WHERE ${COUNTABLE} AND ${member}`,
       [from, to],
     );
-    expect(Number((indep.rows[0] as { v?: string }).v)).toBe(engine);
+    const memberIds = (indep.rows as Array<{ id: number }>).map(x => Number(x.id));
+    expect(debtOfIds(memberIds)).toBe(engine);
 
     // (item 4) Phân hoạch theo ngày TẠO: engine = tạo-trước-tháng + tạo-trong-tháng + tạo-sau
     const parts = await pool.query(
-      `SELECT
-         COALESCE(SUM(${ENGINE_DEBT_SQL}) FILTER (WHERE ${createdVN} < $1::date), 0) AS pre,
-         COALESCE(SUM(${ENGINE_DEBT_SQL}) FILTER (WHERE ${createdVN} BETWEEN $1::date AND $2::date), 0) AS cur,
-         COALESCE(SUM(${ENGINE_DEBT_SQL}) FILTER (WHERE ${createdVN} > $2::date), 0) AS post
+      `SELECT b.id,
+         CASE WHEN ${createdVN} < $1::date THEN 'pre'
+              WHEN ${createdVN} > $2::date THEN 'post'
+              ELSE 'cur' END AS bucket
        FROM bookings b WHERE ${COUNTABLE} AND ${member}`,
       [from, to],
     );
-    const pr = parts.rows[0] as { pre: string; cur: string; post: string };
-    expect(Number(pr.pre) + Number(pr.cur) + Number(pr.post)).toBe(engine);
+    const byBucket = { pre: [] as number[], cur: [] as number[], post: [] as number[] };
+    for (const row of parts.rows as Array<{ id: number; bucket: "pre" | "cur" | "post" }>) {
+      byBucket[row.bucket].push(Number(row.id));
+    }
+    const pr = { pre: debtOfIds(byBucket.pre), cur: debtOfIds(byBucket.cur), post: debtOfIds(byBucket.post) };
+    expect(pr.pre + pr.cur + pr.post).toBe(engine);
     console.log(
       `INFO | item4: đơn tạo TRƯỚC tháng nhưng chụp trong tháng đóng góp ${pr.pre} vào receivable ${ym} (phải được tính)`,
     );
 
     // (item 5) Đơn TẠO trong tháng nhưng KHÔNG chụp trong tháng: cấm lọt vào membership
     const leak = await pool.query(
-      `SELECT COUNT(*) AS c, COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS v FROM bookings b
+      `SELECT b.id FROM bookings b
        WHERE ${COUNTABLE} AND ${createdVN} BETWEEN $1::date AND $2::date
          AND NOT (${member})`,
       [from, to],
     );
-    const lk = leak.rows[0] as { c: string; v: string };
+    const leakIds = (leak.rows as Array<{ id: number }>).map(x => Number(x.id));
+    const lk = { c: String(leakIds.length), v: String(debtOfIds(leakIds)) };
     console.log(
       `INFO | item5: ${lk.c} đơn tạo trong ${ym} nhưng chụp tháng khác, tổng nợ sống ${lk.v} — KHÔNG nằm trong receivable tháng (đúng)`,
     );

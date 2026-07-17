@@ -3,8 +3,8 @@
  *
  * Bug nghiệp vụ được fix: phiếu thu hợp đồng gộp nằm ở đơn CHA, đơn CON không
  * nhận được phần tiền đã thu → Khách hàng / Dashboard / Revenue / Copilot báo
- * nợ SAI. Engine giờ phân bổ LIVE từ payments gốc, pro-rata theo giá trị hợp
- * đồng của từng dịch vụ con.
+ * nợ SAI. Engine phân bổ LIVE từ payments gốc; chốt 17/07: CỌC canonical chia
+ * ĐỀU cho dịch vụ, thu-thêm-trên-cha FIFO theo ngày thực hiện (thay pro-rata).
  *
  * Test dựng MỘT gia đình tổng hợp (cha 10tr = con 3tr + con 7tr) trên DB local,
  * ghi MỘT phiếu 4tr ở CHA, rồi bắt các surface ra CÙNG MỘT SỐ:
@@ -23,7 +23,7 @@ import {
   engineCustomerDebt,
   engineCustomerFinance,
   engineReceivableForRange,
-  engineAllocPaidSql,
+  engineAllocationSnapshot,
 } from "../lib/finance/financial-engine";
 import { getSimpleFinance } from "../lib/finance-summary";
 import { getUnpaidCustomers } from "../lib/studio-copilot";
@@ -167,7 +167,7 @@ describe("PR #102 — MỘT payment ở CHA: mọi surface ra CÙNG MỘT SỐ",
     await expectAllSurfacesDebt(10_000_000);
   });
 
-  it("payment 4tr ghi ở CHA → mọi surface = 6tr; phân bổ pro-rata 1,2tr/2,8tr xuống con", async () => {
+  it("payment 4tr ghi ở CHA → mọi surface = 6tr; phân bổ FIFO theo ngày: A (10/01) đủ 3tr trước, B nhận 1tr", async () => {
     await addPayment(parentId, 4_000_000);
     await expectAllSurfacesDebt(6_000_000);
 
@@ -176,24 +176,25 @@ describe("PR #102 — MỘT payment ở CHA: mọi surface ra CÙNG MỘT SỐ",
     close(fin.totalPaid, 4_000_000);
     close(fin.totalOwed, 10_000_000);
 
-    // Phân bổ per-booking (SQL): A = 4tr×3/10 = 1,2tr; B = 4tr×7/10 = 2,8tr.
-    const r = await pool.query(
-      `SELECT b.id, ${engineAllocPaidSql("b")} AS alloc FROM bookings b WHERE b.id = ANY($1::int[])`,
-      [[childAId, childBId]],
-    );
-    const byId = new Map((r.rows as Array<{ id: number; alloc: string }>).map(x => [Number(x.id), Number(x.alloc)]));
-    close(byId.get(childAId) ?? -1, 1_200_000);
-    close(byId.get(childBId) ?? -1, 2_800_000);
+    // Chốt 17/07 Q1-A: phiếu 'payment' trên CHA (không phải cọc canonical) phân bổ
+    // FIFO theo ngày thực hiện: A (2030-01-10, net 3tr) đủ TRƯỚC → 3tr; B → 1tr.
+    const snap = await engineAllocationSnapshot();
+    close(snap.byId.get(childAId)?.allocPaid ?? -1, 3_000_000);
+    close(snap.byId.get(childBId)?.allocPaid ?? -1, 1_000_000);
+    close(snap.byId.get(childAId)?.parentFifo ?? -1, 3_000_000); // đúng thành phần FIFO
+    close(snap.byId.get(childAId)?.equalDeposit ?? -1, 0);       // không có cọc canonical
 
-    // Bản JS thuần (revenue/data.ts dùng) phải khớp bản SQL — hai implementation độc lập.
+    // Bản JS gọi TRỰC TIẾP (revenue/data.ts dùng) phải khớp engine snapshot —
+    // cùng allocator, hai đường nạp dữ liệu độc lập.
     const rows = await pool.query(
       `SELECT id, parent_id AS "parentId", is_parent_contract AS "isParentContract", status,
-              deleted_at AS "deletedAt", total_amount AS "totalAmount", discount_amount AS "discountAmount"
+              deleted_at AS "deletedAt", total_amount AS "totalAmount", discount_amount AS "discountAmount",
+              shoot_date::text AS "shootDate"
        FROM bookings WHERE COALESCE(parent_id, id) = $1`,
       [parentId],
     );
     const pays = await pool.query(
-      `SELECT p.booking_id AS "bookingId", p.amount, p.status, p.payment_type AS "paymentType"
+      `SELECT p.id, p.booking_id AS "bookingId", p.amount, p.status, p.payment_type AS "paymentType"
        FROM payments p WHERE p.booking_id = ANY($2::int[]) OR p.booking_id = $1`,
       [parentId, [parentId, childAId, childBId]],
     );
@@ -201,8 +202,8 @@ describe("PR #102 — MỘT payment ở CHA: mọi surface ra CÙNG MỘT SỐ",
       rows.rows as never[],
       pays.rows as never[],
     );
-    close(js.get(childAId) ?? -1, byId.get(childAId) ?? -2, 0.5);
-    close(js.get(childBId) ?? -1, byId.get(childBId) ?? -2, 0.5);
+    close(js.get(childAId) ?? -1, snap.byId.get(childAId)?.allocPaid ?? -2, 0.5);
+    close(js.get(childBId) ?? -1, snap.byId.get(childBId)?.allocPaid ?? -2, 0.5);
   });
 
   it("payment NHIỀU LẦN: +1tr → 5tr mọi surface", async () => {
@@ -251,10 +252,16 @@ describe("PR #102 — MỘT payment ở CHA: mọi surface ra CÙNG MỘT SỐ",
     await expectAllSurfacesDebt(5_000_000);
   });
 
-  it("TRẢ DƯ: +20tr → nợ 0 mọi surface (không âm), tiền thu vẫn đủ sổ", async () => {
+  it("TRẢ DƯ: +20tr → nợ 0 mọi surface (không âm), phần vượt hiện ở overpayment 'Khách trả dư'", async () => {
     await addPayment(parentId, 20_000_000);
     await expectAllSurfacesDebt(0);
     const fin = await engineCustomerFinance(custId);
-    close(fin.totalPaid, 24_000_000); // 4tr + 20tr (1tr đã void, refund không tính)
+    // Chốt 17/07: totalPaid = tiền ĐƯỢC TÍNH vào dịch vụ (cap tại NET gia đình 9tr);
+    // phần vượt KHÔNG mất — nằm ở overpayment của gia đình.
+    close(fin.totalPaid, 9_000_000);
+    close(fin.totalOwed, 9_000_000);
+    const snap = await engineAllocationSnapshot();
+    const fam = snap.families.get(parentId)!;
+    close(fam.overpayment, 15_000_000); // 24tr tiền hợp lệ − 9tr NET = 15tr trả dư
   });
 });

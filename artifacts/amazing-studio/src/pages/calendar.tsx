@@ -44,7 +44,8 @@ import { castAmountFromResult, lookupCastByPkg, resolveCastAmount } from "@/lib/
 import { reflowDescriptionLines, firstDescriptionLine, parseDescriptionBlocks } from "@/lib/package-description";
 import { buildDressWarningsByDate, type DressWarnRow, type DressWarnChip } from "@/lib/dress-warnings";
 import { invalidateBookingRelated } from "@/lib/booking-cache";
-import { refindCustomerPatch } from "@/lib/customer-rename";
+import { refindCustomerPatch, noPhoneSavePlan } from "@/lib/customer-rename";
+import { applyStatusOverride } from "@/lib/effective-status";
 import OutfitBookingSection, { type OutfitDraft } from "@/components/outfit-booking-section";
 import { splitOutfitsBySub, planOutfitSync, mapDressRowToDraft, dedupeParentOutfits, moveOutfitsOnSubRemove } from "@/lib/outfit-per-service";
 import AdditionalServicesSection, { validateAdditionalServicesForm, type AdditionalServiceLine, newAdditionalServiceLine } from "@/components/additional-services-section";
@@ -3973,6 +3974,12 @@ function ShowDetailPanel({
   const [confirmTempToggle, setConfirmTempToggle] = useState<null | "on" | "off">(null);
   const [statusOverride, setStatusOverride] = useState<string | null>(null);
   const effectiveStatus = statusOverride ?? booking.status;
+  // Sau toggle Báo giá tạm, object booking/cha/con bên ngoài vẫn là BẢN CŨ (state đã
+  // copy, refetch không tự cập nhật viewingBooking). Mọi điểm bàn giao sang form
+  // Chỉnh sửa phải áp trạng thái hiệu lực — nếu không form init status cũ rồi LƯU ĐÈ,
+  // booking rớt trạng thái vừa toggle. Toggle flip CẢ GIA ĐÌNH (PR #100) → áp cả nhà.
+  const withEffectiveStatus = <T extends { status?: string | null }>(b: T): T =>
+    applyStatusOverride(b, statusOverride);
   const applyTempQuoteToggle = async (toTemp: boolean) => {
     setTempToggleBusy(true);
     try {
@@ -4325,11 +4332,11 @@ function ShowDetailPanel({
                 allSiblings = siblings;
               }
               if (mergedParent && allSiblings.length > 0) {
-                onEdit(mergedParent, allSiblings);
+                onEdit(withEffectiveStatus(mergedParent), allSiblings.map(withEffectiveStatus));
                 return;
               }
             }
-            onEdit();
+            onEdit(withEffectiveStatus(booking));
           }}
           className="p-1.5 rounded-lg text-primary hover:bg-primary/10 transition-colors flex-shrink-0"
           title="Chỉnh sửa"
@@ -4577,7 +4584,7 @@ function ShowDetailPanel({
                       {isAdmin && onEditAllSiblings && parentContract && (
                         <button
                           type="button"
-                          onClick={e => { e.stopPropagation(); onEditAllSiblings(parentContract, siblings); }}
+                          onClick={e => { e.stopPropagation(); onEditAllSiblings(withEffectiveStatus(parentContract), siblings.map(withEffectiveStatus)); }}
                           title="Mở form chỉnh sửa tất cả dịch vụ"
                           className="p-1 rounded-md transition-colors hover:bg-blue-100 dark:hover:bg-blue-900 text-blue-500 dark:text-blue-400"
                         >
@@ -7368,9 +7375,12 @@ function CalendarPageInner() {
       setCurrentDate(baseDate);
       setSelectedTime(parent.shootTime ?? "08:00");
     } else {
-      setEditingBooking(viewingBooking);
+      // Ưu tiên booking panel truyền sang (đã áp statusOverride sau toggle Báo giá
+      // tạm) — viewingBooking là bản copy cũ, dùng nó form sẽ lưu đè status cũ.
+      const single = parent ?? viewingBooking;
+      setEditingBooking(single);
       setEditingSiblings([]);
-      setSelectedTime(viewingBooking.shootTime ?? "07:00");
+      setSelectedTime(single.shootTime ?? "07:00");
     }
     setCalView("form");
   }, [viewingBooking]);

@@ -177,7 +177,7 @@ export default function RevenueEvidenceModal({ metric, metricLabel, cardTotal, f
   useEffect(() => {
     if (recon?.tileStale && !tileRefreshed.current) {
       tileRefreshed.current = true;
-      for (const key of ["revenue-monthly", "revenue-today", "revenue-week"]) {
+      for (const key of ["revenue-monthly", "revenue-today", "revenue-week", "revenue-daily-cashflow"]) {
         queryClient.invalidateQueries({ queryKey: [key] });
       }
     }
@@ -277,7 +277,7 @@ export default function RevenueEvidenceModal({ metric, metricLabel, cardTotal, f
                   {recon.tileStale ? (
                     <p className="text-[11px] text-red-700/80 dark:text-red-400/80 mt-1">
                       Bảng chi tiết và server đang ĐỒNG THUẬN ở {vnd(data.cardTotal)} — số trên ô là bản cũ
-                      (dữ liệu vừa được sửa). Ô đang được làm mới tự động, badge sẽ chuyển xanh khi ô cập nhật.
+                      (dữ liệu vừa được sửa). Ô đang được làm mới tự động — đóng và bấm lại ô để đối chiếu số mới.
                     </p>
                   ) : (
                     <p className="text-[11px] text-red-700/80 dark:text-red-400/80 mt-1">

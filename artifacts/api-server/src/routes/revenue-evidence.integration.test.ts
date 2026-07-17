@@ -180,6 +180,8 @@ beforeAll(async () => {
     { id: 9, bookingId: 20, amount: "444000", expenseDate: "2026-02-25", status: "approved", costClass: "direct", description: "Gắn đơn tháng 3", expenseCode: "PC0009" },
     // e10: CP trực tiếp gắn đơn ĐÃ HỦY (b3) — đơn không countable nên KHÔNG vào chi phí kỳ nào
     { id: 10, bookingId: 3, amount: "222000", expenseDate: "2026-02-26", status: "approved", costClass: "direct", description: "Gắn đơn đã hủy", expenseCode: "PC0010" },
+    // e11: cost_class LẠ — đặt ở THÁNG 1 riêng để không lây expected các test tháng 2
+    { id: 11, bookingId: null, amount: "123000", expenseDate: "2026-01-15", status: "approved", costClass: "khac_x", description: "Loại lạ", expenseCode: "PC0011" },
   ]);
   setRows(fixedCostsTable, [
     { id: 1, label: "Mặt bằng", amount: "2000000", active: true },
@@ -459,6 +461,48 @@ describe("Rule tiền trên từng bảng bằng chứng", () => {
     expect(net.reconciliationDelta).toBe(0);
     expect(net.detailTotal).toBe(daily.totals.net);
     expect(daily.totals.collected).toBe(EXPECTED_COLLECTED); // thu: rule y hệt collected
+  });
+
+  it("cashSpent: assert TỪNG ID phiếu (chống va chạm số học 777k = 555k + 222k) + cls lạ vẫn liệt kê", async () => {
+    const ev = await get(`/api/revenue/v2/evidence?metric=cashSpent&from=${FROM}&to=${TO}`) as Evidence;
+    const cashIds = rowsOf(ev).map(r => r.expenseId).filter(x => x != null).sort((a, b) => Number(a) - Number(b));
+    expect(cashIds).toEqual([1, 2, 3, 4, 8, 9, 10]); // đúng từng phiếu, không phải tình cờ đúng tổng
+    // cls lạ (e11, tháng 1) — nhóm 'Chi khác' vẫn liệt kê, không rớt tiền
+    const jan = await get(`/api/revenue/v2/evidence?metric=cashSpent&from=2026-01-01&to=2026-01-31`) as Evidence;
+    expect(jan.detailTotal).toBe(123_000);
+    const odd = jan.groups.find(g => g.key === "cash-khac_x")!;
+    expect(odd).toBeDefined();
+    expect(odd.label).toContain("Chi khác");
+    expect(jan.reconciliationDelta).toBe(0);
+  });
+
+  it("Kỳ MỘT NGÀY (đường bấm 'Ngày thu cao nhất'/Top ngày): from=to → đúng phiếu của ngày đó, khớp daily-cashflow", async () => {
+    const ev = await get(`/api/revenue/v2/evidence?metric=collected&from=2026-02-06&to=2026-02-06`) as Evidence;
+    expect(ev.detailTotal).toBe(5_000_000); // chỉ p1 ngày 06/02
+    expect(ev.reconciliationDelta).toBe(0);
+    const daily = await get(`/api/revenue/v2/daily-cashflow?month=2026-02`) as { days: Array<{ date: string; collected: number }> };
+    const day = daily.days.find(d => d.date === "2026-02-06")!;
+    expect(ev.detailTotal).toBe(day.collected);
+  });
+
+  it("Clip GIỮA THÁNG kiểu ô bảng tháng FE (max(from, đầu tháng)..min(to, cuối tháng)): khớp months[] của /monthly", async () => {
+    const from = "2026-02-05", to = "2026-03-20";
+    const monthly = await get(`/api/revenue/v2/monthly?from=${from}&to=${to}`) as {
+      months: Array<Record<string, number> & { month: string }>;
+    };
+    for (const row of monthly.months) {
+      const ym = String(row.month);
+      const [y, m] = ym.split("-").map(Number);
+      const last = new Date(y!, m!, 0).getDate();
+      const clipFrom = from > `${ym}-01` ? from : `${ym}-01`;
+      const end = `${ym}-${String(last).padStart(2, "0")}`;
+      const clipTo = to < end ? to : end;
+      const ev = await get(`/api/revenue/v2/evidence?metric=collected&from=${clipFrom}&to=${clipTo}`) as Evidence;
+      expect(ev.detailTotal, `collected ${ym}`).toBe(row.collected);
+      // e3 (khấu hao 01/02) + e4 (lãi vay 02/02) phải bị CLIP khỏi bucket tháng 2 (từ 05/02)
+      const cost = await get(`/api/revenue/v2/evidence?metric=cost&from=${clipFrom}&to=${clipTo}`) as Evidence;
+      expect(cost.detailTotal, `cost ${ym}`).toBe(row.totalCost);
+    }
   });
 
   it("Còn nợ (mock SQL rỗng): vẫn tự đối chiếu detail == card == 0", async () => {

@@ -456,6 +456,14 @@ function buildCashSpentGroups(
   return groups;
 }
 
+/** Tổng chi dòng tiền — bản cộng ĐỘC LẬP (không qua groups) cho cardTotal cash*. */
+function cashSpentTotal(all: ClassifiedExpense[], from: string, to: string): number {
+  return all.reduce((s, e) => {
+    const d = (e.date || "").slice(0, 10);
+    return d !== "" && d >= from && d <= to ? s + e.amount : s;
+  }, 0);
+}
+
 /**
  * Nhóm chi phí cố định: card cộng fixedCostPerMonth cho TỪNG bucket tháng
  * ⇒ phần fixed trong card = totals.operatingExp − Σ phiếu chi vận hành.
@@ -579,8 +587,13 @@ router.get("/revenue/v2/evidence", async (req, res) => {
   for (const cls of ["direct", "operating", "depreciation", "interest"] as const) {
     for (const e of ev.expenses[cls]) if (e.bookingId != null) bookingIds.add(e.bookingId);
   }
-  // Nhãn cho các phiếu chi dòng tiền (cash*) — có thể gắn booking ngoài cohort P&L
-  for (const e of ev.allClassifiedExpenses) if (e.bookingId != null) bookingIds.add(e.bookingId);
+  // Nhãn cho các phiếu chi dòng tiền (cash*) — có thể gắn booking ngoài cohort P&L.
+  // CHỈ lấy phiếu có ngày chi TRONG KỲ (mirror buildCashSpentGroups) — không phình
+  // IN query theo toàn bộ lịch sử chi.
+  for (const e of ev.allClassifiedExpenses) {
+    const d = (e.date || "").slice(0, 10);
+    if (e.bookingId != null && d !== "" && d >= from && d <= to) bookingIds.add(e.bookingId);
+  }
   const [bInfo, pInfo, fixedItems] = await Promise.all([
     fetchBookingInfo([...bookingIds]),
     fetchPaymentInfo(ev.payments.map(p => p.id)),
@@ -652,7 +665,9 @@ router.get("/revenue/v2/evidence", async (req, res) => {
       formula = "Tổng chi (dòng tiền) = Σ TẤT CẢ phiếu chi đã duyệt/đã chi có NGÀY CHI trong kỳ — gồm cả chi cá nhân; KHÔNG gồm chi phí cố định hàng tháng, không gồm trả gốc vay";
       scopeNote = "Đúng rule của Biểu đồ dòng tiền theo ngày — KHÁC ô 'Chi phí' P&L (P&L loại chi cá nhân và cộng chi phí cố định).";
       groups = buildCashSpentGroups(ev.allClassifiedExpenses, from, to, bInfo);
-      cardTotal = groups.reduce((s, g) => s + g.subtotal, 0);
+      // cardTotal tính bằng đường ĐỘC LẬP với groups (cộng thẳng list theo ngày chi)
+      // — để reconciliationDelta là phép kiểm thật, không tự tham chiếu.
+      cardTotal = cashSpentTotal(ev.allClassifiedExpenses, from, to);
       notes = ["Chi CÁ NHÂN được tính ở đây vì là tiền thật rời quỹ, nhưng KHÔNG nằm trong Chi phí/Lợi nhuận P&L."];
       break;
     }
@@ -664,7 +679,7 @@ router.get("/revenue/v2/evidence", async (req, res) => {
         ...paymentGroups(ev.payments, ev.bookingStatusById, bInfo, pInfo),
         ...spentGroups.map(g => ({ ...g, sign: -1 as const })),
       ];
-      cardTotal = ev.totals.collected - spentGroups.reduce((s, g) => s + g.subtotal, 0);
+      cardTotal = ev.totals.collected - cashSpentTotal(ev.allClassifiedExpenses, from, to);
       notes = ["Chi CÁ NHÂN được trừ ở đây vì là tiền thật rời quỹ, nhưng KHÔNG nằm trong Chi phí/Lợi nhuận P&L."];
       break;
     }

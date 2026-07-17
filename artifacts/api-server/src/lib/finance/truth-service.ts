@@ -17,7 +17,7 @@ import { revenueCountableSql } from "../booking-money";
 import { getUnpaidCustomers, getRevenueSummary } from "../studio-copilot";
 import { getSimpleFinance } from "../finance-summary";
 import {
-  ENGINE_DEBT_SQL,
+  engineAllocationSnapshot,
   engineSystemDebt,
   engineCustomerDebt,
   engineCashIn,
@@ -101,14 +101,11 @@ let copilotDebtMap: Map<string, number> | null = null;
 export async function consumerCopilotDebtByCustomer(customerId: number): Promise<number> {
   if (!copilotDebtMap) {
     copilotDebtMap = new Map();
-    const r = await pool.query(
-      `SELECT c.id, SUM(${ENGINE_DEBT_SQL}) AS debt
-       FROM bookings b JOIN customers c ON c.id = b.customer_id
-       WHERE ${revenueCountableSql("b")}
-       GROUP BY c.id HAVING SUM(${ENGINE_DEBT_SQL}) > 0`,
-    );
-    for (const row of r.rows as Array<{ id: number; debt: string }>) {
-      copilotDebtMap.set(String(row.id), Number(row.debt));
+    const snap = await engineAllocationSnapshot();
+    for (const m of snap.members) {
+      if (m.customerId == null || m.debt <= 0) continue;
+      const k = String(m.customerId);
+      copilotDebtMap.set(k, (copilotDebtMap.get(k) ?? 0) + m.debt);
     }
   }
   return copilotDebtMap.get(String(customerId)) ?? 0;
@@ -230,13 +227,8 @@ export async function verifyBookingRemaining(bookingId: number): Promise<TruthCh
   );
   const root = Number((rootR.rows[0] as { root?: number } | undefined)?.root ?? bookingId);
 
-  const engineR = await pool.query(
-    `SELECT COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS v
-     FROM bookings b
-     WHERE COALESCE(b.parent_id, b.id) = $1 AND ${revenueCountableSql("b")}`,
-    [root],
-  );
-  const engine = Number((engineR.rows[0] as { v?: string })?.v ?? 0);
+  const snap = await engineAllocationSnapshot();
+  const engine = snap.members.reduce((s, m) => (m.rootId === root ? s + m.debt : s), 0);
 
   // Độc lập với Engine: net gia đình từ bảng bookings + phiếu gốc từ bảng payments.
   const famR = await pool.query(
@@ -291,15 +283,21 @@ export async function verifyExcludedGroups(): Promise<TruthCheck[]> {
     },
   ];
   const out: TruthCheck[] = [];
+  const snapEx = await engineAllocationSnapshot();
   for (const g of groups) {
+    // Nhóm bị loại KHÔNG được nằm trong snapshot member (allocator chỉ nhận countable)
+    // — kiểm bằng SQL đếm id nhóm rồi soi snapshot có chứa id nào không.
     const r = await pool.query(
-      `SELECT COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS v FROM bookings b
-       WHERE ${revenueCountableSql("b")} AND (${g.cond})`,
+      `SELECT b.id FROM bookings b WHERE ${revenueCountableSql("b")} AND (${g.cond})`,
+    );
+    const leakedDebt = (r.rows as Array<{ id: number }>).reduce(
+      (s, x) => s + (snapEx.byId.get(Number(x.id))?.debt ?? 0),
+      0,
     );
     out.push(
       compareAgainstEngine(`nhom_bi_loai_${g.name}`, "trong tập countable", {
         engine: 0,
-        dongGop: Number((r.rows[0] as { v?: string })?.v ?? 0),
+        dongGop: leakedDebt,
       }),
     );
   }

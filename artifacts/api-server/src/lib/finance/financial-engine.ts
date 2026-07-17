@@ -39,7 +39,14 @@
  * engineFamilyCashDrift giữ nguyên vai trò cảnh báo vệ sinh cột paid_amount cũ.
  */
 import { pool } from "@workspace/db";
-import { revenueCountableSql } from "../booking-money";
+import {
+  revenueCountableSql,
+  allocateFamilies,
+  money,
+  type AllocBookingInput,
+  type AllocPaymentInput,
+  type FamilyAllocation,
+} from "../booking-money";
 import { paymentNotOnEmptyParentSql } from "../parent-contract";
 import { getSchemaFlags } from "../schema-compat";
 
@@ -50,40 +57,142 @@ import { getSchemaFlags } from "../schema-compat";
  * tập tính nợ; phiếu trên "cha rỗng" (không còn con hiệu lực) → không ai nhận
  * (mirror paymentNotOnEmptyParentSql: tiền treo, không tính vào Đã thu active).
  */
-export function engineAllocPaidSql(alias = "b"): string {
-  const a = alias;
-  return `(
-    SELECT CASE
-      WHEN NOT (${revenueCountableSql(a)}) THEN 0
-      WHEN fam.family_net > 0
-        THEN fam.family_paid * GREATEST(0, ${a}.total_amount - COALESCE(${a}.discount_amount, 0)) / fam.family_net
-      WHEN fam.first_countable_id = ${a}.id THEN fam.family_paid
-      ELSE 0
-    END
-    FROM (
-      SELECT
-        COALESCE(SUM(GREATEST(0, fm.total_amount - COALESCE(fm.discount_amount, 0)))
-          FILTER (WHERE ${revenueCountableSql("fm")}), 0) AS family_net,
-        MIN(fm.id) FILTER (WHERE ${revenueCountableSql("fm")}) AS first_countable_id,
-        COALESCE((
-          SELECT SUM(p.amount::numeric)
-          FROM payments p JOIN bookings pb ON pb.id = p.booking_id
-          WHERE COALESCE(pb.parent_id, pb.id) = COALESCE(${a}.parent_id, ${a}.id)
-            AND COALESCE(p.status, 'active') != 'voided'
-            AND COALESCE(p.payment_type, '') NOT IN ('refund', 'ad_hoc')
-        ), 0) AS family_paid
-      FROM bookings fm
-      WHERE COALESCE(fm.parent_id, fm.id) = COALESCE(${a}.parent_id, ${a}.id)
-    ) fam
-  )`;
+// ─── ALLOCATION SNAPSHOT (chốt 17/07 đêm — CHIA ĐỀU CỌC, thay pro-rata) ────────
+// MỘT allocator duy nhất = allocateFamilies() trong booking-money.ts (thuần JS,
+// unit test dày). Engine nạp 2 query nhẹ (bookings + payments) rồi tính JS —
+// KHÔNG còn 2 bản SQL/JS song sinh có thể lệch nhau.
+
+export type AllocatedBooking = {
+  bookingId: number;
+  rootId: number;
+  customerId: number | null;
+  orderCode: string | null;
+  customerName: string | null;
+  customerPhone: string | null;
+  serviceLabel: string | null;
+  serviceCategory: string | null;
+  packageType: string | null;
+  shootDate: string | null;
+  net: number;
+  /** Cọc chung chia ĐỀU (cap ≤ NET, water-filling). */
+  equalDeposit: number;
+  /** Phiếu gắn thẳng dịch vụ này (gồm cọc legacy trên con). */
+  directPaid: number;
+  directCredited: number;
+  /** Phân bổ FIFO từ pool trên cha (thu thêm legacy + tiền thừa dịch vụ khác). */
+  parentFifo: number;
+  /** Tổng "đã thu phân bổ" = equalDeposit + directCredited + parentFifo. */
+  allocPaid: number;
+  /** Nợ sống quy tắc ① = max(0, net − allocPaid). */
+  debt: number;
+};
+
+export type AllocationSnapshot = {
+  /** CHỈ thành viên countable (đơn con hợp lệ + đơn lẻ hợp lệ). */
+  members: AllocatedBooking[];
+  byId: Map<number, AllocatedBooking>;
+  /** Breakdown mức gia đình (totalDeposit / eligibleServiceCount / overpayment). */
+  families: Map<number, FamilyAllocation>;
+};
+
+/**
+ * Nạp toàn bộ bookings + payments (2 query nhẹ, ~vài trăm dòng) và chạy allocator
+ * chung. Mọi hàm engine bên dưới đọc từ snapshot này — cùng MỘT thuật toán,
+ * cùng MỘT thời điểm đọc dữ liệu.
+ */
+export async function engineAllocationSnapshot(): Promise<AllocationSnapshot> {
+  const [bkR, payR] = await Promise.all([
+    pool.query(
+      `SELECT b.id, b.parent_id, b.is_parent_contract, b.status, b.deleted_at,
+              b.total_amount, b.discount_amount, b.shoot_date::text AS shoot_date,
+              b.customer_id, b.order_code, b.service_label, b.service_category, b.package_type,
+              c.name AS customer_name, c.phone AS customer_phone
+       FROM bookings b
+       LEFT JOIN customers c ON c.id = b.customer_id`,
+    ),
+    pool.query(
+      `SELECT id, booking_id, amount, payment_type, status FROM payments`,
+    ),
+  ]);
+  type BkRow = {
+    id: number; parent_id: number | null; is_parent_contract: boolean | null;
+    status: string | null; deleted_at: string | null;
+    total_amount: string | null; discount_amount: string | null; shoot_date: string | null;
+    customer_id: number | null; order_code: string | null; service_label: string | null;
+    service_category: string | null; package_type: string | null;
+    customer_name: string | null; customer_phone: string | null;
+  };
+  const bkRows = bkR.rows as BkRow[];
+  const allocBookings: (AllocBookingInput & { row: BkRow })[] = bkRows.map(r => ({
+    id: Number(r.id),
+    parentId: r.parent_id == null ? null : Number(r.parent_id),
+    isParentContract: !!r.is_parent_contract,
+    status: r.status,
+    deletedAt: r.deleted_at,
+    totalAmount: r.total_amount,
+    discountAmount: r.discount_amount,
+    shootDate: r.shoot_date,
+    row: r,
+  }));
+  const allocPayments: AllocPaymentInput[] = (payR.rows as Array<{
+    id: number; booking_id: number | null; amount: string; payment_type: string | null; status: string | null;
+  }>).map(p => ({
+    id: Number(p.id),
+    bookingId: p.booking_id == null ? null : Number(p.booking_id),
+    amount: p.amount,
+    paymentType: p.payment_type,
+    status: p.status,
+  }));
+
+  const families = allocateFamilies(allocBookings, allocPayments);
+  const rowById = new Map(allocBookings.map(b => [b.id, b.row]));
+  const members: AllocatedBooking[] = [];
+  for (const fam of families.values()) {
+    for (const m of fam.members) {
+      const r = rowById.get(m.bookingId);
+      if (!r) continue;
+      members.push({
+        bookingId: m.bookingId,
+        rootId: fam.rootId,
+        customerId: r.customer_id == null ? null : Number(r.customer_id),
+        orderCode: r.order_code,
+        customerName: r.customer_name,
+        customerPhone: r.customer_phone,
+        serviceLabel: r.service_label,
+        serviceCategory: r.service_category,
+        packageType: r.package_type,
+        shootDate: r.shoot_date ? String(r.shoot_date).slice(0, 10) : null,
+        net: m.net,
+        equalDeposit: m.equalDeposit,
+        directPaid: m.directPaid,
+        directCredited: m.directCredited,
+        parentFifo: m.parentFifo,
+        allocPaid: m.allocated,
+        debt: m.remaining,
+      });
+    }
+  }
+  return { members, byId: new Map(members.map(m => [m.bookingId, m])), families };
 }
 
-/** "Đã thu phân bổ" cho alias mặc định b — dùng trong mọi SELECT của engine. */
-export const ENGINE_ALLOC_PAID_SQL = engineAllocPaidSql("b");
+/** Σ nợ của một tập member id (id không có trong snapshot đóng góp 0). */
+function sumDebt(snap: AllocationSnapshot, ids?: Set<number>): number {
+  let s = 0;
+  for (const m of snap.members) {
+    if (ids && !ids.has(m.bookingId)) continue;
+    s += m.debt;
+  }
+  return s;
+}
 
-/** Quy tắc ①: nợ sống per-booking = max(0, net − đã thu PHÂN BỔ từ payments gốc). */
-export const ENGINE_DEBT_SQL =
-  `GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0) - ${ENGINE_ALLOC_PAID_SQL})`;
+/** Id các đơn countable thỏa điều kiện SQL bổ sung (membership kỳ, khách...). */
+async function countableIdsWhere(cond: string, params: unknown[]): Promise<Set<number>> {
+  const r = await pool.query(
+    `SELECT b.id FROM bookings b WHERE ${revenueCountableSql("b")}${cond ? ` AND ${cond}` : ""}`,
+    params,
+  );
+  return new Set((r.rows as Array<{ id: number }>).map(x => Number(x.id)));
+}
 
 /**
  * BA SCOPE CHÍNH THỨC của doanh thu tháng (chủ chốt 14/07 tối) — ba chỉ số là ba
@@ -122,12 +231,11 @@ export function monthMembershipSql(p1: string, p2: string, hasOccurrences: boole
  */
 export async function engineReceivableForRange(from: string, to: string): Promise<number> {
   const hasOcc = (await getSchemaFlags()).occurrences;
-  return num(
-    `SELECT COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS v
-     FROM bookings b
-     WHERE ${revenueCountableSql("b")} AND ${monthMembershipSql("$1", "$2", hasOcc)}`,
-    [from, to],
-  );
+  const [snap, ids] = await Promise.all([
+    engineAllocationSnapshot(),
+    countableIdsWhere(monthMembershipSql("$1", "$2", hasOcc), [from, to]),
+  ]);
+  return sumDebt(snap, ids);
 }
 
 export type ReceivableEvidenceRow = {
@@ -139,6 +247,10 @@ export type ReceivableEvidenceRow = {
   net: number;
   allocPaid: number;
   debt: number;
+  /** Breakdown chia đều (chốt 17/07) — cho bảng bằng chứng 6 dòng. */
+  equalDeposit: number;
+  directPaid: number;
+  parentFifo: number;
 };
 
 /**
@@ -154,43 +266,34 @@ export async function engineReceivableRowsForRange(
   to: string,
 ): Promise<{ rows: ReceivableEvidenceRow[]; total: number }> {
   const hasOcc = (await getSchemaFlags()).occurrences;
-  const r = await pool.query(
-    `SELECT * FROM (
-       SELECT t.*, SUM(t.debt) OVER () AS card_total
-       FROM (
-         SELECT b.id, b.order_code, b.service_label, b.shoot_date::text AS shoot_date,
-                c.name AS customer_name,
-                GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0)) AS net,
-                ${ENGINE_ALLOC_PAID_SQL} AS alloc_paid,
-                ${ENGINE_DEBT_SQL} AS debt
-         FROM bookings b
-         LEFT JOIN customers c ON c.id = b.customer_id
-         WHERE ${revenueCountableSql("b")} AND ${monthMembershipSql("$1", "$2", hasOcc)}
-       ) t
-     ) w
-     WHERE w.debt > 0
-     ORDER BY w.shoot_date, w.id`,
-    [from, to],
-  );
-  const list = r.rows as Array<{
-    id: number; order_code: string | null; service_label: string | null;
-    shoot_date: string | null; customer_name: string | null;
-    net: string; alloc_paid: string; debt: string; card_total: string;
-  }>;
-  return {
-    rows: list.map(row => ({
-      bookingId: Number(row.id),
-      orderCode: row.order_code,
-      customerName: row.customer_name,
-      serviceLabel: row.service_label,
-      shootDate: row.shoot_date,
-      net: Number(row.net),
-      allocPaid: Number(row.alloc_paid),
-      debt: Number(row.debt),
-    })),
-    // 0 dòng nợ dương → tổng chắc chắn 0 (mọi debt đều GREATEST(0,…) = 0).
-    total: list.length > 0 ? Number(list[0]!.card_total) : 0,
-  };
+  // rows và total lấy từ CÙNG một snapshot allocator (một lần đọc dữ liệu) —
+  // không thể lệch giả do ghi đồng thời giữa hai query rời (giữ tính chất PR #105).
+  const [snap, ids] = await Promise.all([
+    engineAllocationSnapshot(),
+    countableIdsWhere(monthMembershipSql("$1", "$2", hasOcc), [from, to]),
+  ]);
+  const inRange = snap.members.filter(m => ids.has(m.bookingId));
+  const rows = inRange
+    .filter(m => m.debt > 0)
+    .sort((a, b) => {
+      const ka = a.shootDate ?? "9999-12-31";
+      const kb = b.shootDate ?? "9999-12-31";
+      return ka < kb ? -1 : ka > kb ? 1 : a.bookingId - b.bookingId;
+    })
+    .map(m => ({
+      bookingId: m.bookingId,
+      orderCode: m.orderCode,
+      customerName: m.customerName,
+      serviceLabel: m.serviceLabel,
+      shootDate: m.shootDate,
+      net: m.net,
+      allocPaid: m.allocPaid,
+      debt: m.debt,
+      equalDeposit: m.equalDeposit,
+      directPaid: m.directPaid,
+      parentFifo: m.parentFifo,
+    }));
+  return { rows, total: inRange.reduce((s, m) => s + m.debt, 0) };
 }
 
 /** Phiếu thu HỢP LỆ của dòng tiền: không voided, không refund, không nằm trên đơn cha rỗng. */
@@ -208,17 +311,12 @@ async function num(sql: string, params: unknown[] = []): Promise<number> {
 // ─── Công nợ (quy tắc ①) ───────────────────────────────────────────────────────
 
 export async function engineSystemDebt(): Promise<number> {
-  return num(
-    `SELECT COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS v FROM bookings b WHERE ${revenueCountableSql("b")}`,
-  );
+  return sumDebt(await engineAllocationSnapshot());
 }
 
 export async function engineCustomerDebt(customerId: number): Promise<number> {
-  return num(
-    `SELECT COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS v
-     FROM bookings b WHERE ${revenueCountableSql("b")} AND b.customer_id = $1`,
-    [customerId],
-  );
+  const snap = await engineAllocationSnapshot();
+  return snap.members.reduce((s, m) => (m.customerId === customerId ? s + m.debt : s), 0);
 }
 
 export type CustomerFinance = {
@@ -234,45 +332,33 @@ export type CustomerFinance = {
   totalDebt: number;
 };
 
-const CUSTOMER_FINANCE_SELECT = `
-  COUNT(*)::int AS cnt,
-  COALESCE(SUM(GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0))), 0) AS owed,
-  COALESCE(SUM(${ENGINE_ALLOC_PAID_SQL}), 0) AS paid,
-  COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS debt`;
-
-function rowToCustomerFinance(row?: Record<string, unknown>): CustomerFinance {
-  return {
-    totalBookings: Number(row?.cnt ?? 0),
-    totalOwed: Number(row?.owed ?? 0),
-    totalPaid: Number(row?.paid ?? 0),
-    totalDebt: Number(row?.debt ?? 0),
-  };
+function customerFinanceFromSnapshot(snap: AllocationSnapshot): Map<number, CustomerFinance> {
+  const map = new Map<number, CustomerFinance>();
+  for (const m of snap.members) {
+    if (m.customerId == null) continue;
+    const cur = map.get(m.customerId) ?? { totalBookings: 0, totalOwed: 0, totalPaid: 0, totalDebt: 0 };
+    cur.totalBookings += 1;
+    cur.totalOwed += m.net;
+    cur.totalPaid += m.allocPaid;
+    cur.totalDebt += m.debt;
+    map.set(m.customerId, cur);
+  }
+  return map;
 }
 
 /** Bộ số tài chính hồ sơ MỘT khách (màn Khách hàng chi tiết dùng). */
 export async function engineCustomerFinance(customerId: number): Promise<CustomerFinance> {
-  const r = await pool.query(
-    `SELECT ${CUSTOMER_FINANCE_SELECT}
-     FROM bookings b WHERE ${revenueCountableSql("b")} AND b.customer_id = $1`,
-    [customerId],
+  const snap = await engineAllocationSnapshot();
+  return (
+    customerFinanceFromSnapshot(snap).get(customerId) ?? {
+      totalBookings: 0, totalOwed: 0, totalPaid: 0, totalDebt: 0,
+    }
   );
-  return rowToCustomerFinance(r.rows[0] as Record<string, unknown> | undefined);
 }
 
-/** Bộ số tài chính TOÀN BỘ khách trong MỘT query (màn danh sách Khách hàng dùng
- *  — thay vòng lặp N+1 query + nạp toàn bộ payments vào RAM trước đây). */
+/** Bộ số tài chính TOÀN BỘ khách từ MỘT snapshot allocator (màn danh sách Khách hàng dùng). */
 export async function engineAllCustomersFinance(): Promise<Map<number, CustomerFinance>> {
-  const r = await pool.query(
-    `SELECT b.customer_id AS cid, ${CUSTOMER_FINANCE_SELECT}
-     FROM bookings b
-     WHERE ${revenueCountableSql("b")} AND b.customer_id IS NOT NULL
-     GROUP BY b.customer_id`,
-  );
-  const map = new Map<number, CustomerFinance>();
-  for (const row of r.rows as Array<Record<string, unknown>>) {
-    map.set(Number(row.cid), rowToCustomerFinance(row));
-  }
-  return map;
+  return customerFinanceFromSnapshot(await engineAllocationSnapshot());
 }
 
 // ─── Dòng tiền vào (từ bảng payments GỐC) ─────────────────────────────────────
@@ -510,30 +596,33 @@ export async function engineOverdueReceivables(limit = 100): Promise<OverdueRece
   const lastPerf = hasOcc
     ? `GREATEST(b.shoot_date, COALESCE((SELECT MAX(oc.shoot_date) FROM booking_occurrences oc WHERE oc.booking_id = b.id), b.shoot_date))`
     : `b.shoot_date`;
-  const r = await pool.query(
-    `SELECT b.id, b.order_code, b.customer_id, c.name AS customer_name,
-            ${lastPerf} AS last_perf,
-            ((NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date - ${lastPerf}) AS days_overdue,
-            ${ENGINE_DEBT_SQL} AS receivable
-     FROM bookings b
-     LEFT JOIN customers c ON c.id = b.customer_id
-     WHERE ${revenueCountableSql("b")}
-       AND b.shoot_date IS NOT NULL
-       AND ${lastPerf} < (NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
-       AND ${ENGINE_DEBT_SQL} > 0
-     ORDER BY receivable DESC, days_overdue DESC
-     LIMIT $1`,
-    [limit],
-  );
-  return (r.rows as Array<Record<string, unknown>>).map(x => ({
-    bookingId: Number(x.id),
-    bookingCode: (x.order_code as string) ?? null,
-    customerId: x.customer_id == null ? null : Number(x.customer_id),
-    customerName: (x.customer_name as string) ?? null,
-    lastPerformanceDate: String(x.last_perf).slice(0, 10),
-    daysOverdue: Number(x.days_overdue),
-    receivable: Number(x.receivable),
-  }));
+  const [snap, perfR] = await Promise.all([
+    engineAllocationSnapshot(),
+    pool.query(
+      `SELECT b.id, ${lastPerf} AS last_perf,
+              ((NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date - ${lastPerf}) AS days_overdue
+       FROM bookings b
+       WHERE ${revenueCountableSql("b")}
+         AND b.shoot_date IS NOT NULL
+         AND ${lastPerf} < (NOW() AT TIME ZONE 'Asia/Ho_Chi_Minh')::date`,
+    ),
+  ]);
+  const out: OverdueReceivable[] = [];
+  for (const x of perfR.rows as Array<{ id: number; last_perf: unknown; days_overdue: number }>) {
+    const m = snap.byId.get(Number(x.id));
+    if (!m || m.debt <= 0) continue;
+    out.push({
+      bookingId: m.bookingId,
+      bookingCode: m.orderCode,
+      customerId: m.customerId,
+      customerName: m.customerName,
+      lastPerformanceDate: String(x.last_perf).slice(0, 10),
+      daysOverdue: Number(x.days_overdue),
+      receivable: m.debt,
+    });
+  }
+  out.sort((a, b) => b.receivable - a.receivable || b.daysOverdue - a.daysOverdue);
+  return out.slice(0, limit);
 }
 
 export type BookingFinance = {
@@ -563,42 +652,42 @@ export async function engineBookingFinance(): Promise<BookingFinance[]> {
     ? `(SELECT COALESCE(array_agg(oc.shoot_date::text ORDER BY oc.shoot_date), '{}')
         FROM booking_occurrences oc WHERE oc.booking_id = b.id)`
     : `'{}'::text[]`;
-  const r = await pool.query(
-    `SELECT b.id, b.order_code, b.customer_id, c.name AS customer_name,
-            COALESCE(b.service_label, b.package_type, b.service_category) AS service,
-            b.shoot_date, ${occSelect} AS occ_dates,
-            GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0)) AS net_value,
-            ${ENGINE_ALLOC_PAID_SQL} AS paid,
-            ${ENGINE_DEBT_SQL} AS receivable,
-            COALESCE((SELECT SUM(e.rate::numeric) FROM staff_job_earnings e
-              WHERE e.booking_id = b.id
-                AND COALESCE(e.status,'') NOT IN ('voided','cancelled')), 0) AS labor_cost,
-            COALESCE((SELECT SUM(x.amount::numeric) FROM expenses x
-              WHERE x.booking_id = b.id AND x.status IN ('approved','paid')
-                AND COALESCE(x.cost_class, 'direct') = 'direct'), 0) AS direct_expense
-     FROM bookings b
-     LEFT JOIN customers c ON c.id = b.customer_id
-     WHERE ${revenueCountableSql("b")}`,
+  const [snap, r] = await Promise.all([
+    engineAllocationSnapshot(),
+    pool.query(
+      `SELECT b.id, b.shoot_date, ${occSelect} AS occ_dates,
+              COALESCE((SELECT SUM(e.rate::numeric) FROM staff_job_earnings e
+                WHERE e.booking_id = b.id
+                  AND COALESCE(e.status,'') NOT IN ('voided','cancelled')), 0) AS labor_cost,
+              COALESCE((SELECT SUM(x.amount::numeric) FROM expenses x
+                WHERE x.booking_id = b.id AND x.status IN ('approved','paid')
+                  AND COALESCE(x.cost_class, 'direct') = 'direct'), 0) AS direct_expense
+       FROM bookings b
+       WHERE ${revenueCountableSql("b")}`,
+    ),
+  ]);
+  const extra = new Map(
+    (r.rows as Array<Record<string, unknown>>).map(x => [Number(x.id), x]),
   );
-  return (r.rows as Array<Record<string, unknown>>).map(x => {
-    const netValue = Number(x.net_value);
-    const laborCost = Number(x.labor_cost);
-    const direct = Number(x.direct_expense);
+  return snap.members.map(m => {
+    const x = extra.get(m.bookingId);
+    const laborCost = Number(x?.labor_cost ?? 0);
+    const direct = Number(x?.direct_expense ?? 0);
     return {
-      bookingId: Number(x.id),
-      bookingCode: (x.order_code as string) ?? null,
-      customerId: x.customer_id == null ? null : Number(x.customer_id),
-      customerName: (x.customer_name as string) ?? null,
-      service: (x.service as string) ?? null,
-      shootDate: x.shoot_date ? String(x.shoot_date).slice(0, 10) : null,
-      occurrenceDates: (x.occ_dates as string[]) ?? [],
-      netValue,
-      paid: Number(x.paid),
-      receivable: Number(x.receivable),
+      bookingId: m.bookingId,
+      bookingCode: m.orderCode,
+      customerId: m.customerId,
+      customerName: m.customerName,
+      service: m.serviceLabel ?? m.packageType ?? m.serviceCategory,
+      shootDate: m.shootDate,
+      occurrenceDates: (x?.occ_dates as string[]) ?? [],
+      netValue: m.net,
+      paid: m.allocPaid,
+      receivable: m.debt,
       laborCost,
       hasLaborLedger: laborCost > 0,
       approvedDirectExpense: direct,
-      estimatedProfit: netValue - laborCost - direct,
+      estimatedProfit: m.net - laborCost - direct,
     };
   });
 }
@@ -618,41 +707,46 @@ export type ServiceRollup = {
 
 /** Gộp tài chính theo DỊCH VỤ (khóa gộp: service_category — chú thích ở caveats tầng business). */
 export async function engineServiceRollup(): Promise<ServiceRollup[]> {
-  const r = await pool.query(
-    `SELECT COALESCE(NULLIF(TRIM(b.service_category), ''), 'khac') AS service,
-            COUNT(*)::int AS booking_count,
-            COALESCE(SUM(GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0))), 0) AS contract_value,
-            COALESCE(SUM(${ENGINE_ALLOC_PAID_SQL}), 0) AS collected,
-            COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS receivable,
-            COALESCE(SUM((SELECT COALESCE(SUM(e.rate::numeric), 0) FROM staff_job_earnings e
-              WHERE e.booking_id = b.id
-                AND COALESCE(e.status,'') NOT IN ('voided','cancelled'))), 0) AS labor,
-            COALESCE(SUM((SELECT COALESCE(SUM(x.amount::numeric), 0) FROM expenses x
-              WHERE x.booking_id = b.id AND x.status IN ('approved','paid')
-                AND COALESCE(x.cost_class, 'direct') = 'direct')), 0) AS direct_expense,
-            COUNT(*) FILTER (WHERE EXISTS (SELECT 1 FROM staff_job_earnings e
-              WHERE e.booking_id = b.id
-                AND COALESCE(e.status,'') NOT IN ('voided','cancelled')))::int AS with_labor
-     FROM bookings b
-     WHERE ${revenueCountableSql("b")}
-     GROUP BY COALESCE(NULLIF(TRIM(b.service_category), ''), 'khac')`,
+  const [snap, r] = await Promise.all([
+    engineAllocationSnapshot(),
+    pool.query(
+      `SELECT b.id,
+              COALESCE((SELECT COALESCE(SUM(e.rate::numeric), 0) FROM staff_job_earnings e
+                WHERE e.booking_id = b.id
+                  AND COALESCE(e.status,'') NOT IN ('voided','cancelled')), 0) AS labor,
+              COALESCE((SELECT COALESCE(SUM(x.amount::numeric), 0) FROM expenses x
+                WHERE x.booking_id = b.id AND x.status IN ('approved','paid')
+                  AND COALESCE(x.cost_class, 'direct') = 'direct'), 0) AS direct_expense
+       FROM bookings b
+       WHERE ${revenueCountableSql("b")}`,
+    ),
+  ]);
+  const extra = new Map(
+    (r.rows as Array<{ id: number; labor: string; direct_expense: string }>).map(x => [Number(x.id), x]),
   );
-  return (r.rows as Array<Record<string, unknown>>).map(x => {
-    const contractValue = Number(x.contract_value);
-    const labor = Number(x.labor);
-    const direct = Number(x.direct_expense);
-    return {
-      service: String(x.service),
-      bookingCount: Number(x.booking_count),
-      contractValue,
-      collected: Number(x.collected),
-      receivable: Number(x.receivable),
-      laborRecognized: labor,
-      approvedDirectExpense: direct,
-      estimatedProfit: contractValue - labor - direct,
-      bookingsWithLaborLedger: Number(x.with_labor),
+  const byService = new Map<string, ServiceRollup>();
+  for (const m of snap.members) {
+    const service = (m.serviceCategory ?? "").trim() || "khac";
+    const cur = byService.get(service) ?? {
+      service, bookingCount: 0, contractValue: 0, collected: 0, receivable: 0,
+      laborRecognized: 0, approvedDirectExpense: 0, estimatedProfit: 0, bookingsWithLaborLedger: 0,
     };
-  });
+    const x = extra.get(m.bookingId);
+    const labor = Number(x?.labor ?? 0);
+    const direct = Number(x?.direct_expense ?? 0);
+    cur.bookingCount += 1;
+    cur.contractValue += m.net;
+    cur.collected += m.allocPaid;
+    cur.receivable += m.debt;
+    cur.laborRecognized += labor;
+    cur.approvedDirectExpense += direct;
+    if (labor > 0) cur.bookingsWithLaborLedger += 1;
+    byService.set(service, cur);
+  }
+  for (const s of byService.values()) {
+    s.estimatedProfit = s.contractValue - s.laborRecognized - s.approvedDirectExpense;
+  }
+  return [...byService.values()];
 }
 
 // ─── GĐ1e-2: READ cho Copilot (chủ duyệt 15/07) ────────────────────────────────
@@ -747,36 +841,29 @@ export async function engineUnpaidCustomers(
   range?: { start: string; end: string },
 ): Promise<UnpaidCustomers> {
   const hasOcc = range ? (await getSchemaFlags()).occurrences : false;
-  const rangeCond = range ? ` AND ${monthMembershipSql("$2", "$3", hasOcc)}` : "";
-  const listR = await pool.query(
-    `SELECT c.name, c.phone, SUM(${ENGINE_DEBT_SQL}) AS debt
-     FROM bookings b
-     JOIN customers c ON c.id = b.customer_id
-     WHERE ${revenueCountableSql("b")}${rangeCond}
-     GROUP BY c.id, c.name, c.phone
-     HAVING SUM(${ENGINE_DEBT_SQL}) > 0
-     ORDER BY debt DESC
-     LIMIT $1`,
-    range ? [limit, range.start, range.end] : [limit],
-  );
-  const customers = (listR.rows as Array<Record<string, unknown>>).map(d => ({
-    name: (d.name as string) ?? null,
-    phone: (d.phone as string) ?? null,
-    debt: Number(d.debt),
-  }));
-  const totalR = await pool.query(
-    `SELECT COUNT(*) FILTER (WHERE ${ENGINE_DEBT_SQL} > 0) AS order_cnt,
-            COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS total_debt
-     FROM bookings b
-     WHERE ${revenueCountableSql("b")}${range ? ` AND ${monthMembershipSql("$1", "$2", hasOcc)}` : ""}`,
-    range ? [range.start, range.end] : [],
-  );
-  const totalRow = totalR.rows[0] as Record<string, unknown> | undefined;
-  return {
-    customers,
-    totalDebt: Number(totalRow?.total_debt ?? 0),
-    orderCount: Number(totalRow?.order_cnt ?? 0),
-  };
+  const [snap, rangeIds] = await Promise.all([
+    engineAllocationSnapshot(),
+    range
+      ? countableIdsWhere(monthMembershipSql("$1", "$2", hasOcc), [range.start, range.end])
+      : Promise.resolve<Set<number> | undefined>(undefined),
+  ]);
+  const byCustomer = new Map<number, { name: string | null; phone: string | null; debt: number }>();
+  let totalDebt = 0;
+  let orderCount = 0;
+  for (const m of snap.members) {
+    if (rangeIds && !rangeIds.has(m.bookingId)) continue;
+    totalDebt += m.debt;
+    if (m.debt > 0) orderCount += 1;
+    if (m.customerId == null) continue;
+    const cur = byCustomer.get(m.customerId) ?? { name: m.customerName, phone: m.customerPhone, debt: 0 };
+    cur.debt += m.debt;
+    byCustomer.set(m.customerId, cur);
+  }
+  const customers = [...byCustomer.values()]
+    .filter(c => c.debt > 0)
+    .sort((a, b) => b.debt - a.debt)
+    .slice(0, limit);
+  return { customers, totalDebt, orderCount };
 }
 
 export type CustomerByPhone = {
@@ -791,21 +878,25 @@ export async function engineCustomersByPhone(
   phoneSuffix: string,
   limit = 5,
 ): Promise<CustomerByPhone[]> {
-  const r = await pool.query(
-    `SELECT c.name, c.phone,
-            COUNT(b.id) AS booking_count,
-            COALESCE(SUM(${ENGINE_DEBT_SQL}), 0) AS debt
-     FROM customers c
-     LEFT JOIN bookings b ON b.customer_id = c.id AND ${revenueCountableSql("b")}
-     WHERE c.phone LIKE $1
-     GROUP BY c.id, c.name, c.phone
-     LIMIT $2`,
-    [`%${phoneSuffix}%`, limit],
-  );
-  return (r.rows as Array<Record<string, unknown>>).map(c => ({
-    name: (c.name as string) ?? null,
-    phone: (c.phone as string) ?? null,
-    bookingCount: Number(c.booking_count),
-    debt: Number(c.debt),
+  const [snap, custR] = await Promise.all([
+    engineAllocationSnapshot(),
+    pool.query(
+      `SELECT c.id, c.name, c.phone FROM customers c WHERE c.phone LIKE $1 LIMIT $2`,
+      [`%${phoneSuffix}%`, limit],
+    ),
+  ]);
+  const perCustomer = new Map<number, { bookingCount: number; debt: number }>();
+  for (const m of snap.members) {
+    if (m.customerId == null) continue;
+    const cur = perCustomer.get(m.customerId) ?? { bookingCount: 0, debt: 0 };
+    cur.bookingCount += 1;
+    cur.debt += m.debt;
+    perCustomer.set(m.customerId, cur);
+  }
+  return (custR.rows as Array<{ id: number; name: string | null; phone: string | null }>).map(c => ({
+    name: c.name ?? null,
+    phone: c.phone ?? null,
+    bookingCount: perCustomer.get(Number(c.id))?.bookingCount ?? 0,
+    debt: perCustomer.get(Number(c.id))?.debt ?? 0,
   }));
 }

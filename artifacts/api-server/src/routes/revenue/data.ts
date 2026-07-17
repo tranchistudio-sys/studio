@@ -149,5 +149,10 @@ export async function loadAllData() {
       && !(p.bookingId != null && zombieParentIds.has(p.bookingId)), // loại cọc của cha rỗng
   );
 
-  return { validBookings, castByBooking, laborMeta, directExpByBooking, directExpByDate, operatingExpByDate, depreciationByDate, interestByDate, payments: activePayments, classifiedExpenses, fixedCostPerMonth };
+  // Chốt nghiệp vụ 17/07: tiền thu trên đơn BÁO GIÁ TẠM vẫn là tiền thật (vào Đã thu)
+  // nhưng bảng bằng chứng phải TÁCH NHÓM + gắn nhãn rõ → cần tra status booking của
+  // từng phiếu từ CÙNG snapshot (không dựa enrichment có thể lỗi).
+  const bookingStatusById = new Map<number, string>(bookings.map(b => [b.id, b.status ?? ""]));
+
+  return { validBookings, castByBooking, laborMeta, directExpByBooking, directExpByDate, operatingExpByDate, depreciationByDate, interestByDate, payments: activePayments, classifiedExpenses, fixedCostPerMonth, bookingStatusById };
 }

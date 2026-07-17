@@ -191,6 +191,8 @@ type RawEvidence = {
   /** Tổng cộng dồn TỪNG BUCKET — y hệt totals của /revenue/v2/monthly. */
   totals: BucketStats & DerivedMoney;
   laborMeta: EngineLaborMeta;
+  /** status booking theo id — CÙNG snapshot với payments (tách nhóm báo giá tạm). */
+  bookingStatusById: Map<number, string>;
 };
 
 async function collectRangeEvidence(from: string, to: string): Promise<RawEvidence> {
@@ -240,6 +242,7 @@ async function collectRangeEvidence(from: string, to: string): Promise<RawEviden
     contractBookings, payments, castRows, expenses, fixedBuckets,
     totals: { ...acc, ...accDerived },
     laborMeta: data.laborMeta,
+    bookingStatusById: data.bookingStatusById,
   };
 }
 
@@ -253,12 +256,22 @@ function byDate(a: EvidenceRow, b: EvidenceRow): number {
   return (a.date ?? "").localeCompare(b.date ?? "");
 }
 
-function paymentGroup(
+/**
+ * Chốt nghiệp vụ 17/07: Đã thu = TỔNG tiền thật vào quỹ, nhưng bảng bằng chứng
+ * TÁCH 3 NHÓM để nhìn là biết tiền đến từ đâu:
+ *   1. Thu từ booking CHÍNH THỨC
+ *   2. Thu từ BÁO GIÁ TẠM — nhãn rõ "Tiền thu từ Báo giá tạm" (đơn tạm không nằm
+ *      trong Doanh thu hợp đồng / Công nợ / Lợi nhuận kỳ vọng, nhưng tiền là thật)
+ *   3. Thu lẻ không gắn đơn (ad_hoc)
+ * Tổng 3 nhóm == card Đã thu == quỹ — việc tách nhóm không đổi một đồng nào.
+ */
+function paymentGroups(
   payments: ActivePayment[],
+  bookingStatusById: Map<number, string>,
   bInfo: Map<number, BookingInfo>,
   pInfo: Map<number, PaymentInfo>,
-): EvidenceGroup {
-  const rows: EvidenceRow[] = payments.map(p => {
+): EvidenceGroup[] {
+  const mkRow = (p: ActivePayment, tempQuote: boolean): EvidenceRow => {
     const info = pInfo.get(p.id);
     const bk = p.bookingId != null ? bInfo.get(p.bookingId) : undefined;
     const isAdHoc = p.paymentType === "ad_hoc" || p.bookingId == null;
@@ -266,7 +279,9 @@ function paymentGroup(
       date: getPaymentDate(p),
       code: bk?.orderCode ?? (p.bookingId != null ? `#${p.bookingId}` : null),
       name: isAdHoc ? (info?.payerName ?? "Thu lẻ") : (bk?.customerName ?? null),
-      kind: PAYMENT_KIND[p.paymentType ?? ""] ?? (p.paymentType || "Phiếu thu"),
+      kind: tempQuote
+        ? "Tiền thu từ Báo giá tạm"
+        : PAYMENT_KIND[p.paymentType ?? ""] ?? (p.paymentType || "Phiếu thu"),
       detail: info?.description ?? (info?.method ? `Hình thức: ${info.method}` : null),
       status: info?.status ?? p.status ?? "active",
       by: info?.collector ?? null,
@@ -275,8 +290,32 @@ function paymentGroup(
       paymentId: p.id,
       expenseId: null,
     };
-  }).sort(byDate);
-  return { key: "payments", label: "Phiếu thu hợp lệ trong kỳ", sign: 1, rows, subtotal: sum(rows) };
+  };
+
+  const official: EvidenceRow[] = [];
+  const tempQuote: EvidenceRow[] = [];
+  const adHoc: EvidenceRow[] = [];
+  for (const p of payments) {
+    if (p.paymentType === "ad_hoc" || p.bookingId == null) adHoc.push(mkRow(p, false));
+    else if (bookingStatusById.get(p.bookingId) === "temp_quote") tempQuote.push(mkRow(p, true));
+    else official.push(mkRow(p, false));
+  }
+  official.sort(byDate); tempQuote.sort(byDate); adHoc.sort(byDate);
+
+  const groups: EvidenceGroup[] = [
+    { key: "payments-official", label: "Thu từ booking chính thức", sign: 1, rows: official, subtotal: sum(official) },
+  ];
+  if (tempQuote.length > 0) {
+    groups.push({
+      key: "payments-temp-quote",
+      label: "Thu từ BÁO GIÁ TẠM (tiền thật đã vào quỹ — đơn tạm không nằm trong doanh thu/công nợ chính thức)",
+      sign: 1, rows: tempQuote, subtotal: sum(tempQuote),
+    });
+  }
+  if (adHoc.length > 0) {
+    groups.push({ key: "payments-adhoc", label: "Thu lẻ không gắn đơn", sign: 1, rows: adHoc, subtotal: sum(adHoc) });
+  }
+  return groups;
 }
 
 function contractGroup(bookings: ValidBooking[], bInfo: Map<number, BookingInfo>): EvidenceGroup {
@@ -503,9 +542,12 @@ router.get("/revenue/v2/evidence", async (req, res) => {
 
   switch (metric) {
     case "collected": {
-      formula = "Đã thu = Σ tất cả PHIẾU THU hợp lệ có ngày thu trong kỳ (loại: phiếu đã hủy, phiếu hoàn tiền, phiếu nằm trên hợp đồng cha rỗng)";
-      scopeNote = `Scope: ${REVENUE_SCOPES.collectedAmount.scope} — tính theo NGÀY THU TIỀN, không phụ thuộc đơn chốt/tháng chụp.`;
-      groups = [paymentGroup(ev.payments, bInfo, pInfo)];
+      formula = "Đã thu = Thu từ booking chính thức + Thu từ báo giá tạm + Thu lẻ = Σ tất cả PHIẾU THU hợp lệ có ngày thu trong kỳ (loại: phiếu đã hủy, phiếu hoàn tiền, phiếu nằm trên hợp đồng cha rỗng)";
+      scopeNote = `Scope: ${REVENUE_SCOPES.collectedAmount.scope} — tính theo NGÀY THU TIỀN, không phụ thuộc đơn chốt/tháng chụp. Tổng các nhóm luôn khớp quỹ.`;
+      groups = paymentGroups(ev.payments, ev.bookingStatusById, bInfo, pInfo);
+      if (groups.some(g => g.key === "payments-temp-quote")) {
+        notes = ["Tiền thu từ đơn BÁO GIÁ TẠM là tiền thật đã vào quỹ nên tính vào Đã thu; nhưng đơn báo giá tạm KHÔNG nằm trong Doanh thu hợp đồng / Công nợ / Lợi nhuận kỳ vọng chính thức."];
+      }
       cardTotal = ev.totals.collected;
       break;
     }
@@ -522,9 +564,9 @@ router.get("/revenue/v2/evidence", async (req, res) => {
     }
     case "realProfit": {
       formula = "Lợi nhuận thực = Đã thu − Chi phí";
-      scopeNote = "Phần A (+) là tiền đã vào túi trong kỳ; phần B (−) là chi phí thực tế đã phát sinh trong kỳ.";
+      scopeNote = "Phần A (+) là tiền đã vào túi trong kỳ (gồm cả thu từ báo giá tạm — tiền thật); phần B (−) là chi phí thực tế đã phát sinh trong kỳ.";
       groups = [
-        paymentGroup(ev.payments, bInfo, pInfo),
+        ...paymentGroups(ev.payments, ev.bookingStatusById, bInfo, pInfo),
         ...buildCostGroups().map(g => ({ ...g, sign: -1 as const })),
       ];
       cardTotal = ev.totals.realProfit;

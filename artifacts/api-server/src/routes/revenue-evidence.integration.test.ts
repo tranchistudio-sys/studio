@@ -224,6 +224,11 @@ function rowsOf(ev: Evidence, key?: string) {
   return ev.groups.filter(g => !key || g.key === key).flatMap(g => g.rows);
 }
 
+/** Gom mọi nhóm phiếu thu (chính thức + báo giá tạm + thu lẻ). */
+function paymentRows(ev: Evidence) {
+  return ev.groups.filter(g => g.key.startsWith("payments")).flatMap(g => g.rows);
+}
+
 /** Cộng lại từ TỪNG DÒNG — không tin detailTotal server trả về. */
 function sumRows(ev: Evidence): number {
   return ev.groups.reduce((s, g) => s + g.sign * g.rows.reduce((x, r) => x + r.amount, 0), 0);
@@ -267,7 +272,7 @@ describe("Bất biến #1 — detailTotal == cardTotal == totals của /monthly 
 describe("Rule tiền trên từng bảng bằng chứng", () => {
   it("Đã thu: đúng 8 phiếu hợp lệ; loại voided/refund/ngoài kỳ/cha-rỗng; 2 phiếu cùng đơn = 2 dòng", async () => {
     const ev = await evidence("collected");
-    const rows = rowsOf(ev, "payments");
+    const rows = paymentRows(ev);
     expect(rows.length).toBe(8);
     const ids = rows.map(r => Number(r.paymentId)).sort((a, b) => a - b);
     expect(ids).toEqual([1, 2, 3, 4, 8, 10, 11, 12]);
@@ -280,7 +285,7 @@ describe("Rule tiền trên từng bảng bằng chứng", () => {
 
   it("CHỐT rule cha rỗng (root cause PR #86): phiếu 1.5M trên cha hết con hiệu lực KHÔNG vào Đã thu", async () => {
     const ev = await evidence("collected");
-    const rows = rowsOf(ev, "payments");
+    const rows = paymentRows(ev);
     expect(rows.map(r => r.paymentId)).not.toContain(9);
     expect(rows.filter(r => r.bookingId === 30).length).toBe(0);
     // Đối chứng: phiếu trên cha CÒN con hiệu lực (b10) thì VẪN tính
@@ -289,7 +294,7 @@ describe("Rule tiền trên từng bảng bằng chứng", () => {
 
   it("CHỐT rule đơn hủy/xóa + thu lẻ: tiền ĐÃ vào túi vẫn là Đã thu; ad_hoc có nhãn Thu lẻ", async () => {
     const ev = await evidence("collected");
-    const rows = rowsOf(ev, "payments");
+    const rows = paymentRows(ev);
     const p10 = rows.find(r => r.paymentId === 10)!;
     const p11 = rows.find(r => r.paymentId === 11)!;
     const p12 = rows.find(r => r.paymentId === 12)!;
@@ -298,6 +303,35 @@ describe("Rule tiền trên từng bảng bằng chứng", () => {
     expect(p12.amount).toBe(900_000);
     expect(String(p12.kind)).toContain("Thu lẻ");
     expect(p12.bookingId).toBeNull();
+  });
+
+  it("CHỐT nghiệp vụ 17/07 — Đã thu tách 3 nhóm: chính thức / BÁO GIÁ TẠM (nhãn rõ) / thu lẻ; tổng khớp quỹ", async () => {
+    const ev = await evidence("collected");
+    const byKey = Object.fromEntries(ev.groups.map(g => [g.key, g]));
+
+    // 1. Thu từ booking chính thức: p1(5M) + p3(3M) + p4(2M) + p8(5M) + p10(700k) + p11(300k) = 16M
+    expect(byKey["payments-official"]!.subtotal).toBe(16_000_000);
+    expect(byKey["payments-official"]!.rows.map(r => r.paymentId)).not.toContain(2);
+
+    // 2. Thu từ BÁO GIÁ TẠM: đúng p2 (2M trên b2 temp_quote), nhãn RÕ từng dòng
+    const tq = byKey["payments-temp-quote"]!;
+    expect(tq.subtotal).toBe(2_000_000);
+    expect(tq.rows.length).toBe(1);
+    expect(tq.rows[0]!.paymentId).toBe(2);
+    expect(String(tq.rows[0]!.kind)).toBe("Tiền thu từ Báo giá tạm");
+    expect(tq.label).toContain("BÁO GIÁ TẠM");
+
+    // 3. Thu lẻ: p12 (900k)
+    expect(byKey["payments-adhoc"]!.subtotal).toBe(900_000);
+
+    // Tổng 3 nhóm == card == quỹ — tách nhóm không đổi một đồng
+    expect(16_000_000 + 2_000_000 + 900_000).toBe(EXPECTED_COLLECTED);
+    expect(ev.detailTotal).toBe(EXPECTED_COLLECTED);
+    expect(ev.cardTotal).toBe(EXPECTED_COLLECTED);
+
+    // Còn đơn temp_quote (b2) vẫn KHÔNG nằm trong doanh thu HĐ / công nợ / LN kỳ vọng
+    const contract = await evidence("contractValue");
+    expect(rowsOf(contract).map(r => r.bookingId)).not.toContain(2);
   });
 
   it("Doanh thu hợp đồng: loại temp_quote/cancelled/deleted/cha tổng; NET trừ giảm giá đúng", async () => {

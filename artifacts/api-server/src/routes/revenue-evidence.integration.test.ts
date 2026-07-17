@@ -209,6 +209,7 @@ async function get(path: string) {
 
 type Evidence = {
   formula: string;
+  notes: string[];
   groups: Array<{ key: string; label: string; sign: 1 | -1; subtotal: number; rows: Array<Record<string, unknown> & { amount: number }> }>;
   detailTotal: number;
   cardTotal: number;
@@ -312,6 +313,10 @@ describe("Rule tiền trên từng bảng bằng chứng", () => {
     // 1. Thu từ booking chính thức: p1(5M) + p3(3M) + p4(2M) + p8(5M) + p10(700k) + p11(300k) = 16M
     expect(byKey["payments-official"]!.subtotal).toBe(16_000_000);
     expect(byKey["payments-official"]!.rows.map(r => r.paymentId)).not.toContain(2);
+    // Nhãn nhóm chính thức phải là nhãn thường — KHÔNG dòng nào bị dán nhầm nhãn báo giá tạm
+    const p1row = byKey["payments-official"]!.rows.find(r => r.paymentId === 1)!;
+    expect(String(p1row.kind)).toBe("Cọc");
+    expect(byKey["payments-official"]!.rows.map(r => String(r.kind))).not.toContain("Tiền thu từ Báo giá tạm");
 
     // 2. Thu từ BÁO GIÁ TẠM: đúng p2 (2M trên b2 temp_quote), nhãn RÕ từng dòng
     const tq = byKey["payments-temp-quote"]!;
@@ -324,14 +329,26 @@ describe("Rule tiền trên từng bảng bằng chứng", () => {
     // 3. Thu lẻ: p12 (900k)
     expect(byKey["payments-adhoc"]!.subtotal).toBe(900_000);
 
-    // Tổng 3 nhóm == card == quỹ — tách nhóm không đổi một đồng
-    expect(16_000_000 + 2_000_000 + 900_000).toBe(EXPECTED_COLLECTED);
+    // Tổng 3 nhóm (từ RESPONSE thật) == card == quỹ — tách nhóm không đổi một đồng
+    expect(byKey["payments-official"]!.subtotal + tq.subtotal + byKey["payments-adhoc"]!.subtotal).toBe(ev.cardTotal);
     expect(ev.detailTotal).toBe(EXPECTED_COLLECTED);
     expect(ev.cardTotal).toBe(EXPECTED_COLLECTED);
 
-    // Còn đơn temp_quote (b2) vẫn KHÔNG nằm trong doanh thu HĐ / công nợ / LN kỳ vọng
+    // Note giải thích phải xuất hiện khi có nhóm báo giá tạm
+    expect(ev.notes.some(n => n.includes("BÁO GIÁ TẠM"))).toBe(true);
+
+    // Còn đơn temp_quote (b2) vẫn KHÔNG nằm trong Doanh thu hợp đồng (công nợ temp_quote
+    // bị loại ở tầng SQL engine — kiểm trên DB thật trong truth itest, mock này SQL rỗng)
     const contract = await evidence("contractValue");
     expect(rowsOf(contract).map(r => r.bookingId)).not.toContain(2);
+  });
+
+  it("Kỳ KHÔNG có phiếu báo giá tạm/thu lẻ (03/2026): chỉ còn nhóm chính thức, không nhóm rỗng, không note thừa", async () => {
+    const ev = await get(`/api/revenue/v2/evidence?metric=collected&from=2026-03-01&to=2026-03-31`) as Evidence;
+    expect(ev.groups.map(g => g.key)).toEqual(["payments-official"]);
+    expect(ev.detailTotal).toBe(9_000_000); // chỉ p7 (thu 01/03 trên b1)
+    expect(ev.cardTotal).toBe(9_000_000);
+    expect(ev.notes).toEqual([]);
   });
 
   it("Doanh thu hợp đồng: loại temp_quote/cancelled/deleted/cha tổng; NET trừ giảm giá đúng", async () => {
@@ -377,6 +394,11 @@ describe("Rule tiền trên từng bảng bằng chứng", () => {
     expect(plus).toBe(EXPECTED_COLLECTED);
     expect(minus).toBe(EXPECTED_COST);
     expect(ev.detailTotal).toBe(EXPECTED_COLLECTED - EXPECTED_COST);
+    // Phần A cũng phải tách nhóm như metric Đã thu (chốt 17/07) — không được gộp phẳng
+    const plusKeys = ev.groups.filter(g => g.sign === 1).map(g => g.key);
+    expect(plusKeys).toContain("payments-official");
+    expect(plusKeys).toContain("payments-temp-quote");
+    expect(plusKeys).toContain("payments-adhoc");
   });
 
   it("Lợi nhuận kỳ vọng: Doanh thu hợp đồng − Chi phí dự kiến", async () => {

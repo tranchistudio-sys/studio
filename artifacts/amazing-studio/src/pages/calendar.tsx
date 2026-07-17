@@ -1434,6 +1434,12 @@ function ShowFormPanel({
 
   const [deposit, setDeposit] = useState(booking?.depositAmount?.toString() ?? "0");
   const [depositMethod, setDepositMethod] = useState<"cash" | "bank_transfer">("cash");
+  // ── Sửa tiền cọc NGAY TRÊN FORM (nguyên tắc UX: người dùng sửa KẾT QUẢ, hệ
+  // thống tự chạy quy trình). Admin đổi số → popup xác nhận → backend PUT tự
+  // điều chỉnh phiếu cọc + đã thu + công nợ + audit log trong CÙNG transaction.
+  const initialDepositNumRef = useRef(parseFloat(booking?.depositAmount?.toString() ?? "0") || 0);
+  const [editingDeposit, setEditingDeposit] = useState(false);
+  const [confirmDepositOpen, setConfirmDepositOpen] = useState(false);
   // Ngày + giờ cọc = thời điểm thực tế studio nhận tiền (KHÔNG lấy theo shootDate).
   // Ưu tiên: payments[deposit].paidAt → paidDate → fallback bây giờ (chỉ khi tạo mới).
   const { initialDepositDate, initialDepositTime } = (() => {
@@ -1865,7 +1871,12 @@ function ShowFormPanel({
   // Tạo mới (hoặc sửa đơn chưa thu) thì vẫn dùng ô "Đặt cọc" như cũ.
   const actualPaid = Number(booking?.paidAmount ?? 0) || 0;
   const showActualPaid = isEdit && actualPaid > 0;
-  const effectivePaid = showActualPaid ? actualPaid : depositNum;
+  // Admin sửa tiền cọc ngay trên form: preview "Còn lại" phản ánh số MỚI
+  // (đã thu hiện tại − cọc cũ + cọc mới) trước cả khi bấm Lưu.
+  const depositChanged = isEdit && depositNum !== initialDepositNumRef.current;
+  const effectivePaid = showActualPaid
+    ? (depositChanged ? Math.max(0, actualPaid - initialDepositNumRef.current + depositNum) : actualPaid)
+    : depositNum;
   const remaining = Math.max(0, afterDiscount - effectivePaid);
 
   // ── Báo giá tạm tính: dựng text gửi khách + chuyển thành show thật ─────────
@@ -2049,12 +2060,18 @@ function ShowFormPanel({
     }
   };
 
-  const save = async () => {
+  const save = async (opts?: { depositConfirmed?: boolean }) => {
     setError("");
     setProofWarning("");
     if (!customerName.trim()) { setError("Vui lòng nhập tên khách hàng"); return; }
     if (!shootDate) { setError("Vui lòng chọn ngày hợp đồng"); return; }
     if (isUploadingImages) { setError("Ảnh đang tải, vui lòng chờ tải xong để tránh mất ảnh."); return; }
+    // Đổi TIỀN CỌC = đổi phiếu thu → xác nhận MỘT lần rồi hệ thống tự xử lý hết
+    // (điều chỉnh phiếu cọc, đã thu, công nợ, audit — backend làm trong 1 transaction).
+    if (isEdit && depositChanged && opts?.depositConfirmed !== true) {
+      setConfirmDepositOpen(true);
+      return;
+    }
     const extrasValidation = validateAdditionalServicesForm(
       subDrafts.flatMap(s => s.additionalServices || []).filter(l => (l.title || "").trim()),
     );
@@ -3120,9 +3137,46 @@ function ShowFormPanel({
                 <>
                   <div className="flex justify-between items-center gap-3">
                     <span className="text-sm text-muted-foreground flex-shrink-0">Đã cọc / Đã thu:</span>
-                    <span className="font-semibold text-emerald-600">{formatVND(actualPaid)}</span>
+                    <span className={`font-semibold ${depositChanged ? "text-amber-600" : "text-emerald-600"}`}>{formatVND(effectivePaid)}</span>
                   </div>
-                  <p className="text-[11px] text-muted-foreground -mt-1">Tổng đã thu theo lịch sử thanh toán. Muốn thu thêm / chỉnh, dùng nút <b>Thu tiền</b> ở chi tiết show (không sửa ở đây để tránh lệch tiền).</p>
+                  {/* Sửa TIỀN CỌC ngay tại đây (admin) — người dùng sửa KẾT QUẢ, hệ
+                      thống tự điều chỉnh phiếu thu/công nợ/audit khi bấm Lưu. */}
+                  <div className="flex justify-between items-center gap-3">
+                    <span className="text-sm text-muted-foreground flex-shrink-0">Tiền cọc:</span>
+                    {editingDeposit && isAdmin ? (
+                      <div className="flex items-center gap-1.5">
+                        <CurrencyInput className="h-8 text-sm text-right w-36" value={deposit} placeholder="0" onChange={setDeposit} />
+                        <button
+                          type="button"
+                          className="text-[11px] text-muted-foreground hover:text-foreground underline flex-shrink-0"
+                          onClick={() => { setDeposit(String(initialDepositNumRef.current)); setEditingDeposit(false); }}
+                        >
+                          hủy
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="flex items-center gap-2">
+                        <span className={`font-semibold ${depositChanged ? "text-amber-600" : ""}`}>{formatVND(depositNum)}</span>
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => setEditingDeposit(true)}
+                            className="h-7 px-2 rounded-lg text-xs font-medium border border-border text-muted-foreground hover:border-primary/40 hover:text-primary transition-colors"
+                          >
+                            ✏️ Sửa
+                          </button>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                  {depositChanged && (
+                    <p className="text-[11px] text-amber-700 -mt-1">
+                      Cọc sẽ đổi {formatVND(initialDepositNumRef.current)} → <b>{formatVND(depositNum)}</b> khi bấm Lưu — hệ thống tự điều chỉnh phiếu thu và công nợ.
+                    </p>
+                  )}
+                  <p className="text-[11px] text-muted-foreground -mt-1">
+                    Tổng đã thu theo lịch sử thanh toán.{isAdmin ? " Sửa tiền cọc ngay tại đây;" : ""} các khoản thu thêm khác dùng nút <b>Thu tiền</b> ở chi tiết show.
+                  </p>
                   {/* Ảnh bằng chứng cọc: xem lại + thêm (chỉ gắn ảnh vào payment cọc, KHÔNG đổi số tiền). */}
                   <div className="space-y-1.5 pt-1">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -3278,6 +3332,35 @@ function ShowFormPanel({
           </Button>
         )}
       </div>
+
+      {/* Popup xác nhận SỬA TIỀN CỌC — người dùng chỉ xác nhận KẾT QUẢ,
+          backend tự điều chỉnh phiếu thu/đã thu/công nợ/audit trong 1 transaction. */}
+      {confirmDepositOpen && (
+        <div className="fixed inset-0 z-[400] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-card rounded-2xl border border-border shadow-xl max-w-sm w-full p-5 space-y-3">
+            <p className="font-bold text-base">💰 Xác nhận sửa tiền cọc</p>
+            <p className="text-sm leading-relaxed">
+              Bạn vừa thay đổi tiền cọc từ{" "}
+              <b className="text-muted-foreground line-through">{formatVND(initialDepositNumRef.current)}</b>{" "}
+              thành <b className="text-primary">{formatVND(depositNum)}</b>.
+            </p>
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              Hệ thống sẽ tự điều chỉnh toàn bộ phiếu thu và công nợ. Bạn có chắc không?
+            </p>
+            <div className="flex gap-2 pt-1">
+              <Button variant="outline" className="flex-1" onClick={() => setConfirmDepositOpen(false)}>
+                Hủy
+              </Button>
+              <Button
+                className="flex-1"
+                onClick={() => { setConfirmDepositOpen(false); setEditingDeposit(false); void save({ depositConfirmed: true }); }}
+              >
+                Đồng ý
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -3842,6 +3925,44 @@ function ShowDetailPanel({
     staleTime: 30_000,
   });
 
+  // ── Toggle Báo giá tạm NGAY MÀN CHI TIẾT (nguyên tắc UX: nút ở chỗ người dùng
+  // đang đứng, không bắt mở form sửa). PUT status → backend flip CẢ GIA ĐÌNH
+  // trong 1 transaction (#100); confirm ngắn 1 lần, không có bước Lưu thứ hai.
+  const { toast: detailToast } = useToast();
+  const [tempToggleBusy, setTempToggleBusy] = useState(false);
+  const [confirmTempToggle, setConfirmTempToggle] = useState<null | "on" | "off">(null);
+  const [statusOverride, setStatusOverride] = useState<string | null>(null);
+  const effectiveStatus = statusOverride ?? booking.status;
+  const applyTempQuoteToggle = async (toTemp: boolean) => {
+    setTempToggleBusy(true);
+    try {
+      const res = await authFetch(`${BASE}/api/bookings/${booking.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: toTemp ? "temp_quote" : "confirmed" }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => null);
+        throw new Error(e?.error || "Lỗi chuyển trạng thái");
+      }
+      setStatusOverride(toTemp ? "temp_quote" : "confirmed");
+      invalidateBookingRelated(qc);
+      detailToast({
+        title: toTemp
+          ? "Đã chuyển sang báo giá tạm — đơn đã được loại khỏi số liệu chính thức."
+          : "Đã chuyển thành booking chính thức — đơn đã được đưa trở lại hệ thống.",
+      });
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Lỗi chuyển trạng thái");
+    } finally {
+      setTempToggleBusy(false);
+      setConfirmTempToggle(null);
+    }
+  };
+
+  // Chip trạng thái trên header đọc theo trạng thái HIỆU LỰC (đổi ngay sau toggle).
+  const stEff = STATUS[effectiveStatus as keyof typeof STATUS] ?? STATUS.pending;
+
   // ── Payment history for this booking ─────────────────────────────────────
   type BookingPayment = { id?: number; amount?: number; paymentMethod?: string; paymentType?: string; collectorName?: string; notes?: string; paidAt?: string; paidDate?: string; proofImageUrl?: string | null; proofImageUrls?: string[] };
   const paymentTargetId = fullDetail?.parentContract?.id ?? booking.parentId ?? booking.id;
@@ -4048,11 +4169,31 @@ function ShowDetailPanel({
         <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-muted transition-colors flex-shrink-0">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <div className="flex-1 min-w-0">
-          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border ${st.color}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${st.dot}`} />
-            {st.label}
+        <div className="flex-1 min-w-0 flex items-center gap-2 flex-wrap">
+          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border ${stEff.color}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${stEff.dot}`} />
+            {stEff.label}
           </span>
+          {/* Toggle Báo giá tạm NGAY TẠI ĐÂY — không bắt mở form sửa (nguyên tắc
+              UX: người dùng sửa KẾT QUẢ tại chỗ, hệ thống tự chạy quy trình). */}
+          {isAdmin && effectiveStatus !== "cancelled" && (
+            <button
+              type="button"
+              disabled={tempToggleBusy}
+              onClick={() => setConfirmTempToggle(effectiveStatus === "temp_quote" ? "off" : "on")}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border transition-colors flex-shrink-0 ${
+                effectiveStatus === "temp_quote"
+                  ? "border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/30"
+                  : "border-purple-300 text-purple-700 bg-purple-50 hover:bg-purple-100 dark:bg-purple-950/30"
+              } ${tempToggleBusy ? "opacity-60 cursor-wait" : ""}`}
+            >
+              {tempToggleBusy
+                ? "Đang chuyển…"
+                : effectiveStatus === "temp_quote"
+                  ? "✅ Chuyển thành chính thức"
+                  : "🧮 Báo giá tạm tính"}
+            </button>
+          )}
         </div>
         {/* Role indicator */}
         <div className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded-full ${isAdmin ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"}`}>
@@ -5055,6 +5196,30 @@ function ShowDetailPanel({
                 <p className="text-center text-white/40 text-xs pb-4">Bấm giữ ảnh để lưu vào thư viện điện thoại</p>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Confirm chuyển Báo giá tạm ↔ chính thức — 1 xác nhận, không bước Lưu thứ hai */}
+      {confirmTempToggle && (
+        <div className="fixed inset-0 z-[400] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-card rounded-2xl border border-border shadow-xl max-w-sm w-full p-5 space-y-3">
+            <p className="font-bold text-base">
+              {confirmTempToggle === "on" ? "🧮 Chuyển sang Báo giá tạm tính?" : "✅ Chuyển thành booking chính thức?"}
+            </p>
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              {confirmTempToggle === "on"
+                ? "Cả hợp đồng (mọi dịch vụ) sẽ được loại khỏi doanh thu/công nợ và hiện màu tím trên lịch. Booking, phiếu thu, hợp đồng đều giữ nguyên — bật lại lúc nào cũng được."
+                : "Cả hợp đồng (mọi dịch vụ) sẽ được tính lại vào doanh thu/công nợ như booking bình thường ngay lập tức."}
+            </p>
+            <div className="flex gap-2 pt-1">
+              <Button variant="outline" className="flex-1" onClick={() => setConfirmTempToggle(null)} disabled={tempToggleBusy}>
+                Hủy
+              </Button>
+              <Button className="flex-1" disabled={tempToggleBusy} onClick={() => void applyTempQuoteToggle(confirmTempToggle === "on")}>
+                {tempToggleBusy ? "Đang chuyển…" : "Đồng ý"}
+              </Button>
+            </div>
           </div>
         </div>
       )}

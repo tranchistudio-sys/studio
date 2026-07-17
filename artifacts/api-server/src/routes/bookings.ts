@@ -1065,6 +1065,13 @@ router.put("/bookings/:id", async (req, res) => {
   if (dressWarnColsReady && req.body.dressWarnPickupDays !== undefined) updateData.dressWarnPickupDays = toWarnDays(req.body.dressWarnPickupDays);
   if (dressWarnColsReady && req.body.dressWarnReturnDays !== undefined) updateData.dressWarnReturnDays = toWarnDays(req.body.dressWarnReturnDays);
 
+  // ── Toggle "Báo giá tạm tính" (temp_quote = true/false, MỘT nguồn chân lý là
+  // bookings.status). Bật/tắt phải flip CẢ GIA ĐÌNH (cha + các con) trong cùng
+  // transaction — nửa tím nửa thường thì predicate countable (con theo cha, con
+  // theo chính nó) vẫn loại cả nhà → "tắt rồi mà số không về". Không delete/
+  // recreate gì; đổi qua lại bao nhiêu lần cũng deterministic + idempotent.
+  const newStatusRaw = status !== undefined ? String(status) : undefined;
+
   // Check booking exists. Đọc đầy đủ field để diff trước/sau, ghi lịch sử sửa đơn.
   const [oldBooking] = await db
     .select({
@@ -1087,6 +1094,12 @@ router.put("/bookings/:id", async (req, res) => {
     .where(eq(bookingsTable.id, id));
   if (!oldBooking) return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
   const oldStatus = oldBooking.status;
+
+  // Ranh giới temp_quote: chỉ khi body CÓ status và giá trị đổi phía (thường↔tạm).
+  const wasTempQuote = oldStatus === "temp_quote";
+  const willTempQuote = newStatusRaw !== undefined ? newStatusRaw === "temp_quote" : wasTempQuote;
+  const crossesTempBoundary = newStatusRaw !== undefined && wasTempQuote !== willTempQuote;
+  let tempToggledFamilyIds: number[] = [];
 
   // Setting nhắc thuê đồ sống ở ĐƠN GỐC (reminder tính per family theo root).
   // PUT vào đơn con mà có gửi field nhắc → ghi sang đơn gốc để setting luôn có tác dụng.
@@ -1442,6 +1455,35 @@ router.put("/bookings/:id", async (req, res) => {
       );
     }
 
+    // ── 7. Toggle Báo giá tạm: flip CẢ GIA ĐÌNH trong cùng transaction ──
+    // Booking chính đã được UPDATE ở bước 4; đây là phần cha + anh em còn lại.
+    // Chỉ UPDATE status — không đụng khách/dịch vụ/giá/ngày/payment/occurrence.
+    if (crossesTempBoundary) {
+      const rootId = oldBooking.parentId ?? id;
+      if (willTempQuote) {
+        // BẬT: cả nhà về temp_quote (trừ đơn đã hủy/đã xóa — giữ nguyên trạng thái đó).
+        const r = await client.query<{ id: number }>(
+          `UPDATE bookings SET status = 'temp_quote'
+           WHERE (id = $1 OR parent_id = $1) AND id <> $2
+             AND deleted_at IS NULL AND COALESCE(status, '') NOT IN ('cancelled', 'temp_quote')
+           RETURNING id`,
+          [rootId, id]
+        );
+        tempToggledFamilyIds = r.rows.map((x) => x.id);
+      } else {
+        // TẮT: mọi thành viên đang temp_quote nhận CÙNG trạng thái mới → cả nhà
+        // countable trở lại một lần, deterministic.
+        const r = await client.query<{ id: number }>(
+          `UPDATE bookings SET status = $3
+           WHERE (id = $1 OR parent_id = $1) AND id <> $2
+             AND deleted_at IS NULL AND status = 'temp_quote'
+           RETURNING id`,
+          [rootId, id, newStatusRaw]
+        );
+        tempToggledFamilyIds = r.rows.map((x) => x.id);
+      }
+    }
+
     await client.query("COMMIT");
 
     const customerId = updateResult.rows[0].customer_id;
@@ -1449,6 +1491,40 @@ router.put("/bookings/:id", async (req, res) => {
     // Post-production: tạo job mới nếu gói yêu cầu hậu kỳ (không sửa job cũ nếu không đủ điều kiện)
     if (items !== undefined || servicePackageId !== undefined) {
       await maybeCreatePhotoshopJobForBooking(id).catch(err => console.warn("[bookings] maybeCreatePhotoshopJob PUT failed:", err));
+    }
+
+    // ── Side-effect sau toggle Báo giá tạm (dữ liệu chính đã COMMIT) ──
+    // BẬT: computeBookingEarnings dọn lương pending rồi early-return vì temp_quote
+    //      (lương đã trả + earning Hậu kỳ paid giữ nguyên; job hậu kỳ không xóa —
+    //      các màn hậu kỳ tự ẩn vì lọc status).
+    // TẮT: tạo job hậu kỳ nếu gói yêu cầu (lúc tạo báo giá đã skip); hàm tự bỏ qua
+    //      cha tổng/không đủ điều kiện. Không tạo trùng (maybe* kiểm tra job active).
+    if (crossesTempBoundary) {
+      const affectedIds = [id, ...tempToggledFamilyIds];
+      for (const bid of affectedIds) {
+        if (willTempQuote) {
+          computeBookingEarnings(bid).catch(err => console.warn("[bookings] earnings cleanup (temp_quote on) failed:", err));
+        } else {
+          await maybeCreatePhotoshopJobForBooking(bid).catch(err => console.warn("[bookings] maybeCreatePhotoshopJob (temp_quote off) failed:", err));
+          // Tắt thẳng về "Hoàn thành" → tính lương chốt cho cả gia đình như luồng completed chuẩn.
+          if (newStatusRaw === "completed") {
+            computeBookingEarnings(bid).catch(err => console.warn("[bookings] earnings compute (temp_quote off) failed:", err));
+          }
+        }
+      }
+      // Audit: các thành viên gia đình bị flip theo (đơn đang sửa đã có log status riêng).
+      if (tempToggledFamilyIds.length > 0) {
+        await db.insert(bookingChangeLogTable).values(tempToggledFamilyIds.map(bid => ({
+          bookingId: bid,
+          fieldChanged: "status",
+          oldValue: willTempQuote ? null : "temp_quote",
+          newValue: willTempQuote ? "temp_quote" : String(newStatusRaw),
+          reason: willTempQuote
+            ? "Đồng bộ Báo giá tạm tính cho cả hợp đồng gộp"
+            : "Đồng bộ Booking chính thức cho cả hợp đồng gộp",
+          changedById: callerId,
+        }))).catch(err => console.warn("[bookings] temp-quote toggle change-log failed:", err));
+      }
     }
 
     // Task #316: Sync photoshop_jobs.total_photos when booking snapshot changes

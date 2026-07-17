@@ -1572,10 +1572,12 @@ function ShowFormPanel({
   const [error, setError] = useState("");
   const [proofWarning, setProofWarning] = useState("");
   const [saving, setSaving] = useState(false);
-  // ── Báo giá tạm tính (chỉ khi tạo mới) ─────────────────────────────────────
-  // Bật lên thì form chỉ dùng để TÍNH GIÁ cho khách xem: không gọi save(),
-  // không POST/PUT customers/bookings/payments — không ghi gì vào DB.
-  const [tempQuoteMode, setTempQuoteMode] = useState(false);
+  // ── Báo giá tạm tính — MỘT toggle duy nhất, nguồn chân lý = bookings.status.
+  // Tạo mới: bật để lưu thành báo giá (mã BG, không countable). Sửa: admin bật/
+  // tắt bất kỳ lúc nào — backend flip cả GIA ĐÌNH (cha + con) trong 1 transaction.
+  // Không khóa, không tạo/xóa record, đổi qua lại bao nhiêu lần cũng được.
+  const [tempQuoteMode, setTempQuoteMode] = useState(booking?.status === "temp_quote");
+  const initialTempQuoteRef = useRef(booking?.status === "temp_quote");
   const { toast } = useToast();
   // ── Lưới an toàn upload ảnh ──────────────────────────────────────────────────
   // Đếm số ảnh đang tải ở các dòng dịch vụ (ảnh concept). Khi > 0 thì KHOÁ nút Lưu
@@ -2261,6 +2263,12 @@ function ShowFormPanel({
               dressWarnReturnDays: parseWarnDays(dressWarnReturnDays),
               // Only send assignedStaff when non-empty to avoid wiping item-level photographer/makeup
               ...(editMultiAssignedStaff.length > 0 ? { assignedStaff: editMultiAssignedStaff } : {}),
+              // Toggle Báo giá tạm đổi phía → gửi status cho CHA; backend flip cả
+              // gia đình (con + cha) trong 1 transaction. Không đổi thì không gửi
+              // status — tránh ghi đè trạng thái vận hành hiện tại của cha.
+              ...(tempQuoteMode !== initialTempQuoteRef.current
+                ? { status: tempQuoteMode ? "temp_quote" : "confirmed" }
+                : {}),
             }),
           });
         }
@@ -2268,6 +2276,14 @@ function ShowFormPanel({
         // khách hàng, thu tiền, tìm kiếm, dashboard (trước đây thiếu → màn khác
         // hiện dữ liệu cũ tới 5 phút vì staleTime toàn cục).
         invalidateBookingRelated(qc);
+        if (isEdit && tempQuoteMode !== initialTempQuoteRef.current) {
+          // UX như xóa/phục hồi mềm — nhưng kỹ thuật chỉ là flip status, không xóa gì.
+          toast({
+            title: tempQuoteMode
+              ? "Đã chuyển sang báo giá tạm — đơn đã được loại khỏi số liệu chính thức."
+              : "Đã chuyển thành booking chính thức — đơn đã được đưa trở lại hệ thống.",
+          });
+        }
         orderCreatedFeedback();
         onSaved(subDrafts[0]?.shootDate || shootDate);
         return;
@@ -2439,7 +2455,8 @@ function ShowFormPanel({
             : `${validLines[0].serviceName || "Dịch vụ"} (+${validLines.length - 1})`)
         : "Chưa chốt dịch vụ";
 
-      const finalStatus = hasServices ? status : (status === "confirmed" || status === "in_progress" || status === "completed" ? status : "pending_service");
+      // temp_quote giữ nguyên cả khi chưa chốt gói — báo giá tạm không bị ép về "Chưa chốt dịch vụ".
+      const finalStatus = hasServices ? status : (status === "confirmed" || status === "in_progress" || status === "completed" || status === "temp_quote" ? status : "pending_service");
       const finalTotal = totalAmount;
       const finalDeposit = hasServices ? depositNum : 0;
 
@@ -2551,6 +2568,14 @@ function ShowFormPanel({
       }
 
       invalidateBookingRelated(qc);
+      if (isEdit && tempQuoteMode !== initialTempQuoteRef.current) {
+        // UX như xóa/phục hồi mềm — nhưng kỹ thuật chỉ là flip status, không xóa gì.
+        toast({
+          title: tempQuoteMode
+            ? "Đã chuyển sang báo giá tạm — đơn đã được loại khỏi số liệu chính thức."
+            : "Đã chuyển thành booking chính thức — đơn đã được đưa trở lại hệ thống.",
+        });
+      }
       orderCreatedFeedback();
       if (singleProofUploadFailed) {
         setSaving(false);
@@ -2602,13 +2627,20 @@ function ShowFormPanel({
             {format(shootDateObj, "EEEE, dd/MM/yyyy", { locale: vi })} · {subDrafts[0]?.shootTime ?? initialTime}
           </p>
         </div>
-        {!isEdit && (
+        {/* Toggle Báo giá tạm — luôn thao tác được (edit: admin), không bao giờ khóa. */}
+        {(!isEdit || isAdmin) && (
           <label className="flex items-center gap-2 flex-shrink-0 cursor-pointer select-none">
-            <span className={`text-xs font-medium ${tempQuoteMode ? "text-amber-600" : "text-muted-foreground"}`}>Báo giá tạm tính</span>
+            <span className={`text-xs font-medium ${tempQuoteMode ? "text-purple-600" : "text-muted-foreground"}`}>
+              {tempQuoteMode ? "Báo giá tạm tính" : "Booking chính thức"}
+            </span>
             <Switch
               checked={tempQuoteMode}
               disabled={saving}
-              onCheckedChange={(checked) => setTempQuoteMode(checked)}
+              onCheckedChange={(checked) => {
+                setTempQuoteMode(checked);
+                // status là nơi LƯU duy nhất — toggle và dropdown Trạng thái luôn khớp nhau.
+                setStatus(prev => checked ? "temp_quote" : (prev === "temp_quote" ? "confirmed" : prev));
+              }}
             />
           </label>
         )}
@@ -2637,7 +2669,20 @@ function ShowFormPanel({
           )}
           {tempQuoteMode && (
             <div className="flex items-center gap-2 p-3 bg-amber-50 border border-amber-300 rounded-xl text-amber-800 text-sm font-medium">
-              <Receipt className="w-4 h-4 flex-shrink-0 text-amber-500" /> Báo giá tạm tính — chưa phải hợp đồng chính thức
+              <Receipt className="w-4 h-4 flex-shrink-0 text-amber-500" /> Báo giá tạm tính — chưa phải hợp đồng chính thức, KHÔNG tính vào doanh thu/công nợ
+            </div>
+          )}
+          {/* Báo giá tạm nhưng đã thu tiền thật: không xóa/sửa phiếu, chỉ cảnh báo
+              rõ để admin chọn — tắt Báo giá tạm thành booking chính thức, hoặc
+              hoàn/hủy phiếu thu theo flow Thu tiền. Không âm thầm mất tiền. */}
+          {tempQuoteMode && isEdit && actualPaid > 0 && (
+            <div className="flex items-start gap-2 p-3 bg-red-50 border border-red-300 rounded-xl text-red-800 text-sm">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-500" />
+              <span>
+                <b>Báo giá tạm này đang có tiền đã thu thực tế ({formatVND(actualPaid)}).</b>{" "}
+                Số tiền này KHÔNG được tính vào doanh thu khi còn là báo giá tạm. Tắt "Báo giá tạm tính"
+                để thành booking chính thức, hoặc hoàn/hủy phiếu thu ở màn Thu tiền.
+              </span>
             </div>
           )}
 
@@ -2776,7 +2821,7 @@ function ShowFormPanel({
               </div>
               <div>
                 <label className="text-[10px] text-muted-foreground mb-1 block">Trạng thái</label>
-                <select className="w-full h-9 border border-input rounded-lg px-2 text-sm bg-background" value={status} onChange={e => setStatus(e.target.value)}>
+                <select className="w-full h-9 border border-input rounded-lg px-2 text-sm bg-background" value={status} onChange={e => { const v = e.target.value; setStatus(v); setTempQuoteMode(v === "temp_quote"); }}>
                   <option value="draft">📋 Lịch tạm</option>
                   <option value="pending_service">⏳ Chưa chốt dịch vụ</option>
                   <option value="pending">🟡 Chờ xác nhận</option>

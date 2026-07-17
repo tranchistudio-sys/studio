@@ -1395,6 +1395,12 @@ function ShowFormPanel({
 }) {
   const qc = useQueryClient();
   const isEdit = !!booking;
+  // ── CHỐT AN TOÀN: form TẠO MỚI luôn khởi tạo từ EMPTY STATE ──
+  // Bug P0: editingSiblings của đơn xem/sửa TRƯỚC ĐÓ (kể cả đơn VỪA XÓA) bị
+  // truyền rớt vào form tạo mới → subDrafts dựng lại nguyên dịch vụ/giá/ngày/ghi
+  // chú của đơn cũ như "restore ngầm". Tạo mới (booking=null) thì TUYỆT ĐỐI không
+  // nhận siblings — đơn cũ không bao giờ được dùng làm template ngầm.
+  if (!booking && siblingBookings.length > 0) siblingBookings = [];
 
   const [phone, setPhone] = useState(booking?.customerPhone ?? "");
   const [customerName, setCustomerName] = useState(booking?.customerName ?? "");
@@ -7123,6 +7129,7 @@ function CalendarPageInner() {
   const handleTimeClick = useCallback((time: string) => {
     setSelectedTime(time);
     setEditingBooking(null);
+    setEditingSiblings([]); // form TẠO MỚI phải sạch — không rớt siblings của đơn xem trước đó
     setViewingBooking(null);
     setCalView("form");
   }, []);
@@ -7177,6 +7184,7 @@ function CalendarPageInner() {
     setCalView(prevCalView);
     setViewingBooking(null);
     setEditingBooking(null);
+    setEditingSiblings([]); // đơn VỪA XÓA không được sống sót trong state để rớt vào form tạo mới
   }, [prevCalView]);
 
   // Week view handlers
@@ -7205,12 +7213,14 @@ function CalendarPageInner() {
     setCalView("month");
     setPrevCalView("month");
     setEditingBooking(null);
+    setEditingSiblings([]);
     setViewingBooking(null);
   }, []);
 
   const handleBackToDay = useCallback(() => {
     setCalView("day");
     setEditingBooking(null);
+    setEditingSiblings([]);
     setViewingBooking(null);
   }, []);
 
@@ -7508,7 +7518,7 @@ function CalendarPageInner() {
               {isAdmin ? "Admin" : "Nhân viên"}
             </button>
           )}
-          <Button onClick={() => { setEditingBooking(null); setViewingBooking(null); setSelectedTime("07:00"); setCalView("form"); }} className="gap-2 h-9">
+          <Button onClick={() => { setEditingBooking(null); setEditingSiblings([]); setViewingBooking(null); setSelectedTime("07:00"); setCalView("form"); }} className="gap-2 h-9">
             <Plus className="w-4 h-4" /> Tạo show
           </Button>
           <Button

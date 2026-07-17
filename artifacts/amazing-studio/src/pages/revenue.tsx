@@ -241,7 +241,26 @@ export default function RevenuePage() {
   }, [selectedMonth, selectedYear, isCustomActive, customFrom, customTo]);
 
   // Modal "Bằng chứng số liệu": ô nào đang được mổ xẻ + số ĐANG hiển thị trên ô đó.
-  const [evidence, setEvidence] = useState<{ metric: EvidenceMetric; label: string; cardTotal: number } | null>(null);
+  // from/to/rangeLabel (tuỳ chọn) cho các ô KHÔNG theo kỳ lọc chung: ô của bảng
+  // theo THÁNG (kỳ = đúng tháng đó) và khối dòng tiền 30 NGÀY (kỳ = cửa sổ 30 ngày).
+  const [evidence, setEvidence] = useState<{
+    metric: EvidenceMetric; label: string; cardTotal: number;
+    from?: string; to?: string; rangeLabel?: string;
+  } | null>(null);
+
+  // Kỳ của MỘT tháng trong bảng "Chi tiết theo tháng" — clip đúng như bucketRanges
+  // của backend (kỳ custom cắt đầu/cuối tháng) để bằng chứng khớp ô từng đồng.
+  const monthClipRange = (ym: string) => {
+    const [y, m] = ym.split("-").map(Number);
+    const last = new Date(y!, m!, 0).getDate();
+    const start = `${ym}-01`;
+    const end = `${ym}-${String(last).padStart(2, "0")}`;
+    return { from: rangeFrom > start ? rangeFrom : start, to: rangeTo < end ? rangeTo : end };
+  };
+  const openMonthEvidence = (row: { month: string; label: string }, metric: EvidenceMetric, label: string, cardTotal: number) => {
+    const r = monthClipRange(row.month);
+    setEvidence({ metric, label: `${label} · ${row.label}`, cardTotal, from: r.from, to: r.to, rangeLabel: row.label });
+  };
 
   const filterKey = isCustomActive
     ? `custom:${customFrom}:${customTo}`
@@ -671,21 +690,28 @@ export default function RevenuePage() {
               {/* Chi tiết chi phí dự kiến */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-border/60">
                 <SummaryCard label="Cast nhân viên" value={totals.staffCast} icon={Users}
-                  sub="Tính vào CP trực tiếp" />
+                  sub="Tính vào CP trực tiếp"
+                  onShowEvidence={() => setEvidence({ metric: "staffCast", label: "Cast nhân viên", cardTotal: totals.staffCast })} />
                 <SummaryCard label="CP trực tiếp" value={totals.directCost} icon={Minus}
-                  sub="Chi gắn show + cast NV" />
+                  sub="Chi gắn show + cast NV"
+                  onShowEvidence={() => setEvidence({ metric: "directCost", label: "CP trực tiếp", cardTotal: totals.directCost })} />
                 <SummaryCard label="CP vận hành" value={totals.operatingExpenses} icon={AlertTriangle}
-                  sub="Mặt bằng, lương cố định…" />
+                  sub="Mặt bằng, lương cố định…"
+                  onShowEvidence={() => setEvidence({ metric: "operatingExpenses", label: "CP vận hành", cardTotal: totals.operatingExpenses })} />
                 <SummaryCard label="Khấu hao + Lãi vay" value={totals.depreciation + totals.interest} icon={ArrowDownRight}
-                  sub={`KH ${vndShort(totals.depreciation)} · Lãi ${vndShort(totals.interest)}`} />
+                  sub={`KH ${vndShort(totals.depreciation)} · Lãi ${vndShort(totals.interest)}`}
+                  onShowEvidence={() => setEvidence({ metric: "depreciationInterest", label: "Khấu hao + Lãi vay", cardTotal: totals.depreciation + totals.interest })} />
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2">
                 <SummaryCard label="Lợi nhuận gộp" value={totals.grossProfit} icon={DollarSign}
-                  sub="= Doanh thu HĐ − CP trực tiếp" />
+                  sub="= Doanh thu HĐ − CP trực tiếp"
+                  onShowEvidence={() => setEvidence({ metric: "grossProfit", label: "Lợi nhuận gộp", cardTotal: totals.grossProfit })} />
                 <SummaryCard label="Lợi nhuận hoạt động" value={totals.operatingProfit} icon={DollarSign}
-                  sub="= Gộp − CP vận hành" />
+                  sub="= Gộp − CP vận hành"
+                  onShowEvidence={() => setEvidence({ metric: "operatingProfit", label: "Lợi nhuận hoạt động", cardTotal: totals.operatingProfit })} />
                 <SummaryCard label="Lợi nhuận ròng" value={totals.netProfit} icon={DollarSign}
-                  sub="= Hoạt động − Khấu hao − Lãi vay" />
+                  sub="= Hoạt động − Khấu hao − Lãi vay"
+                  onShowEvidence={() => setEvidence({ metric: "netProfit", label: "Lợi nhuận ròng", cardTotal: totals.netProfit })} />
               </div>
             </div>
 
@@ -726,20 +752,42 @@ export default function RevenuePage() {
           ) : cashflowData?.days ? (
             <>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
-                <div className="rounded-xl border border-border p-3">
-                  <p className="text-[10px] text-muted-foreground">Tổng thu</p>
+                {/* Bằng chứng khối 30 ngày: kỳ = ĐÚNG cửa sổ from/to của biểu đồ,
+                    metric cash* dùng ĐÚNG rule dòng tiền (khác Chi phí P&L) */}
+                <button type="button" className="rounded-xl border border-border p-3 text-left hover:bg-muted/40 transition-colors"
+                  disabled={!cashflowData.from || !cashflowData.to}
+                  onClick={() => cashflowData.from && cashflowData.to && setEvidence({
+                    metric: "collected", label: "Tổng thu (30 ngày)", cardTotal: cashflowData.totals.collected,
+                    from: cashflowData.from, to: cashflowData.to, rangeLabel: "30 ngày gần nhất",
+                  })}>
+                  <p className="text-[10px] text-muted-foreground">Tổng thu · bấm xem bằng chứng</p>
                   <p className="text-lg font-bold text-foreground">{vnd(cashflowData.totals.collected)}</p>
-                </div>
-                <div className="rounded-xl border border-border p-3">
-                  <p className="text-[10px] text-muted-foreground">Tổng chi</p>
+                </button>
+                <button type="button" className="rounded-xl border border-border p-3 text-left hover:bg-muted/40 transition-colors"
+                  disabled={!cashflowData.from || !cashflowData.to}
+                  onClick={() => cashflowData.from && cashflowData.to && setEvidence({
+                    metric: "cashSpent", label: "Tổng chi (30 ngày)", cardTotal: cashflowData.totals.spent,
+                    from: cashflowData.from, to: cashflowData.to, rangeLabel: "30 ngày gần nhất",
+                  })}>
+                  <p className="text-[10px] text-muted-foreground">Tổng chi · bấm xem bằng chứng</p>
                   <p className="text-lg font-bold text-foreground">{vnd(cashflowData.totals.spent)}</p>
-                </div>
-                <div className="rounded-xl border border-border p-3">
-                  <p className="text-[10px] text-muted-foreground">Tăng/giảm ròng</p>
+                </button>
+                <button type="button" className="rounded-xl border border-border p-3 text-left hover:bg-muted/40 transition-colors"
+                  disabled={!cashflowData.from || !cashflowData.to}
+                  onClick={() => cashflowData.from && cashflowData.to && setEvidence({
+                    metric: "cashNet", label: "Tăng/giảm ròng (30 ngày)", cardTotal: cashflowData.totals.net,
+                    from: cashflowData.from, to: cashflowData.to, rangeLabel: "30 ngày gần nhất",
+                  })}>
+                  <p className="text-[10px] text-muted-foreground">Tăng/giảm ròng · bấm xem bằng chứng</p>
                   <p className="text-lg font-bold text-foreground">{vnd(cashflowData.totals.net)}</p>
-                </div>
-                <div className="rounded-xl border border-border p-3">
-                  <p className="text-[10px] text-muted-foreground">Ngày thu cao nhất</p>
+                </button>
+                <button type="button" className="rounded-xl border border-border p-3 text-left hover:bg-muted/40 transition-colors"
+                  disabled={!cashflowData.peakDay}
+                  onClick={() => cashflowData.peakDay && setEvidence({
+                    metric: "collected", label: `Thu ngày ${cashflowData.peakDay.label}`, cardTotal: cashflowData.peakDay.collected,
+                    from: cashflowData.peakDay.date, to: cashflowData.peakDay.date, rangeLabel: `Ngày ${cashflowData.peakDay.label}`,
+                  })}>
+                  <p className="text-[10px] text-muted-foreground">Ngày thu cao nhất · bấm xem bằng chứng</p>
                   <p className="text-lg font-bold text-foreground">
                     {cashflowData.peakDay
                       ? `${cashflowData.peakDay.label} · ${vndShort(cashflowData.peakDay.collected)}`
@@ -748,7 +796,7 @@ export default function RevenuePage() {
                   {cashflowData.peakDay && (
                     <p className="text-[10px] text-muted-foreground">{cashflowData.peakDay.paymentCount} phiếu thu</p>
                   )}
-                </div>
+                </button>
               </div>
 
               <div className="overflow-x-auto -mx-1 px-1 mb-4">
@@ -797,7 +845,15 @@ export default function RevenuePage() {
                       </thead>
                       <tbody className="divide-y divide-border">
                         {cashflowData.topCollectionDays.map((row, i) => (
-                          <tr key={row.date} className={cashflowData.peakDay?.date === row.date ? "bg-muted/40" : ""}>
+                          <tr
+                            key={row.date}
+                            className={`cursor-pointer hover:bg-muted/50 transition-colors ${cashflowData.peakDay?.date === row.date ? "bg-muted/40" : ""}`}
+                            title="Bấm xem bằng chứng các phiếu thu của ngày này"
+                            onClick={() => setEvidence({
+                              metric: "collected", label: `Thu ngày ${row.label}`, cardTotal: row.collected,
+                              from: row.date, to: row.date, rangeLabel: `Ngày ${row.label}`,
+                            })}
+                          >
                             <td className="py-2 text-muted-foreground">{i + 1}</td>
                             <td className="py-2 font-medium">{row.label}{cashflowData.peakDay?.date === row.date ? " ★" : ""}</td>
                             <td className="py-2 text-right font-bold">{vnd(row.collected)}</td>
@@ -841,49 +897,66 @@ export default function RevenuePage() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {months.map(row => (
+                  {/* Mỗi ô tiền bấm được → bằng chứng của ĐÚNG THÁNG đó (kỳ clip như backend) */}
+                  {months.map(row => {
+                    const cell = (metric: EvidenceMetric, label: string, value: number) => (
+                      <button
+                        type="button"
+                        className="w-full text-right hover:underline decoration-dotted underline-offset-2"
+                        title={`Bấm xem bằng chứng: ${label} ${row.label}`}
+                        onClick={() => openMonthEvidence(row, metric, label, value)}
+                      >
+                        {vndShort(value)}
+                      </button>
+                    );
+                    return (
                     <tr key={row.month} className="hover:bg-muted/30 transition-colors">
                       <td className="py-2.5 pl-4 sm:pl-2 font-medium text-foreground">{row.label}</td>
                       <td className="py-2.5 text-right text-muted-foreground">{row.bookingCount}</td>
-                      <td className="py-2.5 text-right font-bold text-foreground">{vndShort(row.collected)}</td>
-                      <td className="py-2.5 text-right font-medium text-foreground">{vndShort(row.remaining)}</td>
-                      <td className={`py-2.5 text-right font-semibold ${row.realProfit >= 0 ? "text-emerald-800" : "text-foreground"}`}>{vndShort(row.realProfit)}</td>
-                      <td className="py-2.5 text-right font-medium text-muted-foreground">{vndShort(row.contractValue)}</td>
-                      <td className="py-2.5 text-right text-foreground">{vndShort(row.directCost)}</td>
-                      <td className="py-2.5 text-right text-foreground">{vndShort(row.operatingExpenses)}</td>
-                      <td className="py-2.5 text-right text-foreground">{vndShort(row.depreciation)}</td>
-                      <td className="py-2.5 text-right text-foreground">{vndShort(row.interest)}</td>
-                      <td className={`py-2.5 text-right font-semibold ${row.grossProfit >= 0 ? "text-foreground" : "text-foreground"}`}>
-                        {vndShort(row.grossProfit)}
-                      </td>
-                      <td className={`py-2.5 text-right pr-4 sm:pr-2 font-bold ${row.netProfit >= 0 ? "text-foreground" : "text-foreground"}`}>
-                        {vndShort(row.netProfit)}
-                      </td>
+                      <td className="py-2.5 text-right font-bold text-foreground">{cell("collected", "Đã thu", row.collected)}</td>
+                      <td className="py-2.5 text-right font-medium text-foreground">{cell("remaining", "Còn nợ", row.remaining)}</td>
+                      <td className={`py-2.5 text-right font-semibold ${row.realProfit >= 0 ? "text-emerald-800" : "text-foreground"}`}>{cell("realProfit", "Lợi nhuận thực", row.realProfit)}</td>
+                      <td className="py-2.5 text-right font-medium text-muted-foreground">{cell("contractValue", "Doanh thu hợp đồng", row.contractValue)}</td>
+                      <td className="py-2.5 text-right text-foreground">{cell("directCost", "CP trực tiếp", row.directCost)}</td>
+                      <td className="py-2.5 text-right text-foreground">{cell("operatingExpenses", "CP vận hành", row.operatingExpenses)}</td>
+                      <td className="py-2.5 text-right text-foreground">{cell("depreciation", "Khấu hao", row.depreciation)}</td>
+                      <td className="py-2.5 text-right text-foreground">{cell("interest", "Lãi vay", row.interest)}</td>
+                      <td className="py-2.5 text-right font-semibold text-foreground">{cell("grossProfit", "Lợi nhuận gộp", row.grossProfit)}</td>
+                      <td className="py-2.5 text-right pr-4 sm:pr-2 font-bold text-foreground">{cell("netProfit", "Lợi nhuận ròng", row.netProfit)}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
-                {totals && (
+                {totals && (() => {
+                  const totalCell = (metric: EvidenceMetric, label: string, value: number) => (
+                    <button
+                      type="button"
+                      className="w-full text-right hover:underline decoration-dotted underline-offset-2"
+                      title={`Bấm xem bằng chứng: ${label} (tổng kỳ)`}
+                      onClick={() => setEvidence({ metric, label: `${label} (tổng kỳ)`, cardTotal: value })}
+                    >
+                      {vndShort(value)}
+                    </button>
+                  );
+                  return (
                   <tfoot>
                     <tr className="border-t-2 border-foreground/20 bg-muted/30">
                       <td className="py-2.5 pl-4 sm:pl-2 font-bold text-foreground">Tổng cộng</td>
                       <td className="py-2.5 text-right font-bold">{totals.bookingCount}</td>
-                      <td className="py-2.5 text-right font-bold text-foreground">{vndShort(totals.collected)}</td>
-                      <td className="py-2.5 text-right font-bold text-foreground">{vndShort(totals.remaining)}</td>
-                      <td className={`py-2.5 text-right font-bold ${totals.realProfit >= 0 ? "text-emerald-800" : "text-foreground"}`}>{vndShort(totals.realProfit)}</td>
-                      <td className="py-2.5 text-right font-bold text-muted-foreground">{vndShort(totals.contractValue)}</td>
-                      <td className="py-2.5 text-right font-bold text-foreground">{vndShort(totals.directCost)}</td>
-                      <td className="py-2.5 text-right font-bold text-rose-500">{vndShort(totals.operatingExpenses)}</td>
-                      <td className="py-2.5 text-right font-bold text-violet-500">{vndShort(totals.depreciation)}</td>
-                      <td className="py-2.5 text-right font-bold text-fuchsia-500">{vndShort(totals.interest)}</td>
-                      <td className={`py-2.5 text-right font-bold ${totals.grossProfit >= 0 ? "text-foreground" : "text-foreground"}`}>
-                        {vndShort(totals.grossProfit)}
-                      </td>
-                      <td className={`py-2.5 text-right pr-4 sm:pr-2 font-bold ${totals.netProfit >= 0 ? "text-foreground" : "text-foreground"}`}>
-                        {vndShort(totals.netProfit)}
-                      </td>
+                      <td className="py-2.5 text-right font-bold text-foreground">{totalCell("collected", "Đã thu", totals.collected)}</td>
+                      <td className="py-2.5 text-right font-bold text-foreground">{totalCell("remaining", "Còn nợ", totals.remaining)}</td>
+                      <td className={`py-2.5 text-right font-bold ${totals.realProfit >= 0 ? "text-emerald-800" : "text-foreground"}`}>{totalCell("realProfit", "Lợi nhuận thực", totals.realProfit)}</td>
+                      <td className="py-2.5 text-right font-bold text-muted-foreground">{totalCell("contractValue", "Doanh thu hợp đồng", totals.contractValue)}</td>
+                      <td className="py-2.5 text-right font-bold text-foreground">{totalCell("directCost", "CP trực tiếp", totals.directCost)}</td>
+                      <td className="py-2.5 text-right font-bold text-rose-500">{totalCell("operatingExpenses", "CP vận hành", totals.operatingExpenses)}</td>
+                      <td className="py-2.5 text-right font-bold text-violet-500">{totalCell("depreciation", "Khấu hao", totals.depreciation)}</td>
+                      <td className="py-2.5 text-right font-bold text-fuchsia-500">{totalCell("interest", "Lãi vay", totals.interest)}</td>
+                      <td className="py-2.5 text-right font-bold text-foreground">{totalCell("grossProfit", "Lợi nhuận gộp", totals.grossProfit)}</td>
+                      <td className="py-2.5 text-right pr-4 sm:pr-2 font-bold text-foreground">{totalCell("netProfit", "Lợi nhuận ròng", totals.netProfit)}</td>
                     </tr>
                   </tfoot>
-                )}
+                  );
+                })()}
               </table>
             </div>
           </div>
@@ -1052,17 +1125,18 @@ export default function RevenuePage() {
         />
       )}
 
-      {/* Bằng chứng số liệu — dùng ĐÚNG kỳ lọc đang chọn (rangeFrom/rangeTo) */}
+      {/* Bằng chứng số liệu — mặc định dùng kỳ lọc đang chọn; ô theo tháng/30 ngày
+          truyền kỳ riêng qua evidence.from/to */}
       {evidence && (
         <RevenueEvidenceModal
           metric={evidence.metric}
           metricLabel={evidence.label}
           cardTotal={evidence.cardTotal}
-          from={rangeFrom}
-          to={rangeTo}
-          rangeLabel={isCustomActive
+          from={evidence.from ?? rangeFrom}
+          to={evidence.to ?? rangeTo}
+          rangeLabel={evidence.rangeLabel ?? (isCustomActive
             ? `${formatDmy(customFrom)} → ${formatDmy(customTo)}`
-            : `Tháng ${String(selectedMonth).padStart(2, "0")}/${selectedYear}`}
+            : `Tháng ${String(selectedMonth).padStart(2, "0")}/${selectedYear}`)}
           onClose={() => setEvidence(null)}
         />
       )}

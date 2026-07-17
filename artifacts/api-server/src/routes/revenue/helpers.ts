@@ -18,8 +18,17 @@ function toVNDateString(d: Date): string {
   return d.toLocaleDateString("sv-SE", { timeZone: APP_TZ });
 }
 
+// paid_date là cột TEXT không ràng buộc — chỉ tin khi 10 ký tự đầu đúng dạng
+// YYYY-MM-DD; giá trị rác ('2026-07-2 ', '2026-6-01'…) fallback về paidAt giờ VN.
+// Mọi consumer (monthly-core, daily-cashflow, evidence) dùng CHUNG hàm này nên
+// tile và bằng chứng luôn khớp nhau by-construction kể cả khi dữ liệu bẩn.
+const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 export function getPaymentDate(p: { paidDate: string | null; paidAt: Date }): string {
-  if (p.paidDate && p.paidDate.length >= 10) return p.paidDate.slice(0, 10);
+  if (p.paidDate) {
+    const d = p.paidDate.slice(0, 10);
+    if (YMD_RE.test(d)) return d;
+  }
   return toVNDateString(p.paidAt);
 }
 

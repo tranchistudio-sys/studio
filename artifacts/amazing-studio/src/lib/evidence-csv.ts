@@ -18,6 +18,18 @@ export const EVIDENCE_METRICS = [
   "contractValue",
   "expectedCost",
   "expectedProfit",
+  // Đợt 2: các ô còn lại màn Doanh thu (mirror EVIDENCE_METRICS của backend)
+  "grossProfit",
+  "operatingProfit",
+  "netProfit",
+  "staffCast",
+  "directCost",
+  "operatingExpenses",
+  "depreciation",
+  "interest",
+  "depreciationInterest",
+  "cashSpent",
+  "cashNet",
 ] as const;
 export type EvidenceMetric = (typeof EVIDENCE_METRICS)[number];
 

@@ -111,57 +111,128 @@ import {
   engineServiceRollup,
 } from "./financial-engine";
 
-describe("read models GĐ1e-1 — đúng quy tắc ①②③④, không nguồn cấm", () => {
-  it("engineOverdueReceivables: countable + show đã diễn ra + còn nợ; MAX occurrence (1 dòng/booking)", async () => {
+// ─── Helper mock SNAPSHOT (chốt 17/07: engine đọc qua allocator chung) ─────────
+// Nhận diện 2 query snapshot + trả seed; query phụ từng hàm xử lý qua `extra`.
+type MockRow = Record<string, unknown>;
+function mockSnapshot(opts: {
+  bookings?: MockRow[];
+  payments?: MockRow[];
+  extra?: (sql: string, params: unknown[]) => { rows: MockRow[] } | null;
+}) {
+  return async (sql: string, params: unknown[] = []) => {
+    const s = String(sql);
+    if (opts.extra) {
+      const r = opts.extra(s, params);
+      if (r) return r;
+    }
+    if (s.includes("LEFT JOIN customers c ON c.id = b.customer_id") && s.includes("b.parent_id")) {
+      return { rows: opts.bookings ?? [] };
+    }
+    if (s.includes("FROM payments") && s.includes("payment_type, status")) {
+      return { rows: opts.payments ?? [] };
+    }
+    return { rows: [] };
+  };
+}
+/** Đơn lẻ countable chuẩn cho seed snapshot. */
+function bkRow(over: MockRow): MockRow {
+  return {
+    id: 1, parent_id: null, is_parent_contract: false, status: "confirmed", deleted_at: null,
+    total_amount: "0", discount_amount: "0", shoot_date: null, customer_id: null,
+    order_code: null, service_label: null, service_category: null, package_type: null,
+    customer_name: null, customer_phone: null, ...over,
+  };
+}
+
+describe("read models GĐ1e-1 — đúng quy tắc ①②③④ trên snapshot allocator chung", () => {
+  it("engineOverdueReceivables: nợ từ snapshot + query ngày MAX occurrence (1 dòng/booking), chỉ show đã diễn ra còn nợ", async () => {
     const sqls: string[] = [];
-    q.mockImplementation(async (sql: string) => {
-      const s = String(sql);
-      sqls.push(s);
-      if (s.includes("to_regclass")) return { rows: [{ occ: true, dw: true, wt: true, lc: true }] };
-      return { rows: [] };
-    });
-    await engineOverdueReceivables();
-    const main = sqls.find(s => s.includes("days_overdue"));
-    expect(main).toBeDefined();
+    q.mockImplementation(mockSnapshot({
+      bookings: [
+        bkRow({ id: 10, total_amount: "5000000", customer_id: 7, order_code: "DH0010", customer_name: "Khách A", shoot_date: "2026-07-01" }),
+        bkRow({ id: 11, total_amount: "2000000", customer_id: 7, order_code: "DH0011", shoot_date: "2026-07-02" }), // đã trả đủ → không ra
+      ],
+      payments: [
+        { id: 1, booking_id: 10, amount: "2000000", payment_type: "payment", status: "active" },
+        { id: 2, booking_id: 11, amount: "2000000", payment_type: "payment", status: "active" },
+      ],
+      extra: (s) => {
+        sqls.push(s);
+        if (s.includes("to_regclass")) return { rows: [{ occ: true, dw: true, wt: true, lc: true }] };
+        if (s.includes("days_overdue")) return { rows: [
+          { id: 10, last_perf: "2026-07-01", days_overdue: 16 },
+          { id: 11, last_perf: "2026-07-02", days_overdue: 15 },
+        ] };
+        return null;
+      },
+    }));
+    const r = await engineOverdueReceivables();
+    // Query ngày vẫn phải đúng quy tắc SQL: countable + MAX occurrence + giờ VN
+    const main = sqls.find(s => s.includes("days_overdue"))!;
     expect(main).toContain("deleted_at IS NULL");
     expect(main).toContain("is_parent_contract = false");
-    expect(main).toContain("GREATEST(b.shoot_date, COALESCE((SELECT MAX(oc.shoot_date)"); // MAX — không JOIN nhân dòng
+    expect(main).toContain("GREATEST(b.shoot_date, COALESCE((SELECT MAX(oc.shoot_date)");
     expect(main).toContain("Asia/Ho_Chi_Minh");
-    expect(main).toContain("> 0"); // còn nợ
+    // Nợ đọc từ snapshot allocator: 5tr − 2tr = 3tr; đơn 11 đã đủ → loại
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({ bookingId: 10, bookingCode: "DH0010", receivable: 3_000_000, daysOverdue: 16 });
   });
 
-  it("engineBookingFinance: cast từ earnings (loại voided/cancelled), expense approved/paid direct — KHÔNG tasks/payroll/advance/personal", async () => {
+  it("engineBookingFinance: paid/nợ từ snapshot; cast từ earnings + expense approved/paid direct — KHÔNG tasks/payroll/advance", async () => {
     const sqls: string[] = [];
-    q.mockImplementation(async (sql: string) => {
-      const s = String(sql);
-      sqls.push(s);
-      if (s.includes("to_regclass")) return { rows: [{ occ: false, dw: false, wt: false, lc: false }] };
-      return { rows: [] };
-    });
-    await engineBookingFinance();
-    const main = sqls.find(s => s.includes("net_value"));
-    expect(main).toBeDefined();
+    q.mockImplementation(mockSnapshot({
+      bookings: [bkRow({ id: 10, total_amount: "5000000", customer_id: 7, order_code: "DH0010", service_label: "Ngày cưới", shoot_date: "2026-07-01" })],
+      payments: [{ id: 1, booking_id: 10, amount: "1000000", payment_type: "payment", status: "active" }],
+      extra: (s) => {
+        sqls.push(s);
+        if (s.includes("to_regclass")) return { rows: [] };
+        if (s.includes("labor_cost")) return { rows: [{ id: 10, shoot_date: "2026-07-01", occ_dates: [], labor_cost: "1200000", direct_expense: "300000" }] };
+        return null;
+      },
+    }));
+    const r = await engineBookingFinance();
+    const main = sqls.find(s => s.includes("labor_cost"))!;
     expect(main).toContain("staff_job_earnings");
     expect(main).toContain("NOT IN ('voided','cancelled')");
     expect(main).toContain("status IN ('approved','paid')");
     expect(main).not.toContain("tasks");
-    expect(main).not.toContain("payroll_id IS NULL"); // consumed vẫn tính
     expect(main).not.toContain("advance");
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({
+      bookingId: 10, netValue: 5_000_000, paid: 1_000_000, receivable: 4_000_000,
+      laborCost: 1_200_000, hasLaborLedger: true, approvedDirectExpense: 300_000,
+      estimatedProfit: 5_000_000 - 1_200_000 - 300_000,
+    });
   });
 
-  it("engineServiceRollup: gộp service_category, cùng bộ quy tắc", async () => {
+  it("engineServiceRollup: gộp service_category từ snapshot, cast/expense đúng bộ quy tắc", async () => {
     const sqls: string[] = [];
-    q.mockImplementation(async (sql: string) => {
-      sqls.push(String(sql));
-      return { rows: [] };
-    });
-    await engineServiceRollup();
-    const main = sqls.find(s => s.includes("service_category"));
-    expect(main).toBeDefined();
-    expect(main).toContain("GROUP BY");
-    expect(main).toContain("staff_job_earnings");
+    q.mockImplementation(mockSnapshot({
+      bookings: [
+        bkRow({ id: 10, total_amount: "5000000", service_category: "wedding" }),
+        bkRow({ id: 11, total_amount: "3000000", service_category: "wedding" }),
+      ],
+      payments: [{ id: 1, booking_id: 10, amount: "2000000", payment_type: "payment", status: "active" }],
+      extra: (s) => {
+        sqls.push(s);
+        if (s.includes("labor")) return { rows: [
+          { id: 10, labor: "1000000", direct_expense: "200000" },
+          { id: 11, labor: "0", direct_expense: "0" },
+        ] };
+        return null;
+      },
+    }));
+    const r = await engineServiceRollup();
+    const main = sqls.find(s => s.includes("staff_job_earnings"))!;
     expect(main).toContain("status IN ('approved','paid')");
     expect(main).not.toContain("tasks");
+    expect(r).toHaveLength(1);
+    expect(r[0]).toMatchObject({
+      service: "wedding", bookingCount: 2, contractValue: 8_000_000,
+      collected: 2_000_000, receivable: 6_000_000,
+      laborRecognized: 1_000_000, approvedDirectExpense: 200_000,
+      estimatedProfit: 8_000_000 - 1_000_000 - 200_000, bookingsWithLaborLedger: 1,
+    });
   });
 });
 
@@ -221,54 +292,70 @@ describe("read models GĐ1e-2 — Copilot đọc số tiền, KHÔNG tự SQL n�
     expect(r[0]).toEqual({ packageName: "Gói A", bookingCount: 5, revenue: 12000000 });
   });
 
-  it("engineUnpaidCustomers không range: nợ sống ① + countable, 2 query, tổng khớp system", async () => {
+  it("engineUnpaidCustomers không range: nợ từ snapshot allocator, KHÔNG dò schema, tổng khớp system", async () => {
     const sqls: string[] = [];
-    q.mockImplementation(async (sql: string) => {
-      const s = String(sql);
-      sqls.push(s);
-      if (s.includes("total_debt")) return { rows: [{ order_cnt: "19", total_debt: "42798994" }] };
-      return { rows: [{ name: "Khách A", phone: "0900000001", debt: "42798994" }] };
-    });
+    q.mockImplementation(mockSnapshot({
+      bookings: [
+        bkRow({ id: 10, total_amount: "50000000", customer_id: 7, customer_name: "Khách A", customer_phone: "0900000001" }),
+        bkRow({ id: 11, total_amount: "2000000", customer_id: 8, customer_name: "Khách B", customer_phone: "0900000002" }),
+      ],
+      payments: [
+        { id: 1, booking_id: 10, amount: "7201006", payment_type: "payment", status: "active" },
+        { id: 2, booking_id: 11, amount: "2000000", payment_type: "payment", status: "active" }, // đủ tiền → không nợ
+      ],
+      extra: (s) => { sqls.push(s); return null; },
+    }));
     const r = await engineUnpaidCustomers();
-    expect(sqls).toHaveLength(2); // list + total, KHÔNG dò schema khi không có range
-    for (const s of sqls) {
-      expect(s).toContain("deleted_at IS NULL");
-      // PR #102: nợ sống ① dùng "đã thu PHÂN BỔ" từ payments gốc theo gia đình —
-      // không còn tin cột paid_amount.
-      expect(s).toContain("GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0) - (");
-      expect(s).toContain("AS family_paid");
-      expect(s).not.toContain("COALESCE(b.paid_amount, 0)");
-    }
-    expect(r.customers[0]).toEqual({ name: "Khách A", phone: "0900000001", debt: 42798994 });
-    expect(r.totalDebt).toBe(42798994);
-    expect(r.orderCount).toBe(19);
+    expect(sqls.some(s => s.includes("to_regclass"))).toBe(false); // không dò schema khi không range
+    expect(r.customers).toHaveLength(1);
+    expect(r.customers[0]).toEqual({ name: "Khách A", phone: "0900000001", debt: 42_798_994 });
+    expect(r.totalDebt).toBe(42_798_994);
+    expect(r.orderCount).toBe(1);
   });
 
-  it("engineUnpaidCustomers có range: thêm membership shoot_date, tham số đúng vị trí", async () => {
+  it("engineUnpaidCustomers có range: membership shoot_date đúng tham số, chỉ đếm đơn trong kỳ", async () => {
     _resetSchemaFlagsCache();
     const calls: Array<{ sql: string; params: unknown[] }> = [];
-    q.mockImplementation(async (sql: string, params: unknown[]) => {
-      calls.push({ sql: String(sql), params });
-      return { rows: [] }; // to_regclass rỗng → occurrences off
-    });
-    await engineUnpaidCustomers(15, { start: "2026-07-01", end: "2026-07-31" });
-    const data = calls.filter(c => !c.sql.includes("to_regclass"));
-    expect(data[0].sql).toContain("b.shoot_date >= $2::date AND b.shoot_date <= $3::date");
-    expect(data[0].params).toEqual([15, "2026-07-01", "2026-07-31"]);
-    expect(data[1].sql).toContain("b.shoot_date >= $1::date AND b.shoot_date <= $2::date");
-    expect(data[1].params).toEqual(["2026-07-01", "2026-07-31"]);
+    q.mockImplementation(mockSnapshot({
+      bookings: [
+        bkRow({ id: 10, total_amount: "5000000", customer_id: 7, customer_name: "Khách A", customer_phone: "0900000001", shoot_date: "2026-07-10" }),
+        bkRow({ id: 11, total_amount: "4000000", customer_id: 8, customer_name: "Khách B", customer_phone: "0900000002", shoot_date: "2026-08-10" }),
+      ],
+      extra: (s, params) => {
+        calls.push({ sql: s, params });
+        if (s.includes("to_regclass")) return { rows: [] }; // occurrences off
+        if (s.includes("SELECT b.id FROM bookings b WHERE")) return { rows: [{ id: 10 }] }; // chỉ đơn tháng 7
+        return null;
+      },
+    }));
+    const r = await engineUnpaidCustomers(15, { start: "2026-07-01", end: "2026-07-31" });
+    const member = calls.find(c => c.sql.includes("SELECT b.id FROM bookings b WHERE"))!;
+    expect(member.sql).toContain("b.shoot_date >= $1::date AND b.shoot_date <= $2::date");
+    expect(member.params).toEqual(["2026-07-01", "2026-07-31"]);
+    expect(r.customers).toHaveLength(1); // Khách B chụp tháng 8 — không vào kỳ
+    expect(r.customers[0]).toMatchObject({ name: "Khách A", debt: 5_000_000 });
+    expect(r.totalDebt).toBe(5_000_000);
   });
 
-  it("engineCustomersByPhone: tra đuôi SĐT + nợ sống ①, LIKE %suffix%", async () => {
+  it("engineCustomersByPhone: LIKE %suffix% + nợ/đếm đơn từ snapshot", async () => {
     const calls: Array<{ sql: string; params: unknown[] }> = [];
-    q.mockImplementation(async (sql: string, params: unknown[]) => {
-      calls.push({ sql: String(sql), params });
-      return { rows: [{ name: "Khách B", phone: "0912345678", booking_count: "3", debt: "500000" }] };
-    });
+    q.mockImplementation(mockSnapshot({
+      bookings: [
+        bkRow({ id: 10, total_amount: "300000", customer_id: 7 }),
+        bkRow({ id: 11, total_amount: "200000", customer_id: 7 }),
+        bkRow({ id: 12, total_amount: "0", customer_id: 7 }),
+      ],
+      payments: [],
+      extra: (s, params) => {
+        if (s.includes("c.phone LIKE $1")) {
+          calls.push({ sql: s, params });
+          return { rows: [{ id: 7, name: "Khách B", phone: "0912345678" }] };
+        }
+        return null;
+      },
+    }));
     const r = await engineCustomersByPhone("123456789");
-    expect(calls[0].sql).toContain("c.phone LIKE $1");
-    expect(calls[0].sql).toContain("GREATEST(0, b.total_amount");
     expect(calls[0].params).toEqual(["%123456789%", 5]);
-    expect(r[0]).toEqual({ name: "Khách B", phone: "0912345678", bookingCount: 3, debt: 500000 });
+    expect(r[0]).toEqual({ name: "Khách B", phone: "0912345678", bookingCount: 3, debt: 500_000 });
   });
 });

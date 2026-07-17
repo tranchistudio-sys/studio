@@ -16,13 +16,21 @@ beforeEach(() => {
 });
 
 // GĐ1c: chi phí/chi cố định đi qua engineCashOut (cột alias "v"); income
-// vẫn là query nội bộ (cột "total"). PR #102: nợ đi qua engineSystemDebt —
-// SQL nợ giờ CHỨA "FROM payments" (phân bổ tiền gia đình) nên phải nhận diện
-// bằng GREATEST TRƯỚC khi rơi vào nhánh payments.
+// vẫn là query nội bộ (cột "total"). Chốt 17/07: nợ đi qua engineSystemDebt —
+// giờ đọc SNAPSHOT allocator (2 query bookings+payments) nên seed nợ bằng cách
+// trả 1 đơn countable net = 409.927.995 không phiếu thu.
 function mockFinanceRows() {
   q.mockImplementation(async (sql: string) => {
     const s = String(sql);
-    if (s.includes("GREATEST")) return { rows: [{ total: "409927995", v: "409927995" }] };
+    if (s.includes("LEFT JOIN customers c ON c.id = b.customer_id") && s.includes("b.parent_id")) {
+      return { rows: [{
+        id: 1, parent_id: null, is_parent_contract: false, status: "confirmed", deleted_at: null,
+        total_amount: "409927995", discount_amount: "0", shoot_date: null, customer_id: 7,
+        order_code: null, service_label: null, service_category: null, package_type: null,
+        customer_name: null, customer_phone: null,
+      }] };
+    }
+    if (s.includes("payment_type, status") && s.includes("FROM payments")) return { rows: [] }; // snapshot payments
     if (s.includes("FROM payments")) return { rows: [{ total: "34198006", v: "34198006" }] };
     if (s.includes("FROM expenses")) return { rows: [{ total: "15310000", v: "15310000" }] };
     if (s.includes("FROM fixed_costs")) return { rows: [{ total: "37100000", v: "37100000" }] };
@@ -39,7 +47,7 @@ describe("getSimpleFinance — đúng nguyên văn công thức /dashboard/simpl
     });
     await getSimpleFinance("2026-07-01", "2026-07-14");
 
-    const income = calls.find(c => c.sql.includes("FROM payments"));
+    const income = calls.find(c => c.sql.includes("FROM payments") && c.sql.includes("paid_at"));
     expect(income).toBeDefined();
     expect(income!.sql).toContain("payment_type != 'refund'");
     expect(income!.sql).toContain("!= 'voided'");
@@ -57,8 +65,9 @@ describe("getSimpleFinance — đúng nguyên văn công thức /dashboard/simpl
     expect(expense!.sql).toContain("status IN ('approved','paid')");
     expect(expense!.params).toEqual(["2026-07-01", "2026-07-14"]);
 
-    const debt = calls.find(c => c.sql.includes("GREATEST"));
-    expect(debt!.sql).toContain("deleted_at IS NULL"); // predicate countable chuẩn
+    // Chốt 17/07: nợ đọc qua SNAPSHOT allocator — phải nạp bookings (join customers)
+    const snapBk = calls.find(c => c.sql.includes("LEFT JOIN customers c ON c.id = b.customer_id"));
+    expect(snapBk, "engineSystemDebt phải nạp snapshot bookings").toBeDefined();
 
     const fixed = calls.find(c => c.sql.includes("FROM fixed_costs"));
     expect(fixed!.sql).toContain("active = true");

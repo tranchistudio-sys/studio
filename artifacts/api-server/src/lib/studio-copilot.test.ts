@@ -22,6 +22,58 @@ const q = pool.query as ReturnType<typeof vi.fn>;
 const PROD_QUESTION =
   "bạn ơi , thực sự tháng này , còn bao nhiêu đơn chưa thu ạ, tiền còn có thể thu dc là bao nhiêu";
 
+// ─── Helper mock SNAPSHOT (chốt 17/07: nợ đọc qua allocator chung của Engine) ──
+type MockRow = Record<string, unknown>;
+function mockSnapshot(opts: {
+  bookings?: MockRow[];
+  payments?: MockRow[];
+  extra?: (sql: string, params: unknown[]) => { rows: MockRow[] } | null;
+}) {
+  return async (sql: string, params: unknown[] = []) => {
+    const s = String(sql);
+    if (opts.extra) {
+      const r = opts.extra(s, params);
+      if (r) return r;
+    }
+    if (s.includes("LEFT JOIN customers c ON c.id = b.customer_id") && s.includes("b.parent_id")) {
+      return { rows: opts.bookings ?? [] };
+    }
+    if (s.includes("FROM payments") && s.includes("payment_type, status")) {
+      return { rows: opts.payments ?? [] };
+    }
+    return { rows: [] };
+  };
+}
+function bkRow(over: MockRow): MockRow {
+  return {
+    id: 1, parent_id: null, is_parent_contract: false, status: "confirmed", deleted_at: null,
+    total_amount: "0", discount_amount: "0", shoot_date: null, customer_id: null,
+    order_code: null, service_label: null, service_category: null, package_type: null,
+    customer_name: null, customer_phone: null, ...over,
+  };
+}
+// Ca prod 13/07: 19 đơn chưa thu đủ, tổng nợ 42.798.994 — cùng 1 khách.
+const DEBT_BOOKINGS: MockRow[] = [
+  ...Array.from({ length: 18 }, (_, i) =>
+    bkRow({ id: 100 + i, total_amount: "1000000", customer_id: 7, customer_name: "Khách A", customer_phone: "0900000001", shoot_date: "2026-07-10" })),
+  bkRow({ id: 200, total_amount: "24798994", customer_id: 7, customer_name: "Khách A", customer_phone: "0900000001", shoot_date: "2026-07-11" }),
+];
+function debtMock(capture?: (sql: string, params: unknown[]) => { rows: MockRow[] } | null, occ = false) {
+  return mockSnapshot({
+    bookings: DEBT_BOOKINGS,
+    payments: [],
+    extra: (s, p) => {
+      if (capture) {
+        const r = capture(s, p);
+        if (r) return r;
+      }
+      if (s.includes("to_regclass")) return { rows: occ ? [{ occ: true, dw: true, wt: true, lc: true }] : [] };
+      if (s.includes("SELECT b.id FROM bookings b WHERE")) return { rows: DEBT_BOOKINGS.map(b => ({ id: b.id })) };
+      return null;
+    },
+  });
+}
+
 beforeEach(() => {
   q.mockReset();
   q.mockImplementation(async () => ({ rows: [] }));
@@ -126,33 +178,25 @@ describe("getOverduePostProductionJobs — deadline text '' / 'YYYY-MM-DD HH:MM:
 
 // ─── 3. Công nợ — predicate countable chuẩn (PR #65, khớp dashboard/simple) ────
 
-describe("getUnpaidCustomers — loại thùng rác/hủy/báo giá tạm/đơn cha/con mồ côi", () => {
-  it("cả 2 query đều dùng predicate countable chuẩn + COALESCE tiền", async () => {
-    const sqls: string[] = [];
-    q.mockImplementation(async (sql: string) => {
-      sqls.push(String(sql));
-      return { rows: [] };
-    });
-    await getUnpaidCustomers();
-    expect(sqls).toHaveLength(2);
-    for (const s of sqls) {
-      expect(s).toContain("deleted_at IS NULL");
-      expect(s).toContain("'temp_quote'");
-      expect(s).toContain("is_parent_contract = false");
-      expect(s).toContain("parent_id IS NULL"); // orphan-check (NOT EXISTS cha chết)
-      expect(s).toContain("COALESCE(b.discount_amount, 0)");
-      // PR #102: "đã thu" = phân bổ LIVE theo gia đình từ payments gốc — không còn cột paid_amount.
-      expect(s).toContain("AS family_paid");
-      expect(s).not.toContain("COALESCE(b.paid_amount, 0)");
-    }
+describe("getUnpaidCustomers — nợ từ snapshot allocator, loại thùng rác/hủy/báo giá tạm/đơn cha/con mồ côi", () => {
+  it("đơn temp_quote/cancelled/deleted/cha tổng KHÔNG vào nợ (countable lọc trong allocator)", async () => {
+    q.mockImplementation(mockSnapshot({
+      bookings: [
+        bkRow({ id: 1, total_amount: "5000000", customer_id: 7, customer_name: "Khách A", customer_phone: "0900000001" }),
+        bkRow({ id: 2, total_amount: "9000000", customer_id: 7, status: "temp_quote" }),
+        bkRow({ id: 3, total_amount: "8000000", customer_id: 7, status: "cancelled" }),
+        bkRow({ id: 4, total_amount: "7000000", customer_id: 7, deleted_at: "2026-07-01" }),
+        bkRow({ id: 5, total_amount: "0", customer_id: 7, is_parent_contract: true }),
+      ],
+      payments: [],
+    }));
+    const r = await getUnpaidCustomers();
+    expect(r.totalDebt).toBe(5_000_000); // CHỈ đơn hợp lệ — không temp/hủy/xóa/cha
+    expect(r.orderCount).toBe(1);
   });
 
-  it("mapping rows: đếm khách, đếm đơn, tổng nợ", async () => {
-    q.mockImplementation(async (sql: string) => {
-      const s = String(sql);
-      if (s.includes("total_debt")) return { rows: [{ order_cnt: "19", total_debt: "42798994" }] };
-      return { rows: [{ name: "Khách A", phone: "0900000001", debt: "42798994" }] };
-    });
+  it("mapping: đếm khách, đếm đơn, tổng nợ (ca prod 19 đơn / 42.798.994)", async () => {
+    q.mockImplementation(debtMock());
     const r = await getUnpaidCustomers();
     expect(r.count).toBe(1);
     expect(r.orderCount).toBe(19);
@@ -160,27 +204,31 @@ describe("getUnpaidCustomers — loại thùng rác/hủy/báo giá tạm/đơn 
     expect(r.lines[0]).toContain("Khách A (0900000001): còn nợ");
   });
 
-  it("month-scope: thêm filter shoot_date với đúng tham số", async () => {
+  it("month-scope: query membership shoot_date đúng tham số kỳ", async () => {
+    _resetSchemaFlagsCache();
     const calls: Array<{ sql: string; params: unknown[] }> = [];
-    q.mockImplementation(async (sql: string, params: unknown[]) => {
-      calls.push({ sql: String(sql), params });
-      return { rows: [] };
-    });
-    await getUnpaidCustomers(15, { start: "2026-07-01", end: "2026-07-31", label: "tháng 7/2026" });
-    // Bỏ query dò schema (to_regclass) — chỉ soi 2 query dữ liệu
-    const dataCalls = calls.filter(c => !c.sql.includes("to_regclass"));
-    expect(dataCalls[0].sql).toContain("b.shoot_date >= $2::date AND b.shoot_date <= $3::date");
-    expect(dataCalls[0].params).toEqual([15, "2026-07-01", "2026-07-31"]);
-    expect(dataCalls[1].sql).toContain("b.shoot_date >= $1::date AND b.shoot_date <= $2::date");
-    expect(dataCalls[1].params).toEqual(["2026-07-01", "2026-07-31"]);
+    q.mockImplementation(debtMock((s, p) => {
+      if (s.includes("SELECT b.id FROM bookings b WHERE")) {
+        calls.push({ sql: s, params: p });
+        return { rows: DEBT_BOOKINGS.map(b => ({ id: b.id })) };
+      }
+      return null;
+    }));
+    const r = await getUnpaidCustomers(15, { start: "2026-07-01", end: "2026-07-31", label: "tháng 7/2026" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sql).toContain("b.shoot_date >= $1::date AND b.shoot_date <= $2::date");
+    expect(calls[0].sql).toContain("deleted_at IS NULL"); // countable ① ở vế membership
+    expect(calls[0].params).toEqual(["2026-07-01", "2026-07-31"]);
+    expect(r.totalDebt).toBe(42798994);
   });
 
   it("month-scope KHÔNG có bảng occurrences (DB chưa migrate) → không thêm vế EXISTS", async () => {
+    _resetSchemaFlagsCache();
     const sqls: string[] = [];
-    q.mockImplementation(async (sql: string) => {
-      sqls.push(String(sql));
-      return { rows: [] }; // to_regclass rỗng → flags false
-    });
+    q.mockImplementation(debtMock((s) => {
+      sqls.push(s);
+      return null;
+    }, false));
     await getUnpaidCustomers(15, { start: "2026-07-01", end: "2026-07-31", label: "tháng 7/2026" });
     for (const sq of sqls.filter(x => x.includes("shoot_date >="))) {
       expect(sq).not.toContain("booking_occurrences");
@@ -188,18 +236,15 @@ describe("getUnpaidCustomers — loại thùng rác/hủy/báo giá tạm/đơn 
   });
 
   it("month-scope CÓ occurrences → membership shoot_date HOẶC ngày phụ (GĐ1b-1, chung Engine với màn Doanh thu)", async () => {
+    _resetSchemaFlagsCache();
     const sqls: string[] = [];
-    q.mockImplementation(async (sql: string) => {
-      const sx = String(sql);
-      sqls.push(sx);
-      if (sx.includes("to_regclass")) {
-        return { rows: [{ occ: true, dw: true, wt: true, lc: true }] };
-      }
-      return { rows: [] };
-    });
+    q.mockImplementation(debtMock((s) => {
+      sqls.push(s);
+      return null;
+    }, true));
     await getUnpaidCustomers(15, { start: "2026-07-01", end: "2026-07-31", label: "tháng 7/2026" });
     const dataSqls = sqls.filter(x => x.includes("shoot_date >=") && !x.includes("to_regclass"));
-    expect(dataSqls.length).toBe(2);
+    expect(dataSqls.length).toBeGreaterThanOrEqual(1);
     for (const sq of dataSqls) {
       expect(sq).toContain("EXISTS");
       expect(sq).toContain("booking_occurrences oc");
@@ -214,13 +259,8 @@ describe("answerStudioCopilot — câu prod trả lời công nợ tháng, khôn
   it("trả số đơn chưa thu + tiền còn thu + phạm vi tính", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-13T12:00:00+07:00"));
-    q.mockImplementation(async (sql: string) => {
-      const s = String(sql);
-      if (s.includes("total_debt")) return { rows: [{ order_cnt: "19", total_debt: "42798994" }] };
-      if (s.includes("HAVING SUM"))
-        return { rows: [{ name: "Khách A", phone: "0900000001", debt: "42798994" }] };
-      return { rows: [] };
-    });
+    _resetSchemaFlagsCache();
+    q.mockImplementation(debtMock());
     const r = await answerStudioCopilot(PROD_QUESTION);
     expect(r.intent).toBe("debt");
     expect(r.fromData).toBe(true);
@@ -343,13 +383,8 @@ describe("deterministic formatter — câu văn tự nhiên ngay cả khi KHÔNG
   });
 
   it("debt: không markdown, tổng nợ giữ nguyên, có nhận xét theo khách nợ lớn nhất", async () => {
-    q.mockImplementation(async (sql: string) => {
-      const s = String(sql);
-      if (s.includes("total_debt")) return { rows: [{ order_cnt: "19", total_debt: "42798994" }] };
-      if (s.includes("HAVING SUM"))
-        return { rows: [{ name: "Khách A", phone: "0900000001", debt: "42798994" }] };
-      return { rows: [] };
-    });
+    _resetSchemaFlagsCache();
+    q.mockImplementation(debtMock());
     const r = await answerStudioCopilot("khách nào đang nợ tiền?");
     expect(r.intent).toBe("debt");
     expect(r.answer).toContain("42.798.994");

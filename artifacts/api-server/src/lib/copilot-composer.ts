@@ -32,22 +32,30 @@ export function extractNumberTokens(s: string): Set<string> {
 }
 
 /**
- * Chốt chặn CỨNG "AI không được đổi số": mọi con số từ 4 chữ số trở lên (cỡ tiền)
- * trong câu AI phải xuất hiện y nguyên trong facts hoặc câu deterministic. AI làm
- * tròn/tự cộng/bịa số → false → route vứt câu AI, dùng câu deterministic.
+ * Chốt chặn CỨNG "AI không được đổi số" — dạng tổng quát cho MỌI đường Copilot:
+ * mọi con số từ 4 chữ số trở lên (cỡ tiền) trong câu AI phải xuất hiện y nguyên
+ * trong ÍT NHẤT một nguồn cho phép (facts / câu deterministic / analysis context).
+ * AI làm tròn / tự cộng / bịa số → false → route vứt câu AI, dùng deterministic.
  * (Số ngắn 1–3 chữ số bỏ qua để không chặn nhầm ngày/giờ/số đếm.)
  */
+export function aiNumbersWithinSources(aiText: string, allowSources: readonly string[]): boolean {
+  const allow = new Set<string>();
+  for (const src of allowSources) {
+    for (const t of extractNumberTokens(src)) allow.add(t);
+  }
+  for (const token of extractNumberTokens(aiText)) {
+    if (token.length >= 4 && !allow.has(token)) return false;
+  }
+  return true;
+}
+
+/** Bản chuyên cho composer facts — giữ nguyên API cũ, delegate về guard tổng quát. */
 export function aiNumbersWithinFacts(
   aiText: string,
   facts: CopilotFacts,
   deterministicAnswer: string,
 ): boolean {
-  const allow = extractNumberTokens(deterministicAnswer);
-  for (const t of extractNumberTokens(JSON.stringify(facts))) allow.add(t);
-  for (const token of extractNumberTokens(aiText)) {
-    if (token.length >= 4 && !allow.has(token)) return false;
-  }
-  return true;
+  return aiNumbersWithinSources(aiText, [deterministicAnswer, JSON.stringify(facts)]);
 }
 
 export function buildComposerSystemPrompt(facts: CopilotFacts, deterministicAnswer: string): string {

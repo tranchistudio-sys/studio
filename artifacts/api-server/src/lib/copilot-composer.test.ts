@@ -172,3 +172,38 @@ describe("composeNaturalAnswer — AI đổi số thì bị vứt, fallback dete
     expect(r).toBe("Tháng 7/2026 em thu 24.699.006 đ, đủ 24 phiếu thu anh nha.");
   });
 });
+
+// ─── PR #103: guard tổng quát cho MỌI đường Copilot (kể cả nhánh analysis) ───
+import { aiNumbersWithinSources } from "./copilot-composer.js";
+
+describe("aiNumbersWithinSources — AI đổi bất kỳ con số cỡ tiền nào là VỨT", () => {
+  const analysisContext = "Doanh thu tháng 7: 34.198.006 ₫ (12 đơn chụp)\nCông nợ: 5 khách, tổng 409.927.995 ₫";
+  const deterministic = "Tháng này em thu 34.198.006 ₫ từ 12 đơn.";
+
+  it("AI giữ nguyên số từ dữ liệu Engine → pass", () => {
+    expect(aiNumbersWithinSources(
+      "Anh ơi tháng này thu 34.198.006 đ, công nợ còn 409.927.995 đ nha.",
+      [analysisContext, deterministic],
+    )).toBe(true);
+  });
+
+  it("AI LÀM TRÒN (34,2 triệu → 34.200.000) → fail, phải fallback deterministic", () => {
+    expect(aiNumbersWithinSources("Tháng này thu khoảng 34.200.000 đ.", [analysisContext, deterministic])).toBe(false);
+  });
+
+  it("AI TỰ CỘNG số mới (thu + nợ) → fail", () => {
+    expect(aiNumbersWithinSources("Tổng cộng em tính ra 444.126.001 đ.", [analysisContext, deterministic])).toBe(false);
+  });
+
+  it("AI BỊA số không có trong nguồn → fail", () => {
+    expect(aiNumbersWithinSources("Lợi nhuận ước tính 12.345.678 đ.", [analysisContext, deterministic])).toBe(false);
+  });
+
+  it("số nhỏ 1–3 chữ số (ngày/giờ/số đếm) không bị chặn nhầm", () => {
+    expect(aiNumbersWithinSources("Ngày 15/7 có 3 show, em nhắc anh 2 việc.", [analysisContext, deterministic])).toBe(true);
+  });
+
+  it("định dạng khác nhau nhưng cùng giá trị (34,198,006 vs 34.198.006) vẫn khớp", () => {
+    expect(aiNumbersWithinSources("Doanh thu 34,198,006 dong.", [analysisContext, deterministic])).toBe(true);
+  });
+});

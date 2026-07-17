@@ -8,9 +8,11 @@ import {
   TrendingUp, DollarSign, BarChart2,
   Users, Award, Calendar, ArrowUpRight, ArrowDownRight,
   AlertTriangle, FileText, Wallet, CreditCard, Minus,
-  Settings, Plus, Trash2, X,
+  Settings, Plus, Trash2, X, Receipt,
 } from "lucide-react";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
+import RevenueEvidenceModal from "@/components/RevenueEvidenceModal";
+import type { EvidenceMetric } from "@/lib/evidence-csv";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -160,24 +162,41 @@ function CustomTooltip({ active, payload, label }: {
 
 const KPI_ICON = "bg-neutral-100 text-neutral-900 dark:bg-neutral-800 dark:text-neutral-100";
 
-function SummaryCard({ label, value, icon: Icon, color, sub, valueClassName, highlight, className }: {
+function SummaryCard({ label, value, icon: Icon, color, sub, valueClassName, highlight, className, onShowEvidence }: {
   label: string; value: number; icon: React.ElementType; color?: string; sub?: string;
   valueClassName?: string; highlight?: boolean; className?: string;
+  /** Có mặt ⇒ ô bấm được để xổ ra "Bằng chứng số liệu" (bảng chi tiết như Excel). */
+  onShowEvidence?: () => void;
 }) {
   const iconCls = color ?? KPI_ICON;
   const valueColor = valueClassName ?? "text-foreground";
-  return (
-    <div className={`rounded-2xl border border-border bg-card p-3 sm:p-4 ${highlight ? "ring-2 ring-foreground/15 border-foreground/20" : ""} ${className ?? ""}`}>
+  const body = (
+    <>
       <div className="flex items-start justify-between gap-2">
         <div className={`w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 ${iconCls}`}>
           <Icon className="w-4 h-4" />
         </div>
+        {onShowEvidence && (
+          <span className="inline-flex items-center gap-0.5 text-[9px] text-muted-foreground" title="Bấm để xem bằng chứng số liệu">
+            <Receipt className="w-3 h-3" />
+            <span className="hidden sm:inline">bằng chứng</span>
+          </span>
+        )}
       </div>
       <p className="text-[11px] text-muted-foreground mt-2 leading-tight">{label}</p>
       <p className={`${highlight ? "text-xl sm:text-2xl" : "text-base sm:text-lg"} font-bold mt-0.5 leading-tight truncate ${valueColor}`}>{vnd(value)}</p>
       {sub && <p className="text-[10px] text-muted-foreground mt-0.5">{sub}</p>}
-    </div>
+    </>
   );
+  const frame = `rounded-2xl border border-border bg-card p-3 sm:p-4 ${highlight ? "ring-2 ring-foreground/15 border-foreground/20" : ""} ${className ?? ""}`;
+  if (onShowEvidence) {
+    return (
+      <button type="button" onClick={onShowEvidence} className={`${frame} text-left w-full cursor-pointer hover:border-foreground/40 active:scale-[0.99] transition`}>
+        {body}
+      </button>
+    );
+  }
+  return <div className={frame}>{body}</div>;
 }
 
 export default function RevenuePage() {
@@ -202,19 +221,27 @@ export default function RevenuePage() {
 
   const isCustomActive = isCustomRange && !dateRangeError;
 
-  const queryParams = useMemo(() => {
-    const p = new URLSearchParams();
+  // rangeFrom/rangeTo: kỳ lọc đang chọn dưới dạng YYYY-MM-DD — dùng CHUNG cho
+  // /monthly (card) và /evidence (bảng bằng chứng) để hai bên luôn cùng filter.
+  const { queryParams, rangeFrom, rangeTo } = useMemo(() => {
+    let from: string, to: string;
     if (isCustomActive) {
-      p.set("from", customFrom);
-      p.set("to", customTo);
+      from = customFrom;
+      to = customTo;
     } else {
       const ym = `${selectedYear}-${String(selectedMonth).padStart(2, "0")}`;
       const lastDay = new Date(selectedYear, selectedMonth, 0).getDate();
-      p.set("from", `${ym}-01`);
-      p.set("to", `${ym}-${String(lastDay).padStart(2, "0")}`);
+      from = `${ym}-01`;
+      to = `${ym}-${String(lastDay).padStart(2, "0")}`;
     }
-    return p.toString();
+    const p = new URLSearchParams();
+    p.set("from", from);
+    p.set("to", to);
+    return { queryParams: p.toString(), rangeFrom: from, rangeTo: to };
   }, [selectedMonth, selectedYear, isCustomActive, customFrom, customTo]);
+
+  // Modal "Bằng chứng số liệu": ô nào đang được mổ xẻ + số ĐANG hiển thị trên ô đó.
+  const [evidence, setEvidence] = useState<{ metric: EvidenceMetric; label: string; cardTotal: number } | null>(null);
 
   const filterKey = isCustomActive
     ? `custom:${customFrom}:${customTo}`
@@ -520,11 +547,24 @@ export default function RevenuePage() {
                 ? ` · ${formatDmy(customFrom)} → ${formatDmy(customTo)}`
                 : ` · Tháng ${String(selectedMonth).padStart(2, "0")}/${selectedYear}`}
             </p>
-            <p className="text-3xl sm:text-4xl font-bold mt-1 tracking-tight text-foreground">{vnd(totals.collected)}</p>
+            <button
+              type="button"
+              onClick={() => setEvidence({ metric: "collected", label: "Đã thu", cardTotal: totals.collected })}
+              className="text-3xl sm:text-4xl font-bold mt-1 tracking-tight text-foreground text-left hover:underline decoration-dotted underline-offset-4 cursor-pointer"
+              title="Bấm để xem bằng chứng số liệu"
+            >
+              {vnd(totals.collected)}
+            </button>
             <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs text-muted-foreground">
-              <span>Còn nợ: <strong className="text-foreground">{vnd(totals.remaining)}</strong></span>
-              <span>Chi phí: <strong className="text-foreground">{vnd(totals.totalCost)}</strong></span>
-              <span>Lợi nhuận thực: <strong className="text-foreground">{vnd(totals.realProfit)}</strong></span>
+              <button type="button" className="hover:underline decoration-dotted cursor-pointer" onClick={() => setEvidence({ metric: "remaining", label: "Còn nợ", cardTotal: totals.remaining })}>
+                Còn nợ: <strong className="text-foreground">{vnd(totals.remaining)}</strong>
+              </button>
+              <button type="button" className="hover:underline decoration-dotted cursor-pointer" onClick={() => setEvidence({ metric: "cost", label: "Chi phí", cardTotal: totals.totalCost })}>
+                Chi phí: <strong className="text-foreground">{vnd(totals.totalCost)}</strong>
+              </button>
+              <button type="button" className="hover:underline decoration-dotted cursor-pointer" onClick={() => setEvidence({ metric: "realProfit", label: "Lợi nhuận thực", cardTotal: totals.realProfit })}>
+                Lợi nhuận thực: <strong className="text-foreground">{vnd(totals.realProfit)}</strong>
+              </button>
             </div>
           </div>
         )}
@@ -569,6 +609,7 @@ export default function RevenuePage() {
                   highlight
                   className="order-1"
                   sub="Tiền thực nhận trong kỳ"
+                  onShowEvidence={() => setEvidence({ metric: "collected", label: "Đã thu", cardTotal: totals.collected })}
                 />
                 <SummaryCard
                   label="Còn nợ"
@@ -576,6 +617,7 @@ export default function RevenuePage() {
                   icon={CreditCard}
                   className="order-2"
                   sub="Chưa thu từ khách"
+                  onShowEvidence={() => setEvidence({ metric: "remaining", label: "Còn nợ", cardTotal: totals.remaining })}
                 />
                 <SummaryCard
                   label="Lợi nhuận thực"
@@ -583,6 +625,7 @@ export default function RevenuePage() {
                   icon={DollarSign}
                   className="order-3"
                   sub="= Đã thu − Chi phí thực tế"
+                  onShowEvidence={() => setEvidence({ metric: "realProfit", label: "Lợi nhuận thực", cardTotal: totals.realProfit })}
                 />
                 <SummaryCard
                   label="Chi phí"
@@ -590,6 +633,7 @@ export default function RevenuePage() {
                   icon={Minus}
                   className="order-4 hidden sm:block"
                   sub="Chi phí thực tế đã phát sinh"
+                  onShowEvidence={() => setEvidence({ metric: "cost", label: "Chi phí", cardTotal: totals.totalCost })}
                 />
               </div>
             </div>
@@ -606,12 +650,14 @@ export default function RevenuePage() {
                   value={totals.contractValue}
                   icon={FileText}
                   sub={`${totals.bookingCount} đơn chốt trong kỳ`}
+                  onShowEvidence={() => setEvidence({ metric: "contractValue", label: "Doanh thu hợp đồng", cardTotal: totals.contractValue })}
                 />
                 <SummaryCard
                   label="Chi phí dự kiến"
                   value={totals.totalCost}
                   icon={AlertTriangle}
                   sub="Cast + CP trực tiếp + vận hành + khấu hao + lãi"
+                  onShowEvidence={() => setEvidence({ metric: "expectedCost", label: "Chi phí dự kiến", cardTotal: totals.totalCost })}
                 />
                 <SummaryCard
                   label="Lợi nhuận kỳ vọng"
@@ -619,6 +665,7 @@ export default function RevenuePage() {
                   icon={TrendingUp}
                   className="col-span-2 sm:col-span-1"
                   sub="= Doanh thu HĐ − Chi phí dự kiến"
+                  onShowEvidence={() => setEvidence({ metric: "expectedProfit", label: "Lợi nhuận kỳ vọng", cardTotal: totals.netProfit })}
                 />
               </div>
               {/* Chi tiết chi phí dự kiến */}
@@ -1002,6 +1049,21 @@ export default function RevenuePage() {
             queryClient.invalidateQueries({ queryKey: ["revenue-today"] });
             queryClient.invalidateQueries({ queryKey: ["revenue-week"] });
           }}
+        />
+      )}
+
+      {/* Bằng chứng số liệu — dùng ĐÚNG kỳ lọc đang chọn (rangeFrom/rangeTo) */}
+      {evidence && (
+        <RevenueEvidenceModal
+          metric={evidence.metric}
+          metricLabel={evidence.label}
+          cardTotal={evidence.cardTotal}
+          from={rangeFrom}
+          to={rangeTo}
+          rangeLabel={isCustomActive
+            ? `${formatDmy(customFrom)} → ${formatDmy(customTo)}`
+            : `Tháng ${String(selectedMonth).padStart(2, "0")}/${selectedYear}`}
+          onClose={() => setEvidence(null)}
         />
       )}
     </div>

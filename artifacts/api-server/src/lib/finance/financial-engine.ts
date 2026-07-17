@@ -130,6 +130,69 @@ export async function engineReceivableForRange(from: string, to: string): Promis
   );
 }
 
+export type ReceivableEvidenceRow = {
+  bookingId: number;
+  orderCode: string | null;
+  customerName: string | null;
+  serviceLabel: string | null;
+  shootDate: string | null;
+  net: number;
+  allocPaid: number;
+  debt: number;
+};
+
+/**
+ * Bằng chứng của engineReceivableForRange: liệt kê TỪNG ĐƠN còn nợ trong kỳ,
+ * dùng ĐÚNG cùng biểu thức ENGINE_DEBT_SQL + cùng WHERE với hàm tổng ở trên.
+ * `total` được tính bằng SUM window TRONG CÙNG MỘT câu SQL (cùng snapshot) trên
+ * tập đầy đủ TRƯỚC khi lọc debt > 0 ⇒ luôn bằng engineReceivableForRange và bằng
+ * SUM(rows) by-construction (đơn nợ 0 bị ẩn khỏi danh sách không đổi tổng) —
+ * không thể lệch do ghi đồng thời giữa hai query rời.
+ */
+export async function engineReceivableRowsForRange(
+  from: string,
+  to: string,
+): Promise<{ rows: ReceivableEvidenceRow[]; total: number }> {
+  const hasOcc = (await getSchemaFlags()).occurrences;
+  const r = await pool.query(
+    `SELECT * FROM (
+       SELECT t.*, SUM(t.debt) OVER () AS card_total
+       FROM (
+         SELECT b.id, b.order_code, b.service_label, b.shoot_date::text AS shoot_date,
+                c.name AS customer_name,
+                GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0)) AS net,
+                ${ENGINE_ALLOC_PAID_SQL} AS alloc_paid,
+                ${ENGINE_DEBT_SQL} AS debt
+         FROM bookings b
+         LEFT JOIN customers c ON c.id = b.customer_id
+         WHERE ${revenueCountableSql("b")} AND ${monthMembershipSql("$1", "$2", hasOcc)}
+       ) t
+     ) w
+     WHERE w.debt > 0
+     ORDER BY w.shoot_date, w.id`,
+    [from, to],
+  );
+  const list = r.rows as Array<{
+    id: number; order_code: string | null; service_label: string | null;
+    shoot_date: string | null; customer_name: string | null;
+    net: string; alloc_paid: string; debt: string; card_total: string;
+  }>;
+  return {
+    rows: list.map(row => ({
+      bookingId: Number(row.id),
+      orderCode: row.order_code,
+      customerName: row.customer_name,
+      serviceLabel: row.service_label,
+      shootDate: row.shoot_date,
+      net: Number(row.net),
+      allocPaid: Number(row.alloc_paid),
+      debt: Number(row.debt),
+    })),
+    // 0 dòng nợ dương → tổng chắc chắn 0 (mọi debt đều GREATEST(0,…) = 0).
+    total: list.length > 0 ? Number(list[0]!.card_total) : 0,
+  };
+}
+
 /** Phiếu thu HỢP LỆ của dòng tiền: không voided, không refund, không nằm trên đơn cha rỗng. */
 function collectedPaymentCond(alias = "payments"): string {
   return `COALESCE(${alias}.status,'active') != 'voided'

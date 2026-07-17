@@ -283,41 +283,179 @@ describe("liveBookingSql — đơn còn hiệu lực GIỮ đơn cha (ngữ cả
   });
 });
 
-// ─── PR #102: FAMILY CASH ALLOCATION (bản JS thuần, mirror engineAllocPaidSql) ──
-import { allocateFamilyPaid } from "./booking-money.js";
+// ─── ALLOCATOR CHIA ĐỀU CỌC (chốt 17/07 đêm — thay pro-rata PR #102) ───────────
+import { allocateFamilyPaid, allocateFamilies } from "./booking-money.js";
 
-describe("allocateFamilyPaid — tiền ở CHA chảy xuống con pro-rata theo giá trị hợp đồng", () => {
+describe("allocateFamilies — cọc chia ĐỀU + thu trực tiếp + FIFO trên cha", () => {
+  // Gia đình 5 dịch vụ — ví dụ CHÍNH của chủ: cọc 2.5tr → mỗi dịch vụ 500k
+  const fam5 = [
+    { id: 10, isParentContract: true, parentId: null, status: "confirmed", deletedAt: null, totalAmount: "0", discountAmount: "0", shootDate: "2026-07-01" },
+    { id: 11, isParentContract: false, parentId: 10, status: "confirmed", deletedAt: null, totalAmount: "2000000", discountAmount: "0", shootDate: "2026-07-05" },
+    { id: 12, isParentContract: false, parentId: 10, status: "confirmed", deletedAt: null, totalAmount: "5000000", discountAmount: "0", shootDate: "2026-07-20" },
+    { id: 13, isParentContract: false, parentId: 10, status: "confirmed", deletedAt: null, totalAmount: "3000000", discountAmount: "0", shootDate: "2026-08-01" },
+    { id: 14, isParentContract: false, parentId: 10, status: "confirmed", deletedAt: null, totalAmount: "10000000", discountAmount: "0", shootDate: "2026-08-15" },
+    { id: 15, isParentContract: false, parentId: 10, status: "confirmed", deletedAt: null, totalAmount: "4000000", discountAmount: "0", shootDate: "2026-09-10" },
+  ];
+  const dep = (amt: string, id = 1) => ({ id, bookingId: 10, amount: amt, status: "active", paymentType: "deposit" });
+
+  it("TEST 1 chủ: 5 dịch vụ, cọc 2.5tr → MỖI dịch vụ đúng 500k, Σ = đúng 2.5tr, delta 0", () => {
+    const fam = allocateFamilies(fam5, [dep("2500000")]).get(10)!;
+    expect(fam.totalDeposit).toBe(2_500_000);
+    expect(fam.eligibleServiceCount).toBe(5);
+    for (const m of fam.members) expect(m.equalDeposit).toBe(500_000); // KHÔNG phụ thuộc giá 2tr hay 10tr
+    const sum = fam.members.reduce((s, m) => s + m.equalDeposit, 0);
+    expect(sum + fam.overpayment - fam.totalDeposit).toBe(0); // Σ alloc + overpayment = totalDeposit
+  });
+
+  it("TEST 2+3 chủ: sửa cọc 2.5tr → 5tr → mỗi dịch vụ 1tr; sửa qua lại 10 lần vẫn recalculate from scratch", () => {
+    const after = allocateFamilies(fam5, [dep("5000000")]).get(10)!;
+    for (const m of after.members) expect(m.equalDeposit).toBe(1_000_000);
+    // 10 lần đổi qua lại — kết quả chỉ phụ thuộc TỔNG CỌC HIỆN TẠI, không cộng dồn
+    for (let i = 0; i < 10; i++) {
+      const v = i % 2 === 0 ? "2500000" : "5000000";
+      const f = allocateFamilies(fam5, [dep(v)]).get(10)!;
+      const per = i % 2 === 0 ? 500_000 : 1_000_000;
+      for (const m of f.members) expect(m.equalDeposit).toBe(per);
+      expect(f.members.reduce((s, m) => s + m.equalDeposit, 0) + f.overpayment).toBe(Number(v));
+    }
+  });
+
+  it("TEST 4 chủ: 1.000.001đ / 3 dịch vụ → 333.334 / 333.334 / 333.333 theo ID tăng dần, tổng khớp tuyệt đối", () => {
+    const fam3 = [
+      { id: 20, isParentContract: true, parentId: null, status: "confirmed", deletedAt: null, totalAmount: "0", discountAmount: "0" },
+      { id: 21, isParentContract: false, parentId: 20, status: "confirmed", deletedAt: null, totalAmount: "9000000", discountAmount: "0" },
+      { id: 22, isParentContract: false, parentId: 20, status: "confirmed", deletedAt: null, totalAmount: "9000000", discountAmount: "0" },
+      { id: 23, isParentContract: false, parentId: 20, status: "confirmed", deletedAt: null, totalAmount: "9000000", discountAmount: "0" },
+    ];
+    const f = allocateFamilies(fam3, [{ id: 1, bookingId: 20, amount: "1000001", status: "active", paymentType: "deposit" }]).get(20)!;
+    const byId = new Map(f.members.map(m => [m.bookingId, m.equalDeposit]));
+    expect(byId.get(21)).toBe(333_334);
+    expect(byId.get(22)).toBe(333_334);
+    expect(byId.get(23)).toBe(333_333);
+    expect(f.members.reduce((s, m) => s + m.equalDeposit, 0)).toBe(1_000_001);
+  });
+
+  it("TEST 5 chủ: dịch vụ NET nhỏ hơn phần chia → cap đúng, phần dư chia lại, không âm công nợ", () => {
+    // 3 dịch vụ NET 300k/5tr/5tr, cọc 3tr: chia đều 1tr — dv nhỏ cap 300k, dư 700k chia lại 2 dv kia
+    const famS = [
+      { id: 30, isParentContract: true, parentId: null, status: "confirmed", deletedAt: null, totalAmount: "0", discountAmount: "0" },
+      { id: 31, isParentContract: false, parentId: 30, status: "confirmed", deletedAt: null, totalAmount: "300000", discountAmount: "0" },
+      { id: 32, isParentContract: false, parentId: 30, status: "confirmed", deletedAt: null, totalAmount: "5000000", discountAmount: "0" },
+      { id: 33, isParentContract: false, parentId: 30, status: "confirmed", deletedAt: null, totalAmount: "5000000", discountAmount: "0" },
+    ];
+    const f = allocateFamilies(famS, [{ id: 1, bookingId: 30, amount: "3000000", status: "active", paymentType: "deposit" }]).get(30)!;
+    const byId = new Map(f.members.map(m => [m.bookingId, m]));
+    expect(byId.get(31)!.equalDeposit).toBe(300_000);   // cap = NET
+    expect(byId.get(31)!.remaining).toBe(0);            // không âm
+    expect(byId.get(32)!.equalDeposit).toBe(1_350_000); // 1tr + 350k dư chia lại
+    expect(byId.get(33)!.equalDeposit).toBe(1_350_000);
+    expect(f.members.reduce((s, m) => s + m.equalDeposit, 0)).toBe(3_000_000);
+  });
+
+  it("TEST 6 chủ: cọc vượt tổng hợp đồng → mọi công nợ 0, phần vượt = overpayment 'Khách trả dư'", () => {
+    const f = allocateFamilies(fam5, [dep("30000000")]).get(10)!; // NET cả nhà 24tr, cọc 30tr
+    for (const m of f.members) expect(m.remaining).toBe(0);
+    expect(f.overpayment).toBe(6_000_000);
+    expect(f.members.reduce((s, m) => s + m.equalDeposit, 0) + f.overpayment).toBe(30_000_000);
+  });
+
+  it("Q1-A: thu thêm trên CHA phân bổ FIFO theo ngày thực hiện tăng dần, cùng ngày theo ID", () => {
+    // cọc 2.5tr (500k/dv) + thu thêm 4tr trên cha:
+    // FIFO ngày: dv11(05/07 cần 1.5tr) → dv12(20/07 cần 4.5tr nhận 2.5tr còn lại)
+    const f = allocateFamilies(fam5, [
+      dep("2500000"),
+      { id: 2, bookingId: 10, amount: "4000000", status: "active", paymentType: "payment" },
+    ]).get(10)!;
+    const byId = new Map(f.members.map(m => [m.bookingId, m]));
+    expect(byId.get(11)!.parentFifo).toBe(1_500_000); // đến hạn sớm nhất, đủ trước
+    expect(byId.get(11)!.remaining).toBe(0);
+    expect(byId.get(12)!.parentFifo).toBe(2_500_000); // phần còn lại
+    expect(byId.get(12)!.remaining).toBe(2_000_000);
+    expect(byId.get(13)!.parentFifo).toBe(0);          // chưa tới lượt
+    expect(f.overpayment).toBe(0);
+  });
+
+  it("Q2: phiếu cọc LEGACY trên đơn CON = thu trực tiếp của chính dịch vụ đó, không gom vào cọc chung", () => {
+    const f = allocateFamilies(fam5, [
+      dep("2500000"),
+      { id: 5, bookingId: 13, amount: "500000", status: "active", paymentType: "deposit" }, // legacy trên con 13
+    ]).get(10)!;
+    expect(f.totalDeposit).toBe(2_500_000); // KHÔNG bị cộng 500k của con
+    const m13 = f.members.find(m => m.bookingId === 13)!;
+    expect(m13.directPaid).toBe(500_000);
+    expect(m13.remaining).toBe(3_000_000 - 500_000 - 500_000); // NET − cọc đều − thu trực tiếp
+  });
+
+  it("Q3: partial/full đọc như payment (thu thêm hợp lệ)", () => {
+    const f = allocateFamilies(fam5, [
+      { id: 3, bookingId: 11, amount: "700000", status: "active", paymentType: "partial" },
+      { id: 4, bookingId: 12, amount: "800000", status: "active", paymentType: "full" },
+    ]).get(10)!;
+    const byId = new Map(f.members.map(m => [m.bookingId, m]));
+    expect(byId.get(11)!.directPaid).toBe(700_000);
+    expect(byId.get(12)!.directPaid).toBe(800_000);
+  });
+
+  it("công thức chủ: remaining = NET − cọc đều − thu trực tiếp − FIFO từ cha (ví dụ Tiệc trong spec)", () => {
+    // Tiệc NET 3tr, cọc đều 500k, thu trực tiếp 1tr, FIFO 0 → còn 1.5tr
+    const f = allocateFamilies(fam5, [
+      dep("2500000"),
+      { id: 6, bookingId: 13, amount: "1000000", status: "active", paymentType: "payment" },
+    ]).get(10)!;
+    const m13 = f.members.find(m => m.bookingId === 13)!;
+    expect(m13.remaining).toBe(1_500_000);
+  });
+
+  it("tiền THỪA của một dịch vụ chảy sang dịch vụ còn nợ theo FIFO — giữ bất biến gia đình", () => {
+    // dv11 NET 2tr nhận trực tiếp 3tr (thừa 1tr) → 1tr chảy FIFO sang dv12
+    const f = allocateFamilies(fam5, [
+      { id: 7, bookingId: 11, amount: "3000000", status: "active", paymentType: "payment" },
+    ]).get(10)!;
+    const byId = new Map(f.members.map(m => [m.bookingId, m]));
+    expect(byId.get(11)!.directCredited).toBe(2_000_000);
+    expect(byId.get(11)!.remaining).toBe(0);
+    expect(byId.get(12)!.parentFifo).toBe(1_000_000);
+    const totalRemaining = f.members.reduce((s, m) => s + m.remaining, 0);
+    expect(totalRemaining).toBe(24_000_000 - 3_000_000); // Σ nợ dịch vụ = NET nhà − tiền nhà
+  });
+});
+
+describe("allocateFamilyPaid (interface cũ trên allocator mới) — bất biến mọi màn cùng một số", () => {
   const fam = [
     { id: 1, isParentContract: true, parentId: null, status: "confirmed", deletedAt: null, totalAmount: "10000000", discountAmount: "0" },
-    { id: 2, isParentContract: false, parentId: 1, status: "confirmed", deletedAt: null, totalAmount: "3000000", discountAmount: "0" },
-    { id: 3, isParentContract: false, parentId: 1, status: "confirmed", deletedAt: null, totalAmount: "7000000", discountAmount: "0" },
+    { id: 2, isParentContract: false, parentId: 1, status: "confirmed", deletedAt: null, totalAmount: "3000000", discountAmount: "0", shootDate: "2026-07-01" },
+    { id: 3, isParentContract: false, parentId: 1, status: "confirmed", deletedAt: null, totalAmount: "7000000", discountAmount: "0", shootDate: "2026-07-10" },
   ];
-  const pay4onParent = [{ bookingId: 1, amount: "4000000", status: "active", paymentType: "payment" }];
+  const pay4onParent = [{ id: 1, bookingId: 1, amount: "4000000", status: "active", paymentType: "payment" }];
 
-  it("phiếu 4tr ở CHA → con A 1,2tr / con B 2,8tr; CHA (đơn tổng) = 0", () => {
+  it("phiếu 'payment' 4tr trên CHA → FIFO: con sớm (3tr) đủ trước, con sau nhận 1tr; CHA = 0", () => {
     const m = allocateFamilyPaid(fam, pay4onParent);
-    expect(m.get(2)).toBeCloseTo(1_200_000, 6);
-    expect(m.get(3)).toBeCloseTo(2_800_000, 6);
+    expect(m.get(2)).toBe(3_000_000);
+    expect(m.get(3)).toBe(1_000_000);
     expect(m.get(1)).toBe(0);
   });
 
-  it("voided/refund/ad_hoc KHÔNG tính; phiếu ghi ở CON vẫn gom về gia đình", () => {
+  it("voided/refund/ad_hoc KHÔNG tính; phiếu ghi ở CON = thu trực tiếp của con đó", () => {
     const m = allocateFamilyPaid(fam, [
-      { bookingId: 2, amount: "1000000", status: "active", paymentType: "payment" }, // ở con → vẫn tiền gia đình
-      { bookingId: 1, amount: "999", status: "voided", paymentType: "payment" },
-      { bookingId: 1, amount: "888", status: "active", paymentType: "refund" },
-      { bookingId: 1, amount: "777", status: "active", paymentType: "ad_hoc" },
+      { id: 1, bookingId: 2, amount: "1000000", status: "active", paymentType: "payment" },
+      { id: 2, bookingId: 1, amount: "999", status: "voided", paymentType: "payment" },
+      { id: 3, bookingId: 1, amount: "888", status: "active", paymentType: "refund" },
+      { id: 4, bookingId: 1, amount: "777", status: "active", paymentType: "ad_hoc" },
     ]);
-    expect((m.get(2) ?? 0) + (m.get(3) ?? 0)).toBeCloseTo(1_000_000, 6);
+    expect(m.get(2)).toBe(1_000_000);
+    expect(m.get(3)).toBe(0);
   });
 
-  it("đơn lẻ: nhận đúng phiếu của chính nó", () => {
+  it("đơn lẻ: cọc canonical + thu thêm đều tính cho chính nó", () => {
     const solo = [{ id: 9, isParentContract: false, parentId: null, status: "confirmed", deletedAt: null, totalAmount: "2000000", discountAmount: "0" }];
-    const m = allocateFamilyPaid(solo, [{ bookingId: 9, amount: "500000", status: "active", paymentType: "payment" }]);
-    expect(m.get(9)).toBe(500_000);
+    const m = allocateFamilyPaid(solo, [
+      { id: 1, bookingId: 9, amount: "500000", status: "active", paymentType: "deposit" },
+      { id: 2, bookingId: 9, amount: "300000", status: "active", paymentType: "payment" },
+    ]);
+    expect(m.get(9)).toBe(800_000);
   });
 
-  it("con bị hủy/xóa/temp không nhận phân bổ; net=0 cả nhà → dồn về thành viên id nhỏ nhất", () => {
+  it("TEST 8+9 chủ: cancelled/temp/cha tổng không nhận; net=0 cả nhà → không ai nhận, tiền = trả dư", () => {
     const famB = [
       { id: 1, isParentContract: true, parentId: null, status: "confirmed", deletedAt: null, totalAmount: "0", discountAmount: "0" },
       { id: 2, isParentContract: false, parentId: 1, status: "cancelled", deletedAt: null, totalAmount: "3000000", discountAmount: "0" },
@@ -325,16 +463,18 @@ describe("allocateFamilyPaid — tiền ở CHA chảy xuống con pro-rata theo
       { id: 4, isParentContract: false, parentId: 1, status: "confirmed", deletedAt: null, totalAmount: "0", discountAmount: "0" },
     ];
     const m = allocateFamilyPaid(famB, pay4onParent);
-    expect(m.get(2)).toBe(0);          // cancelled — không nhận
-    expect(m.get(3)).toBe(4_000_000);  // net=0 → dồn về id countable nhỏ nhất
+    expect(m.get(2)).toBe(0);
+    expect(m.get(3)).toBe(0); // net=0 → không cần tiền; 4tr = Khách trả dư
     expect(m.get(4)).toBe(0);
+    const f = allocateFamilies(famB, pay4onParent).get(1)!;
+    expect(f.overpayment).toBe(4_000_000); // không mất tiền
   });
 
   it("bất biến gia đình: Σ nợ per-booking = max(0, net gia đình − tiền gia đình) (kể cả giảm giá)", () => {
     const famC = [
       { id: 1, isParentContract: true, parentId: null, status: "confirmed", deletedAt: null, totalAmount: "10000000", discountAmount: "0" },
-      { id: 2, isParentContract: false, parentId: 1, status: "confirmed", deletedAt: null, totalAmount: "3000000", discountAmount: "0" },
-      { id: 3, isParentContract: false, parentId: 1, status: "confirmed", deletedAt: null, totalAmount: "7000000", discountAmount: "1000000" },
+      { id: 2, isParentContract: false, parentId: 1, status: "confirmed", deletedAt: null, totalAmount: "3000000", discountAmount: "0", shootDate: "2026-07-01" },
+      { id: 3, isParentContract: false, parentId: 1, status: "confirmed", deletedAt: null, totalAmount: "7000000", discountAmount: "1000000", shootDate: "2026-07-05" },
     ];
     const m = allocateFamilyPaid(famC, pay4onParent);
     const debt2 = Math.max(0, 3_000_000 - (m.get(2) ?? 0));
@@ -342,9 +482,12 @@ describe("allocateFamilyPaid — tiền ở CHA chảy xuống con pro-rata theo
     expect(debt2 + debt3).toBeCloseTo(Math.max(0, 9_000_000 - 4_000_000), 6);
   });
 
-  it("trả dư: phân bổ vượt net theo tỷ lệ, nợ clamp 0, tổng phân bổ = tổng phiếu", () => {
-    const m = allocateFamilyPaid(fam, [{ bookingId: 1, amount: "24000000", status: "active", paymentType: "payment" }]);
-    expect((m.get(2) ?? 0) + (m.get(3) ?? 0)).toBeCloseTo(24_000_000, 6);
-    expect(Math.max(0, 3_000_000 - (m.get(2) ?? 0))).toBe(0);
+  it("trả dư: nợ mọi dịch vụ 0, phần vượt là overpayment — tổng phân bổ + overpayment = tổng phiếu", () => {
+    const m = allocateFamilyPaid(fam, [{ id: 1, bookingId: 1, amount: "24000000", status: "active", paymentType: "payment" }]);
+    expect(m.get(2)).toBe(3_000_000);
+    expect(m.get(3)).toBe(7_000_000);
+    const f = allocateFamilies(fam, [{ id: 1, bookingId: 1, amount: "24000000", status: "active", paymentType: "payment" }]).get(1)!;
+    expect(f.overpayment).toBe(14_000_000);
+    expect((m.get(2) ?? 0) + (m.get(3) ?? 0) + f.overpayment).toBe(24_000_000);
   });
 });

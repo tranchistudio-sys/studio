@@ -66,6 +66,15 @@ const METRIC_TO_FIELD: Record<string, string> = {
   contractValue: "contractValue",
   expectedCost: "totalCost",
   expectedProfit: "netProfit",
+  // Đợt 2 — các ô còn lại màn Doanh thu
+  grossProfit: "grossProfit",
+  operatingProfit: "operatingProfit",
+  netProfit: "netProfit",
+  staffCast: "staffCast",
+  directCost: "directCost",
+  operatingExpenses: "operatingExpenses",
+  depreciation: "depreciation",
+  interest: "interest",
 };
 
 function sumRows(ev: Evidence): number {
@@ -108,6 +117,48 @@ describe("Bằng chứng ↔ Card ↔ Engine trên DB THẬT — lệch 1 đồn
     d.setDate(d.getDate() - 6);
     const from = d.toLocaleDateString("en-CA");
     await checkRange(from, to);
+  });
+
+  it("Dòng tiền 30 ngày: cashSpent/cashNet của evidence == totals của /daily-cashflow (lệch 1 đồng = FAIL)", async () => {
+    const daily = await getJson<{
+      from: string | null; to: string | null;
+      totals: { collected: number; spent: number; net: number };
+    }>(`/api/revenue/v2/daily-cashflow?days=30`);
+    expect(daily.from && daily.to, "daily-cashflow phải trả from/to").toBeTruthy();
+    const spent = await getJson<Evidence>(`/api/revenue/v2/evidence?metric=cashSpent&from=${daily.from}&to=${daily.to}`);
+    expect(Math.abs(spent.detailTotal - daily.totals.spent),
+      `cashSpent ${spent.detailTotal} ≠ daily.spent ${daily.totals.spent}`).toBeLessThan(EPS);
+    expect(Math.abs(spent.reconciliationDelta)).toBeLessThan(EPS);
+    const net = await getJson<Evidence>(`/api/revenue/v2/evidence?metric=cashNet&from=${daily.from}&to=${daily.to}`);
+    expect(Math.abs(net.detailTotal - daily.totals.net),
+      `cashNet ${net.detailTotal} ≠ daily.net ${daily.totals.net}`).toBeLessThan(EPS);
+    const coll = await getJson<Evidence>(`/api/revenue/v2/evidence?metric=collected&from=${daily.from}&to=${daily.to}`);
+    expect(Math.abs(coll.detailTotal - daily.totals.collected),
+      `collected ${coll.detailTotal} ≠ daily.collected ${daily.totals.collected}`).toBeLessThan(EPS);
+    console.log(`  ✓ 30 ngày: thu=${daily.totals.collected.toLocaleString("vi-VN")} chi=${daily.totals.spent.toLocaleString("vi-VN")} ròng=${daily.totals.net.toLocaleString("vi-VN")} — evidence khớp cả 3`);
+  });
+
+  it("Ô bảng theo tháng: evidence với kỳ = 1 tháng khớp ĐÚNG số của months[] trong /monthly", async () => {
+    const to = vnToday();
+    const monthly = await getJson<{ months: Array<Record<string, unknown> & { month: string }> }>(
+      `/api/revenue/v2/monthly?from=2026-06-01&to=${to}`,
+    );
+    expect(monthly.months.length).toBeGreaterThan(1);
+    for (const row of monthly.months) {
+      const ym = String(row.month);
+      const [y, m] = ym.split("-").map(Number);
+      const last = new Date(y!, m!, 0).getDate();
+      const from = `${ym}-01`;
+      const end = `${ym}-${String(last).padStart(2, "0")}`;
+      const clippedTo = end < to ? end : to;
+      for (const [metric, field] of [["collected", "collected"], ["contractValue", "contractValue"], ["grossProfit", "grossProfit"], ["netProfit", "netProfit"]] as const) {
+        const ev = await getJson<Evidence>(`/api/revenue/v2/evidence?metric=${metric}&from=${from}&to=${clippedTo}`);
+        const cell = Number(row[field]);
+        expect(Math.abs(ev.detailTotal - cell),
+          `[${metric} ${ym}] evidence ${ev.detailTotal} ≠ ô bảng ${cell}`).toBeLessThan(EPS);
+      }
+      console.log(`  ✓ tháng ${ym}: 4 ô bảng khớp bằng chứng`);
+    }
   });
 
   it("Còn nợ: cardTotal của evidence == engineReceivableForRange (gọi Engine trực tiếp)", async () => {

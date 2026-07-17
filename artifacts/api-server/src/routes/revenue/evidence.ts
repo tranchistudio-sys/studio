@@ -44,6 +44,21 @@ export const EVIDENCE_METRICS = [
   "contractValue",
   "expectedCost",
   "expectedProfit",
+  // Đợt 2 (yêu cầu chủ 17/07 tối): các ô còn lại của màn Doanh thu cũng phải bấm ra
+  // bằng chứng — TẤT CẢ đọc từ CÙNG collectRangeEvidence, không thêm nguồn số mới.
+  "grossProfit",
+  "operatingProfit",
+  "netProfit",
+  "staffCast",
+  "directCost",
+  "operatingExpenses",
+  "depreciation",
+  "interest",
+  "depreciationInterest",
+  // Khối "Biểu đồ 30 ngày" (dòng tiền theo NGÀY) — rule của daily-cashflow KHÁC cost P&L:
+  // chi GỒM cả cost_class personal, KHÔNG gồm chi phí cố định hàng tháng.
+  "cashSpent",
+  "cashNet",
 ] as const;
 export type EvidenceMetric = (typeof EVIDENCE_METRICS)[number];
 
@@ -82,6 +97,7 @@ const EXPENSE_KIND: Record<string, string> = {
   operating: "CP vận hành",
   depreciation: "Khấu hao",
   interest: "Lãi vay",
+  personal: "Chi cá nhân (chỉ tính dòng tiền, không vào P&L)",
 };
 
 const vndText = (n: number) => `${Math.round(n).toLocaleString("vi-VN")}đ`;
@@ -193,6 +209,11 @@ type RawEvidence = {
   laborMeta: EngineLaborMeta;
   /** status booking theo id — CÙNG snapshot với payments (tách nhóm báo giá tạm). */
   bookingStatusById: Map<number, string>;
+  /**
+   * TOÀN BỘ classifiedExpenses (chưa qua filter cohort/bucket) — nguồn của
+   * daily-cashflow: chi theo NGÀY CHI, gồm cả personal, không gồm CP cố định.
+   */
+  allClassifiedExpenses: ClassifiedExpense[];
 };
 
 async function collectRangeEvidence(from: string, to: string): Promise<RawEvidence> {
@@ -243,6 +264,7 @@ async function collectRangeEvidence(from: string, to: string): Promise<RawEviden
     totals: { ...acc, ...accDerived },
     laborMeta: data.laborMeta,
     bookingStatusById: data.bookingStatusById,
+    allClassifiedExpenses: data.classifiedExpenses,
   };
 }
 
@@ -391,6 +413,50 @@ function expenseGroup(
 }
 
 /**
+ * Nhóm "Tổng chi DÒNG TIỀN" — ĐÚNG rule của daily-cashflow (Biểu đồ 30 ngày):
+ * mọi phiếu chi approved/paid theo NGÀY CHI trong kỳ, GỒM cost_class personal,
+ * KHÔNG cộng chi phí cố định hàng tháng, không loan_principal (data.ts đã loại).
+ * KHÁC rule ô "Chi phí" P&L — tuyệt đối không trộn hai rule.
+ */
+function buildCashSpentGroups(
+  all: ClassifiedExpense[],
+  from: string,
+  to: string,
+  bInfo: Map<number, BookingInfo>,
+): EvidenceGroup[] {
+  const inRange = all.filter(e => {
+    const d = (e.date || "").slice(0, 10);
+    return d !== "" && d >= from && d <= to;
+  });
+  const byCls = new Map<string, ClassifiedExpense[]>();
+  for (const e of inRange) {
+    const list = byCls.get(e.cls) ?? [];
+    list.push(e);
+    byCls.set(e.cls, list);
+  }
+  const ORDER: Array<[string, string]> = [
+    ["direct", "Chi trực tiếp gắn show (phiếu chi)"],
+    ["operating", "Chi vận hành (phiếu chi)"],
+    ["depreciation", "Khấu hao"],
+    ["interest", "Lãi vay"],
+    ["personal", "Chi CÁ NHÂN (tiền rời quỹ — không vào P&L)"],
+  ];
+  const groups: EvidenceGroup[] = [];
+  for (const [key, label] of ORDER) {
+    const list = byCls.get(key);
+    if (list && list.length > 0) {
+      groups.push(expenseGroup(`cash-${key}`, label, list, bInfo));
+      byCls.delete(key);
+    }
+  }
+  // cost_class lạ vẫn phải liệt kê — bảng bằng chứng không được rớt tiền
+  for (const [key, list] of byCls) {
+    groups.push(expenseGroup(`cash-${key}`, `Chi khác (${key})`, list, bInfo));
+  }
+  return groups;
+}
+
+/**
  * Nhóm chi phí cố định: card cộng fixedCostPerMonth cho TỪNG bucket tháng
  * ⇒ phần fixed trong card = totals.operatingExp − Σ phiếu chi vận hành.
  * Liệt kê từng khoản trong danh mục hiện tại × số tháng; nếu danh mục hiện tại
@@ -513,6 +579,8 @@ router.get("/revenue/v2/evidence", async (req, res) => {
   for (const cls of ["direct", "operating", "depreciation", "interest"] as const) {
     for (const e of ev.expenses[cls]) if (e.bookingId != null) bookingIds.add(e.bookingId);
   }
+  // Nhãn cho các phiếu chi dòng tiền (cash*) — có thể gắn booking ngoài cohort P&L
+  for (const e of ev.allClassifiedExpenses) if (e.bookingId != null) bookingIds.add(e.bookingId);
   const [bInfo, pInfo, fixedItems] = await Promise.all([
     fetchBookingInfo([...bookingIds]),
     fetchPaymentInfo(ev.payments.map(p => p.id)),
@@ -578,6 +646,117 @@ router.get("/revenue/v2/evidence", async (req, res) => {
       scopeNote = `Scope: ${REVENUE_SCOPES.signedContractValue.scope} — chỉ số BÁN HÀNG theo ngày tạo đơn, KHÔNG phải tiền đã thu.`;
       groups = [contractGroup(ev.contractBookings, bInfo)];
       cardTotal = ev.totals.contractValue;
+      break;
+    }
+    case "cashSpent": {
+      formula = "Tổng chi (dòng tiền) = Σ TẤT CẢ phiếu chi đã duyệt/đã chi có NGÀY CHI trong kỳ — gồm cả chi cá nhân; KHÔNG gồm chi phí cố định hàng tháng, không gồm trả gốc vay";
+      scopeNote = "Đúng rule của Biểu đồ dòng tiền theo ngày — KHÁC ô 'Chi phí' P&L (P&L loại chi cá nhân và cộng chi phí cố định).";
+      groups = buildCashSpentGroups(ev.allClassifiedExpenses, from, to, bInfo);
+      cardTotal = groups.reduce((s, g) => s + g.subtotal, 0);
+      notes = ["Chi CÁ NHÂN được tính ở đây vì là tiền thật rời quỹ, nhưng KHÔNG nằm trong Chi phí/Lợi nhuận P&L."];
+      break;
+    }
+    case "cashNet": {
+      formula = "Tăng/giảm ròng (dòng tiền) = Tổng thu − Tổng chi trong kỳ";
+      scopeNote = "Phần A (+) là mọi phiếu thu hợp lệ theo ngày thu; phần B (−) là mọi phiếu chi dòng tiền theo ngày chi (gồm chi cá nhân, không gồm CP cố định).";
+      const spentGroups = buildCashSpentGroups(ev.allClassifiedExpenses, from, to, bInfo);
+      groups = [
+        ...paymentGroups(ev.payments, ev.bookingStatusById, bInfo, pInfo),
+        ...spentGroups.map(g => ({ ...g, sign: -1 as const })),
+      ];
+      cardTotal = ev.totals.collected - spentGroups.reduce((s, g) => s + g.subtotal, 0);
+      notes = ["Chi CÁ NHÂN được trừ ở đây vì là tiền thật rời quỹ, nhưng KHÔNG nằm trong Chi phí/Lợi nhuận P&L."];
+      break;
+    }
+    case "staffCast": {
+      formula = "Cast nhân viên = Σ cast từ sổ lương theo show (staff_job_earnings) của các đơn chốt trong kỳ";
+      scopeNote = "Cast tính theo ĐƠN CHỐT trong kỳ — cùng cohort với Doanh thu hợp đồng.";
+      groups = [castGroup(ev.castRows, bInfo)];
+      cardTotal = ev.totals.staffCast;
+      notes = costNotes;
+      break;
+    }
+    case "directCost": {
+      formula = "CP trực tiếp = Cast nhân viên + Chi phí trực tiếp gắn show (phiếu chi đã duyệt/đã chi)";
+      scopeNote = "Theo ĐƠN CHỐT trong kỳ — đây là phần trừ đầu tiên của Lợi nhuận gộp.";
+      groups = [
+        castGroup(ev.castRows, bInfo),
+        expenseGroup("direct", "Chi phí trực tiếp gắn show (phiếu chi)", ev.expenses.direct, bInfo),
+      ];
+      cardTotal = ev.totals.directCost;
+      notes = costNotes;
+      break;
+    }
+    case "operatingExpenses": {
+      formula = "CP vận hành = Σ phiếu chi vận hành trong kỳ + Chi phí cố định hàng tháng × số tháng";
+      scopeNote = "Phiếu chi theo NGÀY CHI trong kỳ; chi phí cố định cộng cho từng tháng của kỳ.";
+      groups = [
+        expenseGroup("operating", "Chi phí vận hành (phiếu chi)", ev.expenses.operating, bInfo),
+        fixedCostGroup(fixedItems, bucketCount, cardFixedTotal),
+      ];
+      cardTotal = ev.totals.operatingExp;
+      break;
+    }
+    case "depreciation": {
+      formula = "Khấu hao = Σ phiếu chi cost_class 'depreciation' theo ngày chi trong kỳ";
+      groups = [expenseGroup("depreciation", "Khấu hao", ev.expenses.depreciation, bInfo)];
+      cardTotal = ev.totals.depreciation;
+      break;
+    }
+    case "interest": {
+      formula = "Lãi vay = Σ phiếu chi cost_class 'interest' theo ngày chi trong kỳ (KHÔNG gồm trả gốc vay)";
+      groups = [expenseGroup("interest", "Lãi vay", ev.expenses.interest, bInfo)];
+      cardTotal = ev.totals.interest;
+      break;
+    }
+    case "depreciationInterest": {
+      formula = "Khấu hao + Lãi vay = Σ phiếu chi khấu hao + Σ phiếu chi lãi vay theo ngày chi trong kỳ";
+      groups = [
+        expenseGroup("depreciation", "Khấu hao", ev.expenses.depreciation, bInfo),
+        expenseGroup("interest", "Lãi vay", ev.expenses.interest, bInfo),
+      ];
+      cardTotal = ev.totals.depreciation + ev.totals.interest;
+      break;
+    }
+    case "grossProfit": {
+      formula = "Lợi nhuận gộp = Doanh thu hợp đồng − (Cast nhân viên + CP trực tiếp)";
+      scopeNote = "Phần A (+) là giá trị hợp đồng chốt trong kỳ; phần B (−) là chi phí trực tiếp của các đơn đó.";
+      groups = [
+        contractGroup(ev.contractBookings, bInfo),
+        ...[
+          castGroup(ev.castRows, bInfo),
+          expenseGroup("direct", "Chi phí trực tiếp gắn show (phiếu chi)", ev.expenses.direct, bInfo),
+        ].map(g => ({ ...g, sign: -1 as const })),
+      ];
+      cardTotal = ev.totals.grossProfit;
+      notes = costNotes;
+      break;
+    }
+    case "operatingProfit": {
+      formula = "Lợi nhuận hoạt động = Lợi nhuận gộp − CP vận hành (= Doanh thu HĐ − CP trực tiếp − CP vận hành)";
+      scopeNote = "Phần A (+) là giá trị hợp đồng chốt trong kỳ; phần B (−) gồm chi phí trực tiếp và vận hành.";
+      groups = [
+        contractGroup(ev.contractBookings, bInfo),
+        ...[
+          castGroup(ev.castRows, bInfo),
+          expenseGroup("direct", "Chi phí trực tiếp gắn show (phiếu chi)", ev.expenses.direct, bInfo),
+          expenseGroup("operating", "Chi phí vận hành (phiếu chi)", ev.expenses.operating, bInfo),
+          fixedCostGroup(fixedItems, bucketCount, cardFixedTotal),
+        ].map(g => ({ ...g, sign: -1 as const })),
+      ];
+      cardTotal = ev.totals.operatingProfit;
+      notes = costNotes;
+      break;
+    }
+    case "netProfit": {
+      formula = "Lợi nhuận ròng = Lợi nhuận hoạt động − Khấu hao − Lãi vay (= Doanh thu HĐ − toàn bộ chi phí dự kiến)";
+      scopeNote = "Phần A (+) là giá trị hợp đồng chốt trong kỳ; phần B (−) là toàn bộ 6 lớp chi phí.";
+      groups = [
+        contractGroup(ev.contractBookings, bInfo),
+        ...buildCostGroups().map(g => ({ ...g, sign: -1 as const })),
+      ];
+      cardTotal = ev.totals.netProfit;
+      notes = costNotes;
       break;
     }
     case "expectedProfit": {

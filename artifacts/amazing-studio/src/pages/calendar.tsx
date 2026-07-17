@@ -44,6 +44,7 @@ import { castAmountFromResult, lookupCastByPkg, resolveCastAmount } from "@/lib/
 import { reflowDescriptionLines, firstDescriptionLine, parseDescriptionBlocks } from "@/lib/package-description";
 import { buildDressWarningsByDate, type DressWarnRow, type DressWarnChip } from "@/lib/dress-warnings";
 import { invalidateBookingRelated } from "@/lib/booking-cache";
+import { refindCustomerPatch } from "@/lib/customer-rename";
 import OutfitBookingSection, { type OutfitDraft } from "@/components/outfit-booking-section";
 import { splitOutfitsBySub, planOutfitSync, mapDressRowToDraft, dedupeParentOutfits, moveOutfitsOnSubRemove } from "@/lib/outfit-per-service";
 import AdditionalServicesSection, { validateAdditionalServicesForm, type AdditionalServiceLine, newAdditionalServiceLine } from "@/components/additional-services-section";
@@ -2118,12 +2119,33 @@ function ShowFormPanel({
           const existing = found.find(c => digitsOnly(c.phone) === digitsOnly(phone));
           if (existing) {
             cid = existing.id;
-            if (avatar && !existing.avatar) {
-              await authFetch(`${BASE}/api/customers/${cid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ avatar }) });
+            // Fix bug DH0267: gõ tên mới trong form SỬA làm ô tên tự gỡ liên kết khách
+            // → rơi vào đây và tìm lại ĐÚNG khách gốc theo SĐT. Trước đây tên vừa gõ
+            // bị bỏ qua → lưu xong tên cũ hiện lại khắp nơi. Giờ: nếu là ý định ĐỔI TÊN
+            // (đang sửa booking + refind ra đúng khách gốc) thì ghi tên mới vào
+            // customers.name — một nguồn sự thật, không sinh khách trùng.
+            const patch = refindCustomerPatch({
+              isEdit,
+              originalCustomerId: booking?.customerId ?? null,
+              existing: { id: existing.id, name: existing.name ?? null, avatar: existing.avatar ?? null },
+              typedName: customerName,
+              avatar: avatar || null,
+            });
+            if (Object.keys(patch).length > 0) {
+              await authFetch(`${BASE}/api/customers/${cid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
             }
           } else {
             const nc = await authFetch(`${BASE}/api/customers`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: customerName, phone, facebook: facebook || undefined, zalo: zalo || undefined, avatar: avatar || undefined, source: "walk-in" }) }).then(r => r.json()) as Customer;
             cid = nc.id;
+          }
+        } else if (isEdit && booking?.customerId != null && customerName.trim()) {
+          // Fix bug DH0267 (biến thể không SĐT): đang SỬA booking có khách gốc nhưng
+          // form không có SĐT hợp lệ — trước đây tạo khách MỚI trùng tên (booking âm
+          // thầm đổi khách + sinh khách trùng). Ý định thật là ĐỔI TÊN: ghi tên mới
+          // vào chính khách gốc, giữ nguyên liên kết.
+          cid = booking.customerId;
+          if (customerName.trim() !== matchedNameRef.current.trim()) {
+            await authFetch(`${BASE}/api/customers/${cid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: customerName.trim() }) });
           }
         } else {
           // Không có SĐT hợp lệ → tạo khách mới theo tên nhập tay (phone = null).

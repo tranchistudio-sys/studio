@@ -34,6 +34,8 @@ export async function loadAllData() {
       expenseDate: expensesTable.expenseDate,
       status: expensesTable.status,
       costClass: expensesTable.costClass,
+      description: expensesTable.description,
+      expenseCode: expensesTable.expenseCode,
     }).from(expensesTable),
     db.select({
       id: paymentsTable.id,
@@ -103,16 +105,22 @@ export async function loadAllData() {
 
   // Task #363: kèm danh sách chi phí đã phân lớp + ngày để route nào cần lọc theo range chính xác (ngày/tuần)
   // có thể tự gom lại mà không cần đụng vào loadAllData() của các route khác.
-  const classifiedExpenses: Array<{ bookingId: number | null; amount: number; date: string; cls: string }> = [];
+  const classifiedExpenses: Array<{
+    id: number; bookingId: number | null; amount: number; date: string; cls: string;
+    description: string | null; expenseCode: string | null;
+  }> = [];
   for (const e of expenses) {
     if (e.status !== "approved" && e.status !== "paid") continue;
     const cls = e.costClass || (e.bookingId != null ? "direct" : "operating");
     if (cls === "loan_principal") continue;
     classifiedExpenses.push({
+      id: e.id,
       bookingId: e.bookingId,
       amount: parseFloat(e.amount) || 0,
       date: e.expenseDate || "",
       cls,
+      description: e.description ?? null,
+      expenseCode: e.expenseCode ?? null,
     });
   }
 

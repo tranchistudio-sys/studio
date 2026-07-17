@@ -48,6 +48,7 @@ const BOOKING_RELATED_KEY_PREFIXES: string[] = [
   "revenue-by-service-v2",
   "revenue-by-sale",
   "revenue-daily-cashflow",
+  "revenue-evidence",
   // Hậu kỳ (đọc dịch vụ/gói từ booking)
   "photoshop-booking-view",
   "photoshop-stats",

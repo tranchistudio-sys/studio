@@ -7,10 +7,12 @@ import statsRouter from "./stats";
 import byPeriodRouter from "./by-period";
 import bySaleRouter from "./by-sale";
 import dailyCashflowRouter from "./daily-cashflow";
+import evidenceRouter from "./evidence";
 
 const router: IRouter = Router();
 
 router.use(monthlyRouter);
+router.use(evidenceRouter);
 router.use(byServiceRouter);
 router.use(warningsRouter);
 router.use(customRangeRouter);

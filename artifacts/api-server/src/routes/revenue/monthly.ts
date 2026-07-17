@@ -1,14 +1,18 @@
 import { Router, type IRouter } from "express";
 import { loadAllData } from "./data";
-import { getBookingDate, getPaymentDate, generateMonthRange, monthLabel } from "./helpers";
+import { generateMonthRange, monthLabel } from "./helpers";
 // GĐ1b-1 (kiến trúc 14/07): "Còn nợ tháng" đọc từ FINANCIAL ENGINE theo NGÀY CHỤP —
 // route không tự tính công nợ nữa.
 import { engineReceivableForRange, REVENUE_SCOPES } from "../../lib/finance/financial-engine";
+// PR Financial Evidence: logic tính bucket tách sang monthly-core (MỘT nguồn sự thật,
+// route /evidence dùng chung) — hành vi giữ NGUYÊN.
+import { computeBucketStats, deriveMoney, bucketRanges } from "./monthly-core";
 
 const router: IRouter = Router();
 
 router.get("/revenue/v2/monthly", async (req, res) => {
-  const { validBookings, castByBooking, laborMeta, payments, classifiedExpenses, fixedCostPerMonth } = await loadAllData();
+  const data = await loadAllData();
+  const { laborMeta } = data;
 
   const range = (req.query["range"] as string) || "6";
   const customFrom = req.query["from"] as string | undefined;
@@ -38,36 +42,10 @@ router.get("/revenue/v2/monthly", async (req, res) => {
   })();
 
   const result = [];
-  for (const ym of months) {
-    const [yy, mm] = ym.split("-").map(Number);
-    const lastDay = new Date(yy, mm, 0).getDate();
-    const ymStart = `${ym}-01`;
-    const ymEnd = `${ym}-${String(lastDay).padStart(2, "0")}`;
-    // Day-precision clipping when caller passed from/to within a month
-    const bucketStart = customFrom && customFrom > ymStart ? customFrom : ymStart;
-    const bucketEnd = customTo && customTo < ymEnd ? customTo : ymEnd;
-
+  for (const { ym, effFrom, effTo } of bucketRanges(months, customFrom, customTo)) {
     // Task #363: với từng tháng, range hiệu lực là giao của [dateFrom,dateTo] và [ymStart,ymEnd].
     // Khi user chọn "hôm nay" hoặc "tuần này", từng bucket sẽ chỉ tính bản ghi nằm đúng trong khoảng đó.
-    const effFrom = bucketStart;
-    const effTo = bucketEnd;
-
-    // "Hợp đồng ký mới trong tháng" — scope booking_created_at (chỉ số BÁN HÀNG).
-    // CẤM dùng cohort này để suy ra công nợ (phép trộn scope Task #394 cũ).
-    const monthBookings = validBookings.filter(b => {
-      const d = getBookingDate(b);
-      return d >= effFrom && d <= effTo;
-    });
-    const contractValue = monthBookings.reduce((s, b) => s + (b.netAmount || 0), 0); // NET (đã trừ giảm giá)
-    const bookingIds = new Set(monthBookings.map(b => b.id));
-
-    // "Tiền thực thu trong tháng" — scope payment_date (gồm ad_hoc, không filter cohort).
-    const monthPayments = payments.filter(p => {
-      if (p.paymentType === "refund") return false;
-      const d = getPaymentDate(p);
-      return d >= effFrom && d <= effTo;
-    });
-    const collected = monthPayments.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0);
+    const stats = computeBucketStats(data, effFrom, effTo);
 
     // GĐ1b-1: "Còn có thể thu từ show của tháng" — scope shoot_date/occurrence,
     // công nợ sống per-booking, đọc từ FINANCIAL ENGINE (đồng bộ Copilot 3B +
@@ -75,61 +53,26 @@ router.get("/revenue/v2/monthly", async (req, res) => {
     // cashIn) từng đẻ ra số 175.748.994 vô nghĩa vận hành.
     const remaining = await engineReceivableForRange(effFrom, effTo);
 
-    let staffCast = 0;
-    for (const bid of bookingIds) {
-      staffCast += castByBooking.get(bid) ?? 0;
-    }
-
-    // Task #363: gom chi phí theo lớp + lọc theo range chính xác (ngày).
-    let directExp = 0, operatingExp = 0, depreciation = 0, interest = 0;
-    for (const e of classifiedExpenses) {
-      // direct gắn booking → cộng nếu booking thuộc bucket này; ngược lại lọc theo ngày chi.
-      if (e.cls === "direct" && e.bookingId != null) {
-        if (bookingIds.has(e.bookingId)) directExp += e.amount;
-        continue;
-      }
-      if (!e.date || e.date < effFrom || e.date > effTo) continue;
-      if (e.cls === "direct") directExp += e.amount;
-      else if (e.cls === "operating") operatingExp += e.amount;
-      else if (e.cls === "depreciation") depreciation += e.amount;
-      else if (e.cls === "interest") interest += e.amount;
-    }
-
-    // Task #364: cộng chi phí cố định hàng tháng vào operating của từng bucket.
-    operatingExp += fixedCostPerMonth;
-
-    // Mô hình tài chính chuẩn:
-    //   revenue = doanh thu chốt (giá trị hợp đồng), KHÔNG phải tiền đã thu
-    //   directCost = cast nhân viên + chi phí trực tiếp gắn show
-    //   grossProfit = revenue - directCost
-    //   operatingProfit = grossProfit - operatingCost
-    //   netProfit = operatingProfit - depreciation - interest
-    const directCost = staffCast + directExp;
-    const grossProfit = contractValue - directCost;
-    const operatingProfit = grossProfit - operatingExp;
-    const netProfit = operatingProfit - depreciation - interest;
-
-    const totalCost = directCost + operatingExp + depreciation + interest;
-    const realProfit = collected - totalCost; // legacy field — giữ để không vỡ chỗ khác
+    const derived = deriveMoney(stats);
 
     result.push({
       month: ym,
       label: monthLabel(ym),
-      contractValue,
-      collected,
+      contractValue: stats.contractValue,
+      collected: stats.collected,
       remaining,
-      staffCast,
-      directExpenses: directExp,
-      operatingExpenses: operatingExp,
-      depreciation,
-      interest,
-      directCost,
-      grossProfit,
-      operatingProfit,
-      netProfit,
-      totalCost,
-      realProfit,
-      bookingCount: monthBookings.length,
+      staffCast: stats.staffCast,
+      directExpenses: stats.directExp,
+      operatingExpenses: stats.operatingExp,
+      depreciation: stats.depreciation,
+      interest: stats.interest,
+      directCost: derived.directCost,
+      grossProfit: derived.grossProfit,
+      operatingProfit: derived.operatingProfit,
+      netProfit: derived.netProfit,
+      totalCost: derived.totalCost,
+      realProfit: derived.realProfit,
+      bookingCount: stats.bookingCount,
     });
   }
 

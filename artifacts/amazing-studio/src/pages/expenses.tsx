@@ -443,6 +443,36 @@ export default function ExpensesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location]);
 
+  // ── Deep-link từ "Bằng chứng số liệu" (màn Doanh thu): /expenses?expenseId=N →
+  //    tự mở modal chi tiết phiếu chi đó (fetch thẳng /api/expenses/:id, không phụ
+  //    thuộc filter tháng của trang). Cùng pattern với /payments?bookingId=N. ──
+  const expenseDeepLinkHandled = useRef(false);
+  useEffect(() => {
+    if (expenseDeepLinkHandled.current) return;
+    const qs = location.includes("?") ? location.slice(location.indexOf("?")) : window.location.search;
+    const params = new URLSearchParams(qs);
+    const eid = params.get("expenseId");
+    if (!eid) return;
+    expenseDeepLinkHandled.current = true;
+    // Xoá query param khỏi URL ngay để khỏi mở lại lúc back / refresh
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("expenseId");
+      window.history.replaceState({}, "", url.toString());
+    } catch { /* ignore */ }
+    const id = Number(eid);
+    if (!Number.isFinite(id) || id <= 0) return;
+    fetch(`${BASE}/api/expenses/${id}`, { headers: authHeaders })
+      .then(r => (r.ok ? r.json() : null))
+      .then((raw: unknown) => {
+        if (raw && typeof raw === "object" && "id" in (raw as object)) {
+          setViewDetail(raw as Expense);
+        }
+      })
+      .catch(() => { /* phiếu không tồn tại / mất mạng — bỏ qua, trang vẫn dùng bình thường */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location]);
+
   // ── Look up linked booking info to display in form / list ──
   const { data: linkedBooking } = useQuery<LinkedBooking | null>({
     queryKey: ["expense-linked-booking", form.bookingId],

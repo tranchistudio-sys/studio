@@ -549,7 +549,14 @@ export async function buildContractPayload(
   let paymentRows: ContractPaymentRow[] = [];
   let paidAmount = 0;
   if (paymentTargetId != null) {
-    const pays = await db.select().from(paymentsTable).where(eq(paymentsTable.bookingId, paymentTargetId));
+    // Chốt 17/07: tiền của hợp đồng = phiếu trên CẢ GIA ĐÌNH (cha + từng dịch vụ con)
+    // — phiếu cọc legacy/thu thêm gắn thẳng đơn con không được rớt khỏi "Đã thanh toán",
+    // giữ bất biến: Còn lại trên hợp đồng = Σ còn-phải-thu các dịch vụ (Engine).
+    const familyPayIds = [
+      paymentTargetId,
+      ...serviceRows.map((b) => b.id).filter((x): x is number => x != null && x !== paymentTargetId),
+    ];
+    const pays = await db.select().from(paymentsTable).where(inArray(paymentsTable.bookingId, familyPayIds));
     const collected = pays.filter(isCollectedPayment);
     paidAmount = collected.reduce((s, p) => s + money(p.amount), 0);
     paymentRows = collected

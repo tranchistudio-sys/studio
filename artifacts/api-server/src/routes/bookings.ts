@@ -1301,12 +1301,10 @@ router.put("/bookings/:id", async (req, res) => {
       );
       const depRecords = depResult.rows;
 
-      // Delete duplicates, keep oldest
-      if (depRecords.length > 1) {
-        for (const r of depRecords.slice(1)) {
-          await client.query(`DELETE FROM payments WHERE id = $1`, [r.id]);
-        }
-      }
+      // Chốt 17/07 (Q2/Q3): CHỈ phiếu deposit CŨ NHẤT là cọc canonical do ô "Tiền cọc"
+      // quản lý. Các phiếu deposit KHÁC (user tự tạo khi thu thêm) là TIỀN THẬT —
+      // allocator đọc chúng như thu thêm/pool. TUYỆT ĐỐI không DELETE như trước
+      // (xóa là mất tiền thật khỏi sổ).
 
       if (newDepositAmount > 0) {
         // Derive paid_date từ depositPaidAt khi user chỉ gửi giờ → đảm bảo đồng bộ

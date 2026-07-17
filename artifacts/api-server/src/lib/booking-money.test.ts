@@ -406,6 +406,72 @@ describe("allocateFamilies — cọc chia ĐỀU + thu trực tiếp + FIFO trê
     expect(m13.remaining).toBe(1_500_000);
   });
 
+  it("water-fill CASCADE ≥3 vòng: NET 300k/1.2tr/5tr, cọc 3tr → 300k/1.2tr/1.5tr, tổng khớp, không lặp vô hạn", () => {
+    const famC = [
+      { id: 40, isParentContract: true, parentId: null, status: "confirmed", deletedAt: null, totalAmount: "0", discountAmount: "0" },
+      { id: 41, isParentContract: false, parentId: 40, status: "confirmed", deletedAt: null, totalAmount: "300000", discountAmount: "0" },
+      { id: 42, isParentContract: false, parentId: 40, status: "confirmed", deletedAt: null, totalAmount: "1200000", discountAmount: "0" },
+      { id: 43, isParentContract: false, parentId: 40, status: "confirmed", deletedAt: null, totalAmount: "5000000", discountAmount: "0" },
+    ];
+    const f = allocateFamilies(famC, [{ id: 1, bookingId: 40, amount: "3000000", status: "active", paymentType: "deposit" }]).get(40)!;
+    const byId = new Map(f.members.map(m => [m.bookingId, m.equalDeposit]));
+    expect(byId.get(41)).toBe(300_000);   // vòng 1 cap
+    expect(byId.get(42)).toBe(1_200_000); // vòng 2 cap (1tr + dư chia lại vẫn vượt 1.2tr)
+    expect(byId.get(43)).toBe(1_500_000); // nhận toàn bộ phần dư còn lại
+    expect(f.members.reduce((s, m) => s + m.equalDeposit, 0)).toBe(3_000_000);
+    expect(f.overpayment).toBe(0);
+  });
+
+  it("FIFO CÙNG NGÀY: tie-break theo booking ID tăng dần — deterministic", () => {
+    const famT = [
+      { id: 50, isParentContract: true, parentId: null, status: "confirmed", deletedAt: null, totalAmount: "0", discountAmount: "0" },
+      { id: 52, isParentContract: false, parentId: 50, status: "confirmed", deletedAt: null, totalAmount: "2000000", discountAmount: "0", shootDate: "2026-08-01" },
+      { id: 51, isParentContract: false, parentId: 50, status: "confirmed", deletedAt: null, totalAmount: "3000000", discountAmount: "0", shootDate: "2026-08-01" },
+    ];
+    const f = allocateFamilies(famT, [{ id: 1, bookingId: 50, amount: "3500000", status: "active", paymentType: "payment" }]).get(50)!;
+    const byId = new Map(f.members.map(m => [m.bookingId, m.parentFifo]));
+    expect(byId.get(51)).toBe(3_000_000); // cùng ngày → ID nhỏ (51) đầy trước
+    expect(byId.get(52)).toBe(500_000);
+  });
+
+  it("shootDate NULL xếp CUỐI hàng FIFO (sau mọi dịch vụ có ngày)", () => {
+    const famN = [
+      { id: 60, isParentContract: true, parentId: null, status: "confirmed", deletedAt: null, totalAmount: "0", discountAmount: "0" },
+      { id: 61, isParentContract: false, parentId: 60, status: "confirmed", deletedAt: null, totalAmount: "2000000", discountAmount: "0", shootDate: null },
+      { id: 62, isParentContract: false, parentId: 60, status: "confirmed", deletedAt: null, totalAmount: "3000000", discountAmount: "0", shootDate: "2026-09-01" },
+    ];
+    const f = allocateFamilies(famN, [{ id: 1, bookingId: 60, amount: "3000000", status: "active", paymentType: "payment" }]).get(60)!;
+    const byId = new Map(f.members.map(m => [m.bookingId, m.parentFifo]));
+    expect(byId.get(62)).toBe(3_000_000); // có ngày → trước
+    expect(byId.get(61)).toBe(0);         // null ngày → cuối
+  });
+
+  it("cọc có PHẦN LẺ thập phân: phần <1đ dồn dịch vụ ID nhỏ nhất, tổng khớp tuyệt đối", () => {
+    const famF = [
+      { id: 70, isParentContract: true, parentId: null, status: "confirmed", deletedAt: null, totalAmount: "0", discountAmount: "0" },
+      { id: 71, isParentContract: false, parentId: 70, status: "confirmed", deletedAt: null, totalAmount: "9000000", discountAmount: "0" },
+      { id: 72, isParentContract: false, parentId: 70, status: "confirmed", deletedAt: null, totalAmount: "9000000", discountAmount: "0" },
+    ];
+    const f = allocateFamilies(famF, [{ id: 1, bookingId: 70, amount: "1000001.5", status: "active", paymentType: "deposit" }]).get(70)!;
+    const total = f.members.reduce((s, m) => s + m.equalDeposit, 0);
+    expect(total).toBeCloseTo(1_000_001.5, 6);
+    const byId = new Map(f.members.map(m => [m.bookingId, m.equalDeposit]));
+    expect(byId.get(71)).toBeCloseTo(500_001.5, 6); // dư nguyên (1đ) + lẻ (0.5đ) → ID nhỏ nhất
+    expect(byId.get(72)).toBe(500_000);
+  });
+
+  it("phiếu deposit THIẾU id không được thắng phiếu có id thật khi chọn canonical", () => {
+    const f = allocateFamilies(fam5, [
+      { bookingId: 10, amount: "9000000", status: "active", paymentType: "deposit" }, // thiếu id
+      { id: 5, bookingId: 10, amount: "2000000", status: "active", paymentType: "deposit" },
+    ]).get(10)!;
+    expect(f.totalDeposit).toBe(2_000_000);            // canonical = phiếu CÓ id
+    expect(f.canonicalDepositPaymentId).toBe(5);
+    // 9tr thiếu-id là tiền thật → pool FIFO, không mất
+    const fifoSum = f.members.reduce((s, m) => s + m.parentFifo, 0);
+    expect(fifoSum + f.overpayment).toBe(9_000_000);
+  });
+
   it("tiền THỪA của một dịch vụ chảy sang dịch vụ còn nợ theo FIFO — giữ bất biến gia đình", () => {
     // dv11 NET 2tr nhận trực tiếp 3tr (thừa 1tr) → 1tr chảy FIFO sang dv12
     const f = allocateFamilies(fam5, [

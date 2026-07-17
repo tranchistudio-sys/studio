@@ -339,9 +339,14 @@ export function allocateFamilies(
 ): Map<number, FamilyAllocation> {
   const byId = new Map(allBookings.map((b) => [b.id, b]));
   const rootOf = (b: AllocBookingInput): number => b.parentId ?? b.id;
-  const parentById = buildParentContractMap(allBookings);
+  // Tra cha bằng TOÀN BỘ đơn (không chỉ cha tổng) — khớp SQL revenueCountableSql:
+  // con của đơn thường ĐÃ CHẾT cũng là mồ côi, không được nhận phân bổ.
+  const parentById = byId;
   const netOf = (b: AllocBookingInput): number =>
     clampMin0(money(b.totalAmount) - money(b.discountAmount));
+  // id phiếu thiếu (caller quên SELECT id) KHÔNG được thắng phiếu có id thật.
+  const pid = (p: AllocPaymentInput): number =>
+    p.id == null ? Number.POSITIVE_INFINITY : Number(p.id);
   const shootKey = (b: AllocBookingInput): string => {
     const d = b.shootDate;
     if (d == null) return "9999-12-31"; // không có ngày → xếp cuối, vẫn deterministic
@@ -382,7 +387,7 @@ export function allocateFamilies(
     for (const p of pays) {
       if (p.bookingId !== root) continue;
       if ((p.paymentType ?? "") !== "deposit") continue;
-      if (canonical == null || money(p.id) < money(canonical.id)) canonical = p;
+      if (canonical == null || pid(p) < pid(canonical)) canonical = p;
     }
     const totalDeposit = canonical ? money(canonical.amount) : 0;
 

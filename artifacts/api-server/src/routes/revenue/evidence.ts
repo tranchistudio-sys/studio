@@ -436,7 +436,9 @@ function receivableGroup(list: ReceivableEvidenceRow[]): EvidenceGroup {
       `NET ${vndText(r.net)}`,
       `Cọc chung chia đều ${vndText(r.equalDeposit)}`,
       `Thu trực tiếp ${vndText(r.directPaid)}${r.legacyDepositPaid > 0 ? ` (trong đó phiếu cọc legacy trên dịch vụ ${vndText(r.legacyDepositPaid)})` : ""}`,
-      `Thu từ đơn cha phân bổ ${vndText(r.parentFifo)}`,
+      // Pool FIFO gồm: thu thêm trên cha + phiếu trên dịch vụ đã hủy/xóa + tiền
+      // thừa của dịch vụ khác — ghi nhãn đúng nguồn để admin rà sổ không bối rối.
+      `Thu phân bổ FIFO từ gia đình đơn ${vndText(r.parentFifo)}`,
       `Còn phải thu ${vndText(r.debt)}`,
     ];
     return {
@@ -453,7 +455,11 @@ function receivableGroup(list: ReceivableEvidenceRow[]): EvidenceGroup {
       expenseId: null,
     };
   });
-  return { key: "receivables", label: "Đơn còn nợ có show trong kỳ", sign: 1, rows, subtotal: sum(rows) };
+  return {
+    key: "receivables",
+    label: "Đơn còn nợ có show trong kỳ (mỗi dòng: NET − cọc đều − thu trực tiếp − FIFO gia đình)",
+    sign: 1, rows, subtotal: sum(rows),
+  };
 }
 
 // ─── Route ─────────────────────────────────────────────────────────────────────
@@ -504,7 +510,7 @@ router.get("/revenue/v2/evidence", async (req, res) => {
       from,
       to,
       formula: "Còn nợ = Σ từng đơn hợp lệ có ngày chụp/ngày thực hiện trong kỳ: max(0, giá trị hợp đồng NET − đã thu PHÂN BỔ theo gia đình đơn)",
-      scopeNote: `Scope: ${REVENUE_SCOPES.receivableAmount.scope} — công nợ sống theo NGÀY THỰC HIỆN; phiếu thu trên hợp đồng cha được phân bổ pro-rata xuống từng dịch vụ con.`,
+      scopeNote: `Scope: ${REVENUE_SCOPES.receivableAmount.scope} — công nợ sống theo NGÀY THỰC HIỆN; cọc chung chia ĐỀU cho từng dịch vụ (tối đa bằng NET), phiếu gắn thẳng dịch vụ = thu riêng, thu thêm trên cha phân bổ FIFO theo dịch vụ đến hạn trước (chốt 17/07).`,
       notes: [],
       groups,
       detailTotal,

@@ -469,13 +469,16 @@ router.post("/payments/sync-deposits", async (_req, res) => {
       report.created++;
       affectedBookingIds.push(bkId);
     } else if (depPayments.rows.length > 1) {
-      // Có nhiều hơn 1 deposit → giữ cái đầu tiên, xóa phần thừa
-      const toDelete = depPayments.rows.slice(1).map((r: any) => Number(r.id));
-      for (const did of toDelete) {
-        await pool.query(`DELETE FROM payments WHERE id = $1`, [did]);
-        report.removed++;
+      // Chốt 17/07 (Q2/Q3): phiếu deposit ngoài bản CŨ NHẤT là TIỀN THẬT (thu thêm
+      // user tự chọn loại) — allocator đọc chúng như pool/thu riêng. KHÔNG XÓA nữa;
+      // chỉ đồng bộ amount của bản canonical (cũ nhất) với cột deposit_amount.
+      const canonicalRow = depPayments.rows[0];
+      const existingAmount = parseFloat(canonicalRow.amount);
+      if (Math.abs(existingAmount - depAmount) > 0.01) {
+        await pool.query(`UPDATE payments SET amount = $1 WHERE id = $2`, [String(depAmount), Number(canonicalRow.id)]);
+        report.updated++;
+        affectedBookingIds.push(bkId);
       }
-      affectedBookingIds.push(bkId);
     } else if (depPayments.rows.length === 1) {
       // Có 1 record — kiểm tra xem amount có lệch không
       const existingAmount = parseFloat(depPayments.rows[0].amount);

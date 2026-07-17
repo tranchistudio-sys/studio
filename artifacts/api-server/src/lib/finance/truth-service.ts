@@ -92,20 +92,26 @@ async function consumerCustomerScreenDebt(
   };
 }
 
-// ─── Consumer: Copilot — đúng dạng query GROUP BY khách của getUnpaidCustomers ─
-// (tool thật trả line text theo tên+SĐT nên không tra id được; tái hiện đúng SQL
-//  grouped của tool, còn TOOL THẬT được đối chiếu tổng ở verifySystemDebt.)
+// ─── Consumer: Copilot — đọc OUTPUT của TOOL THẬT (engineUnpaidCustomers) ──────
+// Chốt 17/07: không tái hiện lại phép tính (tautology với engine snapshot) —
+// gọi đúng tool Copilot dùng rồi map (name, phone) → customerId qua bảng customers
+// để lớp đối chiếu per-khách kiểm tra THẬT đầu ra wiring của tool.
 
 let copilotDebtMap: Map<string, number> | null = null;
 
 export async function consumerCopilotDebtByCustomer(customerId: number): Promise<number> {
   if (!copilotDebtMap) {
     copilotDebtMap = new Map();
-    const snap = await engineAllocationSnapshot();
-    for (const m of snap.members) {
-      if (m.customerId == null || m.debt <= 0) continue;
-      const k = String(m.customerId);
-      copilotDebtMap.set(k, (copilotDebtMap.get(k) ?? 0) + m.debt);
+    const { engineUnpaidCustomers } = await import("./financial-engine");
+    const tool = await engineUnpaidCustomers(100000);
+    const custR = await pool.query(`SELECT id, name, phone FROM customers`);
+    const idByKey = new Map<string, string>();
+    for (const c of custR.rows as Array<{ id: number; name: string | null; phone: string | null }>) {
+      idByKey.set(`${c.name ?? ""}|${c.phone ?? ""}`, String(c.id));
+    }
+    for (const row of tool.customers) {
+      const cid = idByKey.get(`${row.name ?? ""}|${row.phone ?? ""}`);
+      if (cid) copilotDebtMap.set(cid, (copilotDebtMap.get(cid) ?? 0) + row.debt);
     }
   }
   return copilotDebtMap.get(String(customerId)) ?? 0;
@@ -285,10 +291,11 @@ export async function verifyExcludedGroups(): Promise<TruthCheck[]> {
   const out: TruthCheck[] = [];
   const snapEx = await engineAllocationSnapshot();
   for (const g of groups) {
-    // Nhóm bị loại KHÔNG được nằm trong snapshot member (allocator chỉ nhận countable)
-    // — kiểm bằng SQL đếm id nhóm rồi soi snapshot có chứa id nào không.
+    // Nhóm bị loại KHÔNG được nằm trong snapshot member (allocator chỉ nhận countable).
+    // Lấy id CHỈ theo điều kiện nhóm (KHÔNG kèm countable — kèm là mâu thuẫn logic
+    // → luôn 0 dòng → phép kiểm rỗng), rồi soi snapshot: có id nào lọt = leak.
     const r = await pool.query(
-      `SELECT b.id FROM bookings b WHERE ${revenueCountableSql("b")} AND (${g.cond})`,
+      `SELECT b.id FROM bookings b WHERE (${g.cond})`,
     );
     const leakedDebt = (r.rows as Array<{ id: number }>).reduce(
       (s, x) => s + (snapEx.byId.get(Number(x.id))?.debt ?? 0),

@@ -257,11 +257,67 @@ describe("PR #102 — MỘT payment ở CHA: mọi surface ra CÙNG MỘT SỐ",
     await expectAllSurfacesDebt(0);
     const fin = await engineCustomerFinance(custId);
     // Chốt 17/07: totalPaid = tiền ĐƯỢC TÍNH vào dịch vụ (cap tại NET gia đình 9tr);
-    // phần vượt KHÔNG mất — nằm ở overpayment của gia đình.
+    // phần vượt KHÔNG mất — nằm ở overpayment của gia đình + hiện ở màn Khách.
     close(fin.totalPaid, 9_000_000);
     close(fin.totalOwed, 9_000_000);
+    close(fin.totalOverpaid, 15_000_000); // 24tr tiền hợp lệ − 9tr NET = 15tr trả dư
     const snap = await engineAllocationSnapshot();
     const fam = snap.families.get(parentId)!;
-    close(fam.overpayment, 15_000_000); // 24tr tiền hợp lệ − 9tr NET = 15tr trả dư
+    close(fam.overpayment, 15_000_000);
+  });
+
+  it("CỌC CANONICAL trên CHA: phiếu 'deposit' chia ĐỀU cho 2 dịch vụ (không theo giá), breakdown đúng thành phần", async () => {
+    await addPayment(parentId, 2_500_000, "deposit"); // phiếu deposit DUY NHẤT → canonical
+    const snap = await engineAllocationSnapshot();
+    const fam = snap.families.get(parentId)!;
+    close(fam.totalDeposit, 2_500_000);
+    expect(fam.canonicalDepositPaymentId).toBe(paymentIds[paymentIds.length - 1]);
+    // Chia ĐỀU 1.25tr/1.25tr — dù A net 3tr, B net 6tr (KHÔNG pro-rata theo giá)
+    close(snap.byId.get(childAId)?.equalDeposit ?? -1, 1_250_000);
+    close(snap.byId.get(childBId)?.equalDeposit ?? -1, 1_250_000);
+    // Gia đình đã trả dư từ trước → nợ vẫn 0, tiền không mất: alloc + overpayment = tổng tiền hợp lệ
+    await expectAllSurfacesDebt(0);
+    close(fam.overpayment, 17_500_000); // 26.5tr hợp lệ − 9tr NET
+  });
+
+  it("MÁY SỬA CỌC (PUT thật): update phiếu canonical, KHÔNG XÓA phiếu deposit thứ 2 (tiền thật)", async () => {
+    // Phiếu deposit THỨ HAI trên cha (user thu thêm chọn nhầm loại 'Tiền cọc') — là tiền thật
+    const secondDepId = await addPayment(parentId, 500_000, "deposit");
+
+    // Gọi PUT /bookings/:id THẬT với depositAmount mới — máy cọc phải chỉ đụng canonical
+    const express = (await import("express")).default;
+    const { default: bookingsRouter } = await import("../routes/bookings");
+    const app = express();
+    app.use(express.json());
+    app.use("/api", bookingsRouter);
+    const srv = await new Promise<import("node:http").Server>(resolve => {
+      const s = app.listen(0, () => resolve(s));
+    });
+    const port = (srv.address() as { port: number }).port;
+    try {
+      const r = await fetch(`http://127.0.0.1:${port}/api/bookings/${parentId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ depositAmount: 4_000_000 }),
+      });
+      expect(r.ok, `PUT máy cọc lỗi HTTP ${r.status}`).toBe(true);
+    } finally {
+      await new Promise<void>(resolve => srv.close(() => resolve()));
+    }
+
+    // Phiếu thứ 2 PHẢI còn sống (trước chốt 17/07 máy sẽ DELETE — mất tiền thật)
+    const second = await pool.query(`SELECT id, amount::numeric AS amt FROM payments WHERE id = $1`, [secondDepId]);
+    expect(second.rows.length, "phiếu deposit thứ 2 bị máy cọc xóa mất").toBe(1);
+    close(Number((second.rows[0] as { amt: string }).amt), 500_000);
+
+    // Canonical (phiếu deposit CŨ NHẤT) được update đúng 4tr; allocator đọc đúng
+    const snap = await engineAllocationSnapshot();
+    const fam = snap.families.get(parentId)!;
+    close(fam.totalDeposit, 4_000_000);
+    close(snap.byId.get(childAId)?.equalDeposit ?? -1, 2_000_000); // 4tr chia đều 2 dịch vụ
+    close(snap.byId.get(childBId)?.equalDeposit ?? -1, 2_000_000);
+    // Không mất một đồng: nợ vẫn 0, phần vượt nằm ở overpayment
+    await expectAllSurfacesDebt(0);
+    close(fam.overpayment, 24_000_000 + 4_000_000 + 500_000 - 9_000_000); // tiền hợp lệ − NET
   });
 });

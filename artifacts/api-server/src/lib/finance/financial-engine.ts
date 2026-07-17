@@ -20,22 +20,21 @@
  * GĐ0: engine phục vụ Financial Truth Test (read-only). GĐ1: các consumer chuyển
  * sang gọi engine.
  *
- * GĐ3 — FAMILY CASH ALLOCATION (PR #102): engine KHÔNG còn tin cột
- * bookings.paid_amount (bản phân bổ ghi sẵn — thực tế phân bổ hỏng: phiếu thu
- * hợp đồng gộp nằm ở đơn CHA, đơn CON không nhận được phần tiền → màn Khách/
- * Dashboard/Copilot báo nợ sai). "Đã thu" của MỖI booking giờ được PHÂN BỔ LIVE
- * từ bảng payments GỐC theo gia đình đơn:
+ * FAMILY CASH ALLOCATION — chốt nghiệp vụ 17/07 (thay pro-rata PR #102): engine
+ * KHÔNG tin cột bookings.paid_amount; "đã thu" mỗi booking PHÂN BỔ LIVE từ
+ * payments GỐC qua allocator DUY NHẤT allocateFamilies() (booking-money.ts):
  *
- *   family_paid = Σ phiếu thu hợp lệ (không voided/refund/ad_hoc) ghi trên BẤT KỲ
- *                 thành viên nào của gia đình (cha hoặc con)
- *   phân bổ pro-rata theo GIÁ TRỊ HỢP ĐỒNG (net) của từng thành viên countable:
- *   alloc(b) = family_paid × net(b) / Σ net(thành viên countable)
- *   (Σ net = 0 → dồn toàn bộ vào thành viên countable id nhỏ nhất — deterministic)
+ *   1. Cọc CANONICAL (phiếu 'deposit' cũ nhất trên booking gốc — do ô "Tiền cọc"
+ *      quản lý) chia ĐỀU cho N dịch vụ countable; đồng dư theo booking ID tăng
+ *      dần; cap ≤ NET, phần vượt chia lại dịch vụ còn nợ (water-filling).
+ *   2. Phiếu gắn thẳng dịch vụ = thu riêng dịch vụ đó (gồm cọc legacy trên con).
+ *   3. Thu thêm trên CHA + phiếu trên thành viên không-countable + tiền thừa của
+ *      dịch vụ đã đủ → pool FIFO theo (ngày thực hiện ASC, ID ASC).
+ *   4. Dư cuối = overpayment "Khách trả dư" (không nợ âm, không mất tiền).
  *
- * Tính chất then chốt của pro-rata: nếu family_paid ≤ family_net thì
- * Σ per-booking GREATEST(0, net−alloc) = family_net − family_paid — tức tổng nợ
- * per-booking (①) LUÔN bằng nợ mức gia đình mà màn Booking/Hợp đồng hiển thị.
- * Không copy dữ liệu, không sửa/tạo payment — chỉ đổi cách ĐỌC.
+ * Bất biến then chốt: Σ per-booking remaining = max(0, family_net − family_paid)
+ * — tổng nợ per-booking (①) LUÔN bằng nợ mức gia đình mà màn Booking/Hợp đồng
+ * hiển thị. Không copy dữ liệu, không sửa/tạo payment — chỉ đổi cách ĐỌC.
  * engineFamilyCashDrift giữ nguyên vai trò cảnh báo vệ sinh cột paid_amount cũ.
  */
 import { pool } from "@workspace/db";
@@ -103,19 +102,36 @@ export type AllocationSnapshot = {
  * cùng MỘT thời điểm đọc dữ liệu.
  */
 export async function engineAllocationSnapshot(): Promise<AllocationSnapshot> {
-  const [bkR, payR] = await Promise.all([
-    pool.query(
-      `SELECT b.id, b.parent_id, b.is_parent_contract, b.status, b.deleted_at,
+  // MỘT transaction REPEATABLE READ READ ONLY cho cả 2 SELECT — phiếu vừa ghi
+  // giữa 2 câu không thể làm snapshot "nửa cũ nửa mới" (giữ tính chất PR #105).
+  // Mock test chỉ có pool.query (không connect) → fallback đọc tuần tự thường.
+  const BOOKINGS_SQL = `SELECT b.id, b.parent_id, b.is_parent_contract, b.status, b.deleted_at,
               b.total_amount, b.discount_amount, b.shoot_date::text AS shoot_date,
               b.customer_id, b.order_code, b.service_label, b.service_category, b.package_type,
               c.name AS customer_name, c.phone AS customer_phone
        FROM bookings b
-       LEFT JOIN customers c ON c.id = b.customer_id`,
-    ),
-    pool.query(
-      `SELECT id, booking_id, amount, payment_type, status FROM payments`,
-    ),
-  ]);
+       LEFT JOIN customers c ON c.id = b.customer_id`;
+  const PAYMENTS_SQL = `SELECT id, booking_id, amount, payment_type, status FROM payments`;
+  let bkR: { rows: unknown[] };
+  let payR: { rows: unknown[] };
+  const canTx = typeof (pool as unknown as { connect?: unknown }).connect === "function";
+  if (canTx) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+      bkR = await client.query(BOOKINGS_SQL);
+      payR = await client.query(PAYMENTS_SQL);
+      await client.query("COMMIT");
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+  } else {
+    bkR = await pool.query(BOOKINGS_SQL);
+    payR = await pool.query(PAYMENTS_SQL);
+  }
   type BkRow = {
     id: number; parent_id: number | null; is_parent_contract: boolean | null;
     status: string | null; deleted_at: string | null;
@@ -232,10 +248,14 @@ export function monthMembershipSql(p1: string, p2: string, hasOccurrences: boole
  * Đơn tạo tháng trước nhưng chụp trong kỳ → TÍNH; đơn tạo trong kỳ nhưng chụp
  * kỳ sau → KHÔNG tính.
  */
-export async function engineReceivableForRange(from: string, to: string): Promise<number> {
+export async function engineReceivableForRange(
+  from: string,
+  to: string,
+  reuseSnap?: AllocationSnapshot,
+): Promise<number> {
   const hasOcc = (await getSchemaFlags()).occurrences;
   const [snap, ids] = await Promise.all([
-    engineAllocationSnapshot(),
+    reuseSnap ?? engineAllocationSnapshot(),
     countableIdsWhere(monthMembershipSql("$1", "$2", hasOcc), [from, to]),
   ]);
   return sumDebt(snap, ids);
@@ -329,24 +349,38 @@ export type CustomerFinance = {
   totalBookings: number;
   /** Tổng phải thu = Σ NET per-booking (tổng − giảm giá, không âm). */
   totalOwed: number;
-  /** Đã trả = Σ "đã thu PHÂN BỔ LIVE" (từ payments gốc, pro-rata theo gia đình)
-   *  trên các đơn countable — tiền ghi ở đơn CHA giờ TỰ chảy xuống các dịch vụ
-   *  con theo giá trị hợp đồng (PR #102). */
+  /** Đã trả = Σ tiền ĐƯỢC TÍNH vào các dịch vụ (chốt 17/07: cọc chia đều + thu
+   *  trực tiếp + FIFO, cap tại NET từng dịch vụ) — tiền ghi ở đơn CHA tự chảy
+   *  xuống dịch vụ con. */
   totalPaid: number;
   /** Còn nợ = quy tắc ①: Σ GREATEST(0, net − paid) per-booking. */
   totalDebt: number;
+  /** "Khách trả dư" = Σ overpayment các gia đình của khách — tiền thật vượt tổng
+   *  hợp đồng, KHÔNG mất, không tạo nợ âm (chốt 17/07). */
+  totalOverpaid: number;
 };
 
 function customerFinanceFromSnapshot(snap: AllocationSnapshot): Map<number, CustomerFinance> {
   const map = new Map<number, CustomerFinance>();
+  const entry = (cid: number): CustomerFinance => {
+    const cur = map.get(cid) ?? { totalBookings: 0, totalOwed: 0, totalPaid: 0, totalDebt: 0, totalOverpaid: 0 };
+    map.set(cid, cur);
+    return cur;
+  };
   for (const m of snap.members) {
     if (m.customerId == null) continue;
-    const cur = map.get(m.customerId) ?? { totalBookings: 0, totalOwed: 0, totalPaid: 0, totalDebt: 0 };
+    const cur = entry(m.customerId);
     cur.totalBookings += 1;
     cur.totalOwed += m.net;
     cur.totalPaid += m.allocPaid;
     cur.totalDebt += m.debt;
-    map.set(m.customerId, cur);
+  }
+  // "Khách trả dư" theo gia đình — gán cho khách của các dịch vụ trong gia đình.
+  for (const fam of snap.families.values()) {
+    if (fam.overpayment <= 0 || fam.members.length === 0) continue;
+    const first = snap.byId.get(fam.members[0]!.bookingId);
+    if (first?.customerId == null) continue;
+    entry(first.customerId).totalOverpaid += fam.overpayment;
   }
   return map;
 }
@@ -356,7 +390,7 @@ export async function engineCustomerFinance(customerId: number): Promise<Custome
   const snap = await engineAllocationSnapshot();
   return (
     customerFinanceFromSnapshot(snap).get(customerId) ?? {
-      totalBookings: 0, totalOwed: 0, totalPaid: 0, totalDebt: 0,
+      totalBookings: 0, totalOwed: 0, totalPaid: 0, totalDebt: 0, totalOverpaid: 0,
     }
   );
 }

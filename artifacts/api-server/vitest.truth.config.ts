@@ -11,6 +11,11 @@ export default defineConfig({
         replacement: path.resolve(__dirname, "../../lib/db/src/schema/index.ts"),
       },
       {
+        // Subpath phải đứng TRƯỚC "@workspace/db" — itest máy cọc mount bookings router.
+        find: "@workspace/db/additional-services",
+        replacement: path.resolve(__dirname, "../../lib/db/src/additional-services.ts"),
+      },
+      {
         find: "@workspace/db",
         replacement: path.resolve(__dirname, "../../lib/db/src/index.ts"),
       },

@@ -1434,6 +1434,12 @@ function ShowFormPanel({
 
   const [deposit, setDeposit] = useState(booking?.depositAmount?.toString() ?? "0");
   const [depositMethod, setDepositMethod] = useState<"cash" | "bank_transfer">("cash");
+  // ── Sửa tiền cọc NGAY TRÊN FORM (nguyên tắc UX: người dùng sửa KẾT QUẢ, hệ
+  // thống tự chạy quy trình). Admin đổi số → popup xác nhận → backend PUT tự
+  // điều chỉnh phiếu cọc + đã thu + công nợ + audit log trong CÙNG transaction.
+  const initialDepositNumRef = useRef(parseFloat(booking?.depositAmount?.toString() ?? "0") || 0);
+  const [editingDeposit, setEditingDeposit] = useState(false);
+  const [confirmDepositOpen, setConfirmDepositOpen] = useState(false);
   // Ngày + giờ cọc = thời điểm thực tế studio nhận tiền (KHÔNG lấy theo shootDate).
   // Ưu tiên: payments[deposit].paidAt → paidDate → fallback bây giờ (chỉ khi tạo mới).
   const { initialDepositDate, initialDepositTime } = (() => {
@@ -1865,7 +1871,12 @@ function ShowFormPanel({
   // Tạo mới (hoặc sửa đơn chưa thu) thì vẫn dùng ô "Đặt cọc" như cũ.
   const actualPaid = Number(booking?.paidAmount ?? 0) || 0;
   const showActualPaid = isEdit && actualPaid > 0;
-  const effectivePaid = showActualPaid ? actualPaid : depositNum;
+  // Admin sửa tiền cọc ngay trên form: preview "Còn lại" phản ánh số MỚI
+  // (đã thu hiện tại − cọc cũ + cọc mới) trước cả khi bấm Lưu.
+  const depositChanged = isEdit && depositNum !== initialDepositNumRef.current;
+  const effectivePaid = showActualPaid
+    ? (depositChanged ? Math.max(0, actualPaid - initialDepositNumRef.current + depositNum) : actualPaid)
+    : depositNum;
   const remaining = Math.max(0, afterDiscount - effectivePaid);
 
   // ── Báo giá tạm tính: dựng text gửi khách + chuyển thành show thật ─────────
@@ -2049,12 +2060,18 @@ function ShowFormPanel({
     }
   };
 
-  const save = async () => {
+  const save = async (opts?: { depositConfirmed?: boolean }) => {
     setError("");
     setProofWarning("");
     if (!customerName.trim()) { setError("Vui lòng nhập tên khách hàng"); return; }
     if (!shootDate) { setError("Vui lòng chọn ngày hợp đồng"); return; }
     if (isUploadingImages) { setError("Ảnh đang tải, vui lòng chờ tải xong để tránh mất ảnh."); return; }
+    // Đổi TIỀN CỌC = đổi phiếu thu → xác nhận MỘT lần rồi hệ thống tự xử lý hết
+    // (điều chỉnh phiếu cọc, đã thu, công nợ, audit — backend làm trong 1 transaction).
+    if (isEdit && depositChanged && opts?.depositConfirmed !== true) {
+      setConfirmDepositOpen(true);
+      return;
+    }
     const extrasValidation = validateAdditionalServicesForm(
       subDrafts.flatMap(s => s.additionalServices || []).filter(l => (l.title || "").trim()),
     );
@@ -3120,9 +3137,46 @@ function ShowFormPanel({
                 <>
                   <div className="flex justify-between items-center gap-3">
                     <span className="text-sm text-muted-foreground flex-shrink-0">Đã cọc / Đã thu:</span>
-                    <span className="font-semibold text-emerald-600">{formatVND(actualPaid)}</span>
+                    <span className={`font-semibold ${depositChanged ? "text-amber-600" : "text-emerald-600"}`}>{formatVND(effectivePaid)}</span>
                   </div>
-                  <p className="text-[11px] text-muted-foreground -mt-1">Tổng đã thu theo lịch sử thanh toán. Muốn thu thêm / chỉnh, dùng nút <b>Thu tiền</b> ở chi tiết show (không sửa ở đây để tránh lệch tiền).</p>
+                  {/* Sửa TIỀN CỌC ngay tại đây (admin) — người dùng sửa KẾT QUẢ, hệ
+                      thống tự điều chỉnh phiếu thu/công nợ/audit khi bấm Lưu. */}
+                  <div className="flex justify-between items-center gap-3">
+                    <span className="text-sm text-muted-foreground flex-shrink-0">Tiền cọc:</span>
+                    {editingDeposit && isAdmin ? (
+                      <div className="flex items-center gap-1.5">
+                        <CurrencyInput className="h-8 text-sm text-right w-36" value={deposit} placeholder="0" onChange={setDeposit} />
+                        <button
+                          type="button"
+                          className="text-[11px] text-muted-foreground hover:text-foreground underline flex-shrink-0"
+                          onClick={() => { setDeposit(String(initialDepositNumRef.current)); setEditingDeposit(false); }}
+                        >
+                          hủy
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="flex items-center gap-2">
+                        <span className={`font-semibold ${depositChanged ? "text-amber-600" : ""}`}>{formatVND(depositNum)}</span>
+                        {isAdmin && (
+                          <button
+                            type="button"
+                            onClick={() => setEditingDeposit(true)}
+                            className="h-7 px-2 rounded-lg text-xs font-medium border border-border text-muted-foreground hover:border-primary/40 hover:text-primary transition-colors"
+                          >
+                            ✏️ Sửa
+                          </button>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                  {depositChanged && (
+                    <p className="text-[11px] text-amber-700 -mt-1">
+                      Cọc sẽ đổi {formatVND(initialDepositNumRef.current)} → <b>{formatVND(depositNum)}</b> khi bấm Lưu — hệ thống tự điều chỉnh phiếu thu và công nợ.
+                    </p>
+                  )}
+                  <p className="text-[11px] text-muted-foreground -mt-1">
+                    Tổng đã thu theo lịch sử thanh toán.{isAdmin ? " Sửa tiền cọc ngay tại đây;" : ""} các khoản thu thêm khác dùng nút <b>Thu tiền</b> ở chi tiết show.
+                  </p>
                   {/* Ảnh bằng chứng cọc: xem lại + thêm (chỉ gắn ảnh vào payment cọc, KHÔNG đổi số tiền). */}
                   <div className="space-y-1.5 pt-1">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -3278,6 +3332,35 @@ function ShowFormPanel({
           </Button>
         )}
       </div>
+
+      {/* Popup xác nhận SỬA TIỀN CỌC — người dùng chỉ xác nhận KẾT QUẢ,
+          backend tự điều chỉnh phiếu thu/đã thu/công nợ/audit trong 1 transaction. */}
+      {confirmDepositOpen && (
+        <div className="fixed inset-0 z-[400] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-card rounded-2xl border border-border shadow-xl max-w-sm w-full p-5 space-y-3">
+            <p className="font-bold text-base">💰 Xác nhận sửa tiền cọc</p>
+            <p className="text-sm leading-relaxed">
+              Bạn vừa thay đổi tiền cọc từ{" "}
+              <b className="text-muted-foreground line-through">{formatVND(initialDepositNumRef.current)}</b>{" "}
+              thành <b className="text-primary">{formatVND(depositNum)}</b>.
+            </p>
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              Hệ thống sẽ tự điều chỉnh toàn bộ phiếu thu và công nợ. Bạn có chắc không?
+            </p>
+            <div className="flex gap-2 pt-1">
+              <Button variant="outline" className="flex-1" onClick={() => setConfirmDepositOpen(false)}>
+                Hủy
+              </Button>
+              <Button
+                className="flex-1"
+                onClick={() => { setConfirmDepositOpen(false); setEditingDeposit(false); void save({ depositConfirmed: true }); }}
+              >
+                Đồng ý
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

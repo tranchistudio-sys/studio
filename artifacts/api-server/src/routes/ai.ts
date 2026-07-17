@@ -8,7 +8,7 @@ import {
   isLlmConfigured,
 } from "../lib/studio-copilot";
 import { callChat } from "../lib/ai-orchestrator";
-import { composeNaturalAnswer, stripMarkdownArtifacts } from "../lib/copilot-composer";
+import { composeNaturalAnswer, stripMarkdownArtifacts, aiNumbersWithinSources } from "../lib/copilot-composer";
 
 const router: IRouter = Router();
 
@@ -109,7 +109,14 @@ ${analysisContext}`;
 
       // LLM lỗi → rơi về câu phân tích deterministic (vẫn từ dữ liệu thật),
       // không trả câu "trợ lý đang bận" vô dụng.
-      const answer = result.ok ? stripMarkdownArtifacts(result.text) : copilot.answer;
+      let answer = result.ok ? stripMarkdownArtifacts(result.text) : copilot.answer;
+      // PR #103: chốt chặn số áp cho CẢ nhánh analysis (trước đây chỉ nhánh
+      // composer có guard). AI làm tròn / tự cộng / bịa bất kỳ con số cỡ tiền
+      // nào ngoài dữ liệu Engine → VỨT câu AI, dùng câu deterministic.
+      if (result.ok && !aiNumbersWithinSources(answer, [analysisContext, copilot.answer])) {
+        console.warn("[copilot] AI analysis đổi số so với dữ liệu Engine — fallback deterministic");
+        answer = copilot.answer;
+      }
       streamCopilotAnswer(res, answer);
       return;
     }

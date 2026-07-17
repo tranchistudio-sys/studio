@@ -3925,6 +3925,44 @@ function ShowDetailPanel({
     staleTime: 30_000,
   });
 
+  // ── Toggle Báo giá tạm NGAY MÀN CHI TIẾT (nguyên tắc UX: nút ở chỗ người dùng
+  // đang đứng, không bắt mở form sửa). PUT status → backend flip CẢ GIA ĐÌNH
+  // trong 1 transaction (#100); confirm ngắn 1 lần, không có bước Lưu thứ hai.
+  const { toast: detailToast } = useToast();
+  const [tempToggleBusy, setTempToggleBusy] = useState(false);
+  const [confirmTempToggle, setConfirmTempToggle] = useState<null | "on" | "off">(null);
+  const [statusOverride, setStatusOverride] = useState<string | null>(null);
+  const effectiveStatus = statusOverride ?? booking.status;
+  const applyTempQuoteToggle = async (toTemp: boolean) => {
+    setTempToggleBusy(true);
+    try {
+      const res = await authFetch(`${BASE}/api/bookings/${booking.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: toTemp ? "temp_quote" : "confirmed" }),
+      });
+      if (!res.ok) {
+        const e = await res.json().catch(() => null);
+        throw new Error(e?.error || "Lỗi chuyển trạng thái");
+      }
+      setStatusOverride(toTemp ? "temp_quote" : "confirmed");
+      invalidateBookingRelated(qc);
+      detailToast({
+        title: toTemp
+          ? "Đã chuyển sang báo giá tạm — đơn đã được loại khỏi số liệu chính thức."
+          : "Đã chuyển thành booking chính thức — đơn đã được đưa trở lại hệ thống.",
+      });
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Lỗi chuyển trạng thái");
+    } finally {
+      setTempToggleBusy(false);
+      setConfirmTempToggle(null);
+    }
+  };
+
+  // Chip trạng thái trên header đọc theo trạng thái HIỆU LỰC (đổi ngay sau toggle).
+  const stEff = STATUS[effectiveStatus as keyof typeof STATUS] ?? STATUS.pending;
+
   // ── Payment history for this booking ─────────────────────────────────────
   type BookingPayment = { id?: number; amount?: number; paymentMethod?: string; paymentType?: string; collectorName?: string; notes?: string; paidAt?: string; paidDate?: string; proofImageUrl?: string | null; proofImageUrls?: string[] };
   const paymentTargetId = fullDetail?.parentContract?.id ?? booking.parentId ?? booking.id;
@@ -4131,11 +4169,31 @@ function ShowDetailPanel({
         <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-muted transition-colors flex-shrink-0">
           <ArrowLeft className="w-5 h-5" />
         </button>
-        <div className="flex-1 min-w-0">
-          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border ${st.color}`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${st.dot}`} />
-            {st.label}
+        <div className="flex-1 min-w-0 flex items-center gap-2 flex-wrap">
+          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold border ${stEff.color}`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${stEff.dot}`} />
+            {stEff.label}
           </span>
+          {/* Toggle Báo giá tạm NGAY TẠI ĐÂY — không bắt mở form sửa (nguyên tắc
+              UX: người dùng sửa KẾT QUẢ tại chỗ, hệ thống tự chạy quy trình). */}
+          {isAdmin && effectiveStatus !== "cancelled" && (
+            <button
+              type="button"
+              disabled={tempToggleBusy}
+              onClick={() => setConfirmTempToggle(effectiveStatus === "temp_quote" ? "off" : "on")}
+              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border transition-colors flex-shrink-0 ${
+                effectiveStatus === "temp_quote"
+                  ? "border-emerald-300 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/30"
+                  : "border-purple-300 text-purple-700 bg-purple-50 hover:bg-purple-100 dark:bg-purple-950/30"
+              } ${tempToggleBusy ? "opacity-60 cursor-wait" : ""}`}
+            >
+              {tempToggleBusy
+                ? "Đang chuyển…"
+                : effectiveStatus === "temp_quote"
+                  ? "✅ Chuyển thành chính thức"
+                  : "🧮 Báo giá tạm tính"}
+            </button>
+          )}
         </div>
         {/* Role indicator */}
         <div className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded-full ${isAdmin ? "bg-primary/10 text-primary" : "bg-muted text-muted-foreground"}`}>
@@ -5138,6 +5196,30 @@ function ShowDetailPanel({
                 <p className="text-center text-white/40 text-xs pb-4">Bấm giữ ảnh để lưu vào thư viện điện thoại</p>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Confirm chuyển Báo giá tạm ↔ chính thức — 1 xác nhận, không bước Lưu thứ hai */}
+      {confirmTempToggle && (
+        <div className="fixed inset-0 z-[400] bg-black/50 flex items-center justify-center p-4">
+          <div className="bg-card rounded-2xl border border-border shadow-xl max-w-sm w-full p-5 space-y-3">
+            <p className="font-bold text-base">
+              {confirmTempToggle === "on" ? "🧮 Chuyển sang Báo giá tạm tính?" : "✅ Chuyển thành booking chính thức?"}
+            </p>
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              {confirmTempToggle === "on"
+                ? "Cả hợp đồng (mọi dịch vụ) sẽ được loại khỏi doanh thu/công nợ và hiện màu tím trên lịch. Booking, phiếu thu, hợp đồng đều giữ nguyên — bật lại lúc nào cũng được."
+                : "Cả hợp đồng (mọi dịch vụ) sẽ được tính lại vào doanh thu/công nợ như booking bình thường ngay lập tức."}
+            </p>
+            <div className="flex gap-2 pt-1">
+              <Button variant="outline" className="flex-1" onClick={() => setConfirmTempToggle(null)} disabled={tempToggleBusy}>
+                Hủy
+              </Button>
+              <Button className="flex-1" disabled={tempToggleBusy} onClick={() => void applyTempQuoteToggle(confirmTempToggle === "on")}>
+                {tempToggleBusy ? "Đang chuyển…" : "Đồng ý"}
+              </Button>
+            </div>
           </div>
         </div>
       )}

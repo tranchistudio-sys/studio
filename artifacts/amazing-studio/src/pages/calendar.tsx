@@ -2122,35 +2122,53 @@ function ShowFormPanel({
             // Fix bug DH0267: gõ tên mới trong form SỬA làm ô tên tự gỡ liên kết khách
             // → rơi vào đây và tìm lại ĐÚNG khách gốc theo SĐT. Trước đây tên vừa gõ
             // bị bỏ qua → lưu xong tên cũ hiện lại khắp nơi. Giờ: nếu là ý định ĐỔI TÊN
-            // (đang sửa booking + refind ra đúng khách gốc) thì ghi tên mới vào
-            // customers.name — một nguồn sự thật, không sinh khách trùng.
+            // (đang sửa booking + refind ra đúng khách gốc + KHÔNG phải vừa bấm
+            // "Xoá liên kết" để thay khách) thì ghi tên mới vào customers.name —
+            // một nguồn sự thật, không sinh khách trùng.
             const patch = refindCustomerPatch({
               isEdit,
               originalCustomerId: booking?.customerId ?? null,
               existing: { id: existing.id, name: existing.name ?? null, avatar: existing.avatar ?? null },
+              matchedName: matchedNameRef.current,
               typedName: customerName,
               avatar: avatar || null,
             });
             if (Object.keys(patch).length > 0) {
-              await authFetch(`${BASE}/api/customers/${cid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+              const renameRes = await authFetch(`${BASE}/api/customers/${cid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+              // Không được im lặng khi đổi tên thất bại — im lặng là chính triệu chứng DH0267.
+              if (!renameRes.ok) throw new Error("Đổi tên khách chưa lưu được — vui lòng thử lại (booking chưa được lưu).");
             }
           } else {
             const nc = await authFetch(`${BASE}/api/customers`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: customerName, phone, facebook: facebook || undefined, zalo: zalo || undefined, avatar: avatar || undefined, source: "walk-in" }) }).then(r => r.json()) as Customer;
             cid = nc.id;
           }
-        } else if (isEdit && booking?.customerId != null && customerName.trim()) {
-          // Fix bug DH0267 (biến thể không SĐT): đang SỬA booking có khách gốc nhưng
-          // form không có SĐT hợp lệ — trước đây tạo khách MỚI trùng tên (booking âm
-          // thầm đổi khách + sinh khách trùng). Ý định thật là ĐỔI TÊN: ghi tên mới
-          // vào chính khách gốc, giữ nguyên liên kết.
-          cid = booking.customerId;
-          if (customerName.trim() !== matchedNameRef.current.trim()) {
-            await authFetch(`${BASE}/api/customers/${cid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: customerName.trim() }) });
-          }
         } else {
-          // Không có SĐT hợp lệ → tạo khách mới theo tên nhập tay (phone = null).
-          const nc = await authFetch(`${BASE}/api/customers`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: customerName, facebook: facebook || undefined, zalo: zalo || undefined, avatar: avatar || undefined, source: "walk-in" }) }).then(r => r.json()) as Customer;
-          cid = nc.id;
+          // Không có SĐT hợp lệ khi lưu. Fix bug DH0267 (biến thể không SĐT): đang
+          // SỬA booking có khách gốc + ý định ĐỔI TÊN (matchedName còn tên gốc — tức
+          // KHÔNG phải vừa bấm "Xoá liên kết" để thay khách) → đổi tên tại chỗ trên
+          // khách gốc, giữ nguyên liên kết (trước đây tạo khách MỚI trùng tên).
+          // Bấm "Xoá liên kết" (matchedName rỗng) → tạo khách mới như hành vi cũ.
+          const plan = noPhoneSavePlan({
+            isEdit,
+            originalCustomerId: booking?.customerId ?? null,
+            matchedName: matchedNameRef.current,
+            typedName: customerName,
+            avatar: avatar || null,
+            facebook: facebook || null,
+            zalo: zalo || null,
+          });
+          if (plan.mode === "rename-in-place") {
+            cid = plan.customerId;
+            if (plan.patch) {
+              const renameRes = await authFetch(`${BASE}/api/customers/${cid}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(plan.patch) });
+              // Không được im lặng khi đổi tên thất bại — im lặng là chính triệu chứng DH0267.
+              if (!renameRes.ok) throw new Error("Đổi tên khách chưa lưu được — vui lòng thử lại (booking chưa được lưu).");
+            }
+          } else {
+            // Tạo khách mới theo tên nhập tay (phone = null).
+            const nc = await authFetch(`${BASE}/api/customers`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: customerName, facebook: facebook || undefined, zalo: zalo || undefined, avatar: avatar || undefined, source: "walk-in" }) }).then(r => r.json()) as Customer;
+            cid = nc.id;
+          }
         }
       }
       return cid;

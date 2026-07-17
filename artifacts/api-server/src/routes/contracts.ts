@@ -8,7 +8,7 @@ import {
   notificationsTable,
   staffTable,
 } from "@workspace/db/schema";
-import { eq, desc, and, isNull, inArray } from "drizzle-orm";
+import { eq, ne, desc, and, isNull, inArray } from "drizzle-orm";
 import crypto from "node:crypto";
 import { getPublicBaseUrl } from "../lib/publicUrl";
 import { verifyToken } from "./auth";
@@ -21,6 +21,7 @@ import {
   newestContractIdByBooking,
   pickContractIdForBooking,
 } from "../lib/contract-resolve";
+import { overlayLiveContractRows } from "../lib/contract-live";
 
 const router: IRouter = Router();
 
@@ -110,7 +111,9 @@ async function applyCustomerSignature(
   }
 
   // Snapshot field quan trọng TẠI THỜI ĐIỂM KÝ (sau khi update) — mốc so sánh sửa-sau-ký.
-  const payload = await buildContractPayload(existing.id, "internal");
+  // forSnapshot: chụp bản LIVE hiện tại — ký lại phải chốt theo hiện trạng booking
+  // khách vừa xác nhận, không chụp nhầm bản đóng băng của lần ký trước.
+  const payload = await buildContractPayload(existing.id, "internal", { forSnapshot: true });
   if (payload) {
     await db
       .update(contractsTable)
@@ -176,7 +179,10 @@ router.get("/contracts", async (req, res) => {
   if (customerId)
     filtered = filtered.filter((c) => c.customerId === customerId);
   if (bookingId) filtered = filtered.filter((c) => c.bookingId === bookingId);
-  res.json(filtered);
+  // Hợp đồng CHƯA KÝ đọc tổng tiền + khách LIVE từ booking (booking = source of
+  // truth) — total_value/customer_id trong bảng chỉ là copy lúc tạo, đã chứng
+  // minh lệch thực tế (HD0036, HD0050...). Đã ký giữ nguyên số bản ký.
+  res.json(await overlayLiveContractRows(filtered));
 });
 
 router.post("/contracts", async (req, res) => {
@@ -589,6 +595,21 @@ router.post("/contracts/find-or-create", async (req, res): Promise<void> => {
     newestContractIdByBooking(existingRows),
   );
   if (existingId != null) {
+    // Self-heal: đơn đã ĐỔI KHÁCH sau khi tạo hợp đồng → hợp đồng CHƯA KÝ đi theo
+    // khách hiện tại của đơn. Đã ký thì giữ nguyên (bản pháp lý).
+    if (booking.customerId) {
+      await db
+        .update(contractsTable)
+        .set({ customerId: booking.customerId })
+        .where(
+          and(
+            eq(contractsTable.id, existingId),
+            ne(contractsTable.status, "signed"),
+            ne(contractsTable.customerId, booking.customerId),
+          ),
+        )
+        .catch(() => null);
+    }
     res.json({ id: existingId, created: false });
     return;
   }
@@ -652,7 +673,8 @@ router.get(
       .where(eq(contractsTable.customerId, customerId))
       .orderBy(desc(contractsTable.createdAt));
 
-    res.json(rows);
+    // Chưa ký → tổng tiền/khách live theo booking (mirror GET /contracts).
+    res.json(await overlayLiveContractRows(rows));
   },
 );
 

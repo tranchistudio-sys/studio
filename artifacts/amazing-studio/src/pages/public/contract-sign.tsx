@@ -30,6 +30,10 @@ export default function PublicContractSignPage() {
     },
     enabled: !!token,
     retry: false,
+    // Khách mở link hợp đồng phải luôn thấy bản MỚI NHẤT server trả (live/bản ký
+    // đóng băng do server quyết) — không nhận cache 5 phút toàn cục.
+    staleTime: 0,
+    refetchOnMount: "always",
   });
 
   const signMutation = useMutation({

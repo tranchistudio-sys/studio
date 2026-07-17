@@ -20,6 +20,12 @@ import {
   AdditionalServicesValidationError,
   type AdditionalServiceLine,
 } from "../lib/additional-services";
+import {
+  sanitizeOccurrenceDrafts,
+  planOccurrencesSync,
+  normalizeDate,
+  normalizeTime,
+} from "../lib/booking-occurrences";
 
 const router: IRouter = Router();
 
@@ -1235,6 +1241,21 @@ router.put("/bookings/:id", async (req, res) => {
     updateData.items = (mergedNormalized as Record<string, unknown>[]).map(syncItemLegacyFields);
   }
 
+  // ── Ngày thực hiện phụ gửi KÈM payload Lưu → validate TRƯỚC khi mở transaction.
+  // (Atomic save: payload sai thì 400 ngay, chưa ghi gì; hết cảnh frontend sync
+  // ngày phụ bằng nhiều request rời sau khi booking đã lưu.)
+  let occurrenceDrafts: import("../lib/booking-occurrences").OccurrenceDraftSanitized[] | undefined;
+  if (req.body.occurrences !== undefined) {
+    const parsed = sanitizeOccurrenceDrafts(req.body.occurrences);
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+    occurrenceDrafts = parsed.drafts;
+  }
+  const occurrencesReady = occurrenceDrafts !== undefined && (await getSchemaFlags()).occurrences;
+  // Đổi ngày chính + giữ nguyên field khác → ngày phụ vẫn phải hết trùng với ngày chính MỚI.
+  const effectiveShootDateForOcc = (updateData.shootDate as string | undefined) ?? oldBooking.shootDate;
+  const effectiveShootTimeForOcc = (updateData.shootTime as string | undefined) ?? oldBooking.shootTime;
+  let occChangeSummary: { oldDisplay: string; newDisplay: string } | null = null;
+
   // ── Guard P0 chống lệch total/items (sự cố DH0191 2026-07-12): booking THƯỜNG không
   // được ghi totalAmount mâu thuẫn với dữ liệu dịch vụ. Nếu payload có CẢ items lẫn
   // totalAmount mà tổng lệch khỏi Σ(items + dịch vụ cộng thêm) → tự tính lại từ dữ liệu
@@ -1354,6 +1375,73 @@ router.put("/bookings/:id", async (req, res) => {
       return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
     }
 
+    // ── 5. Sync ngày thực hiện phụ TRONG CÙNG transaction (atomic với booking) ──
+    // Đổi ngày = UPDATE in-place theo id (không delete-rồi-create) → card lịch
+    // không bao giờ "mất tạm"; lỗi bất kỳ → ROLLBACK toàn bộ, không nửa cũ nửa mới.
+    if (occurrencesReady && occurrenceDrafts !== undefined) {
+      const existingOccResult = await client.query<{ id: number; shoot_date: string; shoot_time: string | null; label: string | null; sort_order: number }>(
+        `SELECT id, shoot_date::text AS shoot_date, shoot_time::text AS shoot_time, label, sort_order
+         FROM booking_occurrences WHERE booking_id = $1
+         ORDER BY sort_order ASC, shoot_date ASC, id ASC`,
+        [id]
+      );
+      const existingOcc = existingOccResult.rows;
+      const planned = planOccurrencesSync(
+        existingOcc,
+        occurrenceDrafts,
+        effectiveShootDateForOcc,
+        effectiveShootTimeForOcc,
+      );
+      if (!planned.ok) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ error: planned.error });
+      }
+      const { toUpdate, toInsert, deleteIds } = planned.plan;
+      for (const u of toUpdate) {
+        await client.query(
+          `UPDATE booking_occurrences SET shoot_date = $1, shoot_time = $2, label = $3, updated_at = NOW()
+           WHERE id = $4 AND booking_id = $5`,
+          [u.shootDate, u.shootTime, u.label, u.id, id]
+        );
+      }
+      let nextSort = existingOcc.reduce((m, o) => Math.max(m, o.sort_order), 0);
+      for (const ins of toInsert) {
+        nextSort += 1;
+        await client.query(
+          `INSERT INTO booking_occurrences (booking_id, shoot_date, shoot_time, label, sort_order)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [id, ins.shootDate, ins.shootTime, ins.label, nextSort]
+        );
+      }
+      if (deleteIds.length > 0) {
+        await client.query(
+          `DELETE FROM booking_occurrences WHERE booking_id = $1 AND id = ANY($2::int[])`,
+          [id, deleteIds]
+        );
+      }
+      // Diff cho lịch sử sửa đơn (ghi sau COMMIT cùng các thay đổi khác).
+      const fmtOcc = (o: { shootDate?: string; shoot_date?: string; shootTime?: string | null; shoot_time?: string | null; label?: string | null }) => {
+        const d = normalizeDate(o.shootDate ?? o.shoot_date ?? "");
+        const t = normalizeTime(o.shootTime ?? o.shoot_time ?? null);
+        const l = (o.label ?? "").trim();
+        return `${d}${t ? ` ${t}` : ""}${l ? ` — ${l}` : ""}`;
+      };
+      const oldDisplay = existingOcc.map(fmtOcc).join("; ") || "(không có)";
+      const newDisplay = occurrenceDrafts.map(fmtOcc).join("; ") || "(không có)";
+      if (oldDisplay !== newDisplay) occChangeSummary = { oldDisplay, newDisplay };
+    }
+
+    // ── 6. Đơn đổi khách → hợp đồng CHƯA KÝ gắn đơn này đi theo khách mới ──
+    // (Hợp đồng render khách live theo booking; cột customer_id đồng bộ để list/
+    // join cũ không lệch. Bản ĐÃ KÝ giữ nguyên — bản pháp lý.)
+    if (updateData.customerId !== undefined && updateData.customerId !== oldBooking.customerId) {
+      await client.query(
+        `UPDATE contracts SET customer_id = $1
+         WHERE booking_id = $2 AND COALESCE(status, '') <> 'signed'`,
+        [updateData.customerId, id]
+      );
+    }
+
     await client.query("COMMIT");
 
     const customerId = updateResult.rows[0].customer_id;
@@ -1456,6 +1544,7 @@ router.put("/bookings/:id", async (req, res) => {
     if (depositAmount !== undefined) pushChange("depositAmount", "tiền cọc", oldBooking.depositAmount, depositAmount, fmtVND);
     if (discountAmount !== undefined) pushChange("discountAmount", "giảm giá", oldBooking.discountAmount, discountAmount, fmtVND);
     if (notes !== undefined) pushChange("notes", "ghi chú", oldBooking.notes, notes);
+    if (occChangeSummary) changes.push({ field: "occurrences", label: "ngày thực hiện phụ", oldDisplay: occChangeSummary.oldDisplay, newDisplay: occChangeSummary.newDisplay });
     // Diff staff theo từng vai trò (so 2 chuỗi tên đã sort)
     if (items !== undefined || assignedStaff !== undefined) {
       const oldPhoto = extractStaffByRole(oldBooking.items, "photographer");

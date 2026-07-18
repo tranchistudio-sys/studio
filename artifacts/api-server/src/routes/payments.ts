@@ -1,13 +1,54 @@
 import { Router, type IRouter } from "express";
 import { db, pool } from "@workspace/db";
 import { paymentsTable, bookingsTable, customersTable, staffTable } from "@workspace/db/schema";
-import { eq, desc, and, ne, sql } from "drizzle-orm";
+import { eq, desc, and, ne, sql, inArray } from "drizzle-orm";
 import { emitNotification } from "./notifications";
 import { verifyToken, getCallerRole } from "./auth";
 import { liveBookingSql, revenueCountableSql } from "../lib/booking-money";
 import { notEmptyParentSql } from "../lib/parent-contract";
+import { engineAllocationSnapshot, type AllocationSnapshot } from "../lib/finance/financial-engine";
 
 const router: IRouter = Router();
+
+// ── Chốt 17/07 + review #109 (known-gap): paid/remaining HIỂN THỊ đọc từ ALLOCATOR
+// (một nguồn sự thật — cọc chia đều + thu trực tiếp + FIFO), KHÔNG đọc cột
+// paid_amount thô nữa (engine đã bỏ tin cột này từ PR #102).
+type FamilyMoney = { paid: number; remaining: number };
+
+function familyMoneyMap(snap: AllocationSnapshot): Map<number, FamilyMoney> {
+  const map = new Map<number, FamilyMoney>();
+  for (const m of snap.members) {
+    const cur = map.get(m.rootId) ?? { paid: 0, remaining: 0 };
+    cur.paid += m.allocPaid;
+    cur.remaining += m.debt;
+    map.set(m.rootId, cur);
+  }
+  // Tiền trả DƯ vẫn là tiền thật đã thu — cộng vào "đã trả" hiển thị (không tụt số).
+  for (const fam of snap.families.values()) {
+    if (fam.overpayment > 0) {
+      const cur = map.get(fam.rootId) ?? { paid: 0, remaining: 0 };
+      cur.paid += fam.overpayment;
+      map.set(fam.rootId, cur);
+    }
+  }
+  return map;
+}
+
+/** Ghi đè paidAmount/remainingAmount của row hiển thị bằng số GIA ĐÌNH từ allocator. */
+function applyFamilyMoney<T extends { id?: unknown; bookingId?: unknown; paidAmount?: number; remainingAmount?: number }>(
+  row: T,
+  snap: AllocationSnapshot,
+  fm: Map<number, FamilyMoney>,
+  bookingIdField: "id" | "bookingId" = "id",
+): T {
+  const rawId = row[bookingIdField];
+  if (rawId == null) return row;
+  const id = Number(rawId);
+  const root = snap.byId.get(id)?.rootId ?? id;
+  const money = fm.get(root);
+  if (!money) return { ...row, paidAmount: 0, remainingAmount: 0 };
+  return { ...row, paidAmount: money.paid, remainingAmount: money.remaining };
+}
 
 // GET /payments — danh sách phiếu thu (lọc theo bookingId hoặc rentalId)
 router.get("/payments", async (req, res) => {
@@ -15,8 +56,21 @@ router.get("/payments", async (req, res) => {
   const bookingId = req.query.bookingId ? parseInt(req.query.bookingId as string) : undefined;
   const rentalId  = req.query.rentalId  ? parseInt(req.query.rentalId  as string) : undefined;
 
+  // PR-B (opt-in ?family=1): lịch sử thu của một đơn = phiếu của CẢ GIA ĐÌNH
+  // (cha + các dịch vụ con) — phiếu "dịch vụ cụ thể" ghi trên đơn con phải hiện
+  // trong ví hợp đồng. Mặc định giữ scope đúng-1-đơn (các luồng tìm phiếu cọc
+  // của form show dựa vào scope hẹp này, không được nới).
+  const familyScope = req.query.family === "1";
+
   let query = db.select().from(paymentsTable).$dynamic();
-  if (bookingId) query = query.where(eq(paymentsTable.bookingId, bookingId));
+  if (bookingId && familyScope) {
+    const [bk] = await db.select({ parentId: bookingsTable.parentId }).from(bookingsTable).where(eq(bookingsTable.id, bookingId));
+    const rootId = bk?.parentId ?? bookingId;
+    const kids = await db.select({ id: bookingsTable.id }).from(bookingsTable).where(eq(bookingsTable.parentId, rootId));
+    const familyIds = [rootId, ...kids.map(k => k.id)];
+    query = query.where(inArray(paymentsTable.bookingId, familyIds));
+  }
+  else if (bookingId) query = query.where(eq(paymentsTable.bookingId, bookingId));
   else if (rentalId) query = query.where(eq(paymentsTable.rentalId, rentalId));
 
   const payments = await query.orderBy(desc(paymentsTable.paidAt));
@@ -89,7 +143,7 @@ const BOOKING_JOIN_SQL = `
 // GET /payments/suggestions — gợi ý thông minh khi mở ô tìm kiếm (chưa nhập)
 router.get("/payments/suggestions", async (req, res) => {
   try {
-  const [bookingsResult, paymentsResult] = await Promise.all([
+  const [bookingsResult, paymentsResult, allocSnap] = await Promise.all([
     pool.query(`${BOOKING_JOIN_SQL}
       ORDER BY b.created_at DESC
       LIMIT 200`),
@@ -99,7 +153,9 @@ router.get("/payments/suggestions", async (req, res) => {
       WHERE booking_id IS NOT NULL
         AND COALESCE(status, 'active') != 'voided'
       GROUP BY booking_id`),
+    engineAllocationSnapshot(),
   ]);
+  const fm = familyMoneyMap(allocSnap);
 
   const latestMap = new Map<number, string>();
   for (const row of paymentsResult.rows) {
@@ -107,7 +163,7 @@ router.get("/payments/suggestions", async (req, res) => {
   }
 
   const items = bookingsResult.rows.map((b: any) => ({
-    ...fmtBookingRow(b),
+    ...applyFamilyMoney(fmtBookingRow(b), allocSnap, fm),
     latestPaymentAt: latestMap.get(Number(b.id)) ?? null,
   }));
 
@@ -217,7 +273,7 @@ router.get("/payments/recent", async (req, res) => {
     ORDER BY p.paid_at DESC, p.id DESC
     LIMIT $1`;
 
-  const [listResult, sumResult] = await Promise.all([
+  const [listResult, sumResult, allocSnap] = await Promise.all([
     pool.query(BASE_SELECT, [limit]),
     pool.query(
       `SELECT
@@ -231,9 +287,11 @@ router.get("/payments/recent", async (req, res) => {
          ))
          AND ${dateFilter}`
     ),
+    engineAllocationSnapshot(),
   ]);
+  const fmRecent = familyMoneyMap(allocSnap);
 
-  const payments = listResult.rows.map((p: any) => ({
+  const payments = listResult.rows.map((p: any) => applyFamilyMoney({
     id:           Number(p.id),
     bookingId:    p.bookingId ? Number(p.bookingId) : null,
     rentalId:     p.rentalId  ? Number(p.rentalId)  : null,
@@ -267,7 +325,7 @@ router.get("/payments/recent", async (req, res) => {
     status:          p.status ?? null,
     isParentContract: Boolean(p.isParentContract),
     paymentCount: Number(p.paymentCount ?? 0),
-  }));
+  }, allocSnap, fmRecent, "bookingId"));
 
   const summary = sumResult.rows[0];
   res.json({
@@ -291,8 +349,9 @@ router.get("/payments/search", async (req, res) => {
   if (!q) { res.json([]); return; }
 
   const pct = `%${q}%`;
-  const result = await pool.query(
-    `${BOOKING_JOIN_SQL}
+  const [result, allocSnap] = await Promise.all([
+    pool.query(
+      `${BOOKING_JOIN_SQL}
      AND (
        unaccent(c.name) ILIKE unaccent($1)
        OR c.phone ILIKE $2
@@ -300,10 +359,13 @@ router.get("/payments/search", async (req, res) => {
      )
      ORDER BY b.created_at DESC
      LIMIT 20`,
-    [pct, pct, pct]
-  );
+      [pct, pct, pct]
+    ),
+    engineAllocationSnapshot(),
+  ]);
+  const fm = familyMoneyMap(allocSnap);
 
-  res.json(result.rows.map(fmtBookingRow));
+  res.json(result.rows.map((b: any) => applyFamilyMoney(fmtBookingRow(b), allocSnap, fm)));
   } catch (err) {
     console.error("GET /payments/search error:", err);
     res.status(500).json({ error: "Lỗi hệ thống" });
@@ -721,12 +783,25 @@ router.get("/payments/monthly-list", async (req, res) => {
       bookingRows = r.rows;
     }
 
+    // PR-B (known-gap #109): paid/remaining đọc từ ALLOCATOR, không đọc paid_amount thô.
+    // Dòng CHA/đơn lẻ (root) → số GIA ĐÌNH (gồm "Khách trả dư"); dòng DỊCH VỤ CON
+    // (shootMonth liệt kê từng show) → số PHÂN BỔ riêng của dịch vụ đó.
+    const allocSnapM = await engineAllocationSnapshot();
+    const fmM = familyMoneyMap(allocSnapM);
+
     const data = bookingRows.map(b => {
+      const idNum = Number(b.id);
       const total = parseFloat(String(b.total_amount));
       const discount = parseFloat(String(b.discount_amount || 0));
-      const paid = parseFloat(String(b.paid_amount));
-      const remaining = Math.max(0, total - discount - paid);
-      const collectedInPeriod = parseFloat(String(b.collected_in_period || paid));
+      let paid = parseFloat(String(b.paid_amount));
+      let remaining = Math.max(0, total - discount - paid);
+      const famMoney = fmM.get(idNum);
+      const member = allocSnapM.byId.get(idNum);
+      if (famMoney) { paid = famMoney.paid; remaining = famMoney.remaining; }
+      else if (member) { paid = member.allocPaid; remaining = member.debt; }
+      const collectedInPeriod = b.collected_in_period != null
+        ? parseFloat(String(b.collected_in_period))
+        : paid;
       const paymentsList = Array.isArray(b.payments_list) ? b.payments_list : [];
       return {
         id: Number(b.id), orderCode: b.order_code, shootDate: b.shoot_date, createdAt: b.created_at,
@@ -780,7 +855,14 @@ router.get("/payments/monthly-list", async (req, res) => {
     }
 
     const totalCollected = data.reduce((s, b) => s + (viewMode === "shootMonth" ? b.paidAmount : b.collectedInPeriod), 0) + adHocTotal;
-    const totalOwed = data.reduce((s, b) => s + b.remainingAmount, 0);
+    // Chống đếm trùng: dòng dịch vụ con có dòng CHA cùng danh sách (cha đã gộp cả
+    // gia đình) thì không cộng lại nợ của con vào tổng.
+    const rowIdSet = new Set(data.map(b => b.id));
+    const totalOwed = data.reduce((s, b) => {
+      const member = allocSnapM.byId.get(b.id);
+      if (member && member.rootId !== b.id && rowIdSet.has(member.rootId)) return s;
+      return s + b.remainingAmount;
+    }, 0);
     const totalAmount = data.reduce((s, b) => s + b.totalAmount, 0);
 
     res.json({
@@ -847,12 +929,9 @@ router.get("/payments/export", async (req, res) => {
       }
     }
 
-    let statusClause = "";
-    if (status === "owed") {
-      statusClause = `AND GREATEST(0, (b.total_amount - COALESCE(b.discount_amount, 0) - b.paid_amount)::numeric) > 0`;
-    } else if (status === "paid") {
-      statusClause = `AND GREATEST(0, (b.total_amount - COALESCE(b.discount_amount, 0) - b.paid_amount)::numeric) <= 0`;
-    }
+    // PR-B: lọc owed/paid theo số ALLOCATOR (áp sau khi ghi đè paid/remaining bên
+    // dưới) — không lọc bằng paid_amount thô trong SQL nữa.
+    const statusClause = "";
 
     const result = await pool.query(`
       SELECT
@@ -935,7 +1014,26 @@ router.get("/payments/export", async (req, res) => {
       "Đã thu", "Còn nợ", "Phương thức TT", "Trạng thái", "Thu lần cuối",
     ];
 
-    const rows = result.rows.map((b: any) => {
+    // PR-B: ghi đè Đã thu/Còn nợ bằng số GIA ĐÌNH từ allocator (export chỉ có dòng
+    // cha/đơn lẻ — parent_id IS NULL), rồi mới lọc owed/paid.
+    const allocSnapX = await engineAllocationSnapshot();
+    const fmX = familyMoneyMap(allocSnapX);
+    const exportRows = result.rows
+      .map((b: any) => {
+        const money = fmX.get(Number(b.id));
+        if (money) {
+          return { ...b, paidAmount: money.paid, remainingAmount: money.remaining };
+        }
+        return b;
+      })
+      .filter((b: any) => {
+        const remain = parseFloat(String(b.remainingAmount || 0));
+        if (status === "owed") return remain > 0;
+        if (status === "paid") return remain <= 0;
+        return true;
+      });
+
+    const rows = exportRows.map((b: any) => {
       const total    = parseFloat(b.totalAmount    || 0);
       const discount = parseFloat(b.discountAmount || 0);
       const paid     = parseFloat(b.paidAmount     || 0);

@@ -4015,7 +4015,8 @@ function ShowDetailPanel({
   const paymentTargetId = fullDetail?.parentContract?.id ?? booking.parentId ?? booking.id;
   const { data: paymentHistory = [] } = useQuery<BookingPayment[]>({
     queryKey: ["payments", paymentTargetId],
-    queryFn: () => authFetch(`${BASE}/api/payments?bookingId=${paymentTargetId}`).then(r => r.ok ? r.json() : []),
+    // family=1: hiện cả phiếu ghi trên đơn con (thu "dịch vụ cụ thể" từ màn Thu tiền).
+    queryFn: () => authFetch(`${BASE}/api/payments?bookingId=${paymentTargetId}&family=1`).then(r => r.ok ? r.json() : []),
     staleTime: 0,
   });
 

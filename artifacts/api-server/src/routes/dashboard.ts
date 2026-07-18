@@ -212,13 +212,6 @@ function getPeriodRange(preset: PeriodPreset): { start: Date; end: Date; startDa
   };
 }
 
-function computeRemaining(b: { totalAmount: string; discountAmount: string; paidAmount: string }): number {
-  return Math.max(
-    0,
-    parseFloat(b.totalAmount) - parseFloat(b.discountAmount || "0") - parseFloat(b.paidAmount),
-  );
-}
-
 function buildDayBuckets(start: Date, end: Date): { date: string; amount: number; count: number }[] {
   const buckets: { date: string; amount: number; count: number }[] = [];
   const cur = new Date(start);
@@ -601,10 +594,14 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
     const collectedAmount = paymentsInPeriod.reduce((s, p) => s + parseFloat(p.amount), 0);
     const collectedCount = paymentsInPeriod.length;
 
-    // owedTotal / owedCount: use booking.remainingAmount = max(0, total-discount-paid)
-    const owedTotal = allActiveBookings.reduce((s, b) => s + computeRemaining(b), 0);
-    const owedCount = allActiveBookings.filter(b => computeRemaining(b) > 0).length;
-    const owedInPeriod = bookingsInPeriod.reduce((s, b) => s + computeRemaining(b), 0);
+    // owedTotal / owedCount: chốt 17/07 (review #109 known-gap) — nợ đọc từ SNAPSHOT
+    // allocator chung (cọc chia đều + thu trực tiếp + FIFO), không tính từ cột
+    // paid_amount thô nữa. Booking không có trong snapshot (không countable) → 0.
+    const allocSnapV2 = await engineAllocationSnapshot();
+    const snapDebt = (id: number): number => allocSnapV2.byId.get(Number(id))?.debt ?? 0;
+    const owedTotal = allActiveBookings.reduce((s, b) => s + snapDebt(b.id), 0);
+    const owedCount = allActiveBookings.filter(b => snapDebt(b.id) > 0).length;
+    const owedInPeriod = bookingsInPeriod.reduce((s, b) => s + snapDebt(b.id), 0);
 
     const linkedExpenses = expensesInPeriod
       .filter(e => e.bookingId != null)
@@ -684,7 +681,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
       const key = b.packageType || b.serviceCategory || "other";
       const label = b.serviceLabel || b.packageType || b.serviceCategory || "Khác";
       const cat = b.serviceCategory || "other";
-      const rem = computeRemaining(b);
+      const rem = snapDebt(b.id);
 
       if (!serviceMap.has(key)) {
         serviceMap.set(key, { category: cat, serviceKey: key, label, bookedCount: 0, bookedAmount: 0, owedAmount: 0, collectedAmount: 0 });
@@ -728,7 +725,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
     for (const b of bookingsInPeriod) {
       const cat = b.serviceCategory || "other";
       const label = CATEGORY_LABELS[cat] || cat;
-      const rem = computeRemaining(b);
+      const rem = snapDebt(b.id);
 
       if (!categoryMap.has(cat)) {
         categoryMap.set(cat, { category: cat, serviceKey: cat, label, bookedCount: 0, bookedAmount: 0, owedAmount: 0, collectedAmount: 0 });
@@ -764,7 +761,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
       }))
       .sort((a, b) => b.bookedAmount - a.bookedAmount);
 
-    // ── Top debtors (all time, sorted by remainingAmount desc) ────────────
+    // ── Top debtors (all time) — nợ/đã thu per-booking từ SNAPSHOT allocator ──
     const topDebtors = allActiveWithCustomer
       .map(b => ({
         bookingId: b.id,
@@ -772,8 +769,8 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
         customerName: b.customerName || "—",
         customerPhone: b.customerPhone || "",
         totalAmount: parseFloat(b.totalAmount),
-        paidAmount: parseFloat(b.paidAmount),
-        remainingAmount: computeRemaining(b),
+        paidAmount: allocSnapV2.byId.get(Number(b.id))?.allocPaid ?? 0,
+        remainingAmount: snapDebt(b.id),
         shootDate: b.shootDate,
         status: b.status,
       }))

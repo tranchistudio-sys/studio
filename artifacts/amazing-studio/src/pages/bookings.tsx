@@ -52,8 +52,15 @@ const PAYMENT_METHOD: Record<string, string> = {
   cash: "Tiền mặt", transfer: "Chuyển khoản", other: "Khác",
 };
 
+// Nhãn HIỂN THỊ phiếu cũ — partial/full là data legacy (allocator đọc như "payment"),
+// vẫn cần nhãn để render lịch sử, nhưng KHÔNG cho tạo mới (PR-B, chốt Q3 17/07).
 const PAYMENT_TYPE: Record<string, string> = {
   deposit: "Tiền cọc", partial: "Thanh toán một phần", payment: "Thanh toán", full: "Thanh toán đủ",
+};
+
+// Loại được phép khi TẠO phiếu mới — chỉ Cọc / Thanh toán.
+const PAYMENT_TYPE_CREATABLE: Record<string, string> = {
+  deposit: "Tiền cọc", payment: "Thanh toán",
 };
 
 type Booking = {
@@ -909,7 +916,7 @@ export default function BookingsPage() {
                               <div>
                                 <label className="text-xs font-medium text-muted-foreground">Loại thanh toán</label>
                                 <Select value={payForm.paymentType} onChange={e => setPayForm(f => ({ ...f, paymentType: e.target.value }))}>
-                                  {Object.entries(PAYMENT_TYPE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                                  {Object.entries(PAYMENT_TYPE_CREATABLE).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                                 </Select>
                               </div>
                               <div>

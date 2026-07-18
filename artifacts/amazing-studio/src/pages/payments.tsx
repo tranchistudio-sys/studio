@@ -10,6 +10,12 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getImageSrc } from "@/lib/imageUtils";
+import {
+  previewPaymentAllocation,
+  serviceDisplayLabel,
+  type AllocTargetMode,
+  type FamilyAllocationInfo,
+} from "@/lib/payment-allocation-preview";
 import { OpenCalendarButton } from "@/components/OpenCalendarButton";
 import { CurrencyInput } from "@/components/ui/currency-input";
 import { DateInput } from "@/components/ui/date-input";
@@ -1263,13 +1269,27 @@ export default function PaymentsPage() {
   const [sheetOpen, setSheetOpen] = useState(false);
   const [selectedBooking, setSelectedBooking] = useState<Booking | null>(null);
 
+  /* PR-B: breakdown phân bổ gia đình đơn (allocator backend) cho picker Thu tiền.
+     >1 dịch vụ → hiện picker "chung hợp đồng / dịch vụ cụ thể / FIFO" + preview. */
+  const [allocMode, setAllocMode] = useState<AllocTargetMode>("contract");
+  const [allocServiceId, setAllocServiceId] = useState<number | null>(null);
+  const { data: allocation } = useQuery<FamilyAllocationInfo>({
+    queryKey: ["booking-allocation", selectedBooking?.id],
+    queryFn: () => fetchJson(`/api/bookings/${selectedBooking!.id}/allocation`),
+    enabled: sheetOpen && !!selectedBooking,
+    staleTime: 0,
+  });
+  const allocServices = allocation?.services ?? [];
+  const showAllocPicker = allocServices.length > 1;
+
   const {
     data: paymentHistory = [],
     refetch: refetchHistory,
     isFetched: paymentHistoryFetched,
   } = useQuery<Payment[]>({
     queryKey: ["payments", selectedBooking?.id],
-    queryFn: () => fetchJson(`/api/payments?bookingId=${selectedBooking!.id}`),
+    // family=1: gồm cả phiếu ghi trên đơn con (thu "dịch vụ cụ thể") — ví hợp đồng đầy đủ.
+    queryFn: () => fetchJson(`/api/payments?bookingId=${selectedBooking!.id}&family=1`),
     enabled: !!selectedBooking,
     staleTime: 0,
   });
@@ -1506,6 +1526,8 @@ export default function PaymentsPage() {
     }
     setSelectedBooking(b);
     setSaveError(null);
+    setAllocMode("contract");
+    setAllocServiceId(null);
     setForm(f => ({ ...f, amount: "", notes: "", bankName: "" }));
     setProofImages([]);
     if (fileRef.current) fileRef.current.value = "";
@@ -1566,6 +1588,8 @@ export default function PaymentsPage() {
       }
       setSheetOpen(false);
       setSelectedBooking(null);
+      setAllocMode("contract");
+      setAllocServiceId(null);
       resetForm();
     } else {
       setSheetOpen(true);
@@ -1627,13 +1651,25 @@ export default function PaymentsPage() {
       setSaveError("Vui lòng nhập số tiền thu hợp lệ");
       return;
     }
+    // PR-B: đích của phiếu — "dịch vụ cụ thể" ghi thẳng lên đơn con (allocator
+    // đọc là thu riêng của dịch vụ đó); "chung hợp đồng"/"FIFO" ghi lên đơn gốc
+    // (allocator tự phân bổ FIFO). Chỉ nhận id có thật trong breakdown.
+    let targetBookingId = selectedBooking.id;
+    if (showAllocPicker && allocMode === "service") {
+      const chosen = allocServices.find(s => s.bookingId === allocServiceId);
+      if (!chosen) {
+        setSaveError("Vui lòng chọn dịch vụ sẽ nhận tiền (hoặc chuyển về Chung hợp đồng)");
+        return;
+      }
+      targetBookingId = chosen.bookingId;
+    }
     setSaveError(null);
     setSaving(true);
     try {
       const created = await fetchJson<{ id?: number }>("/api/payments", {
         method: "POST",
         body: JSON.stringify({
-          bookingId:     selectedBooking.id,
+          bookingId:     targetBookingId,
           amount:        amt,
           paymentMethod: form.paymentMethod,
           paymentType:   "payment",
@@ -1658,6 +1694,7 @@ export default function PaymentsPage() {
       qc.invalidateQueries({ queryKey: ["dashboard-simple"] });
       qc.invalidateQueries({ queryKey: ["dashboard-v2"] });
       qc.invalidateQueries({ queryKey: ["payment-suggestions"] });
+      qc.invalidateQueries({ queryKey: ["booking-allocation"] });
       paymentFeedback();
       resetForm();
       setSheetOpen(false);
@@ -1748,13 +1785,24 @@ export default function PaymentsPage() {
     ? paymentHistory.filter((p: Payment) => p.status !== "voided").reduce((s: number, p: Payment) => s + p.amount, 0)
     : (selectedBooking?.paidAmount ?? 0);
 
-  // effectiveRemaining: tính từ actualPaid — không dùng cache
+  // effectiveRemaining: ưu tiên số từ ALLOCATOR backend (một nguồn sự thật, đã cap
+  // NET từng dịch vụ + loại phiếu hủy/refund); fallback tính từ actualPaid khi
+  // allocation chưa tải hoặc đơn không có breakdown (báo giá tạm...).
   const effectiveTotal    = selectedBooking ? selectedBooking.totalAmount : 0;
   const effectiveDiscount = selectedBooking ? (selectedBooking.discountAmount ?? 0) : 0;
-  const effectiveRemaining = Math.max(0, effectiveTotal - effectiveDiscount - actualPaid);
+  const effectiveRemaining = allocation && allocation.services.length > 0
+    ? allocation.totalRemaining
+    : Math.max(0, effectiveTotal - effectiveDiscount - actualPaid);
 
   const isOverpaid = amtNum > effectiveRemaining;
   const afterPay   = Math.max(0, effectiveRemaining - amtNum);
+
+  // PR-B: preview "tiền sẽ trừ vào đâu" (mirror allocator backend) — chỉ để xem
+  // trước khi xác nhận; số thật do backend tính lại từ payments gốc.
+  const allocServiceChosen = allocMode !== "service" || allocServices.some(s => s.bookingId === allocServiceId);
+  const allocPreview = showAllocPicker && amtNum > 0 && allocServiceChosen
+    ? previewPaymentAllocation(allocServices, amtNum, allocMode, allocServiceId)
+    : null;
 
   /* ── Phiếu thu lẻ (ad-hoc) ─────────────────────────
      Không gắn với booking — dùng cho thuê đồ lẻ, phụ kiện, mâm quả… */
@@ -2204,6 +2252,92 @@ export default function PaymentsPage() {
                 </div>
               )}
 
+              {/* PR-B: hợp đồng nhiều dịch vụ → chọn tiền thu vào đâu */}
+              {showAllocPicker && (
+                <div className="border border-primary/25 bg-primary/[0.03] rounded-xl p-3 space-y-2.5">
+                  <p className="text-xs font-semibold text-muted-foreground">
+                    🧭 Thu tiền vào đâu? <span className="font-normal">(hợp đồng có {allocServices.length} dịch vụ)</span>
+                  </p>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    {([
+                      { v: "contract", label: "🧾 Chung hợp đồng" },
+                      { v: "service",  label: "🎯 Dịch vụ cụ thể" },
+                      { v: "fifo",     label: "⚡ Tự động FIFO" },
+                    ] as { v: AllocTargetMode; label: string }[]).map(opt => (
+                      <button
+                        key={opt.v}
+                        type="button"
+                        onClick={() => { setAllocMode(opt.v); setSaveError(null); }}
+                        className={cn(
+                          "py-2 px-1 rounded-xl text-[11px] font-semibold border transition-all leading-tight",
+                          allocMode === opt.v
+                            ? "border-primary bg-primary/10 text-primary"
+                            : "border-border bg-background text-muted-foreground hover:border-primary/40"
+                        )}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground italic leading-snug">
+                    {allocMode === "contract" && "Ghi phiếu vào hợp đồng chung — hệ thống tự trừ nợ dịch vụ tới hạn trước (FIFO theo ngày thực hiện)."}
+                    {allocMode === "service" && "Ghi phiếu thẳng vào dịch vụ được chọn — phần vượt quá nợ dịch vụ đó sẽ tự chảy sang dịch vụ còn nợ khác."}
+                    {allocMode === "fifo" && "Phân bổ tự động: trừ nợ lần lượt theo ngày thực hiện gần nhất trước (xem preview bên dưới)."}
+                  </p>
+
+                  {/* Danh sách dịch vụ — 6 trường: tên / ngày / NET / cọc chia đều / đã thu / còn phải thu */}
+                  <div className="space-y-1.5">
+                    {allocServices.map((s, idx) => {
+                      const selectable = allocMode === "service";
+                      const selected = selectable && allocServiceId === s.bookingId;
+                      return (
+                        <button
+                          key={s.bookingId}
+                          type="button"
+                          disabled={!selectable}
+                          onClick={() => { setAllocServiceId(s.bookingId); setSaveError(null); }}
+                          className={cn(
+                            "w-full text-left rounded-xl border p-2.5 transition-all",
+                            selected
+                              ? "border-primary bg-primary/10 ring-1 ring-primary/30"
+                              : "border-border bg-background",
+                            selectable && !selected && "hover:border-primary/40",
+                            !selectable && "cursor-default"
+                          )}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-semibold truncate">
+                              {selectable && (
+                                <span className={cn("mr-1", selected ? "text-primary" : "text-muted-foreground/50")}>
+                                  {selected ? "●" : "○"}
+                                </span>
+                              )}
+                              {serviceDisplayLabel(s, idx)}
+                            </span>
+                            <span className="text-[10px] text-muted-foreground shrink-0">
+                              {s.shootDate ? fmtDate(s.shootDate) : "Chưa có ngày"}
+                            </span>
+                          </div>
+                          <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
+                            <span>Giá dịch vụ: <b className="text-foreground">{fmtVND(s.net)}</b></span>
+                            <span>Cọc chia đều: <b className="text-foreground">{fmtVND(s.equalDeposit)}</b></span>
+                            <span>Đã thu: <b className="text-green-600">{fmtVND(s.allocPaid)}</b></span>
+                            <span>Còn phải thu: <b className={s.remaining > 0 ? "text-red-600" : "text-green-600"}>
+                              {s.remaining > 0 ? fmtVND(s.remaining) : "✓ Đủ"}
+                            </b></span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {allocMode === "service" && !allocServiceChosen && (
+                    <p className="text-[11px] text-orange-600 font-medium">
+                      ⚠️ Chọn dịch vụ sẽ nhận tiền ở danh sách trên.
+                    </p>
+                  )}
+                </div>
+              )}
+
               {/* Số tiền thu lần này */}
               <div>
                 <label className="text-xs font-semibold text-muted-foreground block mb-1.5">
@@ -2251,6 +2385,33 @@ export default function PaymentsPage() {
                   </div>
                 )}
               </div>
+
+              {/* PR-B: preview tiền sẽ trừ vào đâu — bắt buộc thấy trước khi xác nhận */}
+              {allocPreview && (
+                <div className="border border-blue-200 bg-blue-50/60 dark:bg-blue-950/20 dark:border-blue-900 rounded-xl p-3 space-y-1.5">
+                  <p className="text-xs font-bold text-blue-700 dark:text-blue-300">
+                    🔎 Preview: {fmtVND(amtNum)} sẽ trừ vào
+                  </p>
+                  {allocPreview.fills.length === 0 && allocPreview.overpay === 0 && (
+                    <p className="text-[11px] text-muted-foreground italic">Không có dịch vụ nào còn nợ.</p>
+                  )}
+                  {allocPreview.fills.map(f => (
+                    <div key={f.bookingId} className="flex justify-between text-xs">
+                      <span className="text-muted-foreground truncate mr-2">→ {f.label}</span>
+                      <span className="font-semibold shrink-0">{fmtVND(f.amount)}</span>
+                    </div>
+                  ))}
+                  {allocPreview.overpay > 0 && (
+                    <div className="flex justify-between text-xs text-orange-600 font-medium border-t border-blue-200 dark:border-blue-900 pt-1.5">
+                      <span>⚠️ Vượt tổng nợ — ghi nhận "Khách trả dư"</span>
+                      <span className="font-bold shrink-0">{fmtVND(allocPreview.overpay)}</span>
+                    </div>
+                  )}
+                  <p className="text-[10px] text-muted-foreground italic pt-0.5">
+                    Số cuối cùng do hệ thống phân bổ tự tính lại khi lưu phiếu.
+                  </p>
+                </div>
+              )}
 
               {/* Hình thức */}
               <div>
@@ -2434,6 +2595,16 @@ export default function PaymentsPage() {
                                     Cọc
                                   </span>
                                 )}
+                                {/* PR-B: phiếu ghi trên đơn con → chip tên dịch vụ */}
+                                {p.bookingId != null && selectedBooking && p.bookingId !== selectedBooking.id && (() => {
+                                  const idx = allocServices.findIndex(s => s.bookingId === p.bookingId);
+                                  if (idx < 0) return null;
+                                  return (
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-semibold truncate max-w-[120px]">
+                                      → {serviceDisplayLabel(allocServices[idx], idx)}
+                                    </span>
+                                  );
+                                })()}
                               </div>
                               <p className="text-xs text-muted-foreground">
                                 {METHOD_LABEL[p.paymentMethod] ?? p.paymentMethod}
@@ -2541,10 +2712,14 @@ export default function PaymentsPage() {
           <div className="shrink-0 p-4 border-t border-border bg-background">
             <button
               onClick={savePayment}
-              disabled={saving || !form.amount || amtNum <= 0}
+              disabled={saving || !form.amount || amtNum <= 0 || (showAllocPicker && !allocServiceChosen)}
               className="w-full py-3 rounded-xl bg-primary text-primary-foreground font-semibold text-sm hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
-              {saving ? "Đang lưu..." : "✅ Lưu phiếu thu"}
+              {saving
+                ? "Đang lưu..."
+                : showAllocPicker && !allocServiceChosen
+                ? "Chọn dịch vụ nhận tiền trước"
+                : "✅ Lưu phiếu thu"}
             </button>
           </div>
         </SheetContent>

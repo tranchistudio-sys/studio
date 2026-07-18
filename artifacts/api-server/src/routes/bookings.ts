@@ -3,6 +3,7 @@ import { db, pool } from "@workspace/db";
 import { bookingsTable, customersTable, paymentsTable, expensesTable, tasksTable, staffTable, servicePackagesTable, packageItemsTable, photoshopJobsTable, servicesTable, bookingChangeLogTable, contractsTable, bookingDressesTable, bookingItemsTable, staffJobEarningsTable, staffAllowancesTable, attendanceLogsTable, bookingOccurrencesTable } from "@workspace/db/schema";
 import { eq, and, desc, inArray, or, ilike, sql, asc, gte, lte, isNull, ne } from "drizzle-orm";
 import { isCollectedPayment, money } from "../lib/booking-money";
+import { engineAllocationSnapshot } from "../lib/finance/financial-engine";
 import { resolveBookingTotal, summarizeItemsForLog } from "../lib/booking-total";
 import { verifyToken, getCallerRole } from "./auth";
 import { computeBookingEarnings } from "./job-earnings";
@@ -813,6 +814,62 @@ router.post("/bookings", async (req, res) => {
     }
     console.error("POST /bookings error:", err);
     res.status(500).json({ error: "Lỗi hệ thống khi tạo đơn hàng" });
+  }
+});
+
+// PR-B: breakdown phân bổ tiền của CẢ GIA ĐÌNH đơn (id = cha, con hoặc đơn lẻ) —
+// nguồn DUY NHẤT là engineAllocationSnapshot (allocator chia đều cọc, chốt 17/07).
+// FE màn Thu tiền dùng để hiện picker "chung hợp đồng / dịch vụ cụ thể / FIFO"
+// kèm preview tiền sẽ trừ vào đâu. services trả theo đúng thứ tự FIFO của
+// allocator (ngày thực hiện ASC, thiếu ngày xếp cuối, cùng ngày theo ID ASC).
+router.get("/bookings/:id/allocation", async (req, res) => {
+  try {
+    const id = parseInt(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: "id không hợp lệ" });
+    const snap = await engineAllocationSnapshot();
+    const rootId = snap.byId.get(id)?.rootId ?? (snap.families.has(id) ? id : null);
+    if (rootId == null) {
+      // Đơn không countable (báo giá tạm/hủy/thùng rác...) hoặc không tồn tại →
+      // không có phân bổ; FE fallback về hành vi thu tiền thẳng như cũ.
+      return res.json({ rootId: id, services: [], totalDeposit: 0, overpayment: 0, totalNet: 0, totalAllocPaid: 0, totalRemaining: 0 });
+    }
+    const fam = snap.families.get(rootId);
+    const members = snap.members
+      .filter(m => m.rootId === rootId)
+      .sort((a, b) => {
+        const ka = a.shootDate ?? "9999-12-31";
+        const kb = b.shootDate ?? "9999-12-31";
+        if (ka !== kb) return ka < kb ? -1 : 1;
+        return a.bookingId - b.bookingId;
+      });
+    const services = members.map(m => ({
+      bookingId: m.bookingId,
+      orderCode: m.orderCode,
+      serviceLabel: m.serviceLabel,
+      serviceCategory: m.serviceCategory,
+      packageType: m.packageType,
+      shootDate: m.shootDate,
+      net: m.net,
+      equalDeposit: m.equalDeposit,
+      directPaid: m.directPaid,
+      legacyDepositPaid: m.legacyDepositPaid,
+      parentFifo: m.parentFifo,
+      allocPaid: m.allocPaid,
+      remaining: m.debt,
+    }));
+    res.json({
+      rootId,
+      totalDeposit: fam?.totalDeposit ?? 0,
+      canonicalDepositPaymentId: fam?.canonicalDepositPaymentId ?? null,
+      overpayment: fam?.overpayment ?? 0,
+      totalNet: services.reduce((s, x) => s + x.net, 0),
+      totalAllocPaid: services.reduce((s, x) => s + x.allocPaid, 0),
+      totalRemaining: services.reduce((s, x) => s + x.remaining, 0),
+      services,
+    });
+  } catch (err) {
+    console.error("GET /bookings/:id/allocation error:", err);
+    res.status(500).json({ error: "Lỗi hệ thống khi đọc phân bổ tiền" });
   }
 });
 

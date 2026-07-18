@@ -6,6 +6,7 @@ import {
   tokenize,
   scoreSearchResult,
 } from "../lib/search-normalize";
+import { getCallerRole } from "./auth";
 
 /**
  * Global Search — ô "Tìm khách, đơn hàng…" ở header (SmartSearch.tsx gọi GET /api/search?q=).
@@ -33,6 +34,12 @@ function displayOrderCode(orderCode: unknown, id: number): string {
 
 router.get("/search", async (req, res) => {
   try {
+    // Global Search trả PII khách (tên/SĐT/địa chỉ) + tiền đơn → BẮT auth trước khi
+    // query. Mọi nhân sự đăng nhập đều dùng được (đúng role model hiện có).
+    if (!(await getCallerRole(req.headers.authorization))) {
+      res.status(401).json({ error: "Chưa đăng nhập hoặc phiên hết hạn" });
+      return;
+    }
     const qRaw = typeof req.query.q === "string" ? req.query.q : "";
     const q = qRaw.trim();
     const limit = Math.min(Math.max(parseInt(String(req.query.limit ?? "8"), 10) || 8, 1), 20);

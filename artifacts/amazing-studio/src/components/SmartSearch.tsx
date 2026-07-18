@@ -73,10 +73,13 @@ export function SmartSearch() {
 
   const { data, isFetching } = useQuery<SearchResponse>({
     queryKey: ["global-search", debounced],
-    queryFn: () =>
-      fetch(`${BASE}/api/search?q=${encodeURIComponent(debounced)}&limit=8`).then(r =>
-        r.ok ? r.json() : { bookings: [], customers: [] },
-      ),
+    queryFn: () => {
+      // /api/search nay bắt auth (trả PII khách) → gửi kèm Bearer token.
+      const token = localStorage.getItem("amazingStudioToken_v2");
+      return fetch(`${BASE}/api/search?q=${encodeURIComponent(debounced)}&limit=8`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      }).then(r => (r.ok ? r.json() : { bookings: [], customers: [] }));
+    },
     enabled: debounced.length >= 2,
     staleTime: 10_000,
     placeholderData: (prev) => prev, // giữ kết quả cũ khi gõ tiếp → không chớp "Không tìm thấy"

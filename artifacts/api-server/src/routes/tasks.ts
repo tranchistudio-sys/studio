@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { db, pool } from "@workspace/db";
 import { tasksTable, staffTable, staffRatePricesTable, bookingsTable } from "@workspace/db/schema";
 import { eq, desc, and, or, isNull } from "drizzle-orm";
+import { getCallerRole } from "./auth";
 
 const router: IRouter = Router();
 
@@ -52,6 +53,11 @@ async function lookupCost(staffId: number | null, role: string | null, taskType:
 // ── Booking-centric view — MUST be before /tasks/:id ─────────────────────────
 router.get("/tasks/booking-view", async (req, res) => {
   try {
+    // Trả tên/SĐT khách theo booking (có filter search) → bắt auth trước khi query.
+    if (!(await getCallerRole(req.headers.authorization))) {
+      res.status(401).json({ error: "Chưa đăng nhập hoặc phiên hết hạn" });
+      return;
+    }
     const { search, shootMonth } = req.query as Record<string, string>;
 
     // Build WHERE clause addition for shoot month filter

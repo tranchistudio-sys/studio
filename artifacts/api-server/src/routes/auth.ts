@@ -52,7 +52,25 @@ async function ensureAuthColumns() {
 }
 withStartupDdlLock(ensureAuthColumns).catch(console.error);
 
-const JWT_SECRET = process.env.SESSION_SECRET ?? "amazing-studio-secret-2025";
+/**
+ * Bí mật ký/verify token. PRODUCTION BẮT BUỘC có SESSION_SECRET — thiếu thì FAIL-FAST
+ * (throw ngay khi nạp module → server không khởi động) thay vì âm thầm dùng secret
+ * mặc định (ai đọc source cũng forge được token). Dev/test được phép dùng fallback
+ * có cảnh báo để chạy cục bộ. KHÔNG đổi giá trị secret khi đã có SESSION_SECRET →
+ * token đang phát HÀNH vẫn hợp lệ (không logout ai).
+ */
+function resolveJwtSecret(): string {
+  const secret = process.env.SESSION_SECRET;
+  if (secret) return secret;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "SESSION_SECRET chưa được cấu hình ở production. Từ chối khởi động thay vì dùng secret mặc định (bảo mật). Hãy đặt biến môi trường SESSION_SECRET rồi chạy lại.",
+    );
+  }
+  console.warn("[auth] ⚠️ SESSION_SECRET chưa set — dùng secret DEV mặc định. TUYỆT ĐỐI không dùng ở production.");
+  return "amazing-studio-secret-2025";
+}
+const JWT_SECRET = resolveJwtSecret();
 
 export async function getCallerRole(header: string | undefined): Promise<"admin" | "staff" | null> {
   const id = verifyToken(header);
@@ -73,9 +91,14 @@ export function verifyToken(header: string | undefined): number | null {
     const parts = token.split(".");
     if (parts.length !== 3) return null;
     const [jwtHeader, jwtBody, sig] = parts;
-    const { createHmac } = require("crypto") as typeof import("crypto");
+    const { createHmac, timingSafeEqual } = require("crypto") as typeof import("crypto");
     const expectedSig = createHmac("sha256", JWT_SECRET).update(`${jwtHeader}.${jwtBody}`).digest("base64url");
-    if (sig !== expectedSig) return null;
+    // So sánh CONSTANT-TIME (chống timing side-channel). timingSafeEqual đòi 2 buffer
+    // cùng độ dài → khác độ dài coi như sai luôn. KHÔNG đổi cách tính chữ ký nên token
+    // hiện có vẫn verify y hệt.
+    const sigBuf = Buffer.from(sig);
+    const expBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) return null;
     const payload = JSON.parse(Buffer.from(jwtBody, "base64url").toString());
     if (payload.exp && Date.now() / 1000 > payload.exp) return null;
     return payload.id as number;

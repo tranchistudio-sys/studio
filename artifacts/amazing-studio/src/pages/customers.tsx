@@ -10,7 +10,7 @@ import { Button, Input, Select, Textarea, Dialog, DialogContent, DialogHeader, D
 import {
   Search, Plus, Phone, MapPin, Edit, Trash2, Users, Facebook,
   TrendingUp, Calendar, Camera, X, ChevronRight, AlertCircle, CheckCircle, Crown,
-  Heart, Sparkles,
+  Heart, Sparkles, Download,
 } from "lucide-react";
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -142,6 +142,12 @@ type CustomerDetail = Customer & {
   bookings: { id: number; orderCode: string; packageType: string; shootDate: string; totalAmount: number; paidAmount: number; status: string }[];
 };
 
+// Thống kê preview xuất Meta (khớp MetaExportStats backend).
+type MetaPreview = {
+  totalFound: number; withValidPhone: number; excludedNoPhone: number;
+  excludedByAudience: number; duplicatesMerged: number; exported: number;
+};
+
 const EMPTY_FORM = {
   name: "", phone: "", email: "", address: "", gender: "", facebook: "", zalo: "",
   source: "facebook", tags: "", notes: "", avatar: "", customerRank: "new",
@@ -178,6 +184,11 @@ export default function CustomersPage() {
   const [phoneDuplicate, setPhoneDuplicate] = useState<{ id: number; name: string; customCode?: string } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Customer | null>(null);
   const [deleteNeedsForce, setDeleteNeedsForce] = useState(false);
+  // Xuất Meta Ads (admin): popup xác nhận + chọn đối tượng, dùng ĐÚNG bộ lọc màn hình.
+  const [metaOpen, setMetaOpen] = useState(false);
+  const [metaAudience, setMetaAudience] = useState<"all" | "with_orders" | "min_value">("all");
+  const [metaMinValue, setMetaMinValue] = useState<number>(5_000_000);
+  const [metaDownloading, setMetaDownloading] = useState(false);
 
   // ── Queries ──────────────────────────────────────────────────────────────────
   const { data: customers = [], isLoading } = useQuery<Customer[]>({
@@ -196,6 +207,51 @@ export default function CustomersPage() {
     queryFn: () => fetchJson<CustomerDetail>(`/api/customers/${selectedId}`),
     enabled: !!selectedId,
   });
+
+  // ── Xuất Meta Ads: build query dùng ĐÚNG bộ lọc đang chọn + đối tượng ──────────
+  const buildMetaParams = () => {
+    const p = new URLSearchParams();
+    if (search.length > 1) p.set("search", search);
+    if (rankFilter) p.set("rank", rankFilter);
+    if (sourceFilter) p.set("source", sourceFilter);
+    if (demandFilter) p.set("demand", demandFilter);
+    p.set("audience", metaAudience);
+    if (metaAudience === "min_value") p.set("minValue", String(metaMinValue || 0));
+    return p;
+  };
+  // Preview cho popup — tự chạy lại khi đổi bộ lọc/đối tượng/ngưỡng.
+  const { data: metaPreview, isFetching: metaPreviewLoading } = useQuery<MetaPreview>({
+    queryKey: ["meta-preview", search, sourceFilter, rankFilter, demandFilter, metaAudience, metaMinValue],
+    queryFn: () => fetchJson<MetaPreview>(`/api/customers/meta-export/preview?${buildMetaParams()}`),
+    enabled: metaOpen,
+  });
+  const downloadMeta = async () => {
+    setMetaDownloading(true);
+    try {
+      const res = await authFetch(`/api/customers/meta-export?${buildMetaParams()}`);
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(j.error ?? `Lỗi ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const disp = res.headers.get("content-disposition") ?? "";
+      const m = disp.match(/filename="?([^"]+)"?/);
+      a.download = m ? m[1] : `amazing-studio-meta-customers.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success(`Đã tải ${metaPreview?.exported ?? 0} khách cho Meta Ads`);
+      setMetaOpen(false);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "Xuất thất bại");
+    } finally {
+      setMetaDownloading(false);
+    }
+  };
 
   // Deep-link: /customers?customerId=N (từ Lịch chụp hoặc ô tìm nhanh ở header) → mở hồ sơ khách.
   // Reactive theo query string (useSearch) ⇒ hoạt động KỂ CẢ khi đang ở sẵn /customers (component
@@ -408,7 +464,14 @@ export default function CustomersPage() {
           <h1 className="text-2xl font-bold">Khách hàng</h1>
           <p className="text-sm text-muted-foreground mt-0.5">CRM quản lý và chăm sóc khách hàng toàn diện</p>
         </div>
-        <Button onClick={openCreate} className="gap-2"><Plus className="w-4 h-4" />Thêm khách hàng</Button>
+        <div className="flex items-center gap-2">
+          {effectiveIsAdmin && (
+            <Button variant="outline" onClick={() => setMetaOpen(true)} className="gap-2">
+              <Download className="w-4 h-4" />Xuất Meta Ads
+            </Button>
+          )}
+          <Button onClick={openCreate} className="gap-2"><Plus className="w-4 h-4" />Thêm khách hàng</Button>
+        </div>
       </div>
 
       {/* Stats */}
@@ -879,6 +942,84 @@ export default function CustomersPage() {
               </div>
             );
           })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* ─── Xuất Meta Ads (admin) ──────────────────────────────────────────── */}
+      <Dialog open={metaOpen} onOpenChange={o => { if (!metaDownloading) setMetaOpen(o); }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Download className="w-5 h-5" /> Xuất khách cho Meta Ads
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="text-xs text-muted-foreground bg-muted/50 rounded-lg p-2.5">
+              Áp đúng bộ lọc đang chọn:{" "}
+              <span className="font-medium text-foreground">
+                {[
+                  demandFilter === "wedding" ? "Cưới" : demandFilter === "beauty" ? "Beauty" : demandFilter === "both" ? "Cả hai" : null,
+                  rankFilter ? RANK_LABELS[rankFilter] : null,
+                  sourceFilter ? SOURCE_LABELS[sourceFilter] : null,
+                  search.length > 1 ? `tìm "${search}"` : null,
+                ].filter(Boolean).join(" · ") || "Tất cả khách"}
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Đối tượng xuất</p>
+              {([
+                { v: "all", label: "Tất cả khách hợp lệ" },
+                { v: "with_orders", label: "Chỉ khách đã có đơn hợp lệ" },
+                { v: "min_value", label: "Chỉ khách có tổng đơn từ mức tối thiểu" },
+              ] as const).map(opt => (
+                <label key={opt.v} className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input type="radio" name="meta-audience" checked={metaAudience === opt.v}
+                    onChange={() => setMetaAudience(opt.v)} className="accent-primary" />
+                  {opt.label}
+                </label>
+              ))}
+              {metaAudience === "min_value" && (
+                <div className="flex items-center gap-2 pl-6">
+                  <span className="text-xs text-muted-foreground">Tối thiểu</span>
+                  <Input type="number" min={0} step={500000} value={metaMinValue}
+                    onChange={e => setMetaMinValue(Number(e.target.value) || 0)} className="w-40" />
+                  <span className="text-xs text-muted-foreground">đ</span>
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-lg border divide-y text-sm">
+              {[
+                { label: "Tổng khách tìm thấy", value: metaPreview?.totalFound },
+                { label: "Có SĐT hợp lệ", value: metaPreview?.withValidPhone },
+                { label: "Loại vì thiếu/sai số", value: metaPreview?.excludedNoPhone },
+                ...(metaAudience !== "all" ? [{ label: "Loại theo đối tượng", value: metaPreview?.excludedByAudience }] : []),
+                { label: "Số trùng đã gộp", value: metaPreview?.duplicatesMerged },
+              ].map(r => (
+                <div key={r.label} className="flex justify-between px-3 py-1.5">
+                  <span className="text-muted-foreground">{r.label}</span>
+                  <span className="font-medium">{metaPreviewLoading ? "…" : (r.value ?? 0)}</span>
+                </div>
+              ))}
+              <div className="flex justify-between px-3 py-2 bg-primary/5">
+                <span className="font-semibold">Sẽ xuất ra CSV</span>
+                <span className="font-bold text-primary">{metaPreviewLoading ? "…" : (metaPreview?.exported ?? 0)} khách</span>
+              </div>
+            </div>
+
+            <p className="text-[11px] text-muted-foreground">
+              SĐT chuẩn hoá +84, gộp trùng theo số. Chỉ xuất dữ liệu cần cho quảng cáo — KHÔNG nợ, ghi chú, địa chỉ hay lịch sử thanh toán.
+            </p>
+
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" size="sm" disabled={metaDownloading} onClick={() => setMetaOpen(false)}>Hủy</Button>
+              <Button size="sm" disabled={metaDownloading || !metaPreview || metaPreview.exported === 0} onClick={downloadMeta} className="gap-2">
+                <Download className="w-4 h-4" />
+                {metaDownloading ? "Đang tạo..." : `Tải CSV${metaPreview?.exported ? ` (${metaPreview.exported})` : ""}`}
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

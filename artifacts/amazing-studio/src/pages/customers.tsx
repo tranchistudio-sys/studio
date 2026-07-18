@@ -10,6 +10,7 @@ import { Button, Input, Select, Textarea, Dialog, DialogContent, DialogHeader, D
 import {
   Search, Plus, Phone, MapPin, Edit, Trash2, Users, Facebook,
   TrendingUp, Calendar, Camera, X, ChevronRight, AlertCircle, CheckCircle, Crown,
+  Heart, Sparkles,
 } from "lucide-react";
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -89,6 +90,32 @@ const RANK_COLORS: Record<string, string> = {
   needs_care: "bg-orange-100 text-orange-700",
 };
 
+// ─── Nhóm NHU CẦU (Cưới / Beauty) — TỰ ĐỘNG từ đơn hàng, KHÔNG nhập tay, KHÔNG trộn
+//     với phân hạng VIP (customerRank). Backend tính động qua field demandGroups. ──
+type DemandCategory = "wedding" | "beauty";
+const DEMAND_META: Record<DemandCategory, { label: string; color: string; Icon: typeof Heart }> = {
+  wedding: { label: "Cưới", color: "bg-rose-100 text-rose-700", Icon: Heart },
+  beauty: { label: "Beauty", color: "bg-violet-100 text-violet-700", Icon: Sparkles },
+};
+
+function DemandBadges({ groups }: { groups?: DemandCategory[] }) {
+  if (!groups || groups.length === 0) return null;
+  return (
+    <>
+      {groups.map((g) => {
+        const m = DEMAND_META[g];
+        if (!m) return null;
+        const { label, color, Icon } = m;
+        return (
+          <span key={g} className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold inline-flex items-center gap-0.5 ${color}`}>
+            <Icon className="w-2.5 h-2.5" />{label}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
 const STATUS_LABELS: Record<string, { label: string; color: string }> = {
   draft:           { label: "Lịch tạm",          color: "text-slate-500" },
   pending_service: { label: "Chưa chốt DV",       color: "text-orange-500" },
@@ -107,6 +134,8 @@ type Customer = {
   /** "Khách trả dư" — tiền thật vượt tổng hợp đồng (chốt 17/07, không mất, không nợ âm). */
   totalOverpaid?: number;
   customerRank?: string;
+  /** Nhóm nhu cầu TỰ ĐỘNG từ đơn hàng ("wedding"/"beauty") — riêng biệt với customerRank. */
+  demandGroups?: DemandCategory[];
 };
 
 type CustomerDetail = Customer & {
@@ -136,6 +165,8 @@ export default function CustomersPage() {
   const [search, setSearch] = useState("");
   const [sourceFilter, setSourceFilter] = useState("");
   const [rankFilter, setRankFilter] = useState("");
+  // Lọc nhu cầu: "" tất cả | "wedding" có Cưới | "beauty" có Beauty | "both" có cả hai.
+  const [demandFilter, setDemandFilter] = useState("");
   const [isOpen, setIsOpen] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState({ ...EMPTY_FORM });
@@ -337,9 +368,16 @@ export default function CustomersPage() {
     }
   };
 
+  const matchDemand = (c: Customer) => {
+    if (!demandFilter) return true;
+    const g = c.demandGroups ?? [];
+    if (demandFilter === "both") return g.includes("wedding") && g.includes("beauty");
+    return g.includes(demandFilter as DemandCategory);
+  };
   const filtered = customers.filter(c =>
     (!sourceFilter || c.source === sourceFilter) &&
-    (!rankFilter || (c.customerRank || "new") === rankFilter)
+    (!rankFilter || (c.customerRank || "new") === rankFilter) &&
+    matchDemand(c)
   );
 
   // Auto-suggest customer rank from totals
@@ -390,11 +428,17 @@ export default function CustomersPage() {
       <div className="flex gap-4">
         {/* ─── Customer List ───────────────────────────────────────────────── */}
         <div className={`flex-1 min-w-0 ${selectedId ? "hidden lg:block" : ""}`}>
-          <div className="flex gap-2 mb-3">
-            <div className="relative flex-1">
+          <div className="flex flex-wrap gap-2 mb-3">
+            <div className="relative flex-1 min-w-[180px]">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input className="pl-9" placeholder="Tên, SĐT, email..." value={search} onChange={e => setSearch(e.target.value)} />
             </div>
+            <Select value={demandFilter} onChange={e => setDemandFilter(e.target.value)} className="w-32">
+              <option value="">Mọi nhu cầu</option>
+              <option value="wedding">Cưới</option>
+              <option value="beauty">Beauty</option>
+              <option value="both">Cả hai</option>
+            </Select>
             <Select value={sourceFilter} onChange={e => setSourceFilter(e.target.value)} className="w-36">
               <option value="">Tất cả nguồn</option>
               {Object.entries(SOURCE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
@@ -428,6 +472,7 @@ export default function CustomersPage() {
                             {RANK_LABELS[c.customerRank] ?? c.customerRank}
                           </span>
                         )}
+                        <DemandBadges groups={c.demandGroups} />
                         {c.tags && typeof c.tags === "string" && c.tags.split(",").slice(0, 2).map(t => t.trim()).filter(Boolean).map(t => (
                           <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-accent text-accent-foreground">{t}</span>
                         ))}
@@ -491,6 +536,7 @@ export default function CustomersPage() {
                             {RANK_LABELS[customerDetail.customerRank] ?? customerDetail.customerRank}
                           </span>
                         )}
+                        <DemandBadges groups={customerDetail.demandGroups} />
                       </div>
                     </div>
                   </div>

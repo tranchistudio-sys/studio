@@ -2,7 +2,7 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { db, pool } from "@workspace/db";
 import { customersTable, bookingsTable } from "@workspace/db/schema";
 import { eq, desc, and, isNull } from "drizzle-orm";
-import { verifyToken } from "./auth";
+import { verifyToken, getCallerRole } from "./auth";
 import { withStartupDdlLock } from "../lib/startup-ddl";
 import { customerVisibleBookings } from "../lib/customer-aggregate";
 // GĐ1a (kiến trúc 14/07): tiền của khách đọc từ FINANCIAL ENGINE — route không tự tính.
@@ -82,6 +82,19 @@ async function ensureAdmin(req: Request, res: Response, forbiddenMsg = "Không c
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
   const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
   if (!isAdmin) { res.status(403).json({ error: forbiddenMsg }); return false; }
+  return true;
+}
+
+/**
+ * Yêu cầu caller ĐÃ ĐĂNG NHẬP hợp lệ (staff HOẶC admin, tài khoản còn hoạt động).
+ * Dùng cho các endpoint TRẢ dữ liệu khách nhạy cảm (tên/SĐT/email/địa chỉ/ghi chú/
+ * lịch sử tài chính): mọi nhân sự đăng nhập đều được XEM — đúng role model hiện có
+ * (getCallerRole = admin|staff|null), KHÔNG thêm role mới. Ghi/xoá vẫn siết riêng.
+ * Trả true nếu hợp lệ; nếu không, GỬI 401 và trả false.
+ */
+async function ensureAuth(req: Request, res: Response): Promise<boolean> {
+  const role = await getCallerRole(req.headers.authorization);
+  if (!role) { res.status(401).json({ error: "Chưa đăng nhập hoặc phiên hết hạn" }); return false; }
   return true;
 }
 
@@ -168,6 +181,7 @@ router.get("/customers/meta-export", async (req, res) => {
 
 router.get("/customers", async (req, res) => {
   try {
+  if (!(await ensureAuth(req, res))) return;
   const search = req.query.search as string | undefined;
   let customers;
   if (search) {
@@ -218,6 +232,7 @@ router.get("/customers", async (req, res) => {
 
 router.get("/customers/by-phone", async (req, res) => {
   try {
+  if (!(await ensureAuth(req, res))) return;
   const rawPhone = (req.query.phone as string | undefined) ?? "";
   // Không tra theo SĐT placeholder ("0"...) — tránh merge nhầm khách.
   if (isMissingPhone(rawPhone)) return res.status(400).json({ error: "Số điện thoại không hợp lệ để tra cứu" });
@@ -247,6 +262,7 @@ router.post("/customers", async (req, res) => {
   const { name, phone, email, address, notes, facebook, zalo, source, tags, gender, avatar, customerRank } = req.body;
   const normalizedPhone = normalizePhoneOrNull(phone);
   try {
+    if (!(await ensureAuth(req, res))) return;
     const count = await db.select().from(customersTable);
     const customCode = `KH${String(count.length + 1).padStart(3, "0")}`;
     const [customer] = await db
@@ -270,6 +286,7 @@ router.post("/customers", async (req, res) => {
 
 router.get("/customers/:id", async (req, res) => {
   try {
+  if (!(await ensureAuth(req, res))) return;
   const id = parseInt(req.params.id);
   const [customer] = await db.select().from(customersTable).where(eq(customersTable.id, id));
   if (!customer) return res.status(404).json({ error: "Không tìm thấy khách hàng" });
@@ -294,6 +311,7 @@ router.get("/customers/:id", async (req, res) => {
 
 router.get("/customers/:id/recent-bookings", async (req, res) => {
   try {
+    if (!(await ensureAuth(req, res))) return;
     const id = parseInt(req.params.id);
     if (isNaN(id)) return res.status(400).json({ error: "ID không hợp lệ" });
     const rows = await db
@@ -322,6 +340,7 @@ router.put("/customers/:id", async (req, res) => {
   const { name, phone, email, address, notes, facebook, zalo, source, tags, gender, avatar, customerRank } = req.body;
   const rawPhone = phone !== undefined ? String(phone) : undefined;
   try {
+    if (!(await ensureAuth(req, res))) return;
     const setFields: Record<string, unknown> = {
       name, email, address, notes, facebook, zalo, source, gender, avatar,
     };

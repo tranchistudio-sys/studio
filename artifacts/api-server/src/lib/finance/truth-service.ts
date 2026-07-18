@@ -67,7 +67,12 @@ async function consumerCustomerScreenDebt(
 ): Promise<{ surface: string; value: number }> {
   const base = (process.env.TRUTH_API_BASE ?? "").replace(/\/$/, "");
   if (base) {
-    const r = await fetch(`${base}/api/customers/${customerId}`);
+    // GET /api/customers/:id nay yeu cau auth (siet auth module Khach hang). Diagnostic
+    // live can set TRUTH_API_TOKEN = Bearer token cua 1 staff hop le; khong set -> goi
+    // tran (se 401) chi khi ai do bat TRUTH_API_BASE thu cong (mac dinh test skip het).
+    const token = process.env.TRUTH_API_TOKEN;
+    const r = await fetch(`${base}/api/customers/${customerId}`,
+      token ? { headers: { Authorization: `Bearer ${token}` } } : undefined);
     if (!r.ok) throw new Error(`GET /api/customers/${customerId} → HTTP ${r.status}`);
     const j = (await r.json()) as { totalDebt?: number };
     return { surface: "manKhachHang_httpApi", value: Number(j.totalDebt ?? 0) };

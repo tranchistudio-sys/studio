@@ -345,6 +345,11 @@ router.get("/payments/recent", async (req, res) => {
 // Hỗ trợ tìm kiếm có dấu/không dấu nhờ unaccent()
 router.get("/payments/search", async (req, res) => {
   try {
+  // Trả tên/SĐT khách + tiền đơn → bắt auth trước khi query (giữ role model hiện có).
+  if (!(await getCallerRole(req.headers.authorization))) {
+    res.status(401).json({ error: "Chưa đăng nhập hoặc phiên hết hạn" });
+    return;
+  }
   const q = ((req.query.q as string) || "").trim();
   if (!q) { res.json([]); return; }
 

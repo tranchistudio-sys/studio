@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request, type Response } from "express";
 import { db, pool } from "@workspace/db";
 import { customersTable, bookingsTable } from "@workspace/db/schema";
 import { eq, desc, and, isNull } from "drizzle-orm";
@@ -10,6 +10,11 @@ import { engineCustomerFinance, engineAllCustomersFinance } from "../lib/finance
 import { bookingColumnsCompat } from "../lib/schema-compat";
 // Nhóm nhu cầu (Cưới/Beauty) tính TỰ ĐỘNG từ đơn hợp lệ — không lưu cột, không nhập tay.
 import { computeCustomerDemand } from "../lib/customer-demand";
+// Xuất danh sách khách cho Meta Ads (logic thuần: chuẩn hoá SĐT, gộp trùng, CSV).
+import {
+  buildMetaExport, metaRowsToCsv, metaExportFilename, matchesDemandFilter,
+  type MetaExportInput, type MetaAudience, type DemandFilter,
+} from "../lib/meta-export";
 
 const router: IRouter = Router();
 
@@ -65,6 +70,101 @@ async function ensureCustomerPhoneUnique() {
   });
 }
 withStartupDdlLock(ensureCustomerPhoneUnique).catch(console.error);
+
+/**
+ * Xác thực caller là ADMIN. Trả true nếu hợp lệ; nếu không, GỬI LUÔN 401/403 và
+ * trả false (caller chỉ cần `if (!(await ensureAdmin(...))) return;`).
+ */
+async function ensureAdmin(req: Request, res: Response, forbiddenMsg = "Không có quyền thực hiện thao tác này"): Promise<boolean> {
+  const callerId = verifyToken(req.headers.authorization);
+  if (!callerId) { res.status(401).json({ error: "Chưa đăng nhập hoặc phiên hết hạn" }); return false; }
+  const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1 AND is_active = 1`, [callerId]);
+  const caller = callerR.rows[0] as Record<string, unknown> | undefined;
+  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  if (!isAdmin) { res.status(403).json({ error: forbiddenMsg }); return false; }
+  return true;
+}
+
+function parseAudience(v: unknown): MetaAudience {
+  return v === "with_orders" || v === "min_value" ? v : "all";
+}
+
+/**
+ * Gộp khách + số liệu cho XUẤT META, áp ĐÚNG bộ lọc màn Khách hàng (search/rank/
+ * source/demand). KHÔNG N+1: 1 query khách + engineAllCustomersFinance (value +
+ * số đơn countable, khớp engine) + computeCustomerDemand (nhóm nhu cầu) — tất cả
+ * gộp/song song. Trả input THUẦN cho buildMetaExport.
+ */
+async function collectMetaInputs(req: Request): Promise<MetaExportInput[]> {
+  const search = (req.query.search as string | undefined)?.trim();
+  const rank = req.query.rank as string | undefined;
+  const source = req.query.source as string | undefined;
+  const demand = ((req.query.demand as string | undefined) ?? "") as DemandFilter;
+
+  const COLS = `id, name, phone, source, customer_rank`;
+  let rows: Array<{ id: number; name: string; phone: string | null; source: string; customer_rank: string }>;
+  if (search) {
+    const pct = `%${search}%`;
+    const normPct = `%${normalizePhone(search)}%`;
+    const r = await pool.query(
+      `SELECT ${COLS} FROM customers
+       WHERE immutable_unaccent(name) ILIKE immutable_unaccent($1) OR phone ILIKE $2 OR facebook ILIKE $3
+       ORDER BY created_at DESC`,
+      [pct, normPct, pct],
+    );
+    rows = r.rows;
+  } else {
+    const r = await pool.query(`SELECT ${COLS} FROM customers ORDER BY created_at DESC`);
+    rows = r.rows;
+  }
+
+  const [finance, demandMap] = await Promise.all([engineAllCustomersFinance(), computeCustomerDemand()]);
+
+  const out: MetaExportInput[] = [];
+  for (const c of rows) {
+    if (rank && c.customer_rank !== rank) continue;
+    if (source && c.source !== source) continue;
+    const groups = demandMap.get(c.id) ?? [];
+    if (!matchesDemandFilter(groups, demand)) continue;
+    const f = finance.get(c.id);
+    out.push({
+      id: c.id, name: c.name, phone: c.phone,
+      value: f?.totalOwed ?? 0, countableBookings: f?.totalBookings ?? 0,
+      demandGroups: groups,
+    });
+  }
+  return out;
+}
+
+// Preview cho popup xác nhận: tổng khách / SĐT hợp lệ / bị loại / trùng đã gộp / sẽ xuất.
+router.get("/customers/meta-export/preview", async (req, res) => {
+  try {
+    if (!(await ensureAdmin(req, res, "Chỉ admin được xuất danh sách khách"))) return;
+    const inputs = await collectMetaInputs(req);
+    const { stats } = buildMetaExport(inputs, { audience: parseAudience(req.query.audience), minValue: Number(req.query.minValue) || 0 });
+    res.json(stats);
+  } catch (err) {
+    console.error("GET /customers/meta-export/preview error:", err);
+    res.status(500).json({ error: "Lỗi hệ thống" });
+  }
+});
+
+// Tải CSV chuẩn Meta (admin-only). Số chuẩn E.164, không trùng, chỉ 9 cột cho phép.
+router.get("/customers/meta-export", async (req, res) => {
+  try {
+    if (!(await ensureAdmin(req, res, "Chỉ admin được xuất danh sách khách"))) return;
+    const inputs = await collectMetaInputs(req);
+    const { rows } = buildMetaExport(inputs, { audience: parseAudience(req.query.audience), minValue: Number(req.query.minValue) || 0 });
+    const csv = metaRowsToCsv(rows);
+    const filename = metaExportFilename(new Date());
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.send(csv);
+  } catch (err) {
+    console.error("GET /customers/meta-export error:", err);
+    res.status(500).json({ error: "Lỗi hệ thống" });
+  }
+});
 
 router.get("/customers", async (req, res) => {
   try {
@@ -250,13 +350,8 @@ router.put("/customers/:id", async (req, res) => {
 
 router.delete("/customers/:id", async (req, res) => {
   try {
-  // Admin-only: verify token and check role
-  const callerId = verifyToken(req.headers.authorization);
-  if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập hoặc phiên hết hạn" });
-  const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1 AND is_active = 1`, [callerId]);
-  const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const callerIsAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
-  if (!callerIsAdmin) return res.status(403).json({ error: "Không có quyền xóa khách hàng" });
+  // Admin-only (dùng chung ensureAdmin — giữ nguyên message cũ).
+  if (!(await ensureAdmin(req, res, "Không có quyền xóa khách hàng"))) return;
 
   const id = parseInt(req.params.id);
   const force = req.query.force === "true";

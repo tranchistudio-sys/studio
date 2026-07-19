@@ -48,6 +48,7 @@ import { refindCustomerPatch, noPhoneSavePlan } from "@/lib/customer-rename";
 import { applyStatusOverride } from "@/lib/effective-status";
 import OutfitBookingSection, { type OutfitDraft } from "@/components/outfit-booking-section";
 import { splitOutfitsBySub, planOutfitSync, mapDressRowToDraft, dedupeParentOutfits, moveOutfitsOnSubRemove } from "@/lib/outfit-per-service";
+import { defaultNewOccurrence, findOccurrenceConflict, occurrenceRowConflict } from "@/lib/occurrence-form";
 import AdditionalServicesSection, { validateAdditionalServicesForm, type AdditionalServiceLine, newAdditionalServiceLine } from "@/components/additional-services-section";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -2078,6 +2079,20 @@ function ShowFormPanel({
       subDrafts.flatMap(s => s.additionalServices || []).filter(l => (l.title || "").trim()),
     );
     if (!extrasValidation.ok) { setError(extrasValidation.errors[0]); return; }
+    // ── Chặn TRƯỚC khi gọi API: ngày thực hiện phụ trùng ngày chính / trùng nhau ──
+    // (mirror rule backend planOccurrencesSync). Hợp đồng gộp lưu bằng chuỗi PUT tuần
+    // tự — nếu để backend 400 giữa chừng thì dịch vụ trước đã lưu, dịch vụ sau chưa
+    // (sự cố 19/07: "Cập nhật show không có tác dụng"). Validate hết ở đây thì hoặc
+    // lưu trọn vẹn, hoặc chưa đụng gì.
+    const occConflict = findOccurrenceConflict(
+      subDrafts.map(s => ({
+        serviceLabel: s.serviceLabel,
+        shootDate: s.shootDate || shootDate,
+        shootTime: s.shootTime,
+        occurrences: s.occurrences,
+      })),
+    );
+    if (occConflict) { setError(occConflict); return; }
     const isMulti = subDrafts.length >= 2;
 
     // ── Giải quyết khách hàng cho show (dùng chung cho cả luồng đơn & hợp đồng gộp) ──
@@ -2204,7 +2219,10 @@ function ShowFormPanel({
         // Map sub.id → booking id THẬT của dịch vụ (sibling cũ giữ id, dịch vụ mới lấy id từ
         // response add-child) — để sync trang phục vào ĐÚNG child booking.
         const subBookingIds: Record<string, number> = {};
-        for (const sub of subDrafts) {
+        for (const [subIdx, sub] of subDrafts.entries()) {
+          // Tên dịch vụ cho message lỗi — user phải biết SỬA Ở ĐÂU (sự cố 19/07:
+          // lỗi chung chung + banner ngoài tầm nhìn = tưởng "không có tác dụng").
+          const subName = (sub.serviceLabel || "").trim() || `Dịch vụ ${subIdx + 1}`;
           const validItems = normalizeItems(sub.items);
           const subPackageTotal = calcSubPackageTotal(sub.items);
           const subExtrasTotal = calcSubExtrasTotal(sub.additionalServices || []);
@@ -2231,7 +2249,7 @@ function ShowFormPanel({
             });
             if (!res.ok) {
               const errBody = await res.json().catch(() => null);
-              throw new Error(errBody?.error || "Lỗi lưu dịch vụ");
+              throw new Error(`${subName}: ${errBody?.error || "Lỗi lưu dịch vụ"}`);
             }
             subBookingIds[sub.id] = sub.siblingId;
           } else if (booking?.id) {
@@ -2249,7 +2267,10 @@ function ShowFormPanel({
                 servicePackageId,
               }),
             });
-            if (!res.ok) throw new Error("Lỗi thêm dịch vụ mới");
+            if (!res.ok) {
+              const errBody = await res.json().catch(() => null);
+              throw new Error(`${subName}: ${errBody?.error || "Lỗi thêm dịch vụ mới"}`);
+            }
             const createdChild = await res.json().catch(() => null);
             if (createdChild?.id) subBookingIds[sub.id] = createdChild.id;
           }
@@ -2959,10 +2980,12 @@ function ShowFormPanel({
                     {/* Ngày thực hiện phụ (dịch vụ nhiều ngày) — ngày 1 = ô trên; đây là ngày 2..n */}
                     {(sub.occurrences?.length ?? 0) > 0 && (
                       <div className="space-y-2">
-                        {sub.occurrences.map((occ, oi) => (
-                          <div key={occ.id ?? `new-${oi}`} className="rounded-lg border border-dashed border-blue-300 dark:border-blue-800 p-2 bg-blue-50/40 dark:bg-blue-950/10 space-y-1.5">
+                        {sub.occurrences.map((occ, oi) => {
+                          const occDup = occurrenceRowConflict(sub.occurrences, oi, sub.shootDate || shootDate, sub.shootTime);
+                          return (
+                          <div key={occ.id ?? `new-${oi}`} className={`rounded-lg border border-dashed p-2 space-y-1.5 ${occDup ? "border-red-400 dark:border-red-700 bg-red-50/40 dark:bg-red-950/10" : "border-blue-300 dark:border-blue-800 bg-blue-50/40 dark:bg-blue-950/10"}`}>
                             <div className="flex items-center justify-between">
-                              <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400">📅 Ngày thực hiện {oi + 2}</span>
+                              <span className={`text-[10px] font-bold ${occDup ? "text-red-600 dark:text-red-400" : "text-blue-600 dark:text-blue-400"}`}>📅 Ngày thực hiện {oi + 2}</span>
                               <button type="button" onClick={() => updateSubDraft(sub.id, { occurrences: sub.occurrences.filter((_, i) => i !== oi) })}
                                 className="text-[10px] text-red-500 hover:underline">Xóa ngày</button>
                             </div>
@@ -2970,14 +2993,20 @@ function ShowFormPanel({
                               <DateInput className="h-8 text-sm" value={occ.shootDate} onChange={v => updateSubDraft(sub.id, { occurrences: sub.occurrences.map((o, i) => i === oi ? { ...o, shootDate: v } : o) })} />
                               <Input type="time" className="h-8 text-sm" value={occ.shootTime} onChange={e => updateSubDraft(sub.id, { occurrences: sub.occurrences.map((o, i) => i === oi ? { ...o, shootTime: e.target.value } : o) })} />
                             </div>
+                            {occDup && (
+                              <p className="text-[10px] font-medium text-red-600 dark:text-red-400">
+                                ⚠ Trùng hoàn toàn với ngày chính hoặc ngày phụ khác — đổi ngày hoặc giờ thì mới lưu được.
+                              </p>
+                            )}
                             <Input className="h-8 text-sm" placeholder="Ghi chú: Nhà gái / Rước dâu / Tiệc…" value={occ.label}
                               onChange={e => updateSubDraft(sub.id, { occurrences: sub.occurrences.map((o, i) => i === oi ? { ...o, label: e.target.value } : o) })} />
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                     <button type="button"
-                      onClick={() => updateSubDraft(sub.id, { occurrences: [...(sub.occurrences ?? []), { id: null, shootDate: sub.shootDate, shootTime: "08:00", label: "" }] })}
+                      onClick={() => updateSubDraft(sub.id, { occurrences: [...(sub.occurrences ?? []), defaultNewOccurrence(sub.shootDate || shootDate, sub.shootTime, sub.occurrences ?? [])] })}
                       className="text-xs text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-1">
                       <Plus className="w-3.5 h-3.5" /> Thêm ngày
                     </button>
@@ -3329,6 +3358,13 @@ function ShowFormPanel({
 
       {/* Footer */}
       <div className="px-4 py-3 border-t flex-shrink-0 bg-background/80 max-w-2xl mx-auto w-full space-y-3">
+        {/* Lỗi lưu hiện NGAY CẠNH nút — banner đầu form nằm ngoài tầm nhìn khi đang
+            cuộn dưới (sự cố 19/07: bấm "Cập nhật show" tưởng không có tác dụng). */}
+        {error && (
+          <div className="flex items-center gap-2 p-2.5 bg-destructive/10 rounded-xl text-destructive text-xs font-medium">
+            <AlertCircle className="w-4 h-4 flex-shrink-0" /> {error}
+          </div>
+        )}
         {tempQuoteMode && (
           <div className="bg-amber-50 border border-amber-300 rounded-xl p-3 space-y-1.5 text-sm text-amber-900">
             <p className="text-[11px] font-bold uppercase tracking-wider text-amber-700">Báo giá tạm tính — chưa phải hợp đồng chính thức</p>

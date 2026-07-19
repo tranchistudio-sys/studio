@@ -125,13 +125,20 @@ export function planOccurrencesSync(
 ): { ok: true; plan: OccurrenceSyncPlan } | { ok: false; error: string } {
   const seen = new Set<string>();
   const mainKey = `${normalizeDate(mainDate)}|${normalizeTime(mainTime)}`;
+  // Message kèm NGÀY cụ thể (dd/mm/yyyy) — user phải biết sửa dòng nào (sự cố 19/07:
+  // lỗi chung chung khiến người dùng tưởng "Cập nhật show không có tác dụng").
+  const fmtDmy = (iso: string, t: string) => {
+    const [y, m, d] = iso.split("-");
+    return `${d}/${m}/${y}${t ? ` ${t}` : ""}`;
+  };
   for (const d of drafts) {
-    const key = `${d.shootDate}|${normalizeTime(d.shootTime)}`;
+    const t = normalizeTime(d.shootTime);
+    const key = `${d.shootDate}|${t}`;
     if (key === mainKey) {
-      return { ok: false, error: "Ngày thực hiện phụ trùng hoàn toàn với ngày chính của dịch vụ" };
+      return { ok: false, error: `Ngày thực hiện phụ ${fmtDmy(d.shootDate, t)} trùng hoàn toàn với ngày chính của dịch vụ — đổi ngày hoặc giờ rồi lưu lại` };
     }
     if (seen.has(key)) {
-      return { ok: false, error: "Hai ngày thực hiện phụ trùng hoàn toàn ngày + giờ" };
+      return { ok: false, error: `Có hai ngày thực hiện phụ trùng hoàn toàn ngày + giờ (${fmtDmy(d.shootDate, t)}) — xóa bớt một dòng rồi lưu lại` };
     }
     seen.add(key);
   }

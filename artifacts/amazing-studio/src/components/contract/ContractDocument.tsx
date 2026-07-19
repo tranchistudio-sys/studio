@@ -12,7 +12,7 @@ import { useState } from "react";
 import { formatVND } from "@/lib/utils";
 import { parseDescriptionBlocks } from "@/lib/package-description";
 import SignaturePad from "./SignaturePad";
-import type { ContractPayload } from "./contract-types";
+import type { ContractPayload, ContractService } from "./contract-types";
 
 type ContractDocumentProps = {
   payload: ContractPayload;
@@ -44,6 +44,18 @@ function fmtDate(d: string | null | undefined, fallback = "—"): string {
 
 function methodLabel(m: string): string {
   return m === "bank_transfer" ? "Chuyển khoản" : "Tiền mặt";
+}
+
+/**
+ * Danh sách NGÀY của một dịch vụ: ngày chính + các ngày phụ (booking_occurrences).
+ * Chip đầu hợp đồng phải hiện ĐỦ các ngày — người xem nhìn đầu trang là hiểu ngay
+ * show đi mấy ngày, không phải cuộn xuống mục "Lịch thực hiện" (yêu cầu chủ 20/07).
+ */
+function serviceDays(svc: ContractService): { date: string | null; time: string | null; label: string | null }[] {
+  return [
+    { date: svc.shootDate, time: svc.shootTime, label: null },
+    ...(svc.occurrences ?? []).map(o => ({ date: o.date, time: o.time, label: o.label })),
+  ];
 }
 
 function typeLabel(t: string): string {
@@ -168,30 +180,40 @@ export default function ContractDocument({
                   <div className="font-bold text-[#111]">
                     📋 {svc.serviceLabel || `Dịch vụ ${idx + 1}`}
                   </div>
-                  {/* Ngày giờ chụp nổi bật — khách nhìn là thấy, không lộn ngày */}
+                  {/* Ngày giờ chụp nổi bật — khách nhìn là thấy, không lộn ngày.
+                      Dịch vụ nhiều ngày: hiện ĐỦ chip Ngày 1/Ngày 2… ngay tại đây. */}
                   <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
                     {svc.shootTime ? (
                       <span className="inline-flex items-center gap-1 rounded-md bg-[#111] px-2 py-0.5 text-[13px] font-extrabold text-white tabular-nums">
                         🕐 {svc.shootTime.slice(0, 5)}
                       </span>
                     ) : null}
-                    <span className="inline-flex items-center gap-1 rounded-md border border-[#111] bg-[#f7f7f7] px-2 py-0.5 text-[13px] font-extrabold text-[#111] tabular-nums">
-                      📅 {fmtDate(svc.shootDate)}
-                    </span>
+                    {serviceDays(svc).map((d, di, arr) => (
+                      <span key={di} className="inline-flex items-center gap-1 rounded-md border border-[#111] bg-[#f7f7f7] px-2 py-0.5 text-[13px] font-extrabold text-[#111] tabular-nums">
+                        📅 {arr.length > 1 ? `Ngày ${di + 1}: ` : ""}{fmtDate(d.date)}
+                        {di > 0 && d.time ? ` · ${d.time.slice(0, 5)}` : ""}
+                        {d.label ? <span className="font-semibold text-[#555]"> — {d.label}</span> : null}
+                      </span>
+                    ))}
                     {svc.location ? <span className="text-xs text-[#888]">📍 {svc.location}</span> : null}
                   </div>
                 </div>
               ) : (
-                // Ngày giờ chụp nổi bật — khách nhìn là thấy, không lộn ngày
+                // Ngày giờ chụp nổi bật — khách nhìn là thấy, không lộn ngày.
+                // Dịch vụ nhiều ngày: hiện ĐỦ chip Ngày 1/Ngày 2… ngay đầu hợp đồng.
                 <div className="flex flex-wrap items-center gap-2 mb-3">
                   {svc.shootTime ? (
                     <span className="inline-flex items-center gap-1.5 rounded-lg bg-[#111] px-3 py-1.5 text-[15px] font-extrabold text-white tabular-nums">
                       🕐 {svc.shootTime.slice(0, 5)}
                     </span>
                   ) : null}
-                  <span className="inline-flex items-center gap-1.5 rounded-lg border-2 border-[#111] bg-[#f7f7f7] px-3 py-1.5 text-[15px] font-extrabold text-[#111] tabular-nums">
-                    📅 Ngày chụp: {fmtDate(svc.shootDate)}
-                  </span>
+                  {serviceDays(svc).map((d, di, arr) => (
+                    <span key={di} className="inline-flex items-center gap-1.5 rounded-lg border-2 border-[#111] bg-[#f7f7f7] px-3 py-1.5 text-[15px] font-extrabold text-[#111] tabular-nums">
+                      📅 {arr.length > 1 ? `Ngày ${di + 1}: ` : "Ngày chụp: "}{fmtDate(d.date)}
+                      {di > 0 && d.time ? ` · ${d.time.slice(0, 5)}` : ""}
+                      {d.label ? <span className="font-semibold text-[#555]"> — {d.label}</span> : null}
+                    </span>
+                  ))}
                   {svc.location ? <span className="text-xs text-[#666]">📍 {svc.location}</span> : null}
                 </div>
               )}

@@ -28,6 +28,9 @@ export type ContractService = {
   totalAmount: number;
   surcharges: { name: string; amount: number }[];
   items: ContractServiceItem[];
+  /** Ngày thực hiện PHỤ của dịch vụ này (ngày 2..n) — chip đầu HĐ hiện đủ các ngày.
+   *  Optional để tương thích payload cũ/bản ký đóng băng (thiếu ⇒ chỉ chip ngày chính). */
+  occurrences?: { date: string; time: string | null; label: string | null }[];
 };
 
 export type ContractPaymentRow = {

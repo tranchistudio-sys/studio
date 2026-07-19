@@ -54,6 +54,13 @@ export type ContractService = {
   totalAmount: number;
   surcharges: { name: string; amount: number }[];
   items: ContractServiceItem[];
+  /**
+   * Ngày thực hiện PHỤ của chính dịch vụ này (booking_occurrences, ngày 2..n) —
+   * để chip "Ngày chụp" ĐẦU hợp đồng hiện đủ các ngày (yêu cầu chủ 20/07: nhìn
+   * đầu trang là hiểu ngay show đi mấy ngày, không phải cuộn xuống Lịch thực hiện).
+   * Thuần hiển thị, không tiền.
+   */
+  occurrences: { date: string; time: string | null; label: string | null }[];
 };
 
 export type ContractPaymentRow = {
@@ -222,6 +229,8 @@ function buildService(
       amount: money(s.amount),
     })),
     items,
+    // Gắn sau khi query booking_occurrences (buildContractPayload) — đây chỉ là default.
+    occurrences: [],
   };
 }
 
@@ -363,6 +372,9 @@ export function applySignedSnapshotForDisplay(
               makeupName: liveItem?.makeupName ?? null,
             };
           }),
+          // Bản ĐÃ KÝ: chip ngày chỉ hiện ngày chính theo snapshot — KHÔNG mượn ngày
+          // phụ live để tránh chip (live) lệch với section Lịch thực hiện (bản ký).
+          occurrences: [],
         };
       })
     : live.services;
@@ -543,6 +555,14 @@ export async function buildContractPayload(
     for (const o of (b.id != null ? occByBooking.get(b.id) ?? [] : [])) {
       schedule.push({ date: o.shootDate, time: o.shootTime, label: o.label });
     }
+  }
+  // Gắn ngày phụ vào TỪNG dịch vụ — chip "Ngày chụp" đầu hợp đồng hiện đủ các ngày.
+  for (const svc of services) {
+    svc.occurrences = (occByBooking.get(svc.bookingId) ?? []).map((o) => ({
+      date: o.shootDate,
+      time: o.shootTime,
+      label: o.label,
+    }));
   }
 
   // ── Thanh toán ────────────────────────────────────────────────────────────

@@ -57,6 +57,7 @@ function makeLivePayload(): ContractPayload {
             makeupName: null,
           },
         ],
+        occurrences: [],
       },
     ],
     schedule: [{ date: "2026-08-01", time: "08:00", label: "Chụp cưới" }],
@@ -176,5 +177,33 @@ describe("applySignedSnapshotForDisplay — đóng băng bản ĐÃ KÝ", () => 
     expect(frozen.services[0].location).toBe("Tây Ninh");
     // v1 không có customer → giữ live
     expect(frozen.customer.name).toBe("Chị Hoa");
+  });
+});
+
+describe("Ngày thực hiện phụ trên hợp đồng (chip Ngày 1/Ngày 2… đầu trang)", () => {
+  it("buildSignedSnapshot KHÔNG nhét occurrences vào services (lịch đã đóng băng qua field schedule)", () => {
+    const live = makeLivePayload();
+    live.services[0].occurrences = [{ date: "2026-08-02", time: "10:00", label: "Nhà trai" }];
+    const snap = buildSignedSnapshot(live) as Record<string, unknown>;
+    const snapSvc = (snap.services as Record<string, unknown>[])[0];
+    expect("occurrences" in snapSvc).toBe(false);
+  });
+  it("thêm ngày phụ SAU khi ký không tự báo 'lệch bản ký' qua key mới (chỉ schedule mới là nguồn so)", () => {
+    const live = makeLivePayload();
+    const snap = buildSignedSnapshot(live) as Record<string, unknown>;
+    // Sau ký: thêm ngày phụ → occurrences đổi nhưng snapshot không có key đó;
+    // schedule TRONG SNAPSHOT so theo giá trị đã lưu — ở đây giữ nguyên schedule
+    // để chứng minh riêng key occurrences không gây báo lệch.
+    live.services[0].occurrences = [{ date: "2026-08-02", time: "10:00", label: null }];
+    expect(signedSnapshotChanged(snap, live)).toBe(false);
+  });
+  it("bản ĐÃ KÝ render từ snapshot → occurrences = [] (chip chỉ ngày chính bản ký, không trộn ngày live)", () => {
+    const live = makeLivePayload();
+    const snap = buildSignedSnapshot(live) as Record<string, unknown>;
+    live.services[0].occurrences = [{ date: "2026-08-02", time: "10:00", label: null }];
+    live.services[0].shootDate = "2026-08-15"; // lệch để kích hoạt render theo bản ký
+    const frozen = applySignedSnapshotForDisplay(live, snap);
+    expect(frozen.services[0].occurrences).toEqual([]);
+    expect(frozen.services[0].shootDate).toBe("2026-08-01");
   });
 });

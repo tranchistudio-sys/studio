@@ -254,6 +254,44 @@ describe("Ngày thêm SAU khi ký (sự cố BG0017 20/07)", () => {
     ]);
   });
 
+  it("P1: chỉ DỜI GIỜ ngày đã ký → KHÔNG được đẻ ra ngày mới (nhận diện theo id hàng)", () => {
+    const merged = mergeSignedAndAddedDays(
+      [{ id: 7, date: "2026-10-18", time: "08:00", label: "Rước dâu" }],
+      [{ id: 7, date: "2026-10-18", time: "14:00", label: "Rước dâu" }],
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0].time).toBe("08:00"); // hợp đồng giữ đúng giờ khách đã ký
+  });
+
+  it("P1: sửa NGÀY gõ nhầm của ngày đã ký (cùng id) cũng không đẻ ngày mới", () => {
+    const merged = mergeSignedAndAddedDays(
+      [{ id: 7, date: "2026-10-18", time: "08:00", label: null }],
+      [{ id: 7, date: "2026-10-19", time: "08:00", label: null }],
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0].date).toBe("2026-10-18");
+  });
+
+  it("P1: bản ký CŨ chưa lưu id → lùi về so theo NGÀY, đổi giờ vẫn không đẻ ngày ma", () => {
+    const merged = mergeSignedAndAddedDays(
+      [{ date: "2026-10-18", time: "08:00", label: null }],
+      [{ id: 7, date: "2026-10-18", time: "14:00", label: null }],
+    );
+    expect(merged).toHaveLength(1);
+  });
+
+  it("id MỚI (studio thêm hẳn ngày khác) thì vẫn phải hiện + gắn cờ", () => {
+    const merged = mergeSignedAndAddedDays(
+      [{ id: 7, date: "2026-10-18", time: "08:00", label: "Rước dâu" }],
+      [
+        { id: 7, date: "2026-10-18", time: "08:00", label: "Rước dâu" },
+        { id: 9, date: "2026-10-20", time: "07:00", label: "Tiệc" },
+      ],
+    );
+    expect(merged).toHaveLength(2);
+    expect(merged[1]).toMatchObject({ date: "2026-10-20", addedAfterSign: true });
+  });
+
   it("mergeSignedAndAddedDays: ngày CÓ trong bản ký thì không nhân đôi, không gắn cờ", () => {
     const merged = mergeSignedAndAddedDays(
       [{ date: "2026-10-18", time: "08:00", label: "Rước dâu" }],

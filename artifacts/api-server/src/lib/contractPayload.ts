@@ -60,7 +60,17 @@ export type ContractService = {
    * đầu trang là hiểu ngay show đi mấy ngày, không phải cuộn xuống Lịch thực hiện).
    * Thuần hiển thị, không tiền.
    */
-  occurrences: { date: string; time: string | null; label: string | null }[];
+  occurrences: {
+    date: string;
+    time: string | null;
+    label: string | null;
+    /**
+     * Ngày này được thêm SAU khi khách ký (không có trong bản ký). Hợp đồng vẫn
+     * hiện ra — chủ studio 20/07: "phải hiện ra ngày đã thêm" — nhưng gắn nhãn để
+     * khách phân biệt cái gì có từ lúc ký, cái gì bổ sung sau.
+     */
+    addedAfterSign?: boolean;
+  }[];
 };
 
 export type ContractPaymentRow = {
@@ -346,6 +356,30 @@ type ScheduleEntry = { date: string; time: string | null; label: string | null }
  * chính của dịch vụ kế tiếp. Dò tiến (cursor) để 2 dịch vụ trùng ngày không cướp
  * block của nhau.
  */
+type ServiceOccurrence = { date: string; time: string | null; label: string | null; addedAfterSign?: boolean };
+
+/**
+ * Gộp ngày của BẢN KÝ với ngày studio thêm SAU khi ký.
+ *
+ * Chủ studio 20/07: hợp đồng "phải hiện ra ngày đã thêm" — khách mở link thấy
+ * thiếu ngày rước dâu là không chịu. Nhưng cũng không được âm thầm đổi bản pháp
+ * lý → ngày thêm sau đứng sau, mang cờ addedAfterSign để hợp đồng ghi chú rõ.
+ *
+ * Ngày trong bản ký mà live đã xoá thì VẪN GIỮ: đó là cam kết khách đã ký, muốn
+ * bỏ phải cho khách ký lại.
+ */
+export function mergeSignedAndAddedDays(
+  signed: ServiceOccurrence[],
+  liveOcc: { date: string; time: string | null; label: string | null }[],
+): ServiceOccurrence[] {
+  const key = (o: { date: string; time: string | null }) => `${o.date}|${o.time ?? ""}`;
+  const inSigned = new Set(signed.map(key));
+  const added = liveOcc
+    .filter((o) => typeof o.date === "string" && o.date !== "" && !inSigned.has(key(o)))
+    .map((o) => ({ date: o.date, time: o.time ?? null, label: o.label ?? null, addedAfterSign: true }));
+  return [...signed, ...added];
+}
+
 export function splitSnapshotSchedule(
   schedule: ScheduleEntry[],
   services: { bookingId?: number | null; shootDate?: string | null }[],
@@ -430,17 +464,18 @@ export function applySignedSnapshotForDisplay(
               makeupName: liveItem?.makeupName ?? null,
             };
           }),
-          // Bản ĐÃ KÝ: ngày phụ lấy theo BẢN KÝ, KHÔNG mượn ngày phụ live (không âm
-          // thầm đổi bản pháp lý). Snapshot v3 có sẵn occurrences; bản ký cũ thì
-          // back-fill từ `schedule` đã đóng băng — dòng dịch vụ phải hiện đủ ngày,
-          // vì mục "Lịch thực hiện" riêng đã bỏ (yêu cầu chủ 20/07).
-          occurrences: Array.isArray(snap.occurrences)
-            ? snap.occurrences
-                .filter((o) => typeof o.date === "string")
-                .map((o) => ({ date: o.date as string, time: o.time ?? null, label: o.label ?? null }))
-            : snap.bookingId != null
-              ? occFromSchedule.get(snap.bookingId) ?? []
-              : [],
+          // Ngày của bản ký (snapshot v3 có sẵn; bản ký cũ back-fill từ `schedule`),
+          // GỘP thêm ngày studio thêm sau khi ký — có nhãn addedAfterSign.
+          occurrences: mergeSignedAndAddedDays(
+            Array.isArray(snap.occurrences)
+              ? snap.occurrences
+                  .filter((o) => typeof o.date === "string")
+                  .map((o) => ({ date: o.date as string, time: o.time ?? null, label: o.label ?? null }))
+              : snap.bookingId != null
+                ? occFromSchedule.get(snap.bookingId) ?? []
+                : [],
+            liveSvc?.occurrences ?? [],
+          ),
         };
       })
     : live.services;

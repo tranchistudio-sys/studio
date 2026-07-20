@@ -898,6 +898,27 @@ router.get("/bookings/:id", async (req, res) => {
         .orderBy(asc(bookingOccurrencesTable.sortOrder), asc(bookingOccurrencesTable.shootDate), asc(bookingOccurrencesTable.id))
     : [];
 
+  /**
+   * Ngày phụ của CÁC DÒNG DỊCH VỤ KHÁC trong cùng hợp đồng (sibling/child).
+   * Trước đây chỉ đơn đang mở mới có `occurrences` → màn xem show và hợp đồng chỉ
+   * hiện đủ ngày cho ĐÚNG dịch vụ đang xem, các dịch vụ còn lại tưởng như 1 ngày.
+   * Batch 1 query như list endpoint; thuần lịch trình nên KHÔNG đụng tiền/công nợ.
+   */
+  async function occurrencesByBookingId(ids: number[]) {
+    const map: Record<number, { id: number; shootDate: string; shootTime: string | null; label: string | null; sortOrder: number }[]> = {};
+    // Tương thích ngược: DB chưa migrate (thiếu bảng) → coi như không có ngày phụ.
+    if (!schemaFlags.occurrences || ids.length === 0) return map;
+    const rows = await db
+      .select({ id: bookingOccurrencesTable.id, bookingId: bookingOccurrencesTable.bookingId, shootDate: bookingOccurrencesTable.shootDate, shootTime: bookingOccurrencesTable.shootTime, label: bookingOccurrencesTable.label, sortOrder: bookingOccurrencesTable.sortOrder })
+      .from(bookingOccurrencesTable)
+      .where(inArray(bookingOccurrencesTable.bookingId, ids))
+      .orderBy(asc(bookingOccurrencesTable.sortOrder), asc(bookingOccurrencesTable.shootDate), asc(bookingOccurrencesTable.id));
+    for (const o of rows) {
+      (map[o.bookingId] ??= []).push({ id: o.id, shootDate: o.shootDate, shootTime: o.shootTime, label: o.label, sortOrder: o.sortOrder });
+    }
+    return map;
+  }
+
   // Expenses: child/standalone = this booking only; parent contract = parent + all children
   let expenseBookingIds: number[] = [id];
   let children: unknown[] = [];
@@ -909,11 +930,13 @@ router.get("/bookings/:id", async (req, res) => {
       .where(eq(bookingsTable.parentId, id))
       .orderBy(bookingsTable.shootDate);
     expenseBookingIds = [id, ...childRows.map((c) => c.id)];
+    const childOcc = await occurrencesByBookingId(childRows.map((c) => c.id));
     children = childRows.map((c) => ({
       ...c,
       items: normalizeItemStaff(c.items),
       totalAmount: parseFloat(c.totalAmount),
       depositAmount: parseFloat(c.depositAmount),
+      occurrences: childOcc[c.id] ?? [],
     }));
   }
 
@@ -987,12 +1010,14 @@ router.get("/bookings/:id", async (req, res) => {
       sibTaskMap[tr.bookingId].push({ role: tr.role, taskType: tr.taskType, assigneeName: tr.assigneeName, status: tr.status });
     }
 
+    const sibOcc = await occurrencesByBookingId(siblingIds);
     siblings = siblingRows.map(s => ({
       ...s,
       items: normalizeItemStaff(s.items),
       totalAmount: parseFloat(s.totalAmount),
       depositAmount: parseFloat(s.depositAmount),
       taskAssignees: sibTaskMap[s.id] ?? [],
+      occurrences: sibOcc[s.id] ?? [],
     }));
 
     const [parentRow] = await db

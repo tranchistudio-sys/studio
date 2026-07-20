@@ -154,8 +154,11 @@ export function renderServicePriceBreakdownHTML({
 
 export interface ServiceBreakdownCardHTMLProps extends ServicePriceBreakdownHTMLProps {
   title: string;
-  /** Optional subtitle line under the title (e.g. shoot date). Plain text — sẽ được escape. */
-  subtitle?: string | null;
+  /**
+   * Dòng phụ dưới tên dịch vụ (ngày thực hiện). Text thuần — sẽ được escape.
+   * Mảng = nhiều dòng: dịch vụ nhiều ngày phải hiện ĐỦ ngày ngay tại đây.
+   */
+  subtitle?: string | string[] | null;
   /** Mô tả gói (nội dung gói) — multi-line dùng "\n". */
   description?: string | null;
   hidePrice?: boolean;
@@ -184,9 +187,11 @@ export function renderServiceBreakdownCardHTML({
           ).join("")}
         </div>`
     : "";
-  const subtitleHTML = subtitle
-    ? `<div style="font-size:11px;color:#444;margin-top:2px;">${escapeHTML(subtitle)}</div>`
-    : "";
+  const subtitleLines = (Array.isArray(subtitle) ? subtitle : [subtitle])
+    .filter((s): s is string => typeof s === "string" && s.trim() !== "");
+  const subtitleHTML = subtitleLines
+    .map(s => `<div style="font-size:11px;color:#444;margin-top:2px;">${escapeHTML(s)}</div>`)
+    .join("");
   const priceHTML = hidePrice ? "" : renderServicePriceBreakdownHTML(priceProps);
   return `
       <div style="border:1px solid #ddd;border-radius:10px;overflow:hidden;margin-bottom:12px;background:#fff;">

@@ -18,6 +18,7 @@ import {
   projectToShape,
   signedSnapshotChanged,
   applySignedSnapshotForDisplay,
+  splitSnapshotSchedule,
   type ContractPayload,
 } from "./contractPayload.js";
 
@@ -180,30 +181,113 @@ describe("applySignedSnapshotForDisplay — đóng băng bản ĐÃ KÝ", () => 
   });
 });
 
-describe("Ngày thực hiện phụ trên hợp đồng (chip Ngày 1/Ngày 2… đầu trang)", () => {
-  it("buildSignedSnapshot KHÔNG nhét occurrences vào services (lịch đã đóng băng qua field schedule)", () => {
+describe("Ngày thực hiện phụ trên hợp đồng (ngày hiện ngay tại dòng dịch vụ)", () => {
+  it("buildSignedSnapshot đóng băng occurrences theo TỪNG dịch vụ (v3)", () => {
     const live = makeLivePayload();
     live.services[0].occurrences = [{ date: "2026-08-02", time: "10:00", label: "Nhà trai" }];
     const snap = buildSignedSnapshot(live) as Record<string, unknown>;
     const snapSvc = (snap.services as Record<string, unknown>[])[0];
-    expect("occurrences" in snapSvc).toBe(false);
+    expect(snapSvc.occurrences).toEqual([{ date: "2026-08-02", time: "10:00", label: "Nhà trai" }]);
   });
-  it("thêm ngày phụ SAU khi ký không tự báo 'lệch bản ký' qua key mới (chỉ schedule mới là nguồn so)", () => {
+
+  it("bản ký CŨ (v2, không có key occurrences) không bị báo 'lệch bản ký' oan vì key mới", () => {
     const live = makeLivePayload();
-    const snap = buildSignedSnapshot(live) as Record<string, unknown>;
-    // Sau ký: thêm ngày phụ → occurrences đổi nhưng snapshot không có key đó;
-    // schedule TRONG SNAPSHOT so theo giá trị đã lưu — ở đây giữ nguyên schedule
-    // để chứng minh riêng key occurrences không gây báo lệch.
+    const snapV2 = buildSignedSnapshot(live) as Record<string, unknown>;
+    // Giả lập snapshot đã lưu trước đây: gỡ key occurrences khỏi services.
+    for (const s of snapV2.services as Record<string, unknown>[]) delete s.occurrences;
     live.services[0].occurrences = [{ date: "2026-08-02", time: "10:00", label: null }];
-    expect(signedSnapshotChanged(snap, live)).toBe(false);
+    // projectToShape chỉ so key CÓ trong snapshot đã lưu → occurrences không tính.
+    expect(signedSnapshotChanged(snapV2, live)).toBe(false);
   });
-  it("bản ĐÃ KÝ render từ snapshot → occurrences = [] (chip chỉ ngày chính bản ký, không trộn ngày live)", () => {
+
+  it("bản ĐÃ KÝ v3: dòng dịch vụ hiện ngày phụ THEO BẢN KÝ, không mượn ngày live", () => {
     const live = makeLivePayload();
+    live.services[0].occurrences = [{ date: "2026-08-02", time: "10:00", label: "Nhà trai" }];
+    live.schedule = [
+      { date: "2026-08-01", time: "08:00", label: "Chụp cưới" },
+      { date: "2026-08-02", time: "10:00", label: "Nhà trai" },
+    ];
     const snap = buildSignedSnapshot(live) as Record<string, unknown>;
-    live.services[0].occurrences = [{ date: "2026-08-02", time: "10:00", label: null }];
-    live.services[0].shootDate = "2026-08-15"; // lệch để kích hoạt render theo bản ký
+    // Sau ký: sửa lung tung ở bản live → phải render theo bản ký.
+    live.services[0].occurrences = [{ date: "2026-12-31", time: "23:00", label: "ngày live" }];
+    live.services[0].shootDate = "2026-08-15";
     const frozen = applySignedSnapshotForDisplay(live, snap);
-    expect(frozen.services[0].occurrences).toEqual([]);
     expect(frozen.services[0].shootDate).toBe("2026-08-01");
+    expect(frozen.services[0].occurrences).toEqual([{ date: "2026-08-02", time: "10:00", label: "Nhà trai" }]);
+  });
+
+  it("REGRESSION: bản ký CŨ (v2) vẫn hiện đủ ngày — back-fill từ schedule đã đóng băng", () => {
+    const live = makeLivePayload();
+    const snapV2 = buildSignedSnapshot(live) as Record<string, unknown>;
+    // Bản ký cũ: services KHÔNG có occurrences, ngày phụ chỉ nằm trong schedule.
+    for (const s of snapV2.services as Record<string, unknown>[]) delete s.occurrences;
+    snapV2.schedule = [
+      { date: "2026-08-01", time: "08:00", label: "Chụp cưới" },
+      { date: "2026-08-02", time: "10:00", label: "Nhà trai" },
+    ];
+    live.services[0].shootDate = "2026-08-15"; // lệch → render theo bản ký
+    const frozen = applySignedSnapshotForDisplay(live, snapV2);
+    // Trước đây chỗ này trả [] và ngày 2 chỉ hiện ở mục "Lịch thực hiện" (đã bỏ)
+    // → khách mở hợp đồng đã ký sẽ KHÔNG thấy ngày 2 nữa. Phải back-fill.
+    expect(frozen.services[0].occurrences).toEqual([{ date: "2026-08-02", time: "10:00", label: "Nhà trai" }]);
+  });
+});
+
+describe("splitSnapshotSchedule — chia lịch bản ký về từng dịch vụ", () => {
+  it("1 dịch vụ: mọi mốc sau ngày chính là ngày phụ của nó", () => {
+    const m = splitSnapshotSchedule(
+      [
+        { date: "2026-08-01", time: "08:00", label: null },
+        { date: "2026-08-02", time: "10:00", label: "Nhà trai" },
+        { date: "2026-08-03", time: null, label: null },
+      ],
+      [{ bookingId: 10, shootDate: "2026-08-01" }],
+    );
+    expect(m.get(10)).toEqual([
+      { date: "2026-08-02", time: "10:00", label: "Nhà trai" },
+      { date: "2026-08-03", time: null, label: null },
+    ]);
+  });
+
+  it("nhiều dịch vụ: ngày phụ về ĐÚNG dịch vụ của nó", () => {
+    const m = splitSnapshotSchedule(
+      [
+        { date: "2026-08-01", time: "08:00", label: null },
+        { date: "2026-08-02", time: "10:00", label: "Nhà trai" },
+        { date: "2026-09-05", time: "07:00", label: null },
+        { date: "2026-09-06", time: "07:00", label: "Tiệc" },
+      ],
+      [
+        { bookingId: 10, shootDate: "2026-08-01" },
+        { bookingId: 11, shootDate: "2026-09-05" },
+      ],
+    );
+    expect(m.get(10)).toEqual([{ date: "2026-08-02", time: "10:00", label: "Nhà trai" }]);
+    expect(m.get(11)).toEqual([{ date: "2026-09-06", time: "07:00", label: "Tiệc" }]);
+  });
+
+  it("2 dịch vụ TRÙNG ngày chính: dò tiến, không cướp block của nhau", () => {
+    const m = splitSnapshotSchedule(
+      [
+        { date: "2026-08-01", time: "08:00", label: null },
+        { date: "2026-08-04", time: null, label: "phụ của DV1" },
+        { date: "2026-08-01", time: "14:00", label: null },
+      ],
+      [
+        { bookingId: 10, shootDate: "2026-08-01" },
+        { bookingId: 11, shootDate: "2026-08-01" },
+      ],
+    );
+    expect(m.get(10)).toEqual([{ date: "2026-08-04", time: null, label: "phụ của DV1" }]);
+    expect(m.get(11)).toEqual([]);
+  });
+
+  it("lịch rỗng / dịch vụ không có ngày → không nổ, trả rỗng", () => {
+    expect(splitSnapshotSchedule([], [{ bookingId: 10, shootDate: "2026-08-01" }]).size).toBe(0);
+    const m = splitSnapshotSchedule(
+      [{ date: "2026-08-01", time: null, label: null }],
+      [{ bookingId: 10, shootDate: null }],
+    );
+    expect(m.get(10)).toBeUndefined();
   });
 });

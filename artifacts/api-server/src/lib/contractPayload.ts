@@ -256,6 +256,9 @@ export function buildSignedSnapshot(payload: ContractPayload): Record<string, un
       location: s.location,
       totalAmount: s.totalAmount,
       surcharges: s.surcharges,
+      // v3: đóng băng luôn ngày phụ theo TỪNG dịch vụ — bản ký hiện đủ ngày ngay
+      // trên dòng dịch vụ, không phụ thuộc việc suy ngược từ `schedule`.
+      occurrences: s.occurrences.map((o) => ({ date: o.date, time: o.time, label: o.label })),
       items: s.items.map((i) => ({
         name: i.name,
         description: i.description,
@@ -328,7 +331,53 @@ type SnapshotService = {
     deductions?: { label?: string; amount?: number }[];
     surcharges?: { name?: string; amount?: number }[];
   }[];
+  /** v3: ngày thực hiện phụ của chính dịch vụ này (bản ký cũ không có → back-fill từ schedule). */
+  occurrences?: { date?: string; time?: string | null; label?: string | null }[];
 };
+
+type ScheduleEntry = { date: string; time: string | null; label: string | null };
+
+/**
+ * Chia `schedule` của bản ký về lại TỪNG dịch vụ (back-fill cho snapshot cũ chưa
+ * lưu occurrences per-service).
+ *
+ * schedule được dựng theo đúng thứ tự: mỗi dịch vụ → ngày chính rồi tới các ngày
+ * phụ CỦA NÓ. Nên block của dịch vụ i = từ sau ngày chính của i đến trước ngày
+ * chính của dịch vụ kế tiếp. Dò tiến (cursor) để 2 dịch vụ trùng ngày không cướp
+ * block của nhau.
+ */
+export function splitSnapshotSchedule(
+  schedule: ScheduleEntry[],
+  services: { bookingId?: number | null; shootDate?: string | null }[],
+): Map<number, ScheduleEntry[]> {
+  const out = new Map<number, ScheduleEntry[]>();
+  if (schedule.length === 0 || services.length === 0) return out;
+
+  const starts: number[] = [];
+  let cursor = 0;
+  for (const svc of services) {
+    let idx = -1;
+    if (svc.shootDate) {
+      for (let k = cursor; k < schedule.length; k++) {
+        if (schedule[k].date === svc.shootDate) { idx = k; break; }
+      }
+    }
+    starts.push(idx);
+    if (idx >= 0) cursor = idx + 1;
+  }
+
+  for (let i = 0; i < services.length; i++) {
+    const svc = services[i];
+    const start = starts[i];
+    if (svc.bookingId == null || start < 0) continue;
+    let end = schedule.length;
+    for (let j = i + 1; j < services.length; j++) {
+      if (starts[j] >= 0) { end = starts[j]; break; }
+    }
+    out.set(svc.bookingId, schedule.slice(start + 1, end));
+  }
+  return out;
+}
 
 /**
  * Render hợp đồng ĐÃ KÝ từ signed_snapshot thay vì booking hiện tại (quy tắc:
@@ -345,6 +394,15 @@ export function applySignedSnapshotForDisplay(
 ): ContractPayload {
   const snapServices = Array.isArray(stored.services) ? (stored.services as SnapshotService[]) : null;
   const liveByBookingId = new Map(live.services.map((s) => [s.bookingId, s]));
+
+  // Lịch trong bản ký (đã chuẩn hóa) + chia về từng dịch vụ để bản ký cũ (chưa lưu
+  // occurrences per-service) vẫn hiện ĐỦ ngày trên dòng dịch vụ.
+  const storedSchedule: ScheduleEntry[] = Array.isArray(stored.schedule)
+    ? (stored.schedule as { date?: string; time?: string | null; label?: string | null }[])
+        .filter((s) => typeof s.date === "string")
+        .map((s) => ({ date: s.date as string, time: s.time ?? null, label: s.label ?? null }))
+    : [];
+  const occFromSchedule = splitSnapshotSchedule(storedSchedule, snapServices ?? []);
 
   const services: ContractService[] = snapServices
     ? snapServices.map((snap) => {
@@ -372,9 +430,17 @@ export function applySignedSnapshotForDisplay(
               makeupName: liveItem?.makeupName ?? null,
             };
           }),
-          // Bản ĐÃ KÝ: chip ngày chỉ hiện ngày chính theo snapshot — KHÔNG mượn ngày
-          // phụ live để tránh chip (live) lệch với section Lịch thực hiện (bản ký).
-          occurrences: [],
+          // Bản ĐÃ KÝ: ngày phụ lấy theo BẢN KÝ, KHÔNG mượn ngày phụ live (không âm
+          // thầm đổi bản pháp lý). Snapshot v3 có sẵn occurrences; bản ký cũ thì
+          // back-fill từ `schedule` đã đóng băng — dòng dịch vụ phải hiện đủ ngày,
+          // vì mục "Lịch thực hiện" riêng đã bỏ (yêu cầu chủ 20/07).
+          occurrences: Array.isArray(snap.occurrences)
+            ? snap.occurrences
+                .filter((o) => typeof o.date === "string")
+                .map((o) => ({ date: o.date as string, time: o.time ?? null, label: o.label ?? null }))
+            : snap.bookingId != null
+              ? occFromSchedule.get(snap.bookingId) ?? []
+              : [],
         };
       })
     : live.services;
@@ -385,10 +451,8 @@ export function applySignedSnapshotForDisplay(
     stored.customer && typeof stored.customer === "object"
       ? (stored.customer as { name?: string; phone?: string | null })
       : null;
-  const snapSchedule = Array.isArray(stored.schedule)
-    ? (stored.schedule as { date?: string; time?: string | null; label?: string | null }[])
-        .filter((s) => typeof s.date === "string")
-        .map((s) => ({ date: s.date as string, time: s.time ?? null, label: s.label ?? null }))
+  const snapSchedule = storedSchedule.length > 0
+    ? storedSchedule
     : services
         .filter((s) => s.shootDate)
         .map((s) => ({ date: s.shootDate as string, time: s.shootTime, label: s.serviceLabel }));

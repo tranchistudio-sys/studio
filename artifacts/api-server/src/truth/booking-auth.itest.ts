@@ -41,10 +41,12 @@ beforeAll(async () => {
   const express = (await import("express")).default;
   const { default: bookingsRouter } = await import("../routes/bookings");
   const { default: contractsRouter } = await import("../routes/contracts");
+  const { default: paymentsRouter } = await import("../routes/payments");
   const app = express();
   app.use(express.json());
   app.use("/api", bookingsRouter);
   app.use("/api", contractsRouter);
+  app.use("/api", paymentsRouter);
   srv = await new Promise<Server>(resolve => { const s = app.listen(0, () => resolve(s)); });
   base = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
 
@@ -146,6 +148,64 @@ describe("Các endpoint đọc khác của module đơn hàng", () => {
   it("GET /api/bookings/:id/allocation CÓ token → 200", async () => {
     const r = await get(`/api/bookings/${bookingId}/allocation`, mintToken(adminId));
     expect(r.status).toBe(200);
+  });
+});
+
+/**
+ * GHI nguy hiểm hơn ĐỌC: người lạ sửa được tiền/trạng thái đơn, xoá cứng hợp đồng.
+ * Các test dưới chỉ gửi request KHÔNG hợp lệ (401) nên KHÔNG ghi gì vào DB.
+ */
+async function send(method: string, path: string, body?: unknown, token?: string) {
+  const res = await fetch(`${base}${path}`, {
+    method,
+    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  return { status: res.status, text: await res.text() };
+}
+
+describe("Chặn GHI dữ liệu khi chưa đăng nhập", () => {
+  it("POST /api/bookings (tạo đơn) không token → 401", async () => {
+    const r = await send("POST", "/api/bookings", { customerId: 1, shootDate: "2030-01-01", totalAmount: 1 });
+    expect(r.status).toBe(401);
+  });
+
+  it("PUT /api/bookings/:id (sửa tiền/trạng thái) không token → 401", async () => {
+    const r = await send("PUT", `/api/bookings/${bookingId}`, { totalAmount: 1 });
+    expect(r.status).toBe(401);
+  });
+
+  it("PUT /api/bookings/:id token RÁC / HẾT HẠN → 401", async () => {
+    expect((await send("PUT", `/api/bookings/${bookingId}`, { totalAmount: 1 }, "rac")).status).toBe(401);
+    expect((await send("PUT", `/api/bookings/${bookingId}`, { totalAmount: 1 }, mintToken(adminId, -60))).status).toBe(401);
+  });
+
+  it("PUT bị chặn TRƯỚC khi ghi: tiền của đơn không đổi sau request ẩn danh", async () => {
+    const before = await pool.query(`SELECT total_amount::text AS t FROM bookings WHERE id = $1`, [bookingId]);
+    await send("PUT", `/api/bookings/${bookingId}`, { totalAmount: 123 });
+    const after = await pool.query(`SELECT total_amount::text AS t FROM bookings WHERE id = $1`, [bookingId]);
+    expect(after.rows[0]).toEqual(before.rows[0]);
+  });
+
+  it("PATCH /api/payments/:id không token → 401", async () => {
+    const p = await pool.query(`SELECT id FROM payments ORDER BY id DESC LIMIT 1`);
+    if (!p.rows.length) { console.log("  (DB local chưa có phiếu thu — bỏ qua)"); return; }
+    const id = (p.rows[0] as { id: number }).id;
+    expect((await send("PATCH", `/api/payments/${id}`, { proofImageUrl: "x" })).status).toBe(401);
+  });
+
+  it("DELETE /api/contracts/:id không token → 401 và hợp đồng KHÔNG bị xoá", async () => {
+    const c = await pool.query(`SELECT id FROM contracts ORDER BY id DESC LIMIT 1`);
+    if (!c.rows.length) { console.log("  (DB local chưa có hợp đồng — bỏ qua)"); return; }
+    const id = (c.rows[0] as { id: number }).id;
+    expect((await send("DELETE", `/api/contracts/${id}`)).status).toBe(401);
+    const still = await pool.query(`SELECT id FROM contracts WHERE id = $1`, [id]);
+    expect(still.rows.length, "hợp đồng bị xoá dù chưa đăng nhập").toBe(1);
+  });
+
+  it("phản hồi 401 của các route GHI không rò PII", async () => {
+    const r = await send("PUT", `/api/bookings/${bookingId}`, { totalAmount: 1 });
+    for (const k of PII_KEYS) expect(r.text).not.toContain(k);
   });
 });
 

@@ -542,6 +542,9 @@ router.get("/bookings/trash", async (req, res) => {
 
 router.post("/bookings", async (req, res) => {
   try {
+  // Trước 20/07 route này để trần: verifyToken bên dưới chỉ ghi "ai tạo" chứ không
+  // hề chặn → người lạ tạo đơn được. Chặn TRƯỚC khi đọc/ghi bất cứ thứ gì.
+  if (!(await ensureAuth(req, res))) return;
   const callerId = verifyToken(req.headers.authorization) || null;
   // Giá tay (castSource='manual') chỉ được giữ khi người lưu là admin.
   const allowManual = (await getCallerRole(req.headers.authorization)) === "admin";
@@ -1121,6 +1124,10 @@ router.get("/bookings/:id", async (req, res) => {
 
 router.put("/bookings/:id", async (req, res) => {
   try {
+  // PHẢI là câu lệnh đầu tiên: handler này GHI vào DB (cột nhắc thuê đồ của đơn
+  // cha) từ rất sớm, trong khi verifyToken phía dưới chỉ dùng để ghi log "ai sửa"
+  // và không bao giờ từ chối → trước đây người lạ sửa được tiền/trạng thái đơn.
+  if (!(await ensureAuth(req, res))) return;
   const id = parseInt(req.params.id);
   const {
     customerId,

@@ -593,6 +593,10 @@ router.post("/payments/sync-deposits", async (_req, res) => {
 // PATCH /payments/:id — chỉ cập nhật proofImageUrl cho payment đã tồn tại
 router.patch("/payments/:id", async (req, res) => {
   try {
+  // Sửa ảnh chứng từ của phiếu thu — phải đăng nhập (cùng khuôn DELETE bên dưới,
+  // nhưng KHÔNG bắt admin: nhân viên thu tiền vẫn cần đính ảnh như trước).
+  const role = await getCallerRole(req.headers.authorization);
+  if (!role) { res.status(401).json({ error: "Chưa đăng nhập hoặc phiên hết hạn" }); return; }
   const id = parseInt(req.params.id);
   if (isNaN(id)) return res.status(400).json({ error: "ID không hợp lệ" });
   const { proofImageUrl, proofImageUrls } = req.body;

@@ -21,19 +21,30 @@ import { DeductionEditor, type DeductionItem } from "@/components/deduction-edit
 import { ServiceBreakdownCard } from "@/components/ServiceBreakdownCard";
 import { computeServiceGroupStats } from "@/lib/service-group-stats";
 import { invalidateBookingRelated } from "@/lib/booking-cache";
+import { readApiJson } from "@/lib/api-json";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
+/**
+ * Header chuẩn cho mọi request của màn Đơn hàng: LUÔN kèm token đăng nhập.
+ * Trước 20/07 màn này gọi API trần (không token) — sống được chỉ vì backend để hở;
+ * các endpoint đã siết trước đó (customers, staff, xoá phiếu/đơn) thì đang 401 âm
+ * thầm. Đọc token ngay lúc gọi (không cache theo module) để sau khi đăng nhập lại
+ * là có token mới. `extra` để cuối → chỗ gọi vẫn ghi đè được Content-Type nếu cần,
+ * nhưng không vô tình xoá mất Authorization.
+ */
+const authHeaders = (extra?: HeadersInit): Record<string, string> => {
+  const token = localStorage.getItem("amazingStudioToken_v2");
+  return {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(extra as Record<string, string> | undefined),
+  };
+};
+
 const fetchJson = (url: string, opts?: RequestInit) =>
-  fetch(`${BASE}${url}`, { headers: { "Content-Type": "application/json" }, ...opts }).then(async r => {
-    const text = await r.text();
-    let d: unknown;
-    try { d = JSON.parse(text); } catch {
-      throw new Error(r.status === 404 ? "API chưa sẵn sàng — hãy restart server (port 3000)" : `Lỗi server (${r.status})`);
-    }
-    if (!r.ok) throw new Error((d as { error?: string })?.error || "Lỗi kết nối");
-    return d;
-  });
+  fetch(`${BASE}${url}`, { ...opts, headers: authHeaders(opts?.headers) }).then(async r =>
+    readApiJson(r, await r.text()));
 
 const STATUS_MAP: Record<string, { label: string; color: string; bg: string }> = {
   pending: { label: "Chờ xác nhận", color: "text-yellow-700", bg: "bg-yellow-100 border-yellow-200" },
@@ -133,7 +144,6 @@ export default function BookingsPage() {
   const [showReschedule, setShowReschedule] = useState(false);
   const [rescheduleForm, setRescheduleForm] = useState({ newDate: "", newTime: "", reason: "" });
   const [showEditBooking, setShowEditBooking] = useState(false);
-  const token = localStorage.getItem("amazingStudioToken_v2");
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [filterStaffStatus, setFilterStaffStatus] = useState("");
   const [filterPaymentStatus, setFilterPaymentStatus] = useState("");
@@ -222,8 +232,10 @@ export default function BookingsPage() {
   });
 
   const deletePayment = useMutation({
-    mutationFn: (id: number) => fetch(`${BASE}/api/payments/${id}`, { method: "DELETE" }),
+    // Trước đây gọi trần + KHÔNG kiểm r.ok → server 401 mà UI vẫn báo xoá xong.
+    mutationFn: (id: number) => fetchJson(`/api/payments/${id}`, { method: "DELETE" }),
     onSuccess: () => invalidateBookingRelated(qc),
+    onError: (e: Error) => alert(e.message),
   });
 
   const updateStatus = useMutation({
@@ -235,14 +247,17 @@ export default function BookingsPage() {
   const [trashReason, setTrashReason] = useState("");
   const deleteBooking = useMutation({
     mutationFn: ({ id, reason }: { id: number; reason?: string }) =>
-      fetch(`${BASE}/api/bookings/${id}`, { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: reason || null }) }),
+      // Trước đây gọi trần + KHÔNG kiểm r.ok → server 401 mà đơn vẫn biến mất khỏi UI.
+      fetchJson(`/api/bookings/${id}`, { method: "DELETE", body: JSON.stringify({ reason: reason || null }) }),
     onSuccess: () => { setSelectedId(null); setTrashDialog(null); setTrashReason(""); invalidateBookingRelated(qc); },
+    onError: (e: Error) => alert(e.message),
   });
 
   // ── Task #10: Booking items ──────────────────────────────────────────────
-  const authHeaders = { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  // Dùng chung authHeaders module-scope. Bản cũ đặt headers TRƯỚC ...opts nên chỗ
+  // gọi nào truyền headers riêng là mất luôn Authorization.
   const fetchJsonAuth = (url: string, opts?: RequestInit) =>
-    fetch(`${BASE}${url}`, { headers: authHeaders, ...opts }).then(r => r.json());
+    fetch(`${BASE}${url}`, { ...opts, headers: authHeaders(opts?.headers) }).then(r => r.json());
 
   type BookingItem = { id: number; type: string; title: string; qty: number; unitPrice: number; totalPrice: number; notes?: string; isActive: number; };
   const { data: bookingItems = [] } = useQuery<BookingItem[]>({
@@ -1392,7 +1407,7 @@ function CreateBookingForm({ customers, onSuccess, onCancel }: {
         .map(({ label, amount }) => ({ label, amount }));
       await fetch(`${BASE}/api/bookings`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(),
         body: JSON.stringify({
           ...form,
           packageType: packageName,
@@ -1639,7 +1654,7 @@ function EditBookingModal({ booking, onSuccess, onCancel }: {
       }
       const res = await fetch(`${BASE}/api/bookings/${booking.id}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: authHeaders(),
         body: JSON.stringify({
           ...form,
           totalAmount,

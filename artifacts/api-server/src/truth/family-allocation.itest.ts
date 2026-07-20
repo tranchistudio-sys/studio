@@ -17,7 +17,23 @@
  * Chạy qua `pnpm truth` (DATABASE_URL local) — KHÔNG nằm trong `pnpm test`.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { createHmac } from "node:crypto";
 import { pool } from "@workspace/db";
+
+// PUT /bookings/:id nay BẮT BUỘC đăng nhập (siết bảo mật 20/07 — trước đây route
+// này cho người lạ sửa tiền/trạng thái đơn). Test tự ký một token admin hợp lệ.
+// Chốt secret TRƯỚC khi import routes/auth (JWT_SECRET resolve lúc load module).
+process.env.SESSION_SECRET = process.env.SESSION_SECRET || "truth-test-secret";
+
+async function adminBearer(): Promise<string> {
+  const r = await pool.query(`SELECT id FROM staff WHERE role = 'admin' AND is_active = 1 ORDER BY id LIMIT 1`);
+  if (!r.rows.length) throw new Error("DB local không có admin đang hoạt động — không ký được token test");
+  const id = (r.rows[0] as { id: number }).id;
+  const secret = process.env.SESSION_SECRET as string;
+  const h = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
+  const b = Buffer.from(JSON.stringify({ id, exp: Math.floor(Date.now() / 1000) + 3600 })).toString("base64url");
+  return `Bearer ${h}.${b}.${createHmac("sha256", secret).update(`${h}.${b}`).digest("base64url")}`;
+}
 import {
   engineSystemDebt,
   engineCustomerDebt,
@@ -297,7 +313,7 @@ describe("PR #102 — MỘT payment ở CHA: mọi surface ra CÙNG MỘT SỐ",
     try {
       const r = await fetch(`http://127.0.0.1:${port}/api/bookings/${parentId}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: await adminBearer() },
         body: JSON.stringify({ depositAmount: 4_000_000 }),
       });
       expect(r.ok, `PUT máy cọc lỗi HTTP ${r.status}`).toBe(true);

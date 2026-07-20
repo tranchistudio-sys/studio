@@ -11,7 +11,7 @@ import {
 import { eq, ne, desc, and, isNull, inArray } from "drizzle-orm";
 import crypto from "node:crypto";
 import { getPublicBaseUrl } from "../lib/publicUrl";
-import { verifyToken } from "./auth";
+import { verifyToken, getCallerRole } from "./auth";
 import {
   buildContractPayload,
   buildSignedSnapshot,
@@ -833,7 +833,15 @@ router.put("/contracts/:id", async (req, res): Promise<void> => {
 });
 
 router.delete("/contracts/:id", async (req, res) => {
+  // XOÁ CỨNG hợp đồng (không có thùng rác) mà trước đây KHÔNG cần đăng nhập.
+  // Chặn trước khi chạm DB; giữ nguyên mức quyền cũ của màn Hợp đồng (staff/admin
+  // đều xoá được như trước) để không đổi quy trình đang chạy.
+  if (!(await getCallerRole(req.headers.authorization))) {
+    res.status(401).json({ error: "Chưa đăng nhập hoặc phiên hết hạn" });
+    return;
+  }
   const id = parseInt(req.params.id);
+  if (!Number.isFinite(id)) { res.status(400).json({ error: "id không hợp lệ" }); return; }
   await db.delete(contractsTable).where(eq(contractsTable.id, id));
   res.status(204).send();
 });

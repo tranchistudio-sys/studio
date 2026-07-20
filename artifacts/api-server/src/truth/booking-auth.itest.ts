@@ -11,14 +11,17 @@
  *  - id KHÔNG tồn tại + không token → vẫn 401 (không lộ đơn có tồn tại hay không)
  *  - link hợp đồng public           → vẫn mở được không cần đăng nhập
  *
- * READ-ONLY: chỉ GET, không ghi gì vào DB.
+ * Về dữ liệu: các request GHI trong file này đều là request PHẢI bị từ chối (401)
+ * hoặc dùng id không tồn tại, nên không tạo/sửa/xoá hàng thật nào. Nếu một guard
+ * hỏng thì test sẽ FAIL — đó chính là điều nó canh.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createHmac } from "node:crypto";
 import { pool } from "@workspace/db";
 import type { Server } from "node:http";
 
-// Chốt secret TRƯỚC khi import routes/auth (JWT_SECRET resolve lúc load module).
+// Chốt secret ở top-level, TRƯỚC lệnh import ĐỘNG routes/* trong beforeAll (auth.ts
+// resolve JWT_SECRET lúc load module, nên thứ tự này mới ăn).
 process.env.SESSION_SECRET = process.env.SESSION_SECRET || "truth-test-secret";
 
 function mintToken(staffId: number, expSeconds = 3600): string {
@@ -41,15 +44,24 @@ beforeAll(async () => {
   const express = (await import("express")).default;
   const { default: bookingsRouter } = await import("../routes/bookings");
   const { default: contractsRouter } = await import("../routes/contracts");
+  const { default: paymentsRouter } = await import("../routes/payments");
   const app = express();
   app.use(express.json());
   app.use("/api", bookingsRouter);
   app.use("/api", contractsRouter);
+  app.use("/api", paymentsRouter);
   srv = await new Promise<Server>(resolve => { const s = app.listen(0, () => resolve(s)); });
   base = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
 
-  const b = await pool.query(`SELECT id FROM bookings WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1`);
-  bookingId = (b.rows[0] as { id: number }).id;
+  // Ưu tiên đơn CON của một hợp đồng gộp: chỉ đường đó mới kích hoạt thao tác ghi
+  // SỚM của handler PUT (cập nhật cột nhắc thuê đồ trên đơn CHA). Chọn đơn lẻ thì
+  // test "chặn trước khi ghi" sẽ xanh giả — guard đặt sai chỗ vẫn không bị bắt.
+  const b = await pool.query(`
+    SELECT id FROM bookings WHERE deleted_at IS NULL AND parent_id IS NOT NULL
+    ORDER BY id DESC LIMIT 1`);
+  const bAny = b.rows.length ? b : await pool.query(
+    `SELECT id FROM bookings WHERE deleted_at IS NULL ORDER BY id DESC LIMIT 1`);
+  bookingId = (bAny.rows[0] as { id: number }).id;
 
   const a = await pool.query(`SELECT id FROM staff WHERE role = 'admin' AND is_active = 1 ORDER BY id LIMIT 1`);
   adminId = (a.rows[0] as { id: number }).id;
@@ -146,6 +158,98 @@ describe("Các endpoint đọc khác của module đơn hàng", () => {
   it("GET /api/bookings/:id/allocation CÓ token → 200", async () => {
     const r = await get(`/api/bookings/${bookingId}/allocation`, mintToken(adminId));
     expect(r.status).toBe(200);
+  });
+});
+
+/**
+ * GHI nguy hiểm hơn ĐỌC: người lạ sửa được tiền/trạng thái đơn, xoá cứng hợp đồng.
+ * Các test dưới chỉ gửi request KHÔNG hợp lệ (401) nên KHÔNG ghi gì vào DB.
+ */
+async function send(method: string, path: string, body?: unknown, token?: string) {
+  const res = await fetch(`${base}${path}`, {
+    method,
+    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  return { status: res.status, text: await res.text() };
+}
+
+describe("Chặn GHI dữ liệu khi chưa đăng nhập", () => {
+  it("POST /api/bookings (tạo đơn) không token → 401", async () => {
+    const r = await send("POST", "/api/bookings", { customerId: 1, shootDate: "2030-01-01", totalAmount: 1 });
+    expect(r.status).toBe(401);
+  });
+
+  it("PUT /api/bookings/:id (sửa tiền/trạng thái) không token → 401", async () => {
+    const r = await send("PUT", `/api/bookings/${bookingId}`, { totalAmount: 1 });
+    expect(r.status).toBe(401);
+  });
+
+  it("PUT /api/bookings/:id token RÁC / HẾT HẠN → 401", async () => {
+    expect((await send("PUT", `/api/bookings/${bookingId}`, { totalAmount: 1 }, "rac")).status).toBe(401);
+    expect((await send("PUT", `/api/bookings/${bookingId}`, { totalAmount: 1 }, mintToken(adminId, -60))).status).toBe(401);
+  });
+
+  it("PUT bị chặn TRƯỚC MỌI thao tác ghi — cả gia đình hợp đồng không suy suyển", async () => {
+    // Chụp TOÀN BỘ hàng của cả gia đình (cha + các con), không chỉ total_amount:
+    // thao tác GHI ĐẦU TIÊN của handler PUT đụng vào cột nhắc thuê đồ của đơn CHA,
+    // nên nếu chỉ so total_amount của đơn con thì guard có bị đặt sai chỗ vẫn "pass".
+    const familySql = `
+      SELECT b.* FROM bookings b
+      WHERE COALESCE(b.parent_id, b.id) = (SELECT COALESCE(parent_id, id) FROM bookings WHERE id = $1)
+      ORDER BY b.id`;
+    const before = await pool.query(familySql, [bookingId]);
+    expect(before.rows.length).toBeGreaterThan(0);
+
+    await send("PUT", `/api/bookings/${bookingId}`, { totalAmount: 123, dressWarnPickupDays: 9 });
+
+    const after = await pool.query(familySql, [bookingId]);
+    expect(after.rows, "request ẩn danh đã ghi được vào DB").toEqual(before.rows);
+  });
+
+  it("PATCH /api/payments/:id không token → 401", async () => {
+    const p = await pool.query(`SELECT id FROM payments ORDER BY id DESC LIMIT 1`);
+    if (!p.rows.length) { console.log("  (DB local chưa có phiếu thu — bỏ qua)"); return; }
+    const id = (p.rows[0] as { id: number }).id;
+    expect((await send("PATCH", `/api/payments/${id}`, { proofImageUrl: "x" })).status).toBe(401);
+  });
+
+  it("DELETE /api/contracts/:id không token → 401 và hợp đồng KHÔNG bị xoá", async () => {
+    const c = await pool.query(`SELECT id FROM contracts ORDER BY id DESC LIMIT 1`);
+    if (!c.rows.length) { console.log("  (DB local chưa có hợp đồng — bỏ qua)"); return; }
+    const id = (c.rows[0] as { id: number }).id;
+    expect((await send("DELETE", `/api/contracts/${id}`)).status).toBe(401);
+    const still = await pool.query(`SELECT id FROM contracts WHERE id = $1`, [id]);
+    expect(still.rows.length, "hợp đồng bị xoá dù chưa đăng nhập").toBe(1);
+  });
+
+  it("ĐÚNG QUYỀN thì qua được cổng: 4 route ghi KHÔNG trả 401 khi có token", async () => {
+    // Cố ý gửi dữ liệu không hợp lệ / id không tồn tại: đủ để chứng minh guard cho
+    // qua (không 401), mà KHÔNG ghi gì thật vào DB.
+    const tok = mintToken(adminId);
+    const post = await send("POST", "/api/bookings", {}, tok);
+    expect(post.status, "POST /bookings chặn nhầm người đã đăng nhập").not.toBe(401);
+
+    const put = await send("PUT", "/api/bookings/999999999", { totalAmount: 1 }, tok);
+    expect(put.status, "PUT /bookings/:id chặn nhầm người đã đăng nhập").not.toBe(401);
+
+    const patch = await send("PATCH", "/api/payments/999999999", {}, tok);
+    expect(patch.status, "PATCH /payments/:id chặn nhầm người đã đăng nhập").not.toBe(401);
+
+    const del = await send("DELETE", "/api/contracts/999999999", undefined, tok);
+    expect(del.status, "DELETE /contracts/:id chặn nhầm người đã đăng nhập").not.toBe(401);
+  });
+
+  it("NHÂN VIÊN (không phải admin) vẫn đính được ảnh chứng từ — không siết nhầm thành admin-only", async () => {
+    if (staffId == null) { console.log("  (DB local không có staff non-admin — bỏ qua)"); return; }
+    const r = await send("PATCH", "/api/payments/999999999", {}, mintToken(staffId));
+    expect(r.status).not.toBe(401);
+    expect(r.status, "PATCH bị siết thành admin-only, nhân viên thu tiền hết đính được ảnh").not.toBe(403);
+  });
+
+  it("phản hồi 401 của các route GHI không rò PII", async () => {
+    const r = await send("PUT", `/api/bookings/${bookingId}`, { totalAmount: 1 });
+    for (const k of PII_KEYS) expect(r.text).not.toContain(k);
   });
 });
 

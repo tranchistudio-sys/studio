@@ -251,8 +251,16 @@ export default function ContractsPage() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: number) => fetch(`${BASE}/api/contracts/${id}`, { method: "DELETE" }),
+    // Trước đây gọi TRẦN (không token) và KHÔNG kiểm res.ok → nếu server từ chối,
+    // onSuccess vẫn chạy: hợp đồng biến mất khỏi danh sách rồi hiện lại khi tải
+    // lại, trông như mất dữ liệu. Nay gửi token và báo lỗi thật.
+    mutationFn: async (id: number) => {
+      const res = await fetch(`${BASE}/api/contracts/${id}`, { method: "DELETE", headers: authHeaders() });
+      if (!res.ok) throw new Error(res.status === 401 ? "Phiên đăng nhập đã hết hạn — hãy đăng nhập lại" : "Xoá hợp đồng không thành công");
+      return true;
+    },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["contracts"] }); setSelectedId(null); },
+    onError: (e: Error) => alert(e.message),
   });
 
   const sendLinkMutation = useMutation({

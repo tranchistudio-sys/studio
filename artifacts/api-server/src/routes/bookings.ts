@@ -2165,29 +2165,65 @@ router.delete("/bookings/:parentId/remove-child/:childId", async (req, res) => {
     const [child] = await db.select(await bookingColumnsCompat()).from(bookingsTable).where(and(eq(bookingsTable.id, childId), eq(bookingsTable.parentId, parentId)));
     if (!child) return res.status(404).json({ error: "Không tìm thấy dịch vụ con trong hợp đồng này" });
 
+    const childLabel = child.serviceLabel || child.packageType || "Dịch vụ";
+
     const allChildren = await db.select({ id: bookingsTable.id })
       .from(bookingsTable).where(eq(bookingsTable.parentId, parentId));
     if (allChildren.length <= 1) return res.status(400).json({ error: "Hợp đồng phải có ít nhất 1 dịch vụ con. Hãy xoá toàn bộ hợp đồng nếu muốn huỷ." });
 
-    const childLabel = child.serviceLabel || child.packageType || "Dịch vụ";
+    // ── CHẶN TRƯỚC: không bao giờ xoá thứ dính tiền hoặc chữ ký ──────────────
+    // Trước 20/07 endpoint này XOÁ CỨNG cả phiếu thu, hợp đồng, chi phí, công việc
+    // của dịch vụ con — không thùng rác, không hoàn tác. Một cú bấm nhầm là mất
+    // sạch chứng từ tiền và cả hợp đồng khách đã ký. Từ nay: có tiền hoặc có chữ
+    // ký thì TỪ CHỐI, nói rõ vướng gì; còn lại thì cho vào THÙNG RÁC (khôi phục được).
+    const childPayments = await db
+      .select({ id: paymentsTable.id, amount: paymentsTable.amount })
+      .from(paymentsTable)
+      .where(eq(paymentsTable.bookingId, childId));
+    if (childPayments.length > 0) {
+      const total = childPayments.reduce((sum, p) => sum + (parseFloat(String(p.amount)) || 0), 0);
+      return res.status(409).json({
+        error: `Dịch vụ "${childLabel}" đang có ${childPayments.length} phiếu thu (tổng ${total.toLocaleString("vi-VN")}đ). `
+          + "Hãy xử lý số tiền này trước (hoàn tiền hoặc chuyển sang dịch vụ khác) rồi mới gỡ dịch vụ.",
+        blockedBy: "payments",
+        paymentCount: childPayments.length,
+        paymentTotal: total,
+      });
+    }
+
+    const childContracts = await db
+      .select({ id: contractsTable.id, status: contractsTable.status, signedAt: contractsTable.signedAt })
+      .from(contractsTable)
+      .where(eq(contractsTable.bookingId, childId));
+    const signed = childContracts.filter(c => c.status === "signed" || c.signedAt != null);
+    if (signed.length > 0) {
+      return res.status(409).json({
+        error: `Dịch vụ "${childLabel}" gắn với hợp đồng KHÁCH ĐÃ KÝ. Không thể gỡ — hãy huỷ/ký lại hợp đồng trước.`,
+        blockedBy: "signed-contract",
+        contractIds: signed.map(c => c.id),
+      });
+    }
 
     const result = await db.transaction(async (tx) => {
-      await tx.delete(tasksTable).where(eq(tasksTable.bookingId, childId));
-      await tx.delete(expensesTable).where(eq(expensesTable.bookingId, childId));
-      await tx.delete(contractsTable).where(eq(contractsTable.bookingId, childId));
-      await tx.delete(paymentsTable).where(eq(paymentsTable.bookingId, childId));
-      // Giải phóng váy/đồ đang giữ — nếu không xoá, hàng booking_dresses mồ côi vẫn
-      // bị query trùng-lịch (/dresses/:id/conflict) tính → báo "Trùng lịch" với đơn
-      // đã xoá. (FK schema khai báo onDelete cascade nhưng DB thật chưa có ràng buộc.)
-      await tx.delete(bookingDressesTable).where(eq(bookingDressesTable.bookingId, childId));
-      await tx.delete(bookingsTable).where(eq(bookingsTable.id, childId));
+      // XOÁ MỀM (vào thùng rác) — đúng khuôn DELETE /bookings/:id sẵn có. Phiếu thu,
+      // hợp đồng, chi phí, công việc, váy, lịch sử đều GIỮ NGUYÊN và đi theo đơn:
+      // khôi phục đơn là có lại đủ. Query trùng-lịch váy vốn đã lọc deleted_at nên
+      // không cần xoá hàng booking_dresses để tránh báo trùng oan.
+      await tx
+        .update(bookingsTable)
+        .set({
+          deletedAt: new Date(),
+          deletedBy: callerId,
+          deleteReason: `Gỡ khỏi hợp đồng #${parentId} (${childLabel})`,
+        })
+        .where(eq(bookingsTable.id, childId));
 
       await tx.insert(bookingChangeLogTable).values({
         bookingId: parentId,
         fieldChanged: "remove_child",
         oldValue: JSON.stringify({ childId, childServiceLabel: childLabel }),
         newValue: null,
-        reason: `Xoá dịch vụ con "${childLabel}" (ID: ${childId})`,
+        reason: `Gỡ dịch vụ "${childLabel}" (ID: ${childId}) khỏi hợp đồng — đơn vào thùng rác, khôi phục được`,
         changedById: callerId,
       });
 

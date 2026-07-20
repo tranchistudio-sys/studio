@@ -1239,6 +1239,12 @@ router.put("/bookings/:id", async (req, res) => {
   if (oldBooking.isParentContract) {
     delete updateData.totalAmount;
   }
+  // Đối xứng với A8: dịch vụ CON không giữ tiền cọc — cọc của hợp đồng gộp nằm ở
+  // đơn CHA (xem chốt chặn máy cọc bên dưới). Bỏ luôn khỏi updateData, nếu không
+  // cột deposit_amount của con vẫn bị ghi số dù phiếu thu đã được chặn.
+  if (oldBooking.parentId != null) {
+    delete updateData.depositAmount;
+  }
   const callerId = verifyToken(req.headers.authorization) || null;
   // Giá tay (castSource='manual') chỉ được TẠO/ĐỔI khi người lưu là admin.
   // prevManual = giá tay đang lưu → non-admin lưu lại (sửa giờ) vẫn giữ được,
@@ -1407,7 +1413,19 @@ router.put("/bookings/:id", async (req, res) => {
     await client.query("BEGIN");
 
     // ── 1. Upsert/delete deposit payment record (only if depositAmount is in body) ──
-    if (depositAmount !== undefined) {
+    // CHỐT CHẶN: đơn CON không bao giờ giữ tiền cọc — tiền của hợp đồng gộp nằm ở
+    // đơn CHA (tạo hợp đồng gộp và add-child đều ghi con = "0", form gia đình cũng
+    // không gửi cọc cho con). Nếu vẫn có payload mang cọc cho một đơn con thì đó là
+    // client đang bám vào trạng thái cũ — điển hình: rớt mạng ngay sau khi nâng cấp
+    // đơn lẻ thành hợp đồng, form còn trỏ hàng cũ nay đã thành con. Chạy máy cọc lúc
+    // đó sẽ ĐẺ THÊM một phiếu thu (phiếu thật đã dời lên cha) = nhân đôi tiền khách.
+    // Bỏ qua thay vì 400: các luồng hợp lệ không gửi trường này, nên chặn im lặng
+    // không cản ai, mà lỗi tiền thì không thể xảy ra dù client có sai.
+    if (depositAmount !== undefined && oldBooking.parentId != null) {
+      console.warn(
+        `[deposit-guard] PUT /bookings/${id}: bỏ qua depositAmount=${String(depositAmount)} vì đây là dịch vụ con của hợp đồng #${oldBooking.parentId} — cọc chỉ nằm ở đơn cha.`,
+      );
+    } else if (depositAmount !== undefined) {
       const newDepositAmount = parseFloat(String(depositAmount));
 
       const depResult = await client.query<{ id: number }>(
@@ -1894,6 +1912,156 @@ router.put("/bookings/:id", async (req, res) => {
 });
 
 // ─── Task #341: Add child booking to existing multi-service contract ────────
+/**
+ * POST /bookings/:id/promote-to-family — NÂNG CẤP đơn lẻ thành hợp đồng nhiều dịch vụ.
+ *
+ * Nghiệp vụ (chủ studio 20/07): khách cũ quay lại chốt thêm gói thì phải mở đơn cũ
+ * bấm "Thêm dịch vụ" là xong — bao nhiêu lần cũng được. Trước đây FE KHOÁ nút này
+ * cho đơn 1 dịch vụ (sau sự cố DH0191) — khoá tính năng để né bug, không chấp nhận.
+ *
+ * Cách làm: GIỮ NGUYÊN hàng đơn cũ và id của nó (hợp đồng, phiếu thu, lịch nhiều
+ * ngày, trang phục, phân công, lương ekip, lịch sử… đều bám id đó), tạo THÊM một
+ * hàng CHA rồi trỏ đơn cũ vào làm dịch vụ con thứ nhất.
+ *
+ * TIỀN PHẢI DI CHUYỂN LÊN CHA, không chỉ đổi quan hệ:
+ * ba chỗ đọc tiền của con TỪ CHA (danh sách đơn ~442, chi tiết ~917, PUT recalc
+ * ~1467). Nếu để phiếu thu nằm lại đơn cũ thì cọc khách hiện 0đ và lần lưu kế tiếp
+ * ghi đè paid_amount = 0 đè lên chính hàng đang giữ phiếu → lệch sổ.
+ * Vì vậy trong CÙNG một transaction: chuyển payments sang cha, dời deposit/discount/
+ * paid lên cha và zero ở con — ĐÚNG hình dạng mà tạo hợp đồng gộp từ đầu vẫn tạo ra
+ * (cha giữ tiền, con "0"/"0"/"0"), để engine/truth test không phải học hình dạng mới.
+ * Hợp đồng cũng trỏ về cha, nếu không thì mở từ cha sẽ đẻ ra hợp đồng thứ hai.
+ *
+ * Idempotent: gọi trên đơn đã là cha/con thì KHÔNG làm gì, chỉ trả về id cha.
+ * Lỗi giữa chừng → rollback toàn bộ, không có trạng thái nửa vời.
+ */
+router.post("/bookings/:id/promote-to-family", async (req, res) => {
+  try {
+    if (!(await ensureAuth(req, res))) return;
+    const id = parseInt(req.params.id);
+    if (!Number.isFinite(id)) { res.status(400).json({ error: "id không hợp lệ" }); return; }
+
+    const exists = await db.select({ id: bookingsTable.id }).from(bookingsTable).where(eq(bookingsTable.id, id));
+    if (exists.length === 0) { res.status(404).json({ error: "Không tìm thấy đơn" }); return; }
+
+    const callerId = verifyToken(req.headers.authorization) || null;
+
+    const result = await db.transaction(async (tx) => {
+      // KHOÁ hàng rồi mới đọc: hai người cùng bấm "Thêm dịch vụ" một lúc thì người
+      // sau phải thấy trạng thái người trước đã ghi. Không khoá thì cả hai cùng
+      // thấy "đơn lẻ" → đẻ hai hàng cha, phiếu thu về cha thứ nhất còn đơn cũ trỏ
+      // cha thứ hai = cha mồ côi giữ tiền, gia đình mất sạch phiếu.
+      const locked = await tx.execute(
+        sql`SELECT id, order_code, customer_id, shoot_date, shoot_time, service_category, package_type,
+                   location, total_amount, deposit_amount, discount_amount, paid_amount, status,
+                   internal_notes, service_label, parent_id, is_parent_contract, created_by_staff_id,
+                   dress_warn_pickup_days, dress_warn_return_days
+            FROM bookings WHERE id = ${id} FOR UPDATE`,
+      );
+      const r = (locked as unknown as { rows: Record<string, unknown>[] }).rows[0];
+      if (!r) return { notFound: true as const };
+      // Đã nằm trong hợp đồng gộp rồi → không đụng gì, trả id cha để FE dùng tiếp.
+      if (r.is_parent_contract === true) return { parentId: id, childId: null, alreadyFamily: true as const };
+      if (r.parent_id != null) return { parentId: Number(r.parent_id), childId: id, alreadyFamily: true as const };
+
+      const row = {
+        orderCode: r.order_code as string | null,
+        customerId: Number(r.customer_id),
+        shootDate: r.shoot_date as string,
+        shootTime: r.shoot_time as string | null,
+        serviceCategory: r.service_category as string | null,
+        location: r.location as string | null,
+        totalAmount: r.total_amount as string,
+        depositAmount: r.deposit_amount as string,
+        discountAmount: r.discount_amount as string,
+        paidAmount: r.paid_amount as string,
+        status: r.status as string,
+        internalNotes: r.internal_notes as string | null,
+        serviceLabel: r.service_label as string | null,
+        packageType: r.package_type as string | null,
+        createdByStaffId: r.created_by_staff_id as number | null,
+      };
+      const oldCode = row.orderCode || `DH${String(id).padStart(4, "0")}`;
+      // 1. CHA kế thừa mã đơn cũ (DH0xxx) + toàn bộ TIỀN của đơn cũ.
+      //    items rỗng: tiền của cha = Σ con (quy ước A8 sẵn có).
+      const [parent] = await tx
+        .insert(bookingsTable)
+        .values({
+          orderCode: oldCode,
+          customerId: row.customerId,
+          shootDate: row.shootDate,
+          shootTime: row.shootTime || "08:00",
+          serviceCategory: row.serviceCategory || "wedding",
+          packageType: "Hợp đồng nhiều dịch vụ",
+          location: row.location || null,
+          totalAmount: String(row.totalAmount ?? 0),
+          depositAmount: String(row.depositAmount ?? 0),
+          // Giảm giá phải nằm ở CẢ HAI, và đó KHÔNG phải cộng đôi: engine tiền chỉ
+          // tính trên dòng dịch vụ (bỏ qua hàng cha), còn hợp đồng + danh sách đơn
+          // lại đọc từ cha. Dời hẳn lên cha thì engine mất giảm giá → khách bỗng nợ
+          // thêm đúng số đã giảm; để nguyên ở con thì hợp đồng hiện nợ cao hơn.
+          // Ghi cả hai chỗ = mỗi bên đọc đúng một lần, mọi con số giữ y nguyên.
+          discountAmount: String(row.discountAmount ?? 0),
+          paidAmount: String(row.paidAmount ?? 0),
+          items: [],
+          surcharges: [],
+          deductions: [],
+          notes: null,
+          internalNotes: row.internalNotes || null,
+          assignedStaff: {},
+          isParentContract: true,
+          status: row.status,
+          // GIỮ người tạo gốc: hoa hồng sale fallback theo cột này. Ghi người bấm
+          // nút vào đây là lặng lẽ chuyển hoa hồng của bạn sale đã chốt đơn sang
+          // người vừa bấm "Thêm dịch vụ".
+          createdByStaffId: row.createdByStaffId ?? callerId,
+          // Setting nhắc thuê đồ đọc theo GỐC gia đình → không mang lên cha là đơn
+          // âm thầm rơi về mặc định 3/2.
+          ...((await getSchemaFlags()).dressWarnCols ? {
+            dressWarnPickupDays: (r as { dress_warn_pickup_days?: number | null }).dress_warn_pickup_days ?? null,
+            dressWarnReturnDays: (r as { dress_warn_return_days?: number | null }).dress_warn_return_days ?? null,
+          } : {}),
+        })
+        .returning();
+
+      // 2. Đơn cũ thành dịch vụ con #1: đổi mã theo quy ước cha-con, TRẢ tiền lên cha.
+      //    Giữ nguyên id, items, ngày, ghi chú, nhân sự, phụ thu — không đụng.
+      await tx
+        .update(bookingsTable)
+        .set({
+          parentId: parent.id,
+          orderCode: `${oldCode}-1`,
+          serviceLabel: row.serviceLabel || row.packageType || "Dịch vụ 1",
+          depositAmount: "0",
+          paidAmount: "0",
+          // KHÔNG zero discountAmount ở đây — xem ghi chú ở hàng cha phía trên.
+        })
+        .where(eq(bookingsTable.id, id));
+
+      // 3. Phiếu thu + hợp đồng chuyển về cha (xem docblock — bắt buộc, không phải tuỳ chọn).
+      await tx.update(paymentsTable).set({ bookingId: parent.id }).where(eq(paymentsTable.bookingId, id));
+      await tx.update(contractsTable).set({ bookingId: parent.id }).where(eq(contractsTable.bookingId, id));
+
+      // 4. Tổng của cha = tổng con còn hiệu lực. Tính TRONG tx (helper ngoài dùng
+      //    connection khác sẽ kẹt lock với chính transaction này).
+      const kids = await tx
+        .select({ total: bookingsTable.totalAmount })
+        .from(bookingsTable)
+        .where(and(eq(bookingsTable.parentId, parent.id), isNull(bookingsTable.deletedAt), ne(bookingsTable.status, "cancelled")));
+      const sum = kids.reduce((acc, k) => acc + (parseFloat(String(k.total ?? 0)) || 0), 0);
+      await tx.update(bookingsTable).set({ totalAmount: String(sum) }).where(eq(bookingsTable.id, parent.id));
+
+      return { parentId: parent.id, childId: id, alreadyFamily: false as const };
+    });
+
+    if ("notFound" in result) { res.status(404).json({ error: "Không tìm thấy đơn" }); return; }
+    res.json(result);
+  } catch (err) {
+    console.error("POST /bookings/:id/promote-to-family error:", err);
+    res.status(500).json({ error: "Không nâng cấp được đơn thành hợp đồng nhiều dịch vụ" });
+  }
+});
+
 router.post("/bookings/:parentId/add-child", async (req, res) => {
   try {
     const parentId = parseInt(req.params.parentId);

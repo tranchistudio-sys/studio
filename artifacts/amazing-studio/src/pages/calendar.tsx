@@ -1394,7 +1394,8 @@ function ShowFormPanel({
   /** savedDate (YYYY-MM-DD) = ngày chính vừa lưu — calendar nhảy thẳng tới ngày đó. */
   onSaved: (savedDate?: string) => void;
   /** Đơn lẻ vừa được backend nâng thành hợp đồng nhiều dịch vụ → mở lại form ở dạng gia đình. */
-  onPromotedToFamily?: (parentId: number) => void | Promise<void>;
+  /** parentId = null: đã chuyển xong dưới DB nhưng không tải lại được → phải ĐÓNG form. */
+  onPromotedToFamily?: (parentId: number | null) => void | Promise<void>;
   siblingBookings?: Booking[];
   isAdmin: boolean;
   viewerId?: number | null;
@@ -1789,20 +1790,32 @@ function ShowFormPanel({
       "phiếu thu và hợp đồng hiện có). Thay đổi chưa lưu trên form sẽ không được giữ."
     )) return;
     setPromoting(true);
+    // Đã ghi xong dưới DB hay chưa. Mốc này quyết định cách xử lý khi có sự cố:
+    // CHƯA ghi thì chỉ cần báo lỗi, form giữ nguyên cho người dùng thử lại. ĐÃ ghi
+    // rồi thì form đang trỏ vào hàng vừa biến thành dịch vụ con — để nó sống tiếp
+    // là lần Lưu sau máy cọc đẻ thêm một phiếu thu nữa (nhân đôi tiền cọc). Rớt
+    // mạng lúc đọc phản hồi, phản hồi không phải JSON, hay lỗi khi tải lại đều rơi
+    // vào đây, nên chốt chặn phải nằm ở catch chứ không chỉ ở nhánh server báo lỗi.
+    let committed = false;
     try {
       const res = await authFetch(`${BASE}/api/bookings/${booking.id}/promote-to-family`, { method: "POST" });
       if (!res.ok) {
         const e = await res.json().catch(() => ({}));
         throw new Error((e as { error?: string }).error || "Không chuyển được đơn sang hợp đồng nhiều dịch vụ");
       }
+      committed = true;
       const { parentId } = (await res.json()) as { parentId: number };
       await qc.invalidateQueries({ queryKey: ["bookings"] });
-      // PHẢI await: nâng cấp xong mà form vẫn trỏ vào hàng cũ (giờ đã là dịch vụ
-      // con) thì lần Lưu kế tiếp gửi depositAmount lên một đơn con → máy cọc tạo
-      // THÊM một phiếu thu nữa = nhân đôi tiền cọc.
+      // PHẢI await: xong rồi mà form vẫn trỏ hàng cũ là nhân đôi tiền cọc (xem trên).
       await onPromotedToFamily?.(parentId);
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Không chuyển được đơn sang hợp đồng nhiều dịch vụ");
+      if (committed) {
+        // Server ĐÃ chuyển xong — nói "không chuyển được" là sai sự thật và khiến
+        // người dùng làm tiếp trên cái form đã hỏng. Đóng form, báo đúng việc.
+        await onPromotedToFamily?.(null);
+      } else {
+        alert(err instanceof Error ? err.message : "Không chuyển được đơn sang hợp đồng nhiều dịch vụ");
+      }
     } finally {
       setPromoting(false);
     }
@@ -7452,28 +7465,36 @@ function CalendarPageInner() {
    * đình coi `booking` LÀ đơn cha — nó add-child/remove-child/đồng bộ trang phục
    * theo booking.id, nên nếu để form còn trỏ vào đơn con cũ thì thêm dịch vụ sẽ hỏng.
    */
-  const handlePromotedToFamily = useCallback(async (parentId: number) => {
-    const res = await authFetch(`${BASE}/api/bookings/${parentId}`);
-    if (!res.ok) {
-      // Nâng cấp ĐÃ ghi vào DB. Để form cũ sống tiếp là nguy hiểm: nó vẫn trỏ vào
-      // hàng vừa thành dịch vụ con, bấm Lưu sẽ nhân đôi tiền cọc. Đóng hẳn form.
+  const handlePromotedToFamily = useCallback(async (parentId: number | null) => {
+    // Nâng cấp ĐÃ ghi vào DB rồi. Nếu vì bất cứ lý do gì không dựng lại được form ở
+    // dạng gia đình thì phải ĐÓNG HẲN form: để nó sống tiếp là nó vẫn trỏ vào hàng
+    // vừa biến thành dịch vụ con, bấm Lưu là máy cọc đẻ thêm một phiếu thu nữa.
+    const closeForm = (msg: string) => {
       setEditingBooking(null);
       setEditingSiblings([]);
       setViewingBooking(null);
       setCalView("day");
-      alert("Đã chuyển sang hợp đồng nhiều dịch vụ, nhưng chưa tải lại được — hãy mở lại đơn để thêm dịch vụ.");
-      return;
+      alert(msg);
+    };
+    const RELOAD_FAILED = "Đã chuyển sang hợp đồng nhiều dịch vụ, nhưng chưa tải lại được — hãy mở lại đơn để thêm dịch vụ.";
+    if (parentId == null) { closeForm(RELOAD_FAILED); return; }
+    try {
+      const res = await authFetch(`${BASE}/api/bookings/${parentId}`);
+      if (!res.ok) { closeForm(RELOAD_FAILED); return; }
+      const parent = (await res.json()) as Booking & { children?: Booking[] };
+      const kids = parent.children ?? [];
+      setViewingBooking(parent);
+      setEditingBooking(parent);
+      setEditingSiblings(kids);
+      const baseDate = parent.shootDate ? new Date(parent.shootDate) : new Date();
+      setSelectedDate(baseDate);
+      setCurrentDate(baseDate);
+      setSelectedTime(parent.shootTime ?? "08:00");
+      setCalView("form");
+    } catch {
+      // Rớt mạng / phản hồi không phải JSON — cùng một hiểm hoạ, cùng một cách xử.
+      closeForm(RELOAD_FAILED);
     }
-    const parent = (await res.json()) as Booking & { children?: Booking[] };
-    const kids = parent.children ?? [];
-    setViewingBooking(parent);
-    setEditingBooking(parent);
-    setEditingSiblings(kids);
-    const baseDate = parent.shootDate ? new Date(parent.shootDate) : new Date();
-    setSelectedDate(baseDate);
-    setCurrentDate(baseDate);
-    setSelectedTime(parent.shootTime ?? "08:00");
-    setCalView("form");
   }, []);
 
   const handleDetailEdit = useCallback((parent?: Booking, sibs?: Booking[]) => {

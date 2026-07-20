@@ -75,7 +75,7 @@ async function logContractChanges(
 }
 
 /**
- * Ký Bên B (khách) — dùng chung cho endpoint public mới và mark-signed cũ.
+ * Ký Bên B (khách) — dùng cho đường ký công khai theo token (mark-signed cũ đã xoá 20/07).
  * Lưu chữ ký + chụp signed_snapshot (phát hiện sửa-sau-ký NỘI BỘ) + clear cờ
  * yêu-cầu-ký-lại + giữ nguyên side-effect cũ (booking → completed, notification).
  */
@@ -357,28 +357,20 @@ router.get("/contracts/:id/public", async (req, res): Promise<void> => {
   res.json(row);
 });
 
-// Endpoint ký kiểu cũ — giữ cho tương thích (trang ký cũ đã cache / QR đang lưu).
-router.post("/contracts/:id/mark-signed", async (req, res): Promise<void> => {
-  const id = parseInt(req.params.id);
-  const { signatureData } = req.body ?? {};
-  const [existing] = await db
-    .select()
-    .from(contractsTable)
-    .where(eq(contractsTable.id, id));
-  if (!existing) {
-    res.status(404).json({ error: "Không tìm thấy hợp đồng" });
-    return;
-  }
-  if (signatureData) {
-    const sigErr = validateSignatureData(signatureData);
-    if (sigErr) {
-      res.status(400).json({ error: sigErr });
-      return;
-    }
-  }
-  await applyCustomerSignature(existing, req.body ?? {});
-  res.json({ ok: true });
-});
+// ĐÃ XOÁ 20/07: POST /contracts/:id/mark-signed.
+// Endpoint ký "kiểu cũ" này KHÔNG cần đăng nhập và nhận nguyên req.body vào
+// applyCustomerSignature, nên bất kỳ ai đoán được id số cũng có thể: ký giả tên
+// khách, tự đặt ngày ký, ĐÈ tên/SĐT khách trong bảng customers, đẩy đơn sang
+// "hoàn thành", xoá cờ "yêu cầu ký lại" của admin, và ghi đè signedSnapshot —
+// tức là làm câm luôn cơ chế phát hiện "sửa sau khi ký" của chính hệ thống.
+// Nó cũng không có chốt 409 "đã ký rồi" như đường ký thật.
+//
+// Xoá thay vì khoá: rà toàn repo (SPA, scripts, docs, openapi/orval, test) KHÔNG
+// có chỗ nào gọi — chỉ còn trong bản build cũ. Việc ký của khách đã do
+// POST /public/contracts/by-token/:token/sign đảm nhiệm (token 24 byte khó đoán,
+// bắt buộc tên + SĐT + chữ ký PNG, có chốt 409). Link/QR cũ dạng /contracts/:id/sign
+// vẫn chạy: route đó 302 chuyển sang trang token — đúng lý do "giữ tương thích"
+// mà comment cũ nêu, nên xoá không mất tính năng nào.
 
 // ─── Hợp đồng online v2 — endpoints mới ──────────────────────────────────────
 

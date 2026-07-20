@@ -15,6 +15,7 @@ import {
 import { vi } from "date-fns/locale";
 import { formatVND } from "@/lib/utils";
 import { ServicePriceBreakdown, renderServiceBreakdownCardHTML } from "@/components/ServiceBreakdownCard";
+import { serviceDays, serviceDayTextLines } from "@/lib/service-days";
 import { getImageSrc } from "@/lib/imageUtils";
 import { ConceptImage } from "@/components/ConceptImage";
 import {
@@ -3749,12 +3750,9 @@ function generateContractHTML(
       const sPkgId = sItems[0]?.serviceKey?.startsWith("pkg-") ? parseInt(sItems[0].serviceKey.replace("pkg-", "")) : null;
       const sPkg = sPkgId ? allPackages.find(p => p.id === sPkgId) : null;
       const sPkgDesc = sPkg?.description || "";
-      let sSubtitle: string | null = null;
-      if (svc.shootDate) {
-        let dateStr = svc.shootDate;
-        try { dateStr = new Date(svc.shootDate).toLocaleDateString("vi-VN"); } catch { /* keep raw */ }
-        sSubtitle = `📅 ${dateStr}${svc.shootTime ? ` • ${svc.shootTime.slice(0, 5)}` : ""}`;
-      }
+      // Ngày thực hiện của dịch vụ này — ĐỦ các ngày (show nhiều ngày ra nhiều dòng),
+      // ngay dưới tên dịch vụ để khách đọc hợp đồng không phải dò chỗ khác.
+      const sSubtitle = serviceDayTextLines(svc);
       return renderServiceBreakdownCardHTML({
         title: sTitle,
         subtitle: sSubtitle,
@@ -4492,22 +4490,9 @@ function ShowDetailPanel({
                 <span>{booking.location}</span>
               </div>
             )}
-            {/* Lịch thực hiện (dịch vụ nhiều ngày) — ngày 1 = trên; đây là ngày 2..n */}
-            {(booking.occurrences?.length ?? 0) > 0 && (
-              <div className="rounded-lg border border-blue-200 dark:border-blue-900 bg-blue-50/40 dark:bg-blue-950/10 p-2.5 space-y-1">
-                <p className="text-[11px] font-bold text-blue-700 dark:text-blue-300">📅 Lịch thực hiện ({(booking.occurrences!.length + 1)} ngày)</p>
-                <div className="flex items-center gap-2 text-xs">
-                  <span className="font-bold text-blue-600 dark:text-blue-400 flex-shrink-0">Ngày 1</span>
-                  <span>{format(shootDateObj, "dd/MM/yyyy", { locale: vi })}{booking.shootTime ? ` · ${booking.shootTime.slice(0, 5)}` : ""}</span>
-                </div>
-                {booking.occurrences!.map((o, i) => (
-                  <div key={o.id} className="flex items-center gap-2 text-xs">
-                    <span className="font-bold text-blue-600 dark:text-blue-400 flex-shrink-0">Ngày {i + 2}</span>
-                    <span>{(o.shootDate || "").slice(0, 10).split("-").reverse().join("/")}{o.shootTime ? ` · ${o.shootTime.slice(0, 5)}` : ""}{o.label ? ` — ${o.label}` : ""}</span>
-                  </div>
-                ))}
-              </div>
-            )}
+            {/* Lịch thực hiện: KHÔNG còn ô riêng ở đây nữa (yêu cầu chủ 20/07 — thông tin
+                tách khỏi dịch vụ thì dễ lạc). Ngày đầy đủ của TỪNG dịch vụ hiện ngay
+                trên dòng dịch vụ ở mục Thanh toán bên dưới. */}
           </div>
 
           <div className="border-t border-border/40" />
@@ -4636,6 +4621,9 @@ function ShowDetailPanel({
                         const svcTitle = `DỊCH VỤ ${svcIdx + 1}${svcRealName ? `: ${svcRealName}` : ""}`;
                         const svcShootDate = svc.shootDate ? safeFormatDate(svc.shootDate) : "";
                         const svcShootTime = svc.shootTime ? svc.shootTime.slice(0, 5) : "";
+                        // Ngày chính + ngày phụ CỦA CHÍNH dịch vụ này (server trả occurrences cho
+                        // cả sibling, không riêng đơn đang mở).
+                        const svcDays = serviceDays(svc);
                         const svcBookingSurcharges = (svc.surcharges || []) as { name?: string; label?: string; amount: number }[];
                         const svcItemSurcharges = svcItems.flatMap(it => (it.surcharges || []) as { name?: string; label?: string; amount: number }[]);
                         const allSurcharges = [...svcBookingSurcharges, ...svcItemSurcharges];
@@ -4669,7 +4657,27 @@ function ShowDetailPanel({
                                   {svc.orderCode && <span className="text-[9px] font-mono bg-muted px-1.5 py-0.5 rounded text-muted-foreground font-bold">{svc.orderCode}</span>}
                                   {isCurrent && <span className="text-[9px] border border-blue-400 px-1.5 py-0.5 rounded font-bold text-foreground">Đang xem</span>}
                                 </div>
-                                {(svcShootDate || svcShootTime) && (
+                                {/* Dịch vụ NHIỀU NGÀY: liệt kê đủ ngày ngay tại dòng dịch vụ — nhìn phát
+                                    biết show đi mấy ngày, không phải tìm ở chỗ khác. 1 ngày: giữ nguyên
+                                    kiểu cũ (giờ to + ngày bên cạnh). */}
+                                {svcDays.length > 1 ? (
+                                  <div className="mt-0.5 space-y-0.5">
+                                    {svcDays.map(d => (
+                                      <div key={d.index} className="flex items-baseline gap-1.5 flex-wrap">
+                                        <span className="text-[10px] font-bold text-blue-600 dark:text-blue-400 flex-shrink-0">
+                                          Ngày {d.index}/{d.total}
+                                        </span>
+                                        <span className="text-[11px] font-semibold text-foreground tabular-nums">📅 {d.date}</span>
+                                        {d.time && (
+                                          <span className="text-[11px] font-bold text-primary tabular-nums">{d.time}</span>
+                                        )}
+                                        {d.label && (
+                                          <span className="text-[10px] text-muted-foreground truncate">— {d.label}</span>
+                                        )}
+                                      </div>
+                                    ))}
+                                  </div>
+                                ) : (svcShootDate || svcShootTime) && (
                                   <div className="flex items-baseline gap-1.5 mt-0.5">
                                     {svcShootTime && (
                                       <span className="text-base font-black text-primary tabular-nums leading-none">{svcShootTime}</span>

@@ -12,6 +12,7 @@ import { useState } from "react";
 import { formatVND } from "@/lib/utils";
 import { parseDescriptionBlocks } from "@/lib/package-description";
 import SignaturePad from "./SignaturePad";
+import { serviceDays as buildServiceDays, type ServiceDay } from "@/lib/service-days";
 import type { ContractPayload, ContractService } from "./contract-types";
 
 type ContractDocumentProps = {
@@ -51,11 +52,12 @@ function methodLabel(m: string): string {
  * Chip đầu hợp đồng phải hiện ĐỦ các ngày — người xem nhìn đầu trang là hiểu ngay
  * show đi mấy ngày, không phải cuộn xuống mục "Lịch thực hiện" (yêu cầu chủ 20/07).
  */
-function serviceDays(svc: ContractService): { date: string | null; time: string | null; label: string | null }[] {
-  return [
-    { date: svc.shootDate, time: svc.shootTime, label: null },
-    ...(svc.occurrences ?? []).map(o => ({ date: o.date, time: o.time, label: o.label })),
-  ];
+function serviceDays(svc: ContractService): ServiceDay[] {
+  return buildServiceDays({
+    shootDate: svc.shootDate,
+    shootTime: svc.shootTime,
+    occurrences: (svc.occurrences ?? []).map(o => ({ shootDate: o.date, shootTime: o.time, label: o.label })),
+  });
 }
 
 function typeLabel(t: string): string {
@@ -75,7 +77,10 @@ export default function ContractDocument({
   customerLinkCopied = false,
   customerLinkBusy = false,
 }: ContractDocumentProps) {
-  const { contract, studio, customer, services, money, payments, signatures, schedule } = payload;
+  // `payload.schedule` (lịch gộp cả hợp đồng) vẫn được backend trả nhưng KHÔNG vẽ
+  // nữa — ngày đã nằm ngay trên từng dòng dịch vụ. Giữ field ở payload để không
+  // phá hợp đồng đã ký / bên gọi khác.
+  const { contract, studio, customer, services, money, payments, signatures } = payload;
   const isMulti = services.length > 1;
   const contractCode = contract.contractCode || `HD-${String(contract.id).padStart(4, "0")}`;
 
@@ -188,10 +193,10 @@ export default function ContractDocument({
                         🕐 {svc.shootTime.slice(0, 5)}
                       </span>
                     ) : null}
-                    {serviceDays(svc).map((d, di, arr) => (
-                      <span key={di} className="inline-flex items-center gap-1 rounded-md border border-[#111] bg-[#f7f7f7] px-2 py-0.5 text-[13px] font-extrabold text-[#111] tabular-nums">
-                        📅 {arr.length > 1 ? `Ngày ${di + 1}: ` : ""}{fmtDate(d.date)}
-                        {di > 0 && d.time ? ` · ${d.time.slice(0, 5)}` : ""}
+                    {serviceDays(svc).map(d => (
+                      <span key={d.index} className="inline-flex items-center gap-1 rounded-md border border-[#111] bg-[#f7f7f7] px-2 py-0.5 text-[13px] font-extrabold text-[#111] tabular-nums">
+                        📅 {d.total > 1 ? `Ngày ${d.index}/${d.total}: ` : ""}{d.date || "—"}
+                        {d.index > 1 && d.time ? ` · ${d.time}` : ""}
                         {d.label ? <span className="font-semibold text-[#555]"> — {d.label}</span> : null}
                       </span>
                     ))}
@@ -207,10 +212,10 @@ export default function ContractDocument({
                       🕐 {svc.shootTime.slice(0, 5)}
                     </span>
                   ) : null}
-                  {serviceDays(svc).map((d, di, arr) => (
-                    <span key={di} className="inline-flex items-center gap-1.5 rounded-lg border-2 border-[#111] bg-[#f7f7f7] px-3 py-1.5 text-[15px] font-extrabold text-[#111] tabular-nums">
-                      📅 {arr.length > 1 ? `Ngày ${di + 1}: ` : "Ngày chụp: "}{fmtDate(d.date)}
-                      {di > 0 && d.time ? ` · ${d.time.slice(0, 5)}` : ""}
+                  {serviceDays(svc).map(d => (
+                    <span key={d.index} className="inline-flex items-center gap-1.5 rounded-lg border-2 border-[#111] bg-[#f7f7f7] px-3 py-1.5 text-[15px] font-extrabold text-[#111] tabular-nums">
+                      📅 {d.total > 1 ? `Ngày ${d.index}/${d.total}: ` : "Ngày chụp: "}{d.date || "—"}
+                      {d.index > 1 && d.time ? ` · ${d.time}` : ""}
                       {d.label ? <span className="font-semibold text-[#555]"> — {d.label}</span> : null}
                     </span>
                   ))}
@@ -339,20 +344,9 @@ export default function ContractDocument({
         </div>
       </div>
 
-      {/* Lịch thực hiện (dịch vụ nhiều ngày) — chỉ hiện khi có ≥2 mốc */}
-      {schedule && schedule.length > 1 ? (
-        <div className="mb-6" style={{ breakInside: "avoid" }}>
-          <div className="text-[10.5px] font-bold uppercase tracking-wider text-[#111] mb-2.5">📅 Lịch thực hiện</div>
-          <div className="space-y-1">
-            {schedule.map((s, i) => (
-              <div key={i} className="flex items-baseline gap-2 text-[13px] text-[#333]">
-                <span className="font-bold text-[#111] flex-shrink-0">{i + 1}.</span>
-                <span>{fmtDate(s.date)}{s.time ? ` lúc ${s.time.slice(0, 5)}` : ""}{s.label ? ` — ${s.label}` : ""}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : null}
+      {/* Lịch thực hiện: KHÔNG còn mục riêng ở đây (yêu cầu chủ 20/07). Mỗi dịch vụ
+          đã hiện ĐỦ ngày ngay tại dòng của nó ở mục "Dịch vụ đã đặt" phía trên —
+          khách đọc tới đâu thấy ngày tới đó, không phải ghép thông tin 2 chỗ. */}
 
       {/* Lịch sử thanh toán */}
       {payments.length > 0 ? (

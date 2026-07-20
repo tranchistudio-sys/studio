@@ -1384,7 +1384,7 @@ const ALLOWANCE_TYPE_LABELS: Record<string, string> = {
 
 // ─── Show form (create / edit booking) ────────────────────────────────────────
 function ShowFormPanel({
-  date, initialTime = "07:00", onDateChange, booking, onClose, onSaved, siblingBookings = [], isAdmin, viewerId,
+  date, initialTime = "07:00", onDateChange, booking, onClose, onSaved, onPromotedToFamily, siblingBookings = [], isAdmin, viewerId,
 }: {
   date: Date;
   initialTime?: string;
@@ -1393,6 +1393,8 @@ function ShowFormPanel({
   onClose: () => void;
   /** savedDate (YYYY-MM-DD) = ngày chính vừa lưu — calendar nhảy thẳng tới ngày đó. */
   onSaved: (savedDate?: string) => void;
+  /** Đơn lẻ vừa được backend nâng thành hợp đồng nhiều dịch vụ → mở lại form ở dạng gia đình. */
+  onPromotedToFamily?: (parentId: number) => void;
   siblingBookings?: Booking[];
   isAdmin: boolean;
   viewerId?: number | null;
@@ -1768,6 +1770,41 @@ function ShowFormPanel({
   }) : [makeSubDraft(format(date, "yyyy-MM-dd"), initialTime)]);
   const updateSubDraft = (id: string, patch: Partial<SubServiceDraft>) =>
     setSubDrafts(p => p.map(s => s.id === id ? { ...s, ...patch } : s));
+  /**
+   * "+ Thêm dịch vụ" trên đơn đang sửa mà đơn CHƯA phải hợp đồng gộp.
+   *
+   * Nghiệp vụ (chủ 20/07): khách cũ quay lại chốt thêm gói thì phải thêm được ngay
+   * trong đơn cũ. Trước đây nút này bị ẨN (chữa cháy sau sự cố DH0191) — bỏ khoá
+   * suông thì nhánh lưu đơn lẻ chỉ gửi items của Dịch vụ 1 kèm tổng của tất cả,
+   * đúng lại vết xe cũ. Nên ở đây KHÔNG tự thêm ô dịch vụ: nhờ backend nâng cấp
+   * cấu trúc (atomic, tiền dời lên hợp đồng cha) rồi MỞ LẠI form ở dạng gia đình —
+   * từ đó mọi thao tác thêm dịch vụ đi đúng đường add-child đã chạy ổn định.
+   */
+  const [promoting, setPromoting] = useState(false);
+  const promoteThenAddService = async () => {
+    if (!booking) return;
+    if (!confirm(
+      "Thêm dịch vụ mới vào đơn này?\n\n" +
+      "Đơn sẽ được chuyển thành hợp đồng nhiều dịch vụ (giữ nguyên dịch vụ, tiền cọc, " +
+      "phiếu thu và hợp đồng hiện có). Thay đổi chưa lưu trên form sẽ không được giữ."
+    )) return;
+    setPromoting(true);
+    try {
+      const res = await authFetch(`${BASE}/api/bookings/${booking.id}/promote-to-family`, { method: "POST" });
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}));
+        throw new Error((e as { error?: string }).error || "Không chuyển được đơn sang hợp đồng nhiều dịch vụ");
+      }
+      const { parentId } = (await res.json()) as { parentId: number };
+      await qc.invalidateQueries({ queryKey: ["bookings"] });
+      onPromotedToFamily?.(parentId);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Không chuyển được đơn sang hợp đồng nhiều dịch vụ");
+    } finally {
+      setPromoting(false);
+    }
+  };
+
   const addSubDraft = () =>
     setSubDrafts(p => [...p, { id: genId(), serviceLabel: "", shootDate: shootDate, shootTime: "08:00", items: [emptyOrderLine()], photoId: null, photoName: "", photoTask: "", makeupId: null, makeupName: "", makeupTask: "", notes: "", additionalServices: [], occurrences: [] }]);
 
@@ -3062,19 +3099,15 @@ function ShowFormPanel({
                         ẨN khi edit đơn THƯỜNG (không phải hợp đồng gộp): nhánh lưu single
                         chỉ gửi items của Dịch vụ 1 → thêm Dịch vụ 2 sẽ lệch tiền (sự cố
                         DH0191). Muốn nhiều dịch vụ: tạo hợp đồng gộp mới hoặc đơn riêng. */}
-                    {idx === subDrafts.length - 1 && (!isEdit || hasSiblingEdit) && (
+                    {idx === subDrafts.length - 1 && (
                       <button
                         type="button"
-                        onClick={addSubDraft}
-                        className="w-full mt-1 py-2 border-2 border-dashed border-blue-300 dark:border-blue-700 rounded-lg text-sm text-foreground hover:border-blue-500 hover:bg-blue-50/50 dark:hover:bg-blue-950/20 transition-all flex items-center justify-center gap-2 font-medium"
+                        disabled={promoting}
+                        onClick={isEdit && !hasSiblingEdit ? promoteThenAddService : addSubDraft}
+                        className="w-full mt-1 py-2 border-2 border-dashed border-blue-300 dark:border-blue-700 rounded-lg text-sm text-foreground hover:border-blue-500 hover:bg-blue-50/50 dark:hover:bg-blue-950/20 transition-all flex items-center justify-center gap-2 font-medium disabled:opacity-50"
                       >
-                        <Plus className="w-4 h-4" /> Thêm dịch vụ mới
+                        <Plus className="w-4 h-4" /> {promoting ? "Đang chuyển sang hợp đồng nhiều dịch vụ..." : "Thêm dịch vụ mới"}
                       </button>
-                    )}
-                    {idx === subDrafts.length - 1 && isEdit && !hasSiblingEdit && (
-                      <p className="mt-1 text-[10px] text-muted-foreground text-center">
-                        Đơn 1 dịch vụ không thêm được dịch vụ mới khi chỉnh sửa — tạo đơn riêng hoặc hợp đồng gộp mới.
-                      </p>
                     )}
                   </div>
                 </div>
@@ -7410,6 +7443,27 @@ function CalendarPageInner() {
   // the multi-service edit flow (PUT each sibling) instead of accidentally
   // POSTing a brand-new parent contract (which used to silently duplicate the
   // entire merged contract on save).
+  /**
+   * Đơn lẻ vừa được nâng thành hợp đồng nhiều dịch vụ → tải gia đình mới rồi mở lại
+   * form ở dạng gia đình. PHẢI đi đường này (không vá state tại chỗ): nhánh lưu gia
+   * đình coi `booking` LÀ đơn cha — nó add-child/remove-child/đồng bộ trang phục
+   * theo booking.id, nên nếu để form còn trỏ vào đơn con cũ thì thêm dịch vụ sẽ hỏng.
+   */
+  const handlePromotedToFamily = useCallback(async (parentId: number) => {
+    const res = await authFetch(`${BASE}/api/bookings/${parentId}`);
+    if (!res.ok) { alert("Đã chuyển sang hợp đồng nhiều dịch vụ, nhưng chưa tải lại được — hãy mở lại đơn."); return; }
+    const parent = (await res.json()) as Booking & { children?: Booking[] };
+    const kids = parent.children ?? [];
+    setViewingBooking(parent);
+    setEditingBooking(parent);
+    setEditingSiblings(kids);
+    const baseDate = parent.shootDate ? new Date(parent.shootDate) : new Date();
+    setSelectedDate(baseDate);
+    setCurrentDate(baseDate);
+    setSelectedTime(parent.shootTime ?? "08:00");
+    setCalView("form");
+  }, []);
+
   const handleDetailEdit = useCallback((parent?: Booking, sibs?: Booking[]) => {
     if (!viewingBooking) return;
     if (parent && sibs && sibs.length > 0) {
@@ -7565,6 +7619,7 @@ function CalendarPageInner() {
           booking={editingBooking}
           onClose={editingBooking && viewingBooking ? () => { setCalView("detail"); setEditingBooking(null); } : handleBackToDay}
           onSaved={handleFormSaved}
+          onPromotedToFamily={handlePromotedToFamily}
           siblingBookings={[...editingSiblings].sort((a, b) => {
             const sA = parseInt((a.orderCode || "").split("-").pop() || "0") || 0;
             const sB = parseInt((b.orderCode || "").split("-").pop() || "0") || 0;

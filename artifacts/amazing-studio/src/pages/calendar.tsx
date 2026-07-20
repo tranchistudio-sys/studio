@@ -1394,7 +1394,7 @@ function ShowFormPanel({
   /** savedDate (YYYY-MM-DD) = ngày chính vừa lưu — calendar nhảy thẳng tới ngày đó. */
   onSaved: (savedDate?: string) => void;
   /** Đơn lẻ vừa được backend nâng thành hợp đồng nhiều dịch vụ → mở lại form ở dạng gia đình. */
-  onPromotedToFamily?: (parentId: number) => void;
+  onPromotedToFamily?: (parentId: number) => void | Promise<void>;
   siblingBookings?: Booking[];
   isAdmin: boolean;
   viewerId?: number | null;
@@ -1797,7 +1797,10 @@ function ShowFormPanel({
       }
       const { parentId } = (await res.json()) as { parentId: number };
       await qc.invalidateQueries({ queryKey: ["bookings"] });
-      onPromotedToFamily?.(parentId);
+      // PHẢI await: nâng cấp xong mà form vẫn trỏ vào hàng cũ (giờ đã là dịch vụ
+      // con) thì lần Lưu kế tiếp gửi depositAmount lên một đơn con → máy cọc tạo
+      // THÊM một phiếu thu nữa = nhân đôi tiền cọc.
+      await onPromotedToFamily?.(parentId);
     } catch (err) {
       alert(err instanceof Error ? err.message : "Không chuyển được đơn sang hợp đồng nhiều dịch vụ");
     } finally {
@@ -7451,7 +7454,16 @@ function CalendarPageInner() {
    */
   const handlePromotedToFamily = useCallback(async (parentId: number) => {
     const res = await authFetch(`${BASE}/api/bookings/${parentId}`);
-    if (!res.ok) { alert("Đã chuyển sang hợp đồng nhiều dịch vụ, nhưng chưa tải lại được — hãy mở lại đơn."); return; }
+    if (!res.ok) {
+      // Nâng cấp ĐÃ ghi vào DB. Để form cũ sống tiếp là nguy hiểm: nó vẫn trỏ vào
+      // hàng vừa thành dịch vụ con, bấm Lưu sẽ nhân đôi tiền cọc. Đóng hẳn form.
+      setEditingBooking(null);
+      setEditingSiblings([]);
+      setViewingBooking(null);
+      setCalView("day");
+      alert("Đã chuyển sang hợp đồng nhiều dịch vụ, nhưng chưa tải lại được — hãy mở lại đơn để thêm dịch vụ.");
+      return;
+    }
     const parent = (await res.json()) as Booking & { children?: Booking[] };
     const kids = parent.children ?? [];
     setViewingBooking(parent);

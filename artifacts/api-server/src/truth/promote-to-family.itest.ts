@@ -29,6 +29,7 @@ let base: string;
 let token: string;
 let customerId: number;
 let bookingId: number;          // đơn lẻ ban đầu
+let creatorId: number;          // nhân sự đã chốt đơn gốc (khác người bấm nút)
 let parentId: number | null = null;
 const createdBookingIds: number[] = [];
 const createdPaymentIds: number[] = [];
@@ -75,15 +76,21 @@ beforeAll(async () => {
   token = mint((a.rows[0] as { id: number }).id);
   const c = await pool.query(`SELECT id FROM customers ORDER BY id DESC LIMIT 1`);
   customerId = (c.rows[0] as { id: number }).id;
+  // Người tạo đơn = một nhân sự KHÁC người bấm nút, để bắt được lỗi "hoa hồng sale
+  // đổi chủ" (cha nhận created_by_staff_id của người vừa bấm thay vì người chốt đơn).
+  const other = await pool.query(
+    `SELECT id FROM staff WHERE is_active = 1 AND id <> $1 ORDER BY id LIMIT 1`,
+    [(a.rows[0] as { id: number }).id]);
+  creatorId = other.rows.length ? (other.rows[0] as { id: number }).id : (a.rows[0] as { id: number }).id;
 
   // Đơn LẺ ban đầu: 5.000.000, cọc 2.000.000 (có phiếu thu thật).
   const b = await pool.query(
     `INSERT INTO bookings (order_code, customer_id, shoot_date, shoot_time, service_category, package_type,
        total_amount, deposit_amount, discount_amount, paid_amount, items, surcharges, deductions,
-       assigned_staff, is_parent_contract, status)
-     VALUES ($1,$2,'2030-09-01','08:00','wedding','Gói A', '5000000','2000000','0','2000000',
-       '[{"name":"Gói A","price":5000000}]'::jsonb,'[]'::jsonb,'[]'::jsonb,'{}'::jsonb,false,'confirmed')
-     RETURNING id`, [CODE, customerId]);
+       assigned_staff, is_parent_contract, status, created_by_staff_id)
+     VALUES ($1,$2,'2030-09-01','08:00','wedding','Gói A', '5000000','2000000','500000','2000000',
+       '[{"name":"Gói A","price":5000000}]'::jsonb,'[]'::jsonb,'[]'::jsonb,'{}'::jsonb,false,'confirmed',$3)
+     RETURNING id`, [CODE, customerId, creatorId]);
   bookingId = (b.rows[0] as { id: number }).id;
   createdBookingIds.push(bookingId);
 
@@ -125,6 +132,29 @@ describe("A. Đơn 1 dịch vụ → thêm dịch vụ thứ 2", () => {
     expect(after.n, "số phiếu thu đổi (duplicate hoặc mất)").toBe(before.n);
   });
 
+  it("BLOCKER cũ: GIẢM GIÁ không được biến mất khỏi engine tiền", async () => {
+    // Engine chỉ tính trên DÒNG DỊCH VỤ (bỏ qua hàng cha) — xem family-allocation.itest.
+    // Nếu promote dời hẳn giảm giá lên cha thì net của gia đình nhảy lên đúng số đã
+    // giảm → khách bỗng nợ thêm 500k và doanh thu tháng cũng phồng lên bấy nhiêu.
+    const net = await pool.query(
+      `SELECT COALESCE(SUM(GREATEST(0, b.total_amount::numeric - COALESCE(b.discount_amount,0)::numeric)),0)::text AS net
+       FROM bookings b
+       WHERE COALESCE(b.parent_id, b.id) = $1 AND b.deleted_at IS NULL AND b.is_parent_contract = false`,
+      [parentId]);
+    expect((net.rows[0] as { net: string }).net, "engine mất giảm giá sau khi nâng cấp").toBe("4500000.00");
+
+    // Hợp đồng + danh sách đơn lại đọc giảm giá từ CHA → cha cũng phải có.
+    const p = await pool.query(`SELECT discount_amount::text d FROM bookings WHERE id = $1`, [parentId]);
+    expect((p.rows[0] as { d: string }).d, "hợp đồng mất dòng giảm giá").toBe("500000.00");
+  });
+
+  it("giữ nguyên NGƯỜI TẠO đơn (hoa hồng sale không đổi chủ)", async () => {
+    const c = await pool.query(`SELECT created_by_staff_id c FROM bookings WHERE id = $1`, [bookingId]);
+    const p = await pool.query(`SELECT created_by_staff_id c FROM bookings WHERE id = $1`, [parentId]);
+    expect((c.rows[0] as { c: number | null }).c, "đơn gốc mất người tạo").toBe(creatorId);
+    expect((p.rows[0] as { c: number | null }).c, "hoa hồng sale chuyển sang người bấm nút").toBe(creatorId);
+  });
+
   it("dịch vụ cũ còn nguyên: id, ngày, nội dung gói, tiền của nó", async () => {
     const c = await pool.query(
       `SELECT id, parent_id, order_code, total_amount::text t, deposit_amount::text d, paid_amount::text p,
@@ -132,7 +162,7 @@ describe("A. Đơn 1 dịch vụ → thêm dịch vụ thứ 2", () => {
     const row = c.rows[0] as Record<string, unknown>;
     expect(row.parent_id).toBe(parentId);
     expect(row.t).toBe("5000000.00");           // giá dịch vụ giữ nguyên
-    expect(row.d).toBe("0.00");                 // tiền dời lên cha (đúng hình dạng gốc)
+    expect(row.d).toBe("0.00");                 // cọc dời lên cha (đúng hình dạng gốc)
     expect(row.p).toBe("0.00");
     expect(row.order_code).toBe(`${CODE}-1`);
     expect(String(row.sd)).toContain("2030-09-01");

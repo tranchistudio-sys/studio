@@ -1923,17 +1923,47 @@ router.post("/bookings/:id/promote-to-family", async (req, res) => {
     const id = parseInt(req.params.id);
     if (!Number.isFinite(id)) { res.status(400).json({ error: "id không hợp lệ" }); return; }
 
-    const [row] = await db.select(await bookingColumnsCompat()).from(bookingsTable).where(eq(bookingsTable.id, id));
-    if (!row) { res.status(404).json({ error: "Không tìm thấy đơn" }); return; }
-
-    // Đã nằm trong hợp đồng gộp rồi → không đụng gì, trả id cha để FE dùng tiếp.
-    if (row.isParentContract) { res.json({ parentId: row.id, childId: null, alreadyFamily: true }); return; }
-    if (row.parentId != null) { res.json({ parentId: row.parentId, childId: row.id, alreadyFamily: true }); return; }
+    const exists = await db.select({ id: bookingsTable.id }).from(bookingsTable).where(eq(bookingsTable.id, id));
+    if (exists.length === 0) { res.status(404).json({ error: "Không tìm thấy đơn" }); return; }
 
     const callerId = verifyToken(req.headers.authorization) || null;
-    const oldCode = row.orderCode || `DH${String(row.id).padStart(4, "0")}`;
 
     const result = await db.transaction(async (tx) => {
+      // KHOÁ hàng rồi mới đọc: hai người cùng bấm "Thêm dịch vụ" một lúc thì người
+      // sau phải thấy trạng thái người trước đã ghi. Không khoá thì cả hai cùng
+      // thấy "đơn lẻ" → đẻ hai hàng cha, phiếu thu về cha thứ nhất còn đơn cũ trỏ
+      // cha thứ hai = cha mồ côi giữ tiền, gia đình mất sạch phiếu.
+      const locked = await tx.execute(
+        sql`SELECT id, order_code, customer_id, shoot_date, shoot_time, service_category, package_type,
+                   location, total_amount, deposit_amount, discount_amount, paid_amount, status,
+                   internal_notes, service_label, parent_id, is_parent_contract, created_by_staff_id,
+                   dress_warn_pickup_days, dress_warn_return_days
+            FROM bookings WHERE id = ${id} FOR UPDATE`,
+      );
+      const r = (locked as unknown as { rows: Record<string, unknown>[] }).rows[0];
+      if (!r) return { notFound: true as const };
+      // Đã nằm trong hợp đồng gộp rồi → không đụng gì, trả id cha để FE dùng tiếp.
+      if (r.is_parent_contract === true) return { parentId: id, childId: null, alreadyFamily: true as const };
+      if (r.parent_id != null) return { parentId: Number(r.parent_id), childId: id, alreadyFamily: true as const };
+
+      const row = {
+        orderCode: r.order_code as string | null,
+        customerId: Number(r.customer_id),
+        shootDate: r.shoot_date as string,
+        shootTime: r.shoot_time as string | null,
+        serviceCategory: r.service_category as string | null,
+        location: r.location as string | null,
+        totalAmount: r.total_amount as string,
+        depositAmount: r.deposit_amount as string,
+        discountAmount: r.discount_amount as string,
+        paidAmount: r.paid_amount as string,
+        status: r.status as string,
+        internalNotes: r.internal_notes as string | null,
+        serviceLabel: r.service_label as string | null,
+        packageType: r.package_type as string | null,
+        createdByStaffId: r.created_by_staff_id as number | null,
+      };
+      const oldCode = row.orderCode || `DH${String(id).padStart(4, "0")}`;
       // 1. CHA kế thừa mã đơn cũ (DH0xxx) + toàn bộ TIỀN của đơn cũ.
       //    items rỗng: tiền của cha = Σ con (quy ước A8 sẵn có).
       const [parent] = await tx
@@ -1948,6 +1978,11 @@ router.post("/bookings/:id/promote-to-family", async (req, res) => {
           location: row.location || null,
           totalAmount: String(row.totalAmount ?? 0),
           depositAmount: String(row.depositAmount ?? 0),
+          // Giảm giá phải nằm ở CẢ HAI, và đó KHÔNG phải cộng đôi: engine tiền chỉ
+          // tính trên dòng dịch vụ (bỏ qua hàng cha), còn hợp đồng + danh sách đơn
+          // lại đọc từ cha. Dời hẳn lên cha thì engine mất giảm giá → khách bỗng nợ
+          // thêm đúng số đã giảm; để nguyên ở con thì hợp đồng hiện nợ cao hơn.
+          // Ghi cả hai chỗ = mỗi bên đọc đúng một lần, mọi con số giữ y nguyên.
           discountAmount: String(row.discountAmount ?? 0),
           paidAmount: String(row.paidAmount ?? 0),
           items: [],
@@ -1958,7 +1993,16 @@ router.post("/bookings/:id/promote-to-family", async (req, res) => {
           assignedStaff: {},
           isParentContract: true,
           status: row.status,
-          createdByStaffId: callerId,
+          // GIỮ người tạo gốc: hoa hồng sale fallback theo cột này. Ghi người bấm
+          // nút vào đây là lặng lẽ chuyển hoa hồng của bạn sale đã chốt đơn sang
+          // người vừa bấm "Thêm dịch vụ".
+          createdByStaffId: row.createdByStaffId ?? callerId,
+          // Setting nhắc thuê đồ đọc theo GỐC gia đình → không mang lên cha là đơn
+          // âm thầm rơi về mặc định 3/2.
+          ...((await getSchemaFlags()).dressWarnCols ? {
+            dressWarnPickupDays: (r as { dress_warn_pickup_days?: number | null }).dress_warn_pickup_days ?? null,
+            dressWarnReturnDays: (r as { dress_warn_return_days?: number | null }).dress_warn_return_days ?? null,
+          } : {}),
         })
         .returning();
 
@@ -1971,8 +2015,8 @@ router.post("/bookings/:id/promote-to-family", async (req, res) => {
           orderCode: `${oldCode}-1`,
           serviceLabel: row.serviceLabel || row.packageType || "Dịch vụ 1",
           depositAmount: "0",
-          discountAmount: "0",
           paidAmount: "0",
+          // KHÔNG zero discountAmount ở đây — xem ghi chú ở hàng cha phía trên.
         })
         .where(eq(bookingsTable.id, id));
 
@@ -1989,10 +2033,11 @@ router.post("/bookings/:id/promote-to-family", async (req, res) => {
       const sum = kids.reduce((acc, k) => acc + (parseFloat(String(k.total ?? 0)) || 0), 0);
       await tx.update(bookingsTable).set({ totalAmount: String(sum) }).where(eq(bookingsTable.id, parent.id));
 
-      return { parentId: parent.id, childId: id };
+      return { parentId: parent.id, childId: id, alreadyFamily: false as const };
     });
 
-    res.json({ ...result, alreadyFamily: false });
+    if ("notFound" in result) { res.status(404).json({ error: "Không tìm thấy đơn" }); return; }
+    res.json(result);
   } catch (err) {
     console.error("POST /bookings/:id/promote-to-family error:", err);
     res.status(500).json({ error: "Không nâng cấp được đơn thành hợp đồng nhiều dịch vụ" });

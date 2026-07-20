@@ -7479,9 +7479,15 @@ function CalendarPageInner() {
   const handleFormSaved = useCallback((savedDate?: string) => {
     // Nhảy thẳng tới ngày vừa lưu — đổi ngày chụp xong card phải hiện ngay trước
     // mắt, không bắt người dùng tự lật lịch đi tìm (test mobile: save là thấy).
+    // Sự cố 20/07: chỉ set currentDate là CHƯA ĐỦ — day view render theo
+    // selectedDate, thiếu nó thì lịch đứng nguyên NGÀY CŨ dù show đã dời đi
+    // (đổi 12 → 27: data đúng nhưng màn hình vẫn chiếu ngày 12).
     if (savedDate && /^\d{4}-\d{2}-\d{2}$/.test(savedDate)) {
       const jump = new Date(`${savedDate}T12:00:00`);
-      if (!isNaN(jump.getTime())) setCurrentDate(jump);
+      if (!isNaN(jump.getTime())) {
+        setCurrentDate(jump);
+        setSelectedDate(jump);
+      }
     }
     setCalView("day");
     setEditingBooking(null);

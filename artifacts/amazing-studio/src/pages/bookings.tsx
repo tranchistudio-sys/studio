@@ -21,6 +21,7 @@ import { DeductionEditor, type DeductionItem } from "@/components/deduction-edit
 import { ServiceBreakdownCard } from "@/components/ServiceBreakdownCard";
 import { computeServiceGroupStats } from "@/lib/service-group-stats";
 import { invalidateBookingRelated } from "@/lib/booking-cache";
+import { readApiJson } from "@/lib/api-json";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -42,15 +43,8 @@ const authHeaders = (extra?: HeadersInit): Record<string, string> => {
 };
 
 const fetchJson = (url: string, opts?: RequestInit) =>
-  fetch(`${BASE}${url}`, { ...opts, headers: authHeaders(opts?.headers) }).then(async r => {
-    const text = await r.text();
-    let d: unknown;
-    try { d = JSON.parse(text); } catch {
-      throw new Error(r.status === 404 ? "API chưa sẵn sàng — hãy restart server (port 3000)" : `Lỗi server (${r.status})`);
-    }
-    if (!r.ok) throw new Error((d as { error?: string })?.error || "Lỗi kết nối");
-    return d;
-  });
+  fetch(`${BASE}${url}`, { ...opts, headers: authHeaders(opts?.headers) }).then(async r =>
+    readApiJson(r, await r.text()));
 
 const STATUS_MAP: Record<string, { label: string; color: string; bg: string }> = {
   pending: { label: "Chờ xác nhận", color: "text-yellow-700", bg: "bg-yellow-100 border-yellow-200" },
@@ -241,6 +235,7 @@ export default function BookingsPage() {
     // Trước đây gọi trần + KHÔNG kiểm r.ok → server 401 mà UI vẫn báo xoá xong.
     mutationFn: (id: number) => fetchJson(`/api/payments/${id}`, { method: "DELETE" }),
     onSuccess: () => invalidateBookingRelated(qc),
+    onError: (e: Error) => alert(e.message),
   });
 
   const updateStatus = useMutation({
@@ -255,6 +250,7 @@ export default function BookingsPage() {
       // Trước đây gọi trần + KHÔNG kiểm r.ok → server 401 mà đơn vẫn biến mất khỏi UI.
       fetchJson(`/api/bookings/${id}`, { method: "DELETE", body: JSON.stringify({ reason: reason || null }) }),
     onSuccess: () => { setSelectedId(null); setTrashDialog(null); setTrashReason(""); invalidateBookingRelated(qc); },
+    onError: (e: Error) => alert(e.message),
   });
 
   // ── Task #10: Booking items ──────────────────────────────────────────────

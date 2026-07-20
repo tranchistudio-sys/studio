@@ -1239,6 +1239,12 @@ router.put("/bookings/:id", async (req, res) => {
   if (oldBooking.isParentContract) {
     delete updateData.totalAmount;
   }
+  // Đối xứng với A8: dịch vụ CON không giữ tiền cọc — cọc của hợp đồng gộp nằm ở
+  // đơn CHA (xem chốt chặn máy cọc bên dưới). Bỏ luôn khỏi updateData, nếu không
+  // cột deposit_amount của con vẫn bị ghi số dù phiếu thu đã được chặn.
+  if (oldBooking.parentId != null) {
+    delete updateData.depositAmount;
+  }
   const callerId = verifyToken(req.headers.authorization) || null;
   // Giá tay (castSource='manual') chỉ được TẠO/ĐỔI khi người lưu là admin.
   // prevManual = giá tay đang lưu → non-admin lưu lại (sửa giờ) vẫn giữ được,
@@ -1407,7 +1413,19 @@ router.put("/bookings/:id", async (req, res) => {
     await client.query("BEGIN");
 
     // ── 1. Upsert/delete deposit payment record (only if depositAmount is in body) ──
-    if (depositAmount !== undefined) {
+    // CHỐT CHẶN: đơn CON không bao giờ giữ tiền cọc — tiền của hợp đồng gộp nằm ở
+    // đơn CHA (tạo hợp đồng gộp và add-child đều ghi con = "0", form gia đình cũng
+    // không gửi cọc cho con). Nếu vẫn có payload mang cọc cho một đơn con thì đó là
+    // client đang bám vào trạng thái cũ — điển hình: rớt mạng ngay sau khi nâng cấp
+    // đơn lẻ thành hợp đồng, form còn trỏ hàng cũ nay đã thành con. Chạy máy cọc lúc
+    // đó sẽ ĐẺ THÊM một phiếu thu (phiếu thật đã dời lên cha) = nhân đôi tiền khách.
+    // Bỏ qua thay vì 400: các luồng hợp lệ không gửi trường này, nên chặn im lặng
+    // không cản ai, mà lỗi tiền thì không thể xảy ra dù client có sai.
+    if (depositAmount !== undefined && oldBooking.parentId != null) {
+      console.warn(
+        `[deposit-guard] PUT /bookings/${id}: bỏ qua depositAmount=${String(depositAmount)} vì đây là dịch vụ con của hợp đồng #${oldBooking.parentId} — cọc chỉ nằm ở đơn cha.`,
+      );
+    } else if (depositAmount !== undefined) {
       const newDepositAmount = parseFloat(String(depositAmount));
 
       const depResult = await client.query<{ id: number }>(

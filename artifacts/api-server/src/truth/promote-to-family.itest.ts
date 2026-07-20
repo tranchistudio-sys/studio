@@ -189,6 +189,23 @@ describe("A. Đơn 1 dịch vụ → thêm dịch vụ thứ 2", () => {
   });
 });
 
+describe("A2. CHỐT CHẶN: đơn con không bao giờ đẻ thêm phiếu cọc", () => {
+  it("PUT cọc lên DỊCH VỤ CON bị bỏ qua — không nhân đôi tiền khách", async () => {
+    // Ca thật: rớt mạng ngay sau khi nâng cấp, form còn trỏ hàng cũ (nay đã là con)
+    // rồi bấm Lưu. Trước khi có chốt này, máy cọc thấy con không còn phiếu nào (đã
+    // dời lên cha) nên tạo THÊM một phiếu = khách đưa 1 lần mà sổ ghi 2 lần.
+    const before = await familyMoney(parentId!);
+    const r = await api("PUT", `/api/bookings/${bookingId}`, { depositAmount: 2_000_000 });
+    expect(r.status, r.text).toBe(200);
+    const after = await familyMoney(parentId!);
+    expect(after.n, "đẻ thêm phiếu thu trên đơn con").toBe(before.n);
+    expect(after.paid, "tiền đã thu bị nhân đôi").toBe(before.paid);
+
+    const child = await pool.query(`SELECT deposit_amount::text d FROM bookings WHERE id = $1`, [bookingId]);
+    expect((child.rows[0] as { d: string }).d, "cọc bị ghi xuống đơn con").toBe("0.00");
+  });
+});
+
 describe("B. Đơn đã nhiều dịch vụ → thêm tiếp bình thường", () => {
   it("thêm DV3 9.000.000 → tổng 21.000.000", async () => {
     const r = await api("POST", `/api/bookings/${parentId}/add-child`, {

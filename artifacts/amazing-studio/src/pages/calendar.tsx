@@ -1809,9 +1809,19 @@ function ShowFormPanel({
       // PHẢI await: xong rồi mà form vẫn trỏ hàng cũ là nhân đôi tiền cọc (xem trên).
       await onPromotedToFamily?.(parentId);
     } catch (err) {
-      if (committed) {
-        // Server ĐÃ chuyển xong — nói "không chuyển được" là sai sự thật và khiến
-        // người dùng làm tiếp trên cái form đã hỏng. Đóng form, báo đúng việc.
+      // KHÔNG suy đoán từ mã lỗi. Ca hay gặp nhất là rớt mạng khi đang đọc phản hồi:
+      // lúc đó server có thể đã chuyển xong mà trình duyệt không hề biết. Hỏi thẳng
+      // server xem đơn giờ ra sao. Không hỏi được thì mặc định coi như ĐÃ chuyển —
+      // đóng form chỉ mất thao tác đang dở (hộp xác nhận đã báo trước), còn để form
+      // sống trên một đơn đã thành dịch vụ con thì mất tiền thật.
+      let converted = committed;
+      if (!converted) {
+        try {
+          const chk = await authFetch(`${BASE}/api/bookings/${booking.id}`);
+          converted = chk.ok ? ((await chk.json()) as { parentId?: number | null }).parentId != null : true;
+        } catch { converted = true; }
+      }
+      if (converted) {
         await onPromotedToFamily?.(null);
       } else {
         alert(err instanceof Error ? err.message : "Không chuyển được đơn sang hợp đồng nhiều dịch vụ");

@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request, type Response } from "express";
 import { db, pool } from "@workspace/db";
 import { bookingsTable, customersTable, paymentsTable, expensesTable, tasksTable, staffTable, servicePackagesTable, packageItemsTable, photoshopJobsTable, servicesTable, bookingChangeLogTable, contractsTable, bookingDressesTable, bookingItemsTable, staffJobEarningsTable, staffAllowancesTable, attendanceLogsTable, bookingOccurrencesTable } from "@workspace/db/schema";
 import { eq, and, desc, inArray, or, ilike, sql, asc, gte, lte, isNull, ne } from "drizzle-orm";
@@ -29,6 +29,24 @@ import {
 } from "../lib/booking-occurrences";
 
 const router: IRouter = Router();
+
+/**
+ * Yêu cầu caller ĐÃ ĐĂNG NHẬP hợp lệ (staff HOẶC admin, tài khoản còn hoạt động).
+ * Dùng cho các endpoint ĐỌC dữ liệu đơn hàng — payload có tên khách, SĐT, ghi chú
+ * nội bộ và tiền. Trước 20/07 các route này để trần: gọi /api/bookings/:id không
+ * cần token vẫn trả đủ PII, dò id 1,2,3… là hút sạch danh sách khách.
+ *
+ * Cùng khuôn với customers.ts (PR #113) — KHÔNG thêm role mới, mọi nhân sự đăng
+ * nhập đều xem được như trước. Guard PHẢI chạy TRƯỚC mọi truy vấn DB để (a) không
+ * rò PII, (b) người ngoài không phân biệt được đơn có tồn tại hay không (401 giống
+ * hệt nhau, chống dò id).
+ * Trả true nếu hợp lệ; nếu không, GỬI 401 và trả false.
+ */
+async function ensureAuth(req: Request, res: Response): Promise<boolean> {
+  const role = await getCallerRole(req.headers.authorization);
+  if (!role) { res.status(401).json({ error: "Chưa đăng nhập hoặc phiên hết hạn" }); return false; }
+  return true;
+}
 
 // ─── Task #55: Sanitize deductions ───────────────────────────────────────────
 export type DeductionItem = { label: string; amount: number };
@@ -186,6 +204,9 @@ function toWarnDays(v: unknown): number | null {
 
 router.get("/bookings", async (req, res) => {
   try {
+  // Danh sách còn nặng hơn chi tiết: 1 request là ra cả danh sách khách + SĐT,
+  // lại có ?q= tìm theo tên/SĐT. Phải đăng nhập.
+  if (!(await ensureAuth(req, res))) return;
   const status = req.query.status as string | undefined;
   // Báo giá tạm (temp_quote) mặc định BỊ LOẠI khỏi mọi danh sách — chỉ trả về khi
   // caller chủ động xin (lịch chụp truyền includeTempQuotes=1, hoặc filter status=temp_quote).
@@ -824,6 +845,8 @@ router.post("/bookings", async (req, res) => {
 // allocator (ngày thực hiện ASC, thiếu ngày xếp cuối, cùng ngày theo ID ASC).
 router.get("/bookings/:id/allocation", async (req, res) => {
   try {
+    // Trả tiền cọc/còn nợ theo cả gia đình hợp đồng → phải đăng nhập.
+    if (!(await ensureAuth(req, res))) return;
     const id = parseInt(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ error: "id không hợp lệ" });
     const snap = await engineAllocationSnapshot();
@@ -875,7 +898,10 @@ router.get("/bookings/:id/allocation", async (req, res) => {
 
 router.get("/bookings/:id", async (req, res) => {
   try {
+  // Chặn TRƯỚC khi chạm DB: không rò PII, và id có/không tồn tại đều 401 như nhau.
+  if (!(await ensureAuth(req, res))) return;
   const id = parseInt(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: "id không hợp lệ" });
   const schemaFlags = await getSchemaFlags();
   const [row] = await db
     .select(bookingFieldsFor(schemaFlags))

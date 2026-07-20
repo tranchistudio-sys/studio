@@ -19,6 +19,7 @@ import {
   signedSnapshotChanged,
   applySignedSnapshotForDisplay,
   splitSnapshotSchedule,
+  mergeSignedAndAddedDays,
   type ContractPayload,
 } from "./contractPayload.js";
 
@@ -200,7 +201,7 @@ describe("Ngày thực hiện phụ trên hợp đồng (ngày hiện ngay tại
     expect(signedSnapshotChanged(snapV2, live)).toBe(false);
   });
 
-  it("bản ĐÃ KÝ v3: dòng dịch vụ hiện ngày phụ THEO BẢN KÝ, không mượn ngày live", () => {
+  it("bản ĐÃ KÝ v3: ngày của BẢN KÝ giữ nguyên (không bị ngày live ghi đè/làm mất)", () => {
     const live = makeLivePayload();
     live.services[0].occurrences = [{ date: "2026-08-02", time: "10:00", label: "Nhà trai" }];
     live.schedule = [
@@ -208,12 +209,17 @@ describe("Ngày thực hiện phụ trên hợp đồng (ngày hiện ngay tại
       { date: "2026-08-02", time: "10:00", label: "Nhà trai" },
     ];
     const snap = buildSignedSnapshot(live) as Record<string, unknown>;
-    // Sau ký: sửa lung tung ở bản live → phải render theo bản ký.
+    // Sau ký: sửa lung tung ở bản live.
     live.services[0].occurrences = [{ date: "2026-12-31", time: "23:00", label: "ngày live" }];
     live.services[0].shootDate = "2026-08-15";
     const frozen = applySignedSnapshotForDisplay(live, snap);
+    // Ngày CHÍNH + ngày phụ của bản ký: y nguyên, không nhãn bổ sung.
     expect(frozen.services[0].shootDate).toBe("2026-08-01");
-    expect(frozen.services[0].occurrences).toEqual([{ date: "2026-08-02", time: "10:00", label: "Nhà trai" }]);
+    expect(frozen.services[0].occurrences[0]).toEqual({ date: "2026-08-02", time: "10:00", label: "Nhà trai" });
+    // Ngày mới thêm sau khi ký: VẪN hiện (chủ 20/07) nhưng phải có nhãn.
+    expect(frozen.services[0].occurrences[1]).toEqual({
+      date: "2026-12-31", time: "23:00", label: "ngày live", addedAfterSign: true,
+    });
   });
 
   it("REGRESSION: bản ký CŨ (v2) vẫn hiện đủ ngày — back-fill từ schedule đã đóng băng", () => {
@@ -230,6 +236,110 @@ describe("Ngày thực hiện phụ trên hợp đồng (ngày hiện ngay tại
     // Trước đây chỗ này trả [] và ngày 2 chỉ hiện ở mục "Lịch thực hiện" (đã bỏ)
     // → khách mở hợp đồng đã ký sẽ KHÔNG thấy ngày 2 nữa. Phải back-fill.
     expect(frozen.services[0].occurrences).toEqual([{ date: "2026-08-02", time: "10:00", label: "Nhà trai" }]);
+  });
+});
+
+describe("Ngày thêm SAU khi ký (sự cố BG0017 20/07)", () => {
+  it("mergeSignedAndAddedDays: ngày live không có trong bản ký → thêm vào, gắn cờ", () => {
+    const merged = mergeSignedAndAddedDays(
+      [{ date: "2026-10-16", time: "08:00", label: null }],
+      [
+        { date: "2026-10-16", time: "08:00", label: null },
+        { date: "2026-10-18", time: "08:00", label: "Ngày rước dâu" },
+      ],
+    );
+    expect(merged).toEqual([
+      { date: "2026-10-16", time: "08:00", label: null },
+      { date: "2026-10-18", time: "08:00", label: "Ngày rước dâu", addedAfterSign: true },
+    ]);
+  });
+
+  it("P1: chỉ DỜI GIỜ ngày đã ký → KHÔNG được đẻ ra ngày mới (nhận diện theo id hàng)", () => {
+    const merged = mergeSignedAndAddedDays(
+      [{ id: 7, date: "2026-10-18", time: "08:00", label: "Rước dâu" }],
+      [{ id: 7, date: "2026-10-18", time: "14:00", label: "Rước dâu" }],
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0].time).toBe("08:00"); // hợp đồng giữ đúng giờ khách đã ký
+  });
+
+  it("P1: sửa NGÀY gõ nhầm của ngày đã ký (cùng id) cũng không đẻ ngày mới", () => {
+    const merged = mergeSignedAndAddedDays(
+      [{ id: 7, date: "2026-10-18", time: "08:00", label: null }],
+      [{ id: 7, date: "2026-10-19", time: "08:00", label: null }],
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0].date).toBe("2026-10-18");
+  });
+
+  it("P1: bản ký CŨ chưa lưu id → lùi về so theo NGÀY, đổi giờ vẫn không đẻ ngày ma", () => {
+    const merged = mergeSignedAndAddedDays(
+      [{ date: "2026-10-18", time: "08:00", label: null }],
+      [{ id: 7, date: "2026-10-18", time: "14:00", label: null }],
+    );
+    expect(merged).toHaveLength(1);
+  });
+
+  it("id MỚI (studio thêm hẳn ngày khác) thì vẫn phải hiện + gắn cờ", () => {
+    const merged = mergeSignedAndAddedDays(
+      [{ id: 7, date: "2026-10-18", time: "08:00", label: "Rước dâu" }],
+      [
+        { id: 7, date: "2026-10-18", time: "08:00", label: "Rước dâu" },
+        { id: 9, date: "2026-10-20", time: "07:00", label: "Tiệc" },
+      ],
+    );
+    expect(merged).toHaveLength(2);
+    expect(merged[1]).toMatchObject({ date: "2026-10-20", addedAfterSign: true });
+  });
+
+  it("mergeSignedAndAddedDays: ngày CÓ trong bản ký thì không nhân đôi, không gắn cờ", () => {
+    const merged = mergeSignedAndAddedDays(
+      [{ date: "2026-10-18", time: "08:00", label: "Rước dâu" }],
+      [{ date: "2026-10-18", time: "08:00", label: "Rước dâu" }],
+    );
+    expect(merged).toHaveLength(1);
+    expect(merged[0].addedAfterSign).toBeUndefined();
+  });
+
+  it("mergeSignedAndAddedDays: ngày trong bản ký bị xoá ở live vẫn GIỮ (là cam kết đã ký)", () => {
+    const merged = mergeSignedAndAddedDays([{ date: "2026-10-18", time: "08:00", label: null }], []);
+    expect(merged).toEqual([{ date: "2026-10-18", time: "08:00", label: null }]);
+  });
+
+  it("BG0017: ký xong mới thêm ngày rước dâu → hợp đồng đã ký PHẢI hiện đủ 2 ngày", () => {
+    const live = makeLivePayload();
+    // Bản ký chụp lúc dịch vụ mới có 1 ngày.
+    const snap = buildSignedSnapshot(live) as Record<string, unknown>;
+    // Sau khi ký, studio thêm ngày phụ vào chính dịch vụ đó.
+    live.services[0].occurrences = [{ date: "2026-08-04", time: "08:00", label: "Ngày rước dâu" }];
+    live.services[0].location = "đổi chỗ khác"; // lệch → render theo bản ký
+
+    const frozen = applySignedSnapshotForDisplay(live, snap);
+    expect(frozen.services[0].shootDate).toBe("2026-08-01"); // ngày chính vẫn theo bản ký
+    expect(frozen.services[0].occurrences).toEqual([
+      { date: "2026-08-04", time: "08:00", label: "Ngày rước dâu", addedAfterSign: true },
+    ]);
+  });
+
+  it("bản ký CŨ (v2) + thêm ngày sau khi ký → vừa back-fill vừa gắn cờ đúng ngày mới", () => {
+    const live = makeLivePayload();
+    const snapV2 = buildSignedSnapshot(live) as Record<string, unknown>;
+    for (const s of snapV2.services as Record<string, unknown>[]) delete s.occurrences;
+    snapV2.schedule = [
+      { date: "2026-08-01", time: "08:00", label: "Chụp cưới" },
+      { date: "2026-08-02", time: "10:00", label: "Nhà trai" }, // đã có lúc ký
+    ];
+    live.services[0].occurrences = [
+      { date: "2026-08-02", time: "10:00", label: "Nhà trai" },
+      { date: "2026-08-04", time: "08:00", label: "Rước dâu" }, // thêm sau khi ký
+    ];
+    live.services[0].shootDate = "2026-08-15";
+
+    const frozen = applySignedSnapshotForDisplay(live, snapV2);
+    expect(frozen.services[0].occurrences).toEqual([
+      { date: "2026-08-02", time: "10:00", label: "Nhà trai" },
+      { date: "2026-08-04", time: "08:00", label: "Rước dâu", addedAfterSign: true },
+    ]);
   });
 });
 

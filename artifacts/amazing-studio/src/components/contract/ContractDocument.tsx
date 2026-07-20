@@ -56,7 +56,12 @@ function serviceDays(svc: ContractService): ServiceDay[] {
   return buildServiceDays({
     shootDate: svc.shootDate,
     shootTime: svc.shootTime,
-    occurrences: (svc.occurrences ?? []).map(o => ({ shootDate: o.date, shootTime: o.time, label: o.label })),
+    occurrences: (svc.occurrences ?? []).map(o => ({
+      shootDate: o.date,
+      shootTime: o.time,
+      label: o.label,
+      addedAfterSign: o.addedAfterSign,
+    })),
   });
 }
 
@@ -198,6 +203,7 @@ export default function ContractDocument({
                         📅 {d.total > 1 ? `Ngày ${d.index}/${d.total}: ` : ""}{d.date || "—"}
                         {d.index > 1 && d.time ? ` · ${d.time}` : ""}
                         {d.label ? <span className="font-semibold text-[#555]"> — {d.label}</span> : null}
+                        {d.addedAfterSign ? <span className="font-semibold text-[#777] italic"> (bổ sung sau khi ký)</span> : null}
                       </span>
                     ))}
                     {svc.location ? <span className="text-xs text-[#888]">📍 {svc.location}</span> : null}
@@ -217,6 +223,7 @@ export default function ContractDocument({
                       📅 {d.total > 1 ? `Ngày ${d.index}/${d.total}: ` : "Ngày chụp: "}{d.date || "—"}
                       {d.index > 1 && d.time ? ` · ${d.time}` : ""}
                       {d.label ? <span className="font-semibold text-[#555]"> — {d.label}</span> : null}
+                      {d.addedAfterSign ? <span className="text-[12px] font-semibold text-[#777] italic"> (bổ sung sau khi ký)</span> : null}
                     </span>
                   ))}
                   {svc.location ? <span className="text-xs text-[#666]">📍 {svc.location}</span> : null}

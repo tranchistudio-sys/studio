@@ -30,7 +30,13 @@ export type ContractService = {
   items: ContractServiceItem[];
   /** Ngày thực hiện PHỤ của dịch vụ này (ngày 2..n) — chip đầu HĐ hiện đủ các ngày.
    *  Optional để tương thích payload cũ/bản ký đóng băng (thiếu ⇒ chỉ chip ngày chính). */
-  occurrences?: { date: string; time: string | null; label: string | null }[];
+  occurrences?: {
+    date: string;
+    time: string | null;
+    label: string | null;
+    /** Ngày studio thêm SAU khi khách ký — vẫn hiện, nhưng ghi chú rõ là bổ sung. */
+    addedAfterSign?: boolean;
+  }[];
 };
 
 export type ContractPaymentRow = {

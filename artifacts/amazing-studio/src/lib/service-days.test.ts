@@ -70,6 +70,19 @@ describe("serviceDays", () => {
     expect(serviceDays(null)).toEqual([{ date: "", time: null, label: null, index: 1, total: 1 }]);
   });
 
+  it("cờ 'thêm sau khi ký' đi xuyên qua để hợp đồng ghi chú được", () => {
+    const days = serviceDays({
+      shootDate: "2026-10-15",
+      shootTime: "08:00",
+      occurrences: [
+        { shootDate: "2026-10-16", shootTime: "08:00", label: null },
+        { shootDate: "2026-10-18", shootTime: "08:00", label: "Rước dâu", addedAfterSign: true },
+      ],
+    });
+    expect(days[1].addedAfterSign).toBeUndefined();
+    expect(days[2].addedAfterSign).toBe(true);
+  });
+
   it("3 ngày → đánh số 1/3, 2/3, 3/3 theo đúng thứ tự server trả", () => {
     const days = serviceDays({
       shootDate: "2026-10-15",

@@ -60,7 +60,19 @@ export type ContractService = {
    * đầu trang là hiểu ngay show đi mấy ngày, không phải cuộn xuống Lịch thực hiện).
    * Thuần hiển thị, không tiền.
    */
-  occurrences: { date: string; time: string | null; label: string | null }[];
+  occurrences: {
+    /** id hàng booking_occurrences — dùng để nhận diện ngày khi đối chiếu với bản ký. */
+    id?: number;
+    date: string;
+    time: string | null;
+    label: string | null;
+    /**
+     * Ngày này được thêm SAU khi khách ký (không có trong bản ký). Hợp đồng vẫn
+     * hiện ra — chủ studio 20/07: "phải hiện ra ngày đã thêm" — nhưng gắn nhãn để
+     * khách phân biệt cái gì có từ lúc ký, cái gì bổ sung sau.
+     */
+    addedAfterSign?: boolean;
+  }[];
 };
 
 export type ContractPaymentRow = {
@@ -256,9 +268,10 @@ export function buildSignedSnapshot(payload: ContractPayload): Record<string, un
       location: s.location,
       totalAmount: s.totalAmount,
       surcharges: s.surcharges,
-      // v3: đóng băng luôn ngày phụ theo TỪNG dịch vụ — bản ký hiện đủ ngày ngay
-      // trên dòng dịch vụ, không phụ thuộc việc suy ngược từ `schedule`.
-      occurrences: s.occurrences.map((o) => ({ date: o.date, time: o.time, label: o.label })),
+      // Đóng băng ngày phụ theo TỪNG dịch vụ — bản ký hiện đủ ngày ngay trên dòng
+      // dịch vụ, không phải suy ngược từ `schedule`. Có kèm `id` để sau này phân
+      // biệt "sửa ngày đã ký" với "thêm ngày mới" (xem mergeSignedAndAddedDays).
+      occurrences: s.occurrences.map((o) => ({ id: o.id, date: o.date, time: o.time, label: o.label })),
       items: s.items.map((i) => ({
         name: i.name,
         description: i.description,
@@ -331,8 +344,9 @@ type SnapshotService = {
     deductions?: { label?: string; amount?: number }[];
     surcharges?: { name?: string; amount?: number }[];
   }[];
-  /** v3: ngày thực hiện phụ của chính dịch vụ này (bản ký cũ không có → back-fill từ schedule). */
-  occurrences?: { date?: string; time?: string | null; label?: string | null }[];
+  /** Ngày thực hiện phụ của chính dịch vụ này (bản ký cũ không có → back-fill từ schedule).
+   *  `id` chỉ có ở bản ký mới; thiếu id thì đối chiếu lùi về so theo ngày. */
+  occurrences?: { id?: number; date?: string; time?: string | null; label?: string | null }[];
 };
 
 type ScheduleEntry = { date: string; time: string | null; label: string | null };
@@ -346,6 +360,38 @@ type ScheduleEntry = { date: string; time: string | null; label: string | null }
  * chính của dịch vụ kế tiếp. Dò tiến (cursor) để 2 dịch vụ trùng ngày không cướp
  * block của nhau.
  */
+type ServiceOccurrence = { id?: number; date: string; time: string | null; label: string | null; addedAfterSign?: boolean };
+
+/**
+ * Gộp ngày của BẢN KÝ với ngày studio thêm SAU khi ký.
+ *
+ * Chủ studio 20/07: hợp đồng "phải hiện ra ngày đã thêm" — khách mở link thấy
+ * thiếu ngày rước dâu là không chịu. Nhưng cũng không được âm thầm đổi bản pháp
+ * lý → ngày thêm sau đứng sau, mang cờ addedAfterSign để hợp đồng ghi chú rõ.
+ *
+ * NHẬN DIỆN NGÀY THEO id HÀNG, không theo ngày+giờ. Ngày phụ là hàng có id ổn
+ * định và studio sửa TẠI CHỖ (dời giờ, sửa ngày gõ nhầm) — nếu so theo ngày+giờ
+ * thì chỉ dời giờ thôi đã bị hiểu nhầm là "thêm một buổi mới", hợp đồng đã ký tự
+ * dưng mọc thêm ngày. Bản ký cũ chưa lưu id thì lùi về so theo NGÀY (bỏ giờ),
+ * để đổi giờ vẫn không đẻ ra ngày ma.
+ *
+ * Ngày trong bản ký mà live đã xoá thì VẪN GIỮ: đó là cam kết khách đã ký, muốn
+ * bỏ phải cho khách ký lại.
+ */
+export function mergeSignedAndAddedDays(
+  signed: ServiceOccurrence[],
+  liveOcc: { id?: number; date: string; time: string | null; label: string | null }[],
+): ServiceOccurrence[] {
+  const signedIds = new Set(signed.map((o) => o.id).filter((v): v is number => typeof v === "number"));
+  const signedDates = new Set(signed.map((o) => o.date));
+  const isSigned = (o: { id?: number; date: string }) =>
+    typeof o.id === "number" && signedIds.size > 0 ? signedIds.has(o.id) : signedDates.has(o.date);
+  const added = liveOcc
+    .filter((o) => typeof o.date === "string" && o.date !== "" && !isSigned(o))
+    .map((o) => ({ id: o.id, date: o.date, time: o.time ?? null, label: o.label ?? null, addedAfterSign: true }));
+  return [...signed, ...added];
+}
+
 export function splitSnapshotSchedule(
   schedule: ScheduleEntry[],
   services: { bookingId?: number | null; shootDate?: string | null }[],
@@ -430,17 +476,18 @@ export function applySignedSnapshotForDisplay(
               makeupName: liveItem?.makeupName ?? null,
             };
           }),
-          // Bản ĐÃ KÝ: ngày phụ lấy theo BẢN KÝ, KHÔNG mượn ngày phụ live (không âm
-          // thầm đổi bản pháp lý). Snapshot v3 có sẵn occurrences; bản ký cũ thì
-          // back-fill từ `schedule` đã đóng băng — dòng dịch vụ phải hiện đủ ngày,
-          // vì mục "Lịch thực hiện" riêng đã bỏ (yêu cầu chủ 20/07).
-          occurrences: Array.isArray(snap.occurrences)
-            ? snap.occurrences
-                .filter((o) => typeof o.date === "string")
-                .map((o) => ({ date: o.date as string, time: o.time ?? null, label: o.label ?? null }))
-            : snap.bookingId != null
-              ? occFromSchedule.get(snap.bookingId) ?? []
-              : [],
+          // Ngày của bản ký (snapshot v3 có sẵn; bản ký cũ back-fill từ `schedule`),
+          // GỘP thêm ngày studio thêm sau khi ký — có nhãn addedAfterSign.
+          occurrences: mergeSignedAndAddedDays(
+            Array.isArray(snap.occurrences)
+              ? snap.occurrences
+                  .filter((o) => typeof o.date === "string")
+                  .map((o) => ({ id: o.id, date: o.date as string, time: o.time ?? null, label: o.label ?? null }))
+              : snap.bookingId != null
+                ? occFromSchedule.get(snap.bookingId) ?? []
+                : [],
+            liveSvc?.occurrences ?? [],
+          ),
         };
       })
     : live.services;
@@ -602,16 +649,16 @@ export async function buildContractPayload(
   // dịch vụ hiện ngày chính rồi tới các ngày phụ của chính nó.
   const schedule: { date: string; time: string | null; label: string | null }[] = [];
   const serviceRowIds = serviceRows.map((b) => b.id).filter((n): n is number => n != null);
-  const occByBooking = new Map<number, { shootDate: string; shootTime: string | null; label: string | null }[]>();
+  const occByBooking = new Map<number, { id: number; shootDate: string; shootTime: string | null; label: string | null }[]>();
   // Tương thích ngược: DB chưa migrate (thiếu bảng ngày phụ) → hợp đồng chỉ hiện ngày chính.
   if (serviceRowIds.length > 0 && (await getSchemaFlags()).occurrences) {
     const occRows = await db
-      .select({ bookingId: bookingOccurrencesTable.bookingId, shootDate: bookingOccurrencesTable.shootDate, shootTime: bookingOccurrencesTable.shootTime, label: bookingOccurrencesTable.label })
+      .select({ id: bookingOccurrencesTable.id, bookingId: bookingOccurrencesTable.bookingId, shootDate: bookingOccurrencesTable.shootDate, shootTime: bookingOccurrencesTable.shootTime, label: bookingOccurrencesTable.label })
       .from(bookingOccurrencesTable)
       .where(inArray(bookingOccurrencesTable.bookingId, serviceRowIds))
       .orderBy(asc(bookingOccurrencesTable.sortOrder), asc(bookingOccurrencesTable.shootDate), asc(bookingOccurrencesTable.id));
     for (const o of occRows) {
-      (occByBooking.get(o.bookingId) ?? occByBooking.set(o.bookingId, []).get(o.bookingId)!).push({ shootDate: o.shootDate as string, shootTime: o.shootTime, label: o.label });
+      (occByBooking.get(o.bookingId) ?? occByBooking.set(o.bookingId, []).get(o.bookingId)!).push({ id: o.id, shootDate: o.shootDate as string, shootTime: o.shootTime, label: o.label });
     }
   }
   for (const b of serviceRows) {
@@ -623,6 +670,7 @@ export async function buildContractPayload(
   // Gắn ngày phụ vào TỪNG dịch vụ — chip "Ngày chụp" đầu hợp đồng hiện đủ các ngày.
   for (const svc of services) {
     svc.occurrences = (occByBooking.get(svc.bookingId) ?? []).map((o) => ({
+      id: o.id,
       date: o.shootDate,
       time: o.shootTime,
       label: o.label,

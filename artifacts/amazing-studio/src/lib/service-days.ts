@@ -12,7 +12,13 @@
 export type ServiceDaySource = {
   shootDate?: string | null;
   shootTime?: string | null;
-  occurrences?: { shootDate?: string | null; shootTime?: string | null; label?: string | null }[] | null;
+  occurrences?: {
+    shootDate?: string | null;
+    shootTime?: string | null;
+    label?: string | null;
+    /** Chỉ có ở hợp đồng ĐÃ KÝ: ngày này studio thêm sau khi khách ký. */
+    addedAfterSign?: boolean;
+  }[] | null;
 };
 
 export type ServiceDay = {
@@ -26,6 +32,8 @@ export type ServiceDay = {
   index: number;
   /** Tổng số ngày của dịch vụ này (1 = show 1 ngày). */
   total: number;
+  /** Hợp đồng đã ký: ngày này được thêm SAU khi ký → hiện kèm ghi chú bổ sung. */
+  addedAfterSign?: boolean;
 };
 
 /**
@@ -68,6 +76,7 @@ export function serviceDays(svc: ServiceDaySource | null | undefined): ServiceDa
       label: (o.label ?? "").trim() || null,
       index: i + 2,
       total,
+      ...(o.addedAfterSign ? { addedAfterSign: true } : {}),
     })),
   ];
 }

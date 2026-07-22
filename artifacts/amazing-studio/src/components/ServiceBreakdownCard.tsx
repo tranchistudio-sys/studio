@@ -161,14 +161,20 @@ export interface ServiceBreakdownCardHTMLProps extends ServicePriceBreakdownHTML
   subtitle?: string | string[] | null;
   /** Mô tả gói (nội dung gói) — multi-line dùng "\n". */
   description?: string | null;
+  /**
+   * "Ghi chú dịch vụ" (quà tặng/ưu đãi/thỏa thuận với khách) — hiện thành block
+   * riêng dưới price. Text thuần, sẽ được escape; xuống dòng giữ nguyên (pre-wrap).
+   */
+  notes?: string | null;
   hidePrice?: boolean;
 }
 
-/** HTML string version of <ServiceBreakdownCard /> (header + nội dung gói + price block). */
+/** HTML string version of <ServiceBreakdownCard /> (header + nội dung gói + price block + ghi chú). */
 export function renderServiceBreakdownCardHTML({
   title,
   subtitle,
   description,
+  notes,
   hidePrice = false,
   ...priceProps
 }: ServiceBreakdownCardHTMLProps): string {
@@ -193,13 +199,22 @@ export function renderServiceBreakdownCardHTML({
     .map(s => `<div style="font-size:11px;color:#444;margin-top:2px;">${escapeHTML(s)}</div>`)
     .join("");
   const priceHTML = hidePrice ? "" : renderServicePriceBreakdownHTML(priceProps);
+  // Ghi chú dịch vụ: block riêng, escape chống chèn HTML, white-space:pre-wrap giữ
+  // NGUYÊN xuống dòng chủ đã gõ. Rỗng/toàn khoảng trắng → không vẽ block trống.
+  const notesHTML = typeof notes === "string" && notes.trim() !== ""
+    ? `
+        <div style="padding:10px 16px;border-top:1px solid #f0e3c0;background:#fffbeb;">
+          <div style="font-weight:700;font-size:10px;color:#b45309;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">📝 Ghi chú dịch vụ</div>
+          <div style="font-size:12px;color:#555;line-height:1.6;white-space:pre-wrap;">${escapeHTML(notes)}</div>
+        </div>`
+    : "";
   return `
       <div style="border:1px solid #ddd;border-radius:10px;overflow:hidden;margin-bottom:12px;background:#fff;">
         <div style="background:#f5f5f5;padding:10px 16px;border-bottom:1px solid #ddd;">
           <div style="font-weight:700;font-size:12px;color:#111;text-transform:uppercase;letter-spacing:0.5px;">${escapeHTML(title)}</div>
           ${subtitleHTML}
         </div>
-        ${descHTML}${priceHTML}
+        ${descHTML}${priceHTML}${notesHTML}
       </div>`;
 }
 

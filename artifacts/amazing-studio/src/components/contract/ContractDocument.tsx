@@ -258,6 +258,16 @@ export default function ContractDocument({
                       </div>
                       <div className="font-extrabold text-[#111] whitespace-nowrap">{formatVND(item.price)}</div>
                     </div>
+                    {item.notes && item.notes.trim() !== "" ? (
+                      // Ghi chú dịch vụ (quà tặng/ưu đãi/thỏa thuận) — khách phải thấy
+                      // trên MỌI bản hợp đồng. pre-wrap: giữ nguyên từng dòng chủ đã gõ.
+                      <div className="mt-2.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
+                        <div className="text-[10.5px] font-bold uppercase tracking-wider text-amber-700 mb-1">
+                          📝 Ghi chú dịch vụ
+                        </div>
+                        <div className="text-[13px] text-[#555] leading-relaxed whitespace-pre-wrap">{item.notes}</div>
+                      </div>
+                    ) : null}
                     {mode === "internal" && (item.photoName || item.makeupName) ? (
                       <div className="mt-2 rounded-md bg-blue-50 px-2.5 py-1.5 text-xs text-[#555]">
                         {item.photoName ? <>📷 Nhiếp ảnh: <strong>{item.photoName}</strong></> : null}

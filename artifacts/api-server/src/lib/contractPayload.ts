@@ -37,6 +37,11 @@ export type ContractServiceItem = {
   name: string;
   description: string | null;
   price: number;
+  /**
+   * "Ghi chú dịch vụ" của dòng items trên booking (quà tặng/ưu đãi/thỏa thuận
+   * với khách) — là cam kết KHÁCH ĐƯỢC XEM, nên hiện cả public lẫn internal.
+   */
+  notes: string | null;
   deductions: { label: string; amount: number }[];
   surcharges: { name: string; amount: number }[];
   // internal only — public luôn null
@@ -155,6 +160,7 @@ type RawItem = {
   unitPrice?: number | string | null;
   photoName?: string | null;
   makeupName?: string | null;
+  notes?: string | null;
   deductions?: { label?: string; amount?: number }[] | null;
   surcharges?: { name?: string; label?: string; amount?: number }[] | null;
 };
@@ -204,7 +210,7 @@ function pkgIdOf(item: RawItem): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function buildService(
+export function buildService(
   b: BookingRow,
   pkgMap: Map<number, { name: string; description: string | null }>,
   mode: "internal" | "public",
@@ -215,6 +221,9 @@ function buildService(
     return {
       name: pkg?.name || line.serviceName || "—",
       description: pkg?.description ?? null,
+      // Ghi chú dịch vụ: giữ NGUYÊN chữ + xuống dòng; rỗng/toàn khoảng trắng → null
+      // để frontend không vẽ block trống.
+      notes: typeof line.notes === "string" && line.notes.trim() !== "" ? line.notes : null,
       price: money(line.price ?? line.unitPrice),
       deductions: asArray<{ label?: string; amount?: number }>(line.deductions).map((d) => ({
         label: d.label ?? "Giảm trừ",
@@ -275,6 +284,10 @@ export function buildSignedSnapshot(payload: ContractPayload): Record<string, un
       items: s.items.map((i) => ({
         name: i.name,
         description: i.description,
+        // v4: đóng băng cả ghi chú dịch vụ — quà tặng/thỏa thuận là cam kết đã ký,
+        // sửa sau ký phải lộ ra như mọi field quan trọng khác (legacy-safe:
+        // snapshot cũ không có key này thì projectToShape bỏ qua, không báo lệch oan).
+        notes: i.notes,
         price: i.price,
         deductions: i.deductions,
         surcharges: i.surcharges,
@@ -340,6 +353,8 @@ type SnapshotService = {
   items?: {
     name?: string;
     description?: string | null;
+    /** v4 mới có; snapshot cũ thiếu → hiển thị mượn từ live (thuần hiển thị). */
+    notes?: string | null;
     price?: number;
     deductions?: { label?: string; amount?: number }[];
     surcharges?: { name?: string; amount?: number }[];
@@ -469,6 +484,10 @@ export function applySignedSnapshotForDisplay(
               name: it.name ?? "—",
               description:
                 it.description !== undefined ? (it.description ?? null) : (liveItem?.description ?? null),
+              // Bản ký v4 có notes → giữ đúng bản ký; bản ký cũ thiếu key → mượn
+              // live theo tên item (như description) để hợp đồng ĐÃ KÝ không mất
+              // quà tặng/thỏa thuận chỉ vì snapshot chụp trước khi có tính năng.
+              notes: it.notes !== undefined ? (it.notes ?? null) : (liveItem?.notes ?? null),
               price: money(it.price),
               deductions: (it.deductions ?? []).map((d) => ({ label: d.label ?? "Giảm trừ", amount: money(d.amount) })),
               surcharges: (it.surcharges ?? []).map((s) => ({ name: s.name ?? "Phụ thu", amount: money(s.amount) })),

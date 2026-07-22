@@ -9,6 +9,12 @@ import {
 } from "../lib/studio-copilot";
 import { callChat } from "../lib/ai-orchestrator";
 import { composeNaturalAnswer, stripMarkdownArtifacts, aiNumbersWithinSources } from "../lib/copilot-composer";
+import {
+  buildBusinessSnapshot,
+  buildBusinessAnalysisPrompt,
+  renderBusinessSummary,
+  isBusinessOverviewQuestion,
+} from "../lib/business-snapshot";
 
 const router: IRouter = Router();
 
@@ -66,6 +72,43 @@ router.post("/ai/chat", async (req, res) => {
 
     const lastUser = [...messages].reverse().find(m => m.role === "user");
     const lastQuestion = (lastUser?.content ?? "").trim();
+
+    // MVP "bức tranh kinh doanh": câu tổng quan tháng ("Tháng này studio kinh doanh
+    // thế nào?") → App/engine tính SẴN mọi số (chính xác tuyệt đối) rồi để ChatGPT
+    // PHÂN TÍCH + khuyến nghị. Engine là nguồn số duy nhất; AI KHÔNG tính lại số.
+    if (isBusinessOverviewQuestion(lastQuestion)) {
+      const snapshot = await buildBusinessSnapshot();
+      const deterministic = renderBusinessSummary(snapshot);
+
+      // Chưa cấu hình LLM → trả thẳng câu deterministic (vẫn từ engine).
+      if (!isLlmConfigured()) {
+        streamCopilotAnswer(res, deterministic);
+        return;
+      }
+
+      const convo = messages
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => ({ role: m.role as "user" | "assistant", content: String(m.content ?? "") }));
+      while (convo.length && convo[0].role === "assistant") convo.shift();
+
+      const result = await callChat({
+        system: buildBusinessAnalysisPrompt(snapshot),
+        messages: convo,
+        maxTokens: 1024,
+        label: "copilot-ops",
+      });
+
+      // OpenAI lỗi → câu deterministic. AI bịa số TIỀN (số ≥4 chữ số không có trong
+      // snapshot/câu deterministic) → khoá số vứt câu AI, dùng deterministic.
+      let answer = result.ok ? stripMarkdownArtifacts(result.text) : deterministic;
+      if (result.ok && !aiNumbersWithinSources(answer, [JSON.stringify(snapshot), deterministic])) {
+        console.warn("[copilot-ops] AI đổi/bịa số so với snapshot — fallback deterministic");
+        answer = deterministic;
+      }
+      streamCopilotAnswer(res, answer);
+      return;
+    }
+
     const staffName = await getStaffName(callerId);
 
     const copilot = await answerStudioCopilot(lastQuestion, staffName);

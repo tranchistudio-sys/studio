@@ -33,6 +33,7 @@ export default function AiAssistantPage() {
   const abortRef = useRef<AbortController | null>(null);
 
   const suggestions = [
+    "Tháng này studio kinh doanh thế nào?",
     "Hôm nay có bao nhiêu show?",
     "Khách nào đang nợ tiền?",
     "Đơn nào trễ hậu kỳ?",

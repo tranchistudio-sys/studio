@@ -10,6 +10,11 @@ export type ContractServiceItem = {
   name: string;
   description: string | null;
   price: number;
+  /**
+   * "Ghi chú dịch vụ" (quà tặng/ưu đãi/thỏa thuận với khách) — cam kết khách
+   * ĐƯỢC xem, hiện cả public lẫn internal. Optional để tương thích payload cũ.
+   */
+  notes?: string | null;
   deductions: { label: string; amount: number }[];
   surcharges: { name: string; amount: number }[];
   /** internal only — public luôn null */

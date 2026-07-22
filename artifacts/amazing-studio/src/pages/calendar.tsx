@@ -3812,10 +3812,14 @@ function generateContractHTML(
       // Ngày thực hiện của dịch vụ này — ĐỦ các ngày (show nhiều ngày ra nhiều dòng),
       // ngay dưới tên dịch vụ để khách đọc hợp đồng không phải dò chỗ khác.
       const sSubtitle = serviceDayTextLines(svc);
+      // Ghi chú dịch vụ của ĐÚNG dịch vụ này (quà tặng/thỏa thuận) — gom từ các
+      // dòng items của chính booking đó, không lấy nhầm của dịch vụ khác.
+      const sNotes = sItems.map(it => (it.notes ?? "").trim()).filter(Boolean).join("\n");
       return renderServiceBreakdownCardHTML({
         title: sTitle,
         subtitle: sSubtitle,
         description: sPkgDesc,
+        notes: sNotes,
         basePrice: sBase,
         surcharges: sAllSurcharges,
         deductions: sDeductions,

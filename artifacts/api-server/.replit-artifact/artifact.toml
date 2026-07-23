@@ -7,7 +7,12 @@ id = "3B4_FFSkEVBkAeYMFRJ2e"
 [[services]]
 localPort = 8080
 name = "API Server"
-paths = ["/api"]
+# Backend nhận /api VÀ các path OAuth/MCP ở ROOT (ChatGPT Custom Connector).
+# mcpAuthRouter (SDK) mount /authorize /token /register /revoke + /.well-known/*
+# ở gốc, POST /mcp là endpoint MCP. Không thêm thì router chuyển chúng sang
+# frontend tĩnh → trả index.html (200 HTML) → OAuth discovery của ChatGPT chết.
+# Frontend không có route trùng các prefix này (đã kiểm) nên an toàn.
+paths = ["/api", "/mcp", "/.well-known", "/authorize", "/token", "/register", "/revoke"]
 
 [services.development]
 run = "pnpm --filter @workspace/api-server run dev"

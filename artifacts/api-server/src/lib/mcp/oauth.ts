@@ -17,6 +17,7 @@ import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprot
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
 import type { OAuthClientInformationFull, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
+import { InvalidClientMetadataError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 import {
   getStoredClient,
   putStoredClient,
@@ -45,6 +46,32 @@ export function publicBaseUrl(): string {
 export const MCP_PATH = "/mcp";
 export const LOGIN_PATH = "/mcp/oauth/login";
 export const SCOPE = "amazing:read";
+
+// B2 (review #127): siết Dynamic Client Registration — chỉ cho đăng ký client với
+// redirect_uri thuộc host tin cậy (ChatGPT/OpenAI), + localhost để test kỹ thuật.
+// Chặn kẻ tấn công tự đăng ký client redirect=attacker.com để phishing consent.
+const ALLOWED_REDIRECT_HOSTS = ["chatgpt.com", "openai.com", "localhost", "127.0.0.1"];
+const EXTRA_REDIRECT_HOSTS = (process.env.MCP_EXTRA_REDIRECT_HOSTS ?? "")
+  .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+
+function isAllowedRedirectHost(host: string): boolean {
+  const h = host.toLowerCase();
+  const allow = [...ALLOWED_REDIRECT_HOSTS, ...EXTRA_REDIRECT_HOSTS];
+  return allow.some((a) => h === a || h.endsWith(`.${a}`));
+}
+
+/** true nếu MỌI redirect_uri của client thuộc host tin cậy (https, trừ localhost). */
+export function redirectUrisAllowed(uris: readonly string[] | undefined): boolean {
+  if (!uris || uris.length === 0) return false;
+  return uris.every((u) => {
+    try {
+      const url = new URL(u);
+      const isLocal = url.hostname === "localhost" || url.hostname === "127.0.0.1";
+      if (url.protocol !== "https:" && !isLocal) return false; // production phải HTTPS
+      return isAllowedRedirectHost(url.hostname);
+    } catch { return false; }
+  });
+}
 
 // ─── JWT tối giản (HS256, base64url) — đồng bộ cách ký của routes/auth.ts ───────
 
@@ -76,7 +103,9 @@ function verifyJwt(token: string): TokenClaims | null {
   return claims;
 }
 
-const ACCESS_TTL = 12 * 3600;      // 12 giờ
+// B3 (review #127): siết access token còn 2h — nếu token rò rỉ thì cửa sổ ngắn;
+// refresh (30d) re-check is_active/role mỗi lần nên khoá nhân sự có hiệu lực sớm.
+const ACCESS_TTL = 2 * 3600;        // 2 giờ
 const REFRESH_TTL = 30 * 24 * 3600; // 30 ngày
 
 function issueTokens(staffId: number, role: "admin" | "staff", clientId: string): OAuthTokens {
@@ -116,9 +145,16 @@ function escapeHtml(s: string): string {
 }
 
 export function renderLoginPage(params: {
-  clientId: string; redirectUri: string; codeChallenge: string; state?: string; scopes: string[]; error?: string;
+  clientId: string; redirectUri: string; codeChallenge: string; state?: string; scopes: string[];
+  clientName?: string | null; error?: string;
 }): string {
   const hidden = (name: string, value: string) => `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`;
+  // B2: hiện DANH TÍNH THẬT của client + host chuyển hướng để admin phát hiện app lạ
+  // (không ghi cứng "ChatGPT" — client giả sẽ lộ tên/host khác).
+  let redirectHost = "?";
+  try { redirectHost = new URL(params.redirectUri).host; } catch { /* giữ ? */ }
+  const clientLabel = (params.clientName && params.clientName.trim()) || params.clientId;
+  const trusted = isAllowedRedirectHost(redirectHost.split(":")[0]);
   return `<!doctype html><html lang="vi"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Kết nối ChatGPT · Amazing Studio</title>
@@ -131,7 +167,10 @@ button{width:100%;margin-top:18px;padding:12px;border:0;border-radius:9px;backgr
 .err{color:#c0392b;font-size:13px;margin-top:10px}.scope{background:#f0f4ff;border-radius:8px;padding:8px 10px;font-size:12px;color:#334;margin-top:14px}</style>
 </head><body><div class="card">
 <h1>✨ Amazing Studio</h1>
-<p>Cho phép <b>ChatGPT</b> đọc dữ liệu studio của bạn (chỉ đọc).</p>
+<p>Ứng dụng <b>${escapeHtml(clientLabel)}</b> muốn kết nối để <b>đọc</b> dữ liệu studio của bạn.</p>
+<div class="scope" style="${trusted ? "" : "background:#fff4f4;color:#c0392b"}">
+  ${trusted ? "🔗" : "⚠️"} Chuyển hướng tới: <b>${escapeHtml(redirectHost)}</b>${trusted ? "" : " — HOST LẠ, hãy chắc chắn bạn đang kết nối đúng ChatGPT trước khi đăng nhập."}
+</div>
 <form method="post" action="${LOGIN_PATH}">
 ${hidden("client_id", params.clientId)}${hidden("redirect_uri", params.redirectUri)}
 ${hidden("code_challenge", params.codeChallenge)}${hidden("state", params.state ?? "")}
@@ -153,6 +192,14 @@ const clientsStore: OAuthRegisteredClientsStore = {
   async registerClient(client) {
     // SDK đã sinh client_id/client_id_issued_at; ta chỉ lưu lại (DCR public client + PKCE).
     const full = client as OAuthClientInformationFull;
+    // B2: từ chối đăng ký nếu redirect_uri KHÔNG thuộc host tin cậy (chống phishing
+    // qua client giả redirect=attacker.com). ChatGPT dùng chatgpt.com → hợp lệ.
+    if (!redirectUrisAllowed(full.redirect_uris)) {
+      // OAuth error chuẩn → SDK trả HTTP 400 invalid_client_metadata (không 500).
+      throw new InvalidClientMetadataError(
+        "redirect_uri phải thuộc host tin cậy (chatgpt.com/openai.com). Liên hệ admin nếu cần thêm host.",
+      );
+    }
     await putStoredClient(full);
     return full;
   },
@@ -167,6 +214,7 @@ export const mcpOAuthProvider: OAuthServerProvider = {
     res.send(
       renderLoginPage({
         clientId: client.client_id,
+        clientName: client.client_name,
         redirectUri: params.redirectUri,
         codeChallenge: params.codeChallenge,
         state: params.state,

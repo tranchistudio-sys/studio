@@ -4,7 +4,7 @@ import bcrypt from "bcryptjs";
 const query = vi.fn();
 vi.mock("@workspace/db", () => ({ db: {}, pool: { query: (...a: unknown[]) => query(...a) } }));
 
-import { mcpOAuthProvider, issueTestAccessToken, authenticateStaff, _verifyJwtForTest } from "./oauth.js";
+import { mcpOAuthProvider, issueTestAccessToken, authenticateStaff, _verifyJwtForTest, redirectUrisAllowed, renderLoginPage } from "./oauth.js";
 
 describe("MCP OAuth — access token JWT (HS256, SESSION_SECRET)", () => {
   it("access token hợp lệ → verifyAccessToken trả role + staffId", async () => {
@@ -59,5 +59,61 @@ describe("MCP OAuth — authenticateStaff (tái dùng staff + bcrypt)", () => {
     expect(await authenticateStaff("", "x")).toEqual({ ok: false });
     expect(await authenticateStaff("x", "")).toEqual({ ok: false });
     expect(query).not.toHaveBeenCalled();
+  });
+});
+
+describe("B2 — DCR allowlist redirect host (chống client giả phishing)", () => {
+  it("host tin cậy (chatgpt.com, subdomain, localhost) → cho phép", () => {
+    expect(redirectUrisAllowed(["https://chatgpt.com/connector/oauth/abc"])).toBe(true);
+    expect(redirectUrisAllowed(["https://x.chatgpt.com/cb"])).toBe(true);
+    expect(redirectUrisAllowed(["https://openai.com/cb"])).toBe(true);
+    expect(redirectUrisAllowed(["http://localhost:5173/cb"])).toBe(true);
+  });
+  it("host lạ / http non-local / rỗng → từ chối", () => {
+    expect(redirectUrisAllowed(["https://attacker.com/cb"])).toBe(false);
+    expect(redirectUrisAllowed(["http://evil.com/cb"])).toBe(false);
+    expect(redirectUrisAllowed(["https://chatgpt.com.evil.com/cb"])).toBe(false); // không endsWith '.chatgpt.com'
+    expect(redirectUrisAllowed([])).toBe(false);
+    expect(redirectUrisAllowed(undefined)).toBe(false);
+  });
+  it("1 uri hợp lệ + 1 uri lạ → từ chối (every)", () => {
+    expect(redirectUrisAllowed(["https://chatgpt.com/cb", "https://attacker.com/cb"])).toBe(false);
+  });
+
+  it("registerClient TỪ CHỐI redirect_uri host lạ (throw)", async () => {
+    query.mockReset();
+    await expect(
+      mcpOAuthProvider.clientsStore.registerClient!({
+        client_id: "c1", redirect_uris: ["https://attacker.com/cb"],
+      } as never),
+    ).rejects.toThrow(/host tin cậy|invalid_client_metadata/i);
+  });
+  it("registerClient CHO PHÉP redirect_uri chatgpt.com", async () => {
+    query.mockReset();
+    query.mockResolvedValue({ rows: [] });
+    const out = await mcpOAuthProvider.clientsStore.registerClient!({
+      client_id: "c2", redirect_uris: ["https://chatgpt.com/connector/oauth/x"],
+    } as never);
+    expect((out as { client_id: string }).client_id).toBe("c2");
+  });
+});
+
+describe("B2 — trang consent hiện client + host thật (không ghi cứng ChatGPT)", () => {
+  it("hiện client_name + host redirect, host tin cậy không cảnh báo", () => {
+    const html = renderLoginPage({
+      clientId: "c1", clientName: "ChatGPT", redirectUri: "https://chatgpt.com/connector/oauth/x",
+      codeChallenge: "cc", scopes: ["amazing:read"],
+    });
+    expect(html).toContain("chatgpt.com");
+    expect(html).toContain("ChatGPT"); // là client_name THẬT do client khai, không hard-code
+    expect(html).not.toContain("HOST LẠ");
+  });
+  it("host LẠ → cảnh báo đỏ để admin nhận ra app giả", () => {
+    const html = renderLoginPage({
+      clientId: "evil", clientName: "Totally ChatGPT", redirectUri: "https://attacker.com/cb",
+      codeChallenge: "cc", scopes: ["amazing:read"],
+    });
+    expect(html).toContain("attacker.com");
+    expect(html).toContain("HOST LẠ");
   });
 });

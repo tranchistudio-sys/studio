@@ -1,13 +1,20 @@
 modules = ["nodejs-24", "python-3.11", "postgresql-16"]
 
-# Deploy Cách C (single origin): MỘT process backend Express phục vụ TẤT CẢ
-# (frontend build + /api + /mcp + OAuth ở ROOT). Build cả BE+FE (pnpm run build
-# = build:deploy). Bỏ router="application" + [[artifacts]] (mô hình cũ tự chia
-# root→frontend, /api→backend — khiến /mcp và /.well-known bị frontend nuốt).
+# Deploy = application router (Replit tự khám phá artifact qua .replit-artifact/).
+# Route theo `paths` trong từng artifacts/<x>/.replit-artifact/artifact.toml:
+#   api-server (:8080)  → /api + /mcp + OAuth (/authorize /token /register /revoke /.well-known)
+#   amazing-studio      → /  (frontend tĩnh, SPA fallback)
+# ĐỪNG đổi sang single-process ở đây: Replit bỏ qua build/run root khi có artifact,
+# nên muốn cho /mcp về backend phải sửa `paths` của api-server (KHÔNG phải file này).
+[[artifacts]]
+id = "artifacts/api-server"
+
+[[artifacts]]
+id = "artifacts/mockup-sandbox"
+
 [deployment]
+router = "application"
 deploymentTarget = "autoscale"
-build = ["sh", "-c", "pnpm run build"]
-run = ["sh", "-c", "node --enable-source-maps artifacts/api-server/dist/index.mjs"]
 
 [deployment.postBuild]
 args = ["pnpm", "store", "prune"]

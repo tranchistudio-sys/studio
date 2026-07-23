@@ -3,6 +3,7 @@ import cors from "cors";
 import compression from "compression";
 import pinoHttp from "pino-http";
 import router from "./routes";
+import { mountMcp } from "./lib/mcp/server";
 import { logger } from "./lib/logger";
 import { startFollowUpScheduler } from "./follow-up-scheduler";
 import { startTestFollowUpScheduler } from "./test-follow-up-scheduler";
@@ -49,6 +50,11 @@ app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({ extended: true, limit: "20mb" }));
 
 app.use("/api", router);
+
+// MCP server (ChatGPT Custom Connector) — mount cạnh /api, TRƯỚC redirect-dev vì
+// OAuth dùng path gốc (/authorize, /.well-known/...). Đường kết nối độc lập,
+// read-only, có OAuth + role + audit; không đụng /api hiện có.
+mountMcp(app);
 
 // Local dev: :3000 chỉ là API — trình duyệt mở /pricing,... chuyển sang Vite.
 if (process.env.NODE_ENV !== "production") {

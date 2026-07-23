@@ -4,6 +4,7 @@ import compression from "compression";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import { mountMcp } from "./lib/mcp/server";
+import { mountFrontend } from "./lib/serve-frontend";
 import { logger } from "./lib/logger";
 import { startFollowUpScheduler } from "./follow-up-scheduler";
 import { startTestFollowUpScheduler } from "./test-follow-up-scheduler";
@@ -56,8 +57,13 @@ app.use("/api", router);
 // read-only, có OAuth + role + audit; không đụng /api hiện có.
 mountMcp(app);
 
-// Local dev: :3000 chỉ là API — trình duyệt mở /pricing,... chuyển sang Vite.
-if (process.env.NODE_ENV !== "production") {
+// Cách C (single origin): backend phục vụ luôn frontend đã build → /mcp + OAuth
+// discovery ở ROOT do backend trả JSON (ChatGPT Connector kết nối được). Mount SAU
+// /api + MCP nên các path backend luôn thắng; route giao diện còn lại → index.html.
+const frontendMounted = mountFrontend(app);
+
+// Local dev (chưa build frontend): :3000 chỉ là API — chuyển route giao diện sang Vite.
+if (!frontendMounted && process.env.NODE_ENV !== "production") {
   const viteDevUrl = (process.env.VITE_DEV_URL || "http://localhost:5173").replace(/\/$/, "");
   app.use((req, res, next) => {
     if (req.path.startsWith("/api")) return next();

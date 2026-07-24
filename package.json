@@ -9,6 +9,7 @@
     "dev": "echo \"Chạy 2 terminal: pnpm dev:api và pnpm dev:web (Postgres.app phải Running)\"",
     "build": "pnpm run build:deploy",
     "build:deploy": "pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/amazing-studio run build",
+    "deploy:guard": "node scripts/deploy-guard.mjs",
     "build:ci": "pnpm run typecheck && pnpm -r --if-present run build",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node scripts/kill-port.mjs 2>/dev/null; sleep 1; export NODE_ENV=development && (pnpm run build || (echo '\\n\\033[41m\\033[97m  DEV ABORTED: API server build failed — server NOT restarted, dist cũ vẫn đang chạy nếu workflow trước đó còn sống. Xem log build phía trên.  \\033[0m\\n' && exit 1)) && pnpm run start",
-    "build": "node ./scripts/check-duplicate-functions.mjs && node ./build.mjs",
+    "build": "node ../../scripts/deploy-guard.mjs && node ./scripts/check-duplicate-functions.mjs && node ./build.mjs",
     "start": "node --env-file=../../.env --enable-source-maps ./dist/index.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",

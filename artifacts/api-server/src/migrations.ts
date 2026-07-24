@@ -1,5 +1,7 @@
 import { pool } from "@workspace/db";
 import { withStartupDdlLock } from "./lib/startup-ddl";
+import { ensureBrainLabTables } from "./lib/sale-brain-lab";
+import { ensureHumanReviewTable } from "./lib/sale-human-review";
 
 async function runMigrationsUnlocked() {
   const client = await pool.connect();
@@ -1192,6 +1194,21 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
     console.log("[migrations] contracts online-sign v2 OK");
   } catch (err) {
     console.error("[migrations] contracts online-sign v2:", err);
+  }
+
+  // ── Bảng runtime-managed của Lulu (Brain Lab + human review) ─────────────────
+  // 5 bảng lulu_* trước đây CHỈ được tạo lazy khi bot/Brain Lab thực sự chạy —
+  // thứ chỉ chạy trên PROD → DEV DB của workspace thiếu bảng → màn "Database
+  // migrations" của Replit Publishing (diff schema dev↔prod) đề xuất
+  // DROP TABLE lulu_* CASCADE trên prod (sự cố 24/07/2026). Gọi ensure ngay ở
+  // startup để DEV DB luôn có đủ bảng, diff dev↔prod sạch. Idempotent 100%:
+  // CREATE TABLE/INDEX IF NOT EXISTS + seed chỉ-khi-bảng-rỗng.
+  try {
+    await ensureBrainLabTables();
+    await ensureHumanReviewTable();
+    console.log("[migrations] lulu_* runtime-managed tables OK");
+  } catch (err) {
+    console.error("[migrations] lulu_* runtime-managed tables:", err);
   }
 }
 

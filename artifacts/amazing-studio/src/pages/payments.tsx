@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { getImageSrc } from "@/lib/imageUtils";
+import { EvidenceImageViewer, type EvidenceViewerState } from "@/components/EvidenceImageViewer";
 import {
   previewPaymentAllocation,
   serviceDisplayLabel,
@@ -553,14 +554,14 @@ function PaymentRow({
   p,
   newPaymentId,
   onSelect,
-  onPreviewImage,
+  onPreviewImages,
   isAdmin,
   onVoid,
 }: {
   p: RecentPaymentItem;
   newPaymentId: number | null;
   onSelect: (p: RecentPaymentItem) => void;
-  onPreviewImage: (url: string) => void;
+  onPreviewImages: (urls: string[], index: number) => void;
   isAdmin?: boolean;
   onVoid?: (id: number) => void;
 }) {
@@ -746,8 +747,8 @@ function PaymentRow({
                 <button
                   key={`${url}-${i}`}
                   type="button"
-                  onClick={(e) => { e.stopPropagation(); onPreviewImage(getImageSrc(url) || url); }}
-                  className="flex-shrink-0"
+                  onClick={(e) => { e.stopPropagation(); onPreviewImages(urls, i); }}
+                  className="flex-shrink-0 cursor-zoom-in"
                 >
                   <img
                     src={getImageSrc(url) || url}
@@ -758,7 +759,13 @@ function PaymentRow({
                 </button>
               ))}
               {extra > 0 && (
-                <span className="text-[10px] font-semibold text-muted-foreground">+{extra}</span>
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); onPreviewImages(urls, thumbs.length); }}
+                  className="text-[10px] font-semibold text-muted-foreground hover:text-foreground"
+                >
+                  +{extra}
+                </button>
               )}
             </div>
           );
@@ -895,7 +902,7 @@ function MonthlyListSection({
   const [open, setOpen] = useState(true);
   const [exportStatus, setExportStatus] = useState<"all" | "owed" | "paid">("all");
   const [exporting, setExporting] = useState(false);
-  const [thumbPreviewUrl, setThumbPreviewUrl] = useState<string | null>(null);
+  const [thumbViewer, setThumbViewer] = useState<EvidenceViewerState>(null);
 
   useEffect(() => {
     if (defaultMonthKey) setMonth(defaultMonthKey);
@@ -1080,9 +1087,9 @@ function MonthlyListSection({
                                   key={`${u}-${i}`}
                                   role="button"
                                   tabIndex={0}
-                                  onClick={(e) => { e.stopPropagation(); setThumbPreviewUrl(getImageSrc(u) || u); }}
-                                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); setThumbPreviewUrl(getImageSrc(u) || u); } }}
-                                  className="block cursor-pointer"
+                                  onClick={(e) => { e.stopPropagation(); setThumbViewer({ urls, index: i }); }}
+                                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); setThumbViewer({ urls, index: i }); } }}
+                                  className="block cursor-zoom-in"
                                 >
                                   <img
                                     src={getImageSrc(u) || u}
@@ -1094,7 +1101,13 @@ function MonthlyListSection({
                                 </span>
                               ))}
                               {extra > 0 && (
-                                <span className="text-[10px] font-semibold text-muted-foreground">+{extra}</span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => { e.stopPropagation(); setThumbViewer({ urls, index: thumbs.length }); }}
+                                  className="text-[10px] font-semibold text-muted-foreground hover:text-foreground"
+                                >
+                                  +{extra}
+                                </button>
                               )}
                             </div>
                           )}
@@ -1204,9 +1217,9 @@ function MonthlyListSection({
                             key={`${u}-${i}`}
                             role="button"
                             tabIndex={0}
-                            onClick={(e) => { e.stopPropagation(); setThumbPreviewUrl(getImageSrc(u) || u); }}
-                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); setThumbPreviewUrl(getImageSrc(u) || u); } }}
-                            className="block cursor-pointer"
+                            onClick={(e) => { e.stopPropagation(); setThumbViewer({ urls: allUrls, index: i }); }}
+                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); setThumbViewer({ urls: allUrls, index: i }); } }}
+                            className="block cursor-zoom-in"
                           >
                             <img
                               src={getImageSrc(u) || u}
@@ -1218,7 +1231,15 @@ function MonthlyListSection({
                           </span>
                         ))}
                         {extra > 0 && (
-                          <span className="text-[10px] font-semibold text-muted-foreground">+{extra}</span>
+                          <span
+                            role="button"
+                            tabIndex={0}
+                            onClick={(e) => { e.stopPropagation(); setThumbViewer({ urls: allUrls, index: thumbs.length }); }}
+                            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); setThumbViewer({ urls: allUrls, index: thumbs.length }); } }}
+                            className="text-[10px] font-semibold text-muted-foreground hover:text-foreground cursor-pointer"
+                          >
+                            +{extra}
+                          </span>
                         )}
                       </div>
                     );
@@ -1229,25 +1250,12 @@ function MonthlyListSection({
           )}
         </>
       )}
-      {thumbPreviewUrl && (
-        <div
-          className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-4"
-          onClick={() => setThumbPreviewUrl(null)}
-        >
-          <img
-            src={thumbPreviewUrl}
-            alt="Bằng chứng"
-            className="max-w-full max-h-full rounded-xl shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          />
-          <button
-            type="button"
-            onClick={() => setThumbPreviewUrl(null)}
-            className="absolute top-4 right-4 p-2 bg-white/20 hover:bg-white/30 text-white rounded-full"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+      {thumbViewer && (
+        <EvidenceImageViewer
+          urls={thumbViewer.urls}
+          initialIndex={thumbViewer.index}
+          onClose={() => setThumbViewer(null)}
+        />
       )}
     </div>
   );
@@ -1452,8 +1460,7 @@ export default function PaymentsPage() {
 
   const [proofImages, setProofImages] = useState<string[]>([]);
   const [uploadingProof, setUploadingProof] = useState(false);
-  const [proofPreview, setProofPreview] = useState(false);
-  const [proofPreviewUrl, setProofPreviewUrl] = useState<string | null>(null);
+  const [proofViewer, setProofViewer] = useState<EvidenceViewerState>(null);
   const [saving, setSaving]           = useState(false);
   const [saveError, setSaveError]     = useState<string | null>(null);
   const [mainSuccess, setMainSuccess] = useState<string | null>(null);
@@ -2089,7 +2096,7 @@ export default function PaymentsPage() {
                         p={p}
                         newPaymentId={newPaymentId}
                         onSelect={handleSelectFromRecent}
-                        onPreviewImage={(url) => { setProofPreviewUrl(url); setProofPreview(true); }}
+                        onPreviewImages={(urls, index) => setProofViewer({ urls, index })}
                         isAdmin={effectiveIsAdmin}
                         onVoid={openVoidDialog}
                       />
@@ -2121,7 +2128,7 @@ export default function PaymentsPage() {
                         onSelect={handleSelectFromRecent}
                         isAdmin={effectiveIsAdmin}
                         onVoid={openVoidDialog}
-                        onPreviewImage={(url) => { setProofPreviewUrl(url); setProofPreview(true); }}
+                        onPreviewImages={(urls, index) => setProofViewer({ urls, index })}
                       />
                     ))}
                   </div>
@@ -2482,7 +2489,7 @@ export default function PaymentsPage() {
                           <div className="absolute top-1 right-1 flex gap-0.5">
                             <button
                               type="button"
-                              onClick={() => { setProofPreviewUrl(getImageSrc(url) || url); setProofPreview(true); }}
+                              onClick={() => setProofViewer({ urls: proofImages, index: idx })}
                               className="p-1 bg-black/60 text-white rounded-md"
                             >
                               <Eye className="w-3 h-3" />
@@ -2617,7 +2624,7 @@ export default function PaymentsPage() {
                               if (urls.length === 0) return null;
                               return (
                                 <button
-                                  onClick={() => { setProofPreviewUrl(getImageSrc(urls[0]) || urls[0]); setProofPreview(true); }}
+                                  onClick={() => setProofViewer({ urls, index: 0 })}
                                   className="text-[10px] px-2 py-1 bg-primary/10 text-primary rounded-lg flex items-center gap-0.5 font-medium"
                                 >
                                   <Eye className="w-3 h-3" /> {p.paymentType === "deposit" ? "Ảnh cọc" : "Ảnh"}{urls.length > 1 ? ` (${urls.length})` : ""}
@@ -2670,7 +2677,7 @@ export default function PaymentsPage() {
                                     src={getImageSrc(u) || u}
                                     alt={`Ảnh ${i + 1}`}
                                     className="w-28 h-20 object-cover cursor-pointer"
-                                    onClick={() => { setProofPreviewUrl(getImageSrc(u) || u); setProofPreview(true); }}
+                                    onClick={() => setProofViewer({ urls, index: i })}
                                   />
                                 </div>
                               ))}
@@ -2889,7 +2896,8 @@ export default function PaymentsPage() {
                       <img
                         src={getImageSrc(u) || u}
                         alt={`bc ${i + 1}`}
-                        className="w-full aspect-square object-cover rounded-lg border border-border"
+                        className="w-full aspect-square object-cover rounded-lg border border-border cursor-zoom-in"
+                        onClick={() => setProofViewer({ urls: adHocProofs, index: i })}
                       />
                       <button
                         type="button"
@@ -2932,28 +2940,12 @@ export default function PaymentsPage() {
       </Sheet>
 
       {/* Proof image lightbox */}
-      {proofPreview && proofPreviewUrl && (
-        <div
-          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/85"
-          onClick={() => { setProofPreview(false); setProofPreviewUrl(null); }}
-        >
-          <div
-            className="relative max-w-lg max-h-[90vh]"
-            onClick={e => e.stopPropagation()}
-          >
-            <img
-              src={proofPreviewUrl}
-              alt="bằng chứng"
-              className="max-w-full max-h-[85vh] object-contain rounded-2xl shadow-2xl"
-            />
-            <button
-              onClick={() => { setProofPreview(false); setProofPreviewUrl(null); }}
-              className="absolute top-3 right-3 bg-black/60 text-white rounded-full p-1.5"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        </div>
+      {proofViewer && (
+        <EvidenceImageViewer
+          urls={proofViewer.urls}
+          initialIndex={proofViewer.index}
+          onClose={() => setProofViewer(null)}
+        />
       )}
 
       {/* ── Void Dialog ───────────────────────── */}

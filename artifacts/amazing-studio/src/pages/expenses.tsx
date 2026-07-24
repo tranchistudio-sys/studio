@@ -12,6 +12,7 @@ import { CurrencyInput } from "@/components/ui/currency-input";
 import { DateInput } from "@/components/ui/date-input";
 import { OpenCalendarButton } from "@/components/OpenCalendarButton";
 import { getImageSrc } from "@/lib/imageUtils";
+import { EvidenceImageViewer, type EvidenceViewerState } from "@/components/EvidenceImageViewer";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -158,6 +159,7 @@ export default function ExpensesPage() {
   const [showCustomCat, setShowCustomCat] = useState(false);
   const [uploadingReceipt, setUploadingReceipt] = useState(false);
   const [viewDetail, setViewDetail] = useState<Expense | null>(null);
+  const [evidenceViewer, setEvidenceViewer] = useState<EvidenceViewerState>(null);
   const [viewMine, setViewMine] = useState(false);
   const [payDialog, setPayDialog] = useState<number | null>(null);
   const [paidFromValue, setPaidFromValue] = useState<string>("company");
@@ -1068,7 +1070,12 @@ export default function ExpensesPage() {
                     <div className="grid grid-cols-2 gap-2">
                       {receiptList.map((url, idx) => (
                         <div key={`${url}-${idx}`} className="relative w-full h-28 rounded-xl overflow-hidden border border-border">
-                          <img src={getImageSrc(url) ?? undefined} alt={`receipt-${idx + 1}`} className="w-full h-full object-cover" />
+                          <img
+                            src={getImageSrc(url) ?? undefined}
+                            alt={`receipt-${idx + 1}`}
+                            className="w-full h-full object-cover cursor-zoom-in"
+                            onClick={() => setEvidenceViewer({ urls: receiptList, index: idx })}
+                          />
                           <div className="absolute top-2 right-2 flex gap-1">
                             <button type="button" onClick={() => receiptInputRef.current?.click()}
                               className="p-1.5 rounded-lg bg-black/50 text-white hover:bg-black/70">
@@ -1283,9 +1290,14 @@ export default function ExpensesPage() {
                 return detailUrls.length > 0 && (
                   <div className="grid grid-cols-2 gap-2">
                     {detailUrls.map((url, idx) => (
-                      <div key={`${url}-${idx}`} className="rounded-xl overflow-hidden border border-border">
+                      <button
+                        type="button"
+                        key={`${url}-${idx}`}
+                        onClick={() => setEvidenceViewer({ urls: detailUrls, index: idx })}
+                        className="rounded-xl overflow-hidden border border-border cursor-zoom-in hover:opacity-90 transition-opacity"
+                      >
                         <img src={getImageSrc(url) ?? undefined} alt={`receipt-${idx + 1}`} className="w-full object-cover max-h-48" />
-                      </div>
+                      </button>
                     ))}
                   </div>
                 );
@@ -1347,6 +1359,13 @@ export default function ExpensesPage() {
             </div>
           </div>
         </div>
+      )}
+      {evidenceViewer && (
+        <EvidenceImageViewer
+          urls={evidenceViewer.urls}
+          initialIndex={evidenceViewer.index}
+          onClose={() => setEvidenceViewer(null)}
+        />
       )}
     </div>
   );

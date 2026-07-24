@@ -20,15 +20,31 @@ const STARTUP_DDL_LOCK_KEY = 88442201;
 let loggedSkip = false;
 
 export function skipStartupDdl(): boolean {
-  const skip = process.env.SKIP_STARTUP_MIGRATIONS === "1";
-  if (skip && !loggedSkip) {
-    loggedSkip = true;
-    console.warn(
-      "[startup-ddl] SKIP_STARTUP_MIGRATIONS=1 — BỎ QUA toàn bộ migration/DDL lúc khởi động. " +
-        "Schema mới (nếu có) sẽ KHÔNG tự áp — chạy migration thủ công trong workspace khi cần.",
-    );
+  if (process.env.SKIP_STARTUP_MIGRATIONS === "1") {
+    if (!loggedSkip) {
+      loggedSkip = true;
+      console.warn(
+        "[startup-ddl] SKIP_STARTUP_MIGRATIONS=1 — BỎ QUA toàn bộ migration/DDL lúc khởi động. " +
+          "Schema mới (nếu có) sẽ KHÔNG tự áp — chạy migration thủ công trong workspace khi cần.",
+      );
+    }
+    return true;
   }
-  return skip;
+  // FAIL-CLOSED (sự cố DROP-TABLE 24/07/2026): production KHÔNG BAO GIỜ tự chạy
+  // DDL lúc khởi động, kể cả khi quên đặt SKIP_STARTUP_MIGRATIONS trong
+  // Deployment env. Muốn cố tình chạy (rất hiếm — chỉ khi chủ chủ động migrate
+  // qua app) phải đặt tường minh ALLOW_STARTUP_DDL_IN_PRODUCTION=1.
+  if (process.env.NODE_ENV === "production" && process.env.ALLOW_STARTUP_DDL_IN_PRODUCTION !== "1") {
+    if (!loggedSkip) {
+      loggedSkip = true;
+      console.warn(
+        "[startup-ddl] NODE_ENV=production — mặc định BỎ QUA mọi migration/DDL lúc khởi động (fail-closed). " +
+          "Đặt ALLOW_STARTUP_DDL_IN_PRODUCTION=1 nếu thực sự muốn chạy DDL trên production.",
+      );
+    }
+    return true;
+  }
+  return false;
 }
 
 // Chạy fn dưới pg_advisory_lock: các instance (và các luồng ensure* trong cùng

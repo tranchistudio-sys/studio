@@ -18,6 +18,7 @@ import { ServicePriceBreakdown, renderServiceBreakdownCardHTML } from "@/compone
 import { serviceDays, serviceDayTextLines } from "@/lib/service-days";
 import { getImageSrc } from "@/lib/imageUtils";
 import { ConceptImage } from "@/components/ConceptImage";
+import { EvidenceImageViewer, type EvidenceViewerState } from "@/components/EvidenceImageViewer";
 import {
   ChevronLeft, ChevronRight, Calendar, Clock, Phone, Package2, Sun, Moon,
   AlertCircle, Plus, X, Check, Camera, User, Users, Sparkles,
@@ -1576,6 +1577,7 @@ function ShowFormPanel({
   const [editDepositProofs, setEditDepositProofs] = useState<string[]>([]);
   const [savingDepositProof, setSavingDepositProof] = useState(false);
   const [depositProofError, setDepositProofError] = useState("");
+  const [proofViewer, setProofViewer] = useState<EvidenceViewerState>(null);
   const [discount, setDiscount] = useState(booking?.discountAmount?.toString() ?? "0");
   const [notes, setNotes] = useState(booking?.notes ?? "");
   // Setting nhắc thuê đồ per booking ("" = mặc định: lấy trước 3 ngày / trả sau 2 ngày).
@@ -3330,9 +3332,9 @@ function ShowFormPanel({
                           const src = getImageSrc(img) || img;
                           return (
                             <div key={idx} className="relative rounded-xl overflow-hidden border border-border w-24 h-24">
-                              <a href={src} target="_blank" rel="noopener noreferrer" className="block w-full h-full">
+                              <button type="button" onClick={() => setProofViewer({ urls: editDepositProofs, index: idx })} className="block w-full h-full cursor-zoom-in">
                                 <img src={src} alt={`Ảnh cọc ${idx + 1}`} className="w-full h-full object-cover" onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
-                              </a>
+                              </button>
                               <button type="button" onClick={() => handleEditDepositProofRemove(idx)} disabled={savingDepositProof} className="absolute top-0.5 right-0.5 w-5 h-5 rounded-full bg-black/60 text-white flex items-center justify-center disabled:opacity-50">
                                 <X className="w-3 h-3" />
                               </button>
@@ -3388,7 +3390,12 @@ function ShowFormPanel({
                     <div className="flex flex-wrap gap-2">
                       {depositProofImages.map((img, idx) => (
                         <div key={idx} className="relative rounded-xl overflow-hidden border border-border w-24 h-24">
-                          <img src={img} alt={`Ảnh cọc ${idx + 1}`} className="w-full h-full object-cover" />
+                          <img
+                            src={img}
+                            alt={`Ảnh cọc ${idx + 1}`}
+                            className="w-full h-full object-cover cursor-zoom-in"
+                            onClick={() => setProofViewer({ urls: depositProofImages, index: idx })}
+                          />
                           <button type="button" onClick={() => setDepositProofImages(prev => prev.filter((_, i) => i !== idx))} className="absolute top-0.5 right-0.5 w-5 h-5 rounded-full bg-black/60 text-white flex items-center justify-center">
                             <X className="w-3 h-3" />
                           </button>
@@ -3497,6 +3504,13 @@ function ShowFormPanel({
             </div>
           </div>
         </div>
+      )}
+      {proofViewer && (
+        <EvidenceImageViewer
+          urls={proofViewer.urls}
+          initialIndex={proofViewer.index}
+          onClose={() => setProofViewer(null)}
+        />
       )}
     </div>
   );
@@ -4017,6 +4031,7 @@ function ShowDetailPanel({
 }) {
   const qc = useQueryClient();
   const [, setLocation] = useLocation();
+  const [proofViewer, setProofViewer] = useState<EvidenceViewerState>(null);
   const { data: allStaff = [] } = useQuery<Staff[]>({
     queryKey: ["staff-assignable"],
     queryFn: () => authFetch(`${BASE}/api/staff/assignable`).then(r => r.ok ? r.json() : []).then((d: unknown) => Array.isArray(d) ? d : []),
@@ -5049,7 +5064,12 @@ function ShowDetailPanel({
                                                 {proofUrls.map((u, idx) => {
                                                   const src = getImageSrc(u) || u;
                                                   return (
-                                                    <a key={`${u}-${idx}`} href={src} target="_blank" rel="noopener noreferrer" className="block">
+                                                    <button
+                                                      key={`${u}-${idx}`}
+                                                      type="button"
+                                                      onClick={() => setProofViewer({ urls: proofUrls, index: idx })}
+                                                      className="block cursor-zoom-in"
+                                                    >
                                                       <img
                                                         src={src}
                                                         alt={`Bằng chứng ${idx + 1}`}
@@ -5057,7 +5077,7 @@ function ShowDetailPanel({
                                                         className="w-12 h-12 rounded-md object-cover border border-border hover:opacity-80 transition"
                                                         onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
                                                       />
-                                                    </a>
+                                                    </button>
                                                   );
                                                 })}
                                               </div>
@@ -5091,6 +5111,8 @@ function ShowDetailPanel({
                           expenseDate?: string;
                           expenseAt?: string;
                           createdBy?: string | null;
+                          receiptUrl?: string | null;
+                          receiptUrls?: string[] | null;
                         };
                         const expenseRows: BookingExpenseRow[] = Array.isArray(
                           (fullDetail as { expenses?: BookingExpenseRow[] } | undefined)?.expenses,
@@ -5131,18 +5153,50 @@ function ShowDetailPanel({
                                     </tr>
                                   </thead>
                                   <tbody>
-                                    {expenseRows.map((ex) => (
-                                      <tr key={ex.id} className="border-b border-border/20">
-                                        <td className="py-1.5 pr-2 text-muted-foreground whitespace-nowrap">{expenseDateStr(ex)}</td>
-                                        <td className="py-1.5 pr-2 font-medium text-foreground">{ex.description}</td>
-                                        <td className="py-1.5 pr-2 text-muted-foreground">
-                                          {ex.category}
-                                          {ex.costClass ? ` / ${costClassShort(ex.costClass)}` : ""}
-                                        </td>
-                                        <td className="py-1.5 pr-2 text-muted-foreground">{ex.createdBy || "—"}</td>
-                                        <td className="py-1.5 text-right font-semibold text-red-600">-{fmtVND(ex.amount || 0)}</td>
-                                      </tr>
-                                    ))}
+                                    {expenseRows.map((ex) => {
+                                      const receiptUrls = (ex.receiptUrls && ex.receiptUrls.length)
+                                        ? ex.receiptUrls
+                                        : (ex.receiptUrl ? [ex.receiptUrl] : []);
+                                      return (
+                                        <Fragment key={ex.id}>
+                                          <tr className={receiptUrls.length > 0 ? "" : "border-b border-border/20"}>
+                                            <td className="py-1.5 pr-2 text-muted-foreground whitespace-nowrap">{expenseDateStr(ex)}</td>
+                                            <td className="py-1.5 pr-2 font-medium text-foreground">{ex.description}</td>
+                                            <td className="py-1.5 pr-2 text-muted-foreground">
+                                              {ex.category}
+                                              {ex.costClass ? ` / ${costClassShort(ex.costClass)}` : ""}
+                                            </td>
+                                            <td className="py-1.5 pr-2 text-muted-foreground">{ex.createdBy || "—"}</td>
+                                            <td className="py-1.5 text-right font-semibold text-red-600">-{fmtVND(ex.amount || 0)}</td>
+                                          </tr>
+                                          {receiptUrls.length > 0 && (
+                                            <tr className="border-b border-border/20">
+                                              <td colSpan={5} className="pb-2 pt-0.5">
+                                                <div className="flex items-center gap-1.5 flex-wrap">
+                                                  <span className="text-[10px] text-muted-foreground">🧾 Bằng chứng:</span>
+                                                  {receiptUrls.map((u, idx) => (
+                                                    <button
+                                                      key={`${u}-${idx}`}
+                                                      type="button"
+                                                      onClick={() => setProofViewer({ urls: receiptUrls, index: idx })}
+                                                      className="block cursor-zoom-in"
+                                                    >
+                                                      <img
+                                                        src={getImageSrc(u) || u}
+                                                        alt={`Bằng chứng ${idx + 1}`}
+                                                        loading="lazy"
+                                                        className="w-12 h-12 rounded-md object-cover border border-border hover:opacity-80 transition"
+                                                        onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                                                      />
+                                                    </button>
+                                                  ))}
+                                                </div>
+                                              </td>
+                                            </tr>
+                                          )}
+                                        </Fragment>
+                                      );
+                                    })}
                                   </tbody>
                                   <tfoot>
                                     <tr className="border-t border-border/40">
@@ -5494,6 +5548,13 @@ function ShowDetailPanel({
             </div>
           </div>
         </div>
+      )}
+      {proofViewer && (
+        <EvidenceImageViewer
+          urls={proofViewer.urls}
+          initialIndex={proofViewer.index}
+          onClose={() => setProofViewer(null)}
+        />
       )}
     </div>
   );

@@ -33,13 +33,15 @@ export function EvidenceImageViewer({
   const next = () => goto(stepEvidenceIndex(index, 1, count));
 
   useEffect(() => {
+    // Capture ở window để chạy TRƯỚC listener document của Radix Dialog/Sheet —
+    // ESC chỉ đóng viewer, không đóng luôn Sheet Thu tiền phía dưới.
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") { e.stopPropagation(); onClose(); }
       else if (e.key === "ArrowLeft" && count > 1) prev();
       else if (e.key === "ArrowRight" && count > 1) next();
     };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index, count, onClose]);
 
@@ -78,8 +80,9 @@ export function EvidenceImageViewer({
       role="dialog"
       aria-modal="true"
       aria-label="Xem ảnh bằng chứng"
-      className="fixed inset-0 z-[100] bg-black/90 flex flex-col"
+      className="fixed inset-0 z-[100] bg-black/90 flex flex-col pointer-events-auto"
       onClick={onClose}
+      onPointerDown={(e) => e.stopPropagation()}
       onTouchStart={onTouchStartCapture}
       onTouchEnd={onTouchEndCapture}
     >

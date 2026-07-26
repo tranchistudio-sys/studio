@@ -514,7 +514,13 @@ export async function computeMonthEstimate(
         let percentRateUsed: number | undefined;
         let percentBaseUsed: number | undefined;
 
-        if (ent.castAmount && ent.castAmount > 0) {
+        if (ent.manual && Number.isFinite(ent.castAmount) && ent.castAmount >= 0) {
+          // GIÁ TAY admin đã chốt — dùng thẳng cho MỌI role. 0đ cũng là số chốt
+          // (không trả công dòng này) → rate 0, KHÔNG fallback bảng cast/rate.
+          // Sale có giá tay: số CHỐT thay cho % × tiền thu của booking đó.
+          rate = ent.castAmount;
+          fromCast = true;
+        } else if (ent.castAmount && ent.castAmount > 0) {
           rate = ent.castAmount;
           fromCast = true;
         } else {

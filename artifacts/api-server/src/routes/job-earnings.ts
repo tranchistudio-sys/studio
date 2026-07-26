@@ -196,16 +196,38 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
       if (!sa?.staffId || !sa?.role) continue;
       const roleRaw = String(sa.role).toLowerCase();
       const role = roleRaw === "photo" ? "photographer" : roleRaw;
-      if (role !== "photographer" && role !== "makeup") continue;
-      const taskKey = (role === "photographer" ? item.photoTask : item.makeupTask) || "mac_dinh";
       const snapAmt = parseFloat(String(sa.castAmount ?? 0)) || 0;
+      const isManual = sa.castSource === "manual";
+
+      if (role !== "photographer" && role !== "makeup") {
+        // Role khác photographer/makeup:
+        //  • sale/sales: KHÔNG persist — hoa hồng tính realtime ở salary-estimate
+        //    (% × tiền đã thu, hoặc giá tay CHỐT thay % nếu admin gõ). Persist ở
+        //    đây sẽ double-count vì estimate luôn bỏ qua persisted sale.
+        //  • photoshop: module Hậu kỳ own earning riêng (Task #476).
+        //  • Còn lại (videographer/assistant/assistant_photo/marketing/other...):
+        //    CHỈ persist khi admin đã chốt GIÁ TAY > 0 — số này khớp 1:1 với lương
+        //    realtime (salary-estimate đọc thẳng castAmount manual). Giá theo bảng
+        //    của các role này vẫn realtime-only như trước (không đổi hành vi cũ).
+        //    Manual 0đ = chốt không trả công → không tạo row (realtime cũng ra 0).
+        if (role === "sale" || role === "sales" || role === "photoshop") continue;
+        if (isManual && snapAmt > 0) {
+          const taskKey = (typeof (sa as { taskKey?: unknown }).taskKey === "string" && (sa as { taskKey?: string }).taskKey) || "mac_dinh";
+          addEarning(sa.staffId, role, taskKey, lineName, snapAmt);
+        }
+        continue;
+      }
+
+      const taskKey = (role === "photographer" ? item.photoTask : item.makeupTask) || "mac_dinh";
       // Tin castAmount đã chốt khi nguồn là 'manual' (giá tay) hoặc 'staff_pricing'
       // (cast theo GÓI = số tiền TỔNG, khớp đúng snapshot trang lương realtime).
       // Nguồn 'staff_rate' có thể là đơn giá per_photo → phải resolveEarning để
       // nhân số ảnh, không dùng snapshot phẳng.
-      const trustSnapshot = snapAmt > 0 && (sa.castSource === "manual" || sa.castSource === "staff_pricing");
+      // Manual 0đ: admin chốt KHÔNG trả công dòng này → không tạo earning, và chặn
+      // luôn legacy fallback photoId/makeupId phía dưới (không được trả theo bảng).
+      const trustSnapshot = (isManual && snapAmt >= 0) || (snapAmt > 0 && sa.castSource === "staff_pricing");
       if (trustSnapshot) {
-        addEarning(sa.staffId, role, taskKey, lineName, snapAmt);
+        if (snapAmt > 0) addEarning(sa.staffId, role, taskKey, lineName, snapAmt);
         paidViaAssigned.add(`${sa.staffId}-${role}`);
       } else {
         const found = await resolveEarning(sa.staffId, role, taskKey, serviceId, item.price || bookingTotal, photoCount);
@@ -271,6 +293,11 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
   for (const { role, staffKey, taskKey } of bookingLevelRoles) {
     const staffId = assigned[staffKey] as number | undefined;
     if (!staffId) continue;
+
+    // Người này đã có earning cùng role từ items[] (vd giá tay marketing trên dòng
+    // dịch vụ) → bỏ qua booking-level để không tạo 2 khoản cho cùng 1 người/role
+    // (seen-key có taskKey nên khác taskKey vẫn lọt nếu không guard ở đây).
+    if (earnings.some(e => e.staffId === staffId && e.role === role)) continue;
 
     const found = await resolveEarning(
       staffId, role, taskKey, firstServiceId, bookingTotal,
@@ -339,6 +366,13 @@ router.get("/job-earnings", async (req, res) => {
 
 // ─── GET /job-earnings/by-booking/:bookingId ─────────────────────────────────
 router.get("/job-earnings/by-booking/:bookingId", async (req, res) => {
+  // Chặn ẩn danh: response chứa tiền công từng nhân sự — trước đây endpoint này
+  // không kiểm token nào (lộ lương cho bất kỳ ai gọi thẳng API).
+  const { verifyToken } = await import("./auth");
+  if (!verifyToken(req.headers.authorization)) {
+    res.status(401).json({ error: "Chưa đăng nhập" });
+    return;
+  }
   const bookingId = parseInt(req.params.bookingId);
   const rows = await db
     .select({

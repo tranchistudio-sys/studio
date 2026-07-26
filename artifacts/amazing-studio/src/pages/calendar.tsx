@@ -5814,6 +5814,89 @@ function getStaffLine(
   return { p, m, sale, v, extras, unassigned: !p && !m && !sale && !v };
 }
 
+// ─── Helper: FULL crew cho card Day view (timeline theo giờ) ─────────────────
+// Khác getStaffLine (month/week — gọn): trả ĐẦY ĐỦ mọi vai trò + TÊN từng người,
+// gộp từ TẤT CẢ items của booking (không chỉ items[0]) + booking.assignedStaff +
+// taskAssignees fallback. Không giới hạn số người/role — card tự cao theo nội dung.
+// Dedupe trong từng role theo TÊN đầy đủ (case-insensitive) — 1 người làm 2 vai trò
+// vẫn hiện ở cả 2 badge (đúng nghiệp vụ, mỗi vai trò là 1 phân công riêng).
+const CREW_ROLE_META: Record<string, { label: string; border: string; order: number }> = {
+  photographer:    { label: "Nhiếp ảnh", border: "border-sky-300",    order: 0 },
+  makeup:          { label: "Makeup",    border: "border-pink-300",   order: 1 },
+  videographer:    { label: "Quay phim", border: "border-amber-300",  order: 2 },
+  sales:           { label: "Sale",      border: "border-violet-300", order: 3 },
+  assistant:       { label: "Trợ lý",    border: "border-blue-200",   order: 4 },
+  assistant_photo: { label: "Thợ phụ",   border: "border-blue-200",   order: 5 },
+  support:         { label: "Hỗ trợ",    border: "border-blue-200",   order: 6 },
+  photoshop:       { label: "PTS",       border: "border-blue-200",   order: 7 },
+  marketing:       { label: "Marketing", border: "border-blue-200",   order: 8 },
+  print:           { label: "In ảnh",    border: "border-blue-200",   order: 9 },
+  deliver:         { label: "Giao file", border: "border-blue-200",   order: 10 },
+  call:            { label: "Gọi khách", border: "border-blue-200",   order: 11 },
+  other:           { label: "Khác",      border: "border-blue-200",   order: 12 },
+};
+
+type CrewBadge = { canon: string; label: string; border: string; names: string[] };
+
+function getFullCrew(
+  booking: { items?: OrderLine[]; assignedStaff?: unknown; taskAssignees?: TaskAssignee[] },
+): { badges: CrewBadge[]; unassigned: boolean; isFullyAssigned: boolean } {
+  const groups = new Map<string, { names: string[]; seen: Set<string> }>();
+  const push = (canon: string, name: string | null | undefined) => {
+    const n = (name ?? "").trim();
+    if (!n) return;
+    let g = groups.get(canon);
+    if (!g) { g = { names: [], seen: new Set() }; groups.set(canon, g); }
+    const key = n.toLowerCase();
+    if (g.seen.has(key)) return; // trùng THẬT (cùng người cùng role, vd legacy field + assignedStaff)
+    g.seen.add(key);
+    g.names.push(n);
+  };
+  const pushArr = (arr: unknown) => {
+    if (!Array.isArray(arr)) return;
+    for (const sa of arr as { role?: string; staffName?: string }[]) {
+      if (!sa?.role || !sa.staffName) continue;
+      push(canonicalRole(sa.role), sa.staffName);
+    }
+  };
+
+  // 1) TẤT CẢ dòng dịch vụ của booking (không chỉ items[0]) + legacy photoName/makeupName
+  for (const it of booking.items ?? []) {
+    pushArr(it?.assignedStaff);
+    push("photographer", it?.photoName);
+    push("makeup", it?.makeupName);
+  }
+  // 2) booking-level assignedStaff (Sale/PTS gắn ở tầng đơn, Giao việc module)
+  pushArr(booking.assignedStaff);
+  // 3) taskAssignees fallback — CHỈ khi role đó chưa có ai từ items/booking
+  //    (tránh hiện tên cũ từ tasks table khi user đã đổi nhân sự ở items[]).
+  for (const ta of booking.taskAssignees ?? []) {
+    if (!ta.assigneeName) continue;
+    const canon = canonicalRole(ta.role ?? ta.taskType);
+    if ((groups.get(canon)?.names.length ?? 0) === 0) push(canon, ta.assigneeName);
+  }
+
+  const badges: CrewBadge[] = Array.from(groups.entries())
+    .filter(([, g]) => g.names.length > 0)
+    .map(([canon, g]) => {
+      const meta = CREW_ROLE_META[canon];
+      return {
+        canon,
+        label: meta?.label ?? (canon.charAt(0).toUpperCase() + canon.slice(1)),
+        border: meta?.border ?? "border-blue-200",
+        names: g.names,
+      };
+    })
+    .sort((a, b) => (CREW_ROLE_META[a.canon]?.order ?? 99) - (CREW_ROLE_META[b.canon]?.order ?? 99));
+
+  const has = (canon: string) => (groups.get(canon)?.names.length ?? 0) > 0;
+  // Giữ nguyên ngữ nghĩa cảnh báo cũ của Day view:
+  // "Chưa giao việc" khi không có P/M/Sale/Quay phim; "Thiếu" khi chưa đủ (P+M) hoặc Quay phim.
+  const unassigned = !has("photographer") && !has("makeup") && !has("sales") && !has("videographer");
+  const isFullyAssigned = (has("photographer") && has("makeup")) || has("videographer");
+  return { badges, unassigned, isFullyAssigned };
+}
+
 // ─── (legacy) Mobile agenda — không còn dùng, giữ làm tham chiếu cho mode "Danh sách" tương lai ───
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function _MonthAgendaMobile_DEPRECATED({
@@ -6671,13 +6754,9 @@ function DayView({
                         {hourBookings.map(b => {
                           const { dot: staffDot } = getStaffColors(b, allStaff);
                           const item = b.items?.[0];
-                          const { p: photoDisplay, m: makeupDisplay, sale: saleDisplay, v: videoDisplay, extras: timelineExtras, unassigned } = getStaffLine(b, item);
-                          const hasPhoto = !!photoDisplay;
-                          const hasMakeup = !!makeupDisplay;
-                          const hasSale = !!saleDisplay;
-                          const hasVideo = !!videoDisplay;
-                          // Đủ nhân sự khi: có cả nhiếp ảnh + makeup, HOẶC có quay phim (gói quay phim không cần makeup).
-                          const isFullyAssigned = (hasPhoto && hasMakeup) || hasVideo;
+                          // FULL crew: mọi vai trò + tên từng người, từ TẤT CẢ items
+                          // của booking (không cắt bớt — card/dòng giờ tự cao theo nội dung).
+                          const { badges: crewBadges, unassigned, isFullyAssigned } = getFullCrew(b);
                           const isAssigned = !unassigned;
                           const serviceName = getServiceDetailLine(b, item);
                           const groupName = b.servicePackageId ? pkgGroupMap?.get(b.servicePackageId) : undefined;
@@ -6779,33 +6858,20 @@ function DayView({
                                     </div>
                                   )}
 
-                                  {/* Nhân sự */}
+                                  {/* Nhân sự — hiện ĐẦY ĐỦ mọi vai trò + tên; badge wrap tự nhiên,
+                                      KHÔNG cắt/ẩn bớt (không line-clamp/max-height) — thẻ tự cao. */}
                                   <div className="flex flex-wrap gap-0.5 text-[10px] mt-0.5">
                                     {isAssigned ? (
                                       <>
-                                        {hasPhoto && (
-                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-sky-300 text-foreground font-medium">
-                                            <Camera className="w-2.5 h-2.5 text-sky-500" />Nhiếp ảnh: {photoDisplay}
-                                          </span>
-                                        )}
-                                        {hasMakeup && (
-                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-pink-300 text-foreground font-medium">
-                                            <Sparkles className="w-2.5 h-2.5 text-pink-500" />Makeup: {makeupDisplay}
-                                          </span>
-                                        )}
-                                        {hasVideo && (
-                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-amber-300 text-foreground font-medium">
-                                            🎬 Quay phim: {videoDisplay}
-                                          </span>
-                                        )}
-                                        {hasSale && (
-                                          <span className="px-1.5 py-0.5 rounded border border-violet-300 text-foreground font-medium">
-                                            Sale: {saleDisplay}
-                                          </span>
-                                        )}
-                                        {timelineExtras.map(ex => (
-                                          <span key={ex} className="px-1 py-0.5 rounded border border-blue-200 text-foreground font-semibold text-[9px]">
-                                            {ex}
+                                        {crewBadges.map(cb => (
+                                          <span
+                                            key={cb.canon}
+                                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border ${cb.border} text-foreground font-medium break-words [overflow-wrap:anywhere]`}
+                                          >
+                                            {cb.canon === "photographer" && <Camera className="w-2.5 h-2.5 text-sky-500 flex-shrink-0" />}
+                                            {cb.canon === "makeup" && <Sparkles className="w-2.5 h-2.5 text-pink-500 flex-shrink-0" />}
+                                            {cb.canon === "videographer" && <span aria-hidden>🎬</span>}
+                                            {cb.label}: {cb.names.join(", ")}
                                           </span>
                                         ))}
                                         {!isFullyAssigned && (

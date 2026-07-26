@@ -119,11 +119,15 @@ function assignmentKey(staffId: number, role: string): string {
   return `${staffId}:${normalizeRoleForCast(role)}`;
 }
 
-// Giá tay CHỈ áp cho photographer/makeup — đúng bài toán "gói nhiều thợ ảnh",
-// và là 2 role duy nhất mà cả đường lương persist (job-earnings) lẫn realtime
-// (salary-estimate) đều chi trả theo item. Role khác gõ tay sẽ lệch giữa các
-// màn hình nên KHÔNG cho manual (server ép resolve lại).
-const MANUAL_ALLOWED_ROLES = new Set(["photographer", "makeup"]);
+// Giá tay áp cho MỌI role đã chọn nhân sự (photographer/makeup/videographer/
+// assistant/assistant_photo/marketing/sales/other...). Đường tiền mỗi role:
+//  • photographer/makeup: persist job-earnings (snapshot manual) + realtime — như cũ.
+//  • Role khác (trừ sale/photoshop): manual > 0 cũng được persist vào
+//    staff_job_earnings khi booking hoàn thành (computeBookingEarnings); trước đó
+//    realtime (salary-estimate) đọc thẳng castAmount manual — 2 đường cùng 1 số.
+//  • sale: KHÔNG persist (hoa hồng tính riêng); manual = số CHỐT thay % cho booking
+//    đó trong lương realtime. photoshop: module Hậu kỳ own earning riêng.
+// Manual 0đ là GIÁ TRỊ HỢP LỆ (chốt 0 công) — khác với "chưa có giá" (resolve bảng).
 
 /** Build map giá tay ĐANG LƯU trong DB: key `staffId:role` → amount. Dùng để
  *  non-admin lưu lại booking (sửa giờ/ghi chú) KHÔNG làm mất giá tay admin đã
@@ -136,7 +140,8 @@ export function buildPrevManualMap(oldItems: unknown): Map<string, number> {
     for (const s of sa) {
       if (!s?.staffId || !s?.role || s.castSource !== "manual") continue;
       const amt = typeof s.castAmount === "number" ? s.castAmount : parseFloat(String(s.castAmount ?? 0));
-      if (Number.isFinite(amt) && amt > 0) m.set(assignmentKey(s.staffId, s.role), amt);
+      // >= 0: manual 0đ cũng phải được giữ khi non-admin re-save booking.
+      if (Number.isFinite(amt) && amt >= 0) m.set(assignmentKey(s.staffId, s.role), amt);
     }
   }
   return m;
@@ -185,9 +190,9 @@ export async function normalizeItemsAssignedStaffCast(
 
         const canonRole = normalizeRoleForCast(raw.role);
         // Giá tay: giữ khi (a) admin gõ đè, HOẶC (b) non-admin nhưng trùng đúng
-        // giá tay đang lưu trong DB. Chỉ áp cho photographer/makeup.
+        // giá tay đang lưu trong DB. Áp cho MỌI role; 0đ là giá trị hợp lệ (chốt 0 công).
         const manualAmt = typeof raw.castAmount === "number" ? raw.castAmount : parseFloat(String(raw.castAmount ?? 0));
-        const isManualReq = raw.castSource === "manual" && Number.isFinite(manualAmt) && manualAmt > 0 && MANUAL_ALLOWED_ROLES.has(canonRole);
+        const isManualReq = raw.castSource === "manual" && Number.isFinite(manualAmt) && manualAmt >= 0;
         const matchesPrev = prevManual?.get(key) != null && Math.abs((prevManual.get(key) as number) - manualAmt) < 0.01;
         if (isManualReq && (opts?.allowManual || matchesPrev)) {
           console.info("[cast-resolve] manual price kept", {

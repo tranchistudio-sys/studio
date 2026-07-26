@@ -317,6 +317,63 @@ describe("computeMonthEstimate", () => {
     expect(r!.showItems.some(s => s.bookingId === 700)).toBe(false);
   });
 
+  // ── Giá tay mọi role (fix/calendar-full-crew-manual-cast) ──────────────────
+  function mockOneBooking(assignedStaff: unknown[]) {
+    poolQueryMock.mockImplementation((sql: string) => {
+      if (/FROM bookings/i.test(sql) && /assigned_staff IS NOT NULL/i.test(sql)) {
+        return Promise.resolve({
+          rows: [{
+            id: 900,
+            shoot_date: "2026-05-06",
+            package_type: "wedding",
+            service_label: "Album Cưới",
+            assigned_staff: assignedStaff,
+            total_amount: 8_000_000,
+            items: [{ serviceId: 1, price: 8_000_000 }],
+            photo_count: 0,
+            service_package_id: null,
+          }],
+        });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+  }
+
+  it("giá tay 0đ: KHÔNG trả công và KHÔNG fallback bảng rate", async () => {
+    // Bảng rate 300k sẵn sàng — nếu manual-0 rơi xuống resolveEarning sẽ ra 300k (SAI).
+    setupDbForRealtime({ rates: [[{ rate: "300000", rateType: "fixed" }]] });
+    mockOneBooking([
+      { staffId: 3, role: "photographer", taskKey: "mac_dinh", castAmount: 0, castSource: "manual" },
+    ]);
+    const r = await computeMonthEstimate(3, 5, 2026);
+    expect(r!.showEarnings).toBe(0);
+    expect(r!.showItems.some(s => s.bookingId === 900)).toBe(false);
+  });
+
+  it("giá tay role KHÁC photographer/makeup (assistant) được tính vào lương realtime", async () => {
+    setupDbForRealtime();
+    mockOneBooking([
+      { staffId: 3, role: "assistant", taskKey: "mac_dinh", castAmount: 250_000, castSource: "manual" },
+    ]);
+    const r = await computeMonthEstimate(3, 5, 2026);
+    expect(r!.showEarnings).toBe(250_000);
+    const it_ = r!.showItems.find(s => s.bookingId === 900 && s.role === "assistant")!;
+    expect(it_.fromCastAmount).toBe(true);
+    expect(it_.rate).toBe(250_000);
+  });
+
+  it("giá tay SALE = số CHỐT thay cho % × tiền thu của booking đó", async () => {
+    setupDbForRealtime();
+    mockOneBooking([
+      { staffId: 3, role: "sale", taskKey: "mac_dinh", castAmount: 300_000, castSource: "manual" },
+    ]);
+    const r = await computeMonthEstimate(3, 5, 2026);
+    const sale = r!.showItems.find(s => s.bookingId === 900 && s.role === "sale")!;
+    expect(sale.rate).toBe(300_000);
+    expect(sale.percentRate).toBeUndefined();
+    expect(r!.showEarnings).toBe(300_000);
+  });
+
   it("VẪN tính earning orphan nếu booking KHÔNG hủy (đối chứng)", async () => {
     setupDbForRealtime({
       existingEarnings: [{

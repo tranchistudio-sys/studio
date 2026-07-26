@@ -1801,9 +1801,11 @@ router.put("/bookings/:id", async (req, res) => {
       const newCast = collectCast(newItems);
       for (const [key, nv] of newCast) {
         const ov = oldCast.get(key);
-        // Log khi: entry mới là giá tay và khác giá trước đó, hoặc bỏ giá tay quay về bảng cast.
+        // Log khi: entry mới là giá tay và (mới chuyển sang tay HOẶC khác giá trước đó),
+        // hoặc bỏ giá tay quay về bảng cast. `!wasManual` bắt cả case chốt tay 0đ trên
+        // dòng đang 0đ theo bảng — số không đổi nhưng TRẠNG THÁI tiền đã bị khoá tay.
         const wasManual = ov?.manual ?? false;
-        if (nv.manual && (!ov || Math.abs(ov.amount - nv.amount) > 0.01)) {
+        if (nv.manual && (!ov || !wasManual || Math.abs(ov.amount - nv.amount) > 0.01)) {
           changes.push({
             field: `manual_cast_${key}`,
             label: `giá tay ${nv.name}`,

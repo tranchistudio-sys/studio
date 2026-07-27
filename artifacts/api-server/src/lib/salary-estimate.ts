@@ -856,7 +856,11 @@ export async function computeMonthEstimate(
         // MẢNG-5 dedup (nhánh forecast): giống Pass1, tránh cộng trùng khi nhiều dòng cùng role.
         consumedRoles.add(ent.role);
         let rate = 0;
-        if (ent.castAmount && ent.castAmount > 0) {
+        if (ent.manual && Number.isFinite(ent.castAmount) && ent.castAmount >= 0) {
+          // GIÁ TAY (kể cả 0đ) — forecast phải khớp realtime pass 2: dùng thẳng,
+          // KHÔNG fallback bảng/% (0đ = chốt không trả công → rate 0 → bị skip).
+          rate = ent.castAmount;
+        } else if (ent.castAmount && ent.castAmount > 0) {
           rate = ent.castAmount;
         } else {
           // Task #496: forecast cho sale = % cast × total_amount (commission khi thu đủ).

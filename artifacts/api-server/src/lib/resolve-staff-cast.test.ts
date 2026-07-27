@@ -47,7 +47,7 @@ vi.mock("@workspace/db", () => {
   return { db: { select: makeSelect } };
 });
 
-import { normalizeItemsAssignedStaffCast, buildPrevManualMap } from "./resolve-staff-cast";
+import { normalizeItemsAssignedStaffCast, buildPrevManualMap, sanitizeTopLevelAssignedStaffCast } from "./resolve-staff-cast";
 
 type SA = { id?: string; staffId?: number; staffName?: string; role?: string; castAmount?: number; castSource?: string };
 
@@ -150,10 +150,79 @@ describe("normalizeItemsAssignedStaffCast — giá tay mọi role", () => {
     expect(sa.map(s => s.role).sort()).toEqual(["makeup", "photographer"]);
   });
 
-  it("buildPrevManualMap giữ cả entry 0đ", () => {
+  it("buildPrevManualMap giữ cả entry 0đ và ĐỦ nhiều dòng cùng người/role", () => {
     const m = buildPrevManualMap([
       itemWith([{ staffId: 9, staffName: "I", role: "support", castAmount: 0, castSource: "manual" }]),
+      itemWith([{ staffId: 9, staffName: "I", role: "support", castAmount: 100_000, castSource: "manual" }]),
     ]);
-    expect(m.get("9:support")).toBe(0);
+    expect(m.get("9:support")).toEqual([0, 100_000]);
+  });
+
+  it("CONSUME-ONCE: non-admin nhân bản 1 giá tay sang item thứ 2 → bản sao bị resolve lại (chặn double-pay)", async () => {
+    // DB đang lưu ĐÚNG 1 dòng manual 500k (staff 20, videographer, item 0)
+    const prev = buildPrevManualMap([
+      itemWith([{ staffId: 20, staffName: "V", role: "videographer", castAmount: 500_000, castSource: "manual" }]),
+    ]);
+    // Payload: entry gốc + bản SAO y hệt trên item thứ 2 (khác item nên không bị dedupe per-item)
+    const items = [
+      itemWith([{ staffId: 20, staffName: "V", role: "videographer", castAmount: 500_000, castSource: "manual" }]),
+      itemWith([{ staffId: 20, staffName: "V", role: "videographer", castAmount: 500_000, castSource: "manual" }]),
+    ];
+    const out = await normalizeItemsAssignedStaffCast(items, null, { allowManual: false, prevManual: prev });
+    expect(staffOf(out, 0)[0].castSource).toBe("manual");   // dòng gốc được bảo lãnh
+    expect(staffOf(out, 1)[0].castSource).not.toBe("manual"); // bản sao bị hạ — không thành lương thứ 2
+  });
+
+  it("2 giá tay KHÁC NHAU cùng người/role trên 2 dòng: non-admin re-save giữ ĐỦ cả 2 (hết last-write-wins)", async () => {
+    const prev = buildPrevManualMap([
+      itemWith([{ staffId: 21, staffName: "W", role: "assistant", castAmount: 500_000, castSource: "manual" }]),
+      itemWith([{ staffId: 21, staffName: "W", role: "assistant", castAmount: 700_000, castSource: "manual" }]),
+    ]);
+    const items = [
+      itemWith([{ staffId: 21, staffName: "W", role: "assistant", castAmount: 500_000, castSource: "manual" }]),
+      itemWith([{ staffId: 21, staffName: "W", role: "assistant", castAmount: 700_000, castSource: "manual" }]),
+    ];
+    const out = await normalizeItemsAssignedStaffCast(items, null, { allowManual: false, prevManual: prev });
+    expect(staffOf(out, 0)[0]).toMatchObject({ castSource: "manual", castAmount: 500_000 });
+    expect(staffOf(out, 1)[0]).toMatchObject({ castSource: "manual", castAmount: 700_000 });
+  });
+
+  it("entry manual THIẾU castAmount không được ngầm hiểu 0đ — resolve lại theo bảng", async () => {
+    state.staffRates = [{ rate: "300000", rateType: "fixed" }];
+    const items = [itemWith([
+      { staffId: 22, staffName: "X", role: "photographer", castSource: "manual" } as SA,
+    ])];
+    const out = await normalizeItemsAssignedStaffCast(items, null, { allowManual: true });
+    expect(staffOf(out)[0].castSource).not.toBe("manual");
+    expect(staffOf(out)[0].castAmount).toBe(300_000);
+  });
+});
+
+describe("sanitizeTopLevelAssignedStaffCast — chặn bơm manual vào cột top-level", () => {
+  it("non-admin: entry manual LẠ bị hạ cấp (castSource none, castAmount 0)", () => {
+    const out = sanitizeTopLevelAssignedStaffCast(
+      [{ staffId: 30, role: "sale", castAmount: 0, castSource: "manual" }],
+      { allowManual: false },
+    ) as SA[];
+    expect(out[0].castSource).toBe("none");
+    expect(out[0].castAmount).toBe(0);
+  });
+
+  it("non-admin: entry manual TRÙNG giá top-level đang lưu được giữ (re-save không mất giá admin)", () => {
+    const prev = buildPrevManualMap([{ assignedStaff: [
+      { staffId: 31, role: "marketing", castAmount: 400_000, castSource: "manual" },
+    ] }]);
+    const out = sanitizeTopLevelAssignedStaffCast(
+      [{ staffId: 31, role: "marketing", castAmount: 400_000, castSource: "manual" }],
+      { allowManual: false, prevManual: prev },
+    ) as SA[];
+    expect(out[0]).toMatchObject({ castSource: "manual", castAmount: 400_000 });
+  });
+
+  it("admin: giữ nguyên; legacy object {sale: N} trả nguyên vẹn", () => {
+    const arr = [{ staffId: 32, role: "assistant", castAmount: 250_000, castSource: "manual" }];
+    expect(sanitizeTopLevelAssignedStaffCast(arr, { allowManual: true })).toBe(arr);
+    const legacy = { sale: 5, photoshop: 7 };
+    expect(sanitizeTopLevelAssignedStaffCast(legacy, { allowManual: false })).toBe(legacy);
   });
 });

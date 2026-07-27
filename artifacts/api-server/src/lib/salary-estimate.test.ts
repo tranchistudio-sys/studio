@@ -362,6 +362,17 @@ describe("computeMonthEstimate", () => {
     expect(it_.rate).toBe(250_000);
   });
 
+  it("FORECAST cũng tôn trọng giá tay 0đ — không fallback bảng (khớp realtime)", async () => {
+    // Bảng rate 300k sẵn — nếu nhánh forecast thiếu check manual sẽ dự báo 300k (SAI).
+    setupDbForRealtime({ rates: [[{ rate: "300000", rateType: "fixed" }]] });
+    mockOneBooking([
+      { staffId: 3, role: "photographer", taskKey: "mac_dinh", castAmount: 0, castSource: "manual" },
+    ]);
+    const r = await computeMonthEstimate(3, 5, 2026, { includeForecast: true });
+    expect(r!.showEarnings).toBe(0);
+    expect(r!.forecastShowEarnings ?? 0).toBe(0);
+  });
+
   it("giá tay SALE = số CHỐT thay cho % × tiền thu của booking đó", async () => {
     setupDbForRealtime();
     mockOneBooking([

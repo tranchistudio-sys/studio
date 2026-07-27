@@ -129,11 +129,14 @@ function assignmentKey(staffId: number, role: string): string {
 //    đó trong lương realtime. photoshop: module Hậu kỳ own earning riêng.
 // Manual 0đ là GIÁ TRỊ HỢP LỆ (chốt 0 công) — khác với "chưa có giá" (resolve bảng).
 
-/** Build map giá tay ĐANG LƯU trong DB: key `staffId:role` → amount. Dùng để
- *  non-admin lưu lại booking (sửa giờ/ghi chú) KHÔNG làm mất giá tay admin đã
- *  chốt: entry manual trùng khớp DB thì được giữ; chỉ giá tay MỚI/ĐỔI mới bị chặn. */
-export function buildPrevManualMap(oldItems: unknown): Map<string, number> {
-  const m = new Map<string, number>();
+/** Build map giá tay ĐANG LƯU trong DB: key `staffId:role` → DANH SÁCH amount
+ *  (1 phần tử cho MỖI dòng manual đang lưu — cùng người cùng role trên 2 dòng
+ *  dịch vụ giữ đủ 2 giá trị, không last-write-wins). Dùng để non-admin lưu lại
+ *  booking (sửa giờ/ghi chú) KHÔNG làm mất giá tay admin đã chốt. Mỗi entry chỉ
+ *  match được MỘT LẦN (consume-once — xem matchAndConsumePrevManual): chặn việc
+ *  nhân bản 1 giá tay của admin thành nhiều dòng để được trả nhiều lần. */
+export function buildPrevManualMap(oldItems: unknown): Map<string, number[]> {
+  const m = new Map<string, number[]>();
   if (!Array.isArray(oldItems)) return m;
   for (const it of oldItems as Record<string, unknown>[]) {
     const sa = Array.isArray(it.assignedStaff) ? (it.assignedStaff as StaffAssignmentCastInput[]) : [];
@@ -141,10 +144,55 @@ export function buildPrevManualMap(oldItems: unknown): Map<string, number> {
       if (!s?.staffId || !s?.role || s.castSource !== "manual") continue;
       const amt = typeof s.castAmount === "number" ? s.castAmount : parseFloat(String(s.castAmount ?? 0));
       // >= 0: manual 0đ cũng phải được giữ khi non-admin re-save booking.
-      if (Number.isFinite(amt) && amt >= 0) m.set(assignmentKey(s.staffId, s.role), amt);
+      if (Number.isFinite(amt) && amt >= 0) {
+        const key = assignmentKey(s.staffId, s.role);
+        const arr = m.get(key) ?? [];
+        arr.push(amt);
+        m.set(key, arr);
+      }
     }
   }
   return m;
+}
+
+/** Tìm amount khớp trong prevManual và TIÊU THỤ nó (xoá khỏi danh sách) — mỗi
+ *  dòng manual đang lưu chỉ "bảo lãnh" được đúng 1 dòng manual trong payload. */
+function matchAndConsumePrevManual(prev: Map<string, number[]> | undefined, key: string, amt: number): boolean {
+  const arr = prev?.get(key);
+  if (!arr || arr.length === 0) return false;
+  const idx = arr.findIndex(v => Math.abs(v - amt) < 0.01);
+  if (idx < 0) return false;
+  arr.splice(idx, 1);
+  return true;
+}
+
+/** Sanitize assignedStaff TOP-LEVEL (cột bookings.assigned_staff — lưu raw,
+ *  KHÔNG đi qua normalizeItemsAssignedStaffCast): salary-estimate tin cờ
+ *  castSource='manual' ở đây, nên non-admin không được phép tự gắn/đổi cờ đó
+ *  (vd bơm manual-0 để xoá lương realtime của đồng nghiệp). Admin giữ nguyên;
+ *  non-admin chỉ giữ entry manual TRÙNG giá tay đang lưu (consume-once);
+ *  entry manual lạ bị hạ cấp castSource='none' + castAmount=0.
+ *  Dạng legacy object {sale: N, ...} không có castSource → trả nguyên vẹn. */
+export function sanitizeTopLevelAssignedStaffCast(
+  raw: unknown,
+  opts: { allowManual?: boolean; prevManual?: Map<string, number[]> },
+): unknown {
+  if (!Array.isArray(raw)) return raw;
+  if (opts.allowManual) return raw;
+  return (raw as StaffAssignmentCastInput[]).map(entry => {
+    if (!entry || entry.castSource !== "manual") return entry;
+    const amt = typeof entry.castAmount === "number" ? entry.castAmount : parseFloat(String(entry.castAmount ?? 0));
+    if (
+      entry.staffId && entry.role && Number.isFinite(amt) && amt >= 0 &&
+      matchAndConsumePrevManual(opts.prevManual, assignmentKey(entry.staffId, entry.role), amt)
+    ) {
+      return entry; // giá tay admin đã chốt, nhân viên re-save giữ nguyên
+    }
+    console.warn("[cast-resolve] stripped non-admin manual on top-level assignedStaff", {
+      staffId: entry.staffId, role: entry.role, castAmount: entry.castAmount,
+    });
+    return { ...entry, castSource: "none", castAmount: 0 };
+  });
 }
 
 /** Resolve cast from DB, dedupe staffId+role, log corrections.
@@ -157,7 +205,7 @@ export function buildPrevManualMap(oldItems: unknown): Map<string, number> {
 export async function normalizeItemsAssignedStaffCast(
   rawItems: unknown,
   bookingPackageId?: number | null,
-  opts?: { allowManual?: boolean; prevManual?: Map<string, number> },
+  opts?: { allowManual?: boolean; prevManual?: Map<string, number[]> },
 ): Promise<unknown[]> {
   if (!Array.isArray(rawItems)) return [];
   const seenPerItem = new Map<number, Set<string>>();
@@ -190,10 +238,13 @@ export async function normalizeItemsAssignedStaffCast(
 
         const canonRole = normalizeRoleForCast(raw.role);
         // Giá tay: giữ khi (a) admin gõ đè, HOẶC (b) non-admin nhưng trùng đúng
-        // giá tay đang lưu trong DB. Áp cho MỌI role; 0đ là giá trị hợp lệ (chốt 0 công).
+        // giá tay đang lưu trong DB (consume-once — 1 dòng lưu chỉ bảo lãnh 1 dòng
+        // payload, chặn nhân bản giá tay sang item khác thành 2 khoản lương).
+        // Áp cho MỌI role; 0đ là giá trị hợp lệ (chốt 0 công). Yêu cầu castAmount
+        // HIỆN DIỆN — entry manual thiếu amount không được ngầm hiểu là 0đ.
         const manualAmt = typeof raw.castAmount === "number" ? raw.castAmount : parseFloat(String(raw.castAmount ?? 0));
-        const isManualReq = raw.castSource === "manual" && Number.isFinite(manualAmt) && manualAmt >= 0;
-        const matchesPrev = prevManual?.get(key) != null && Math.abs((prevManual.get(key) as number) - manualAmt) < 0.01;
+        const isManualReq = raw.castSource === "manual" && raw.castAmount != null && Number.isFinite(manualAmt) && manualAmt >= 0;
+        const matchesPrev = isManualReq && !opts?.allowManual && matchAndConsumePrevManual(prevManual, key, manualAmt);
         if (isManualReq && (opts?.allowManual || matchesPrev)) {
           console.info("[cast-resolve] manual price kept", {
             staffId: raw.staffId,

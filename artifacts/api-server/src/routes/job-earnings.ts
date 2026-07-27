@@ -174,6 +174,12 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
     earnings.push({ bookingId, staffId, role, serviceKey: taskKey, serviceName, rate: String(Math.round(rate)), earnedDate, month, year });
   }
 
+  // staffId-role đã được items[] xử lý (kể cả GIÁ TAY 0đ — không tạo row nhưng
+  // vẫn phải chặn nhánh booking-level trả theo bảng). Chỉ ghi từ vòng items,
+  // KHÔNG gồm earning của dịch vụ cộng thêm — để khoản booking-level marketing
+  // hợp lệ không bị nuốt khi cùng người có thêm khoản cộng thêm (hành vi gốc).
+  const itemRolePaid = new Set<string>();
+
   // ── Per line: photographer and makeup ─────────────────────────────────────
   for (const item of items) {
     const lineName = item.serviceName || booking.packageType || "Dịch vụ";
@@ -209,11 +215,14 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
         //    CHỈ persist khi admin đã chốt GIÁ TAY > 0 — số này khớp 1:1 với lương
         //    realtime (salary-estimate đọc thẳng castAmount manual). Giá theo bảng
         //    của các role này vẫn realtime-only như trước (không đổi hành vi cũ).
-        //    Manual 0đ = chốt không trả công → không tạo row (realtime cũng ra 0).
+        //    Manual 0đ = chốt không trả công → không tạo row (realtime cũng ra 0)
+        //    NHƯNG vẫn ghi itemRolePaid để chặn nhánh booking-level trả theo bảng.
+        //    taskKey CỐ ĐỊNH 'mac_dinh' (không tin sa.taskKey từ client — key lạ
+        //    sẽ lách dedupe seen-key và tạo khoản trùng).
         if (role === "sale" || role === "sales" || role === "photoshop") continue;
-        if (isManual && snapAmt > 0) {
-          const taskKey = (typeof (sa as { taskKey?: unknown }).taskKey === "string" && (sa as { taskKey?: string }).taskKey) || "mac_dinh";
-          addEarning(sa.staffId, role, taskKey, lineName, snapAmt);
+        if (isManual && snapAmt >= 0) {
+          itemRolePaid.add(`${sa.staffId}-${role}`);
+          if (snapAmt > 0) addEarning(sa.staffId, role, "mac_dinh", lineName, snapAmt);
         }
         continue;
       }
@@ -294,10 +303,12 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
     const staffId = assigned[staffKey] as number | undefined;
     if (!staffId) continue;
 
-    // Người này đã có earning cùng role từ items[] (vd giá tay marketing trên dòng
-    // dịch vụ) → bỏ qua booking-level để không tạo 2 khoản cho cùng 1 người/role
-    // (seen-key có taskKey nên khác taskKey vẫn lọt nếu không guard ở đây).
-    if (earnings.some(e => e.staffId === staffId && e.role === role)) continue;
+    // Người này đã được items[] xử lý cùng role (giá tay >0 ĐÃ persist, hoặc giá
+    // tay 0đ = admin chốt KHÔNG trả công) → bỏ qua booking-level: không tạo khoản
+    // thứ 2, và không được lấy bảng rate đè lên chốt 0đ. Dùng itemRolePaid (chỉ
+    // ghi từ items[]) chứ KHÔNG quét mảng earnings — earning của dịch vụ cộng
+    // thêm không được phép nuốt khoản booking-level hợp lệ (hành vi gốc của main).
+    if (itemRolePaid.has(`${staffId}-${role}`)) continue;
 
     const found = await resolveEarning(
       staffId, role, taskKey, firstServiceId, bookingTotal,

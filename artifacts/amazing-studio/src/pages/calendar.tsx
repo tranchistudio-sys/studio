@@ -272,7 +272,9 @@ const ROLE_CANONICAL: Record<string, string> = {
   video: "videographer", videographer: "videographer", quay_phim: "videographer", "quay phim": "videographer",
   photoshop: "photoshop", pts: "photoshop",
   assistant_photo: "assistant_photo",
-  marketing: "marketing", sales: "sales",
+  // "sale" (số ít) là literal thật trong tasks/staff legacy — phải gộp về "sales"
+  // để không sinh 2 badge Sale (1 stale) và để guard fallback taskAssignees hoạt động.
+  marketing: "marketing", sales: "sales", sale: "sales",
   print: "print", in_anh: "print",
   deliver: "deliver", giao_file: "deliver",
   call: "call", goi_khach: "call",

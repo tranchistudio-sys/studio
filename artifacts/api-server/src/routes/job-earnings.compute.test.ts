@@ -210,6 +210,43 @@ describe("computeBookingEarnings — giá tay mọi role, chống trùng", () =>
     expect(state.earnings.some(e => e.role === "photoshop" && e.status === "pending")).toBe(true);
   });
 
+  it("REVIEW B1: manual 0đ marketing CHẶN cả nhánh booking-level — không được trả theo bảng", async () => {
+    state.booking = baseBooking({
+      items: [{
+        serviceName: "Gói A",
+        serviceId: 9,
+        price: 5_000_000,
+        assignedStaff: [
+          // Admin chốt KHÔNG trả công marketing show này
+          { staffId: 7, staffName: "Mk", role: "marketing", castAmount: 0, castSource: "manual" },
+        ],
+      }],
+      // Cùng người đứng marketing booking-level — nếu thiếu guard sẽ trả 111k theo bảng
+      assignedStaff: { marketing: 7 },
+    });
+    state.staffRates = [{ rate: "111000", rateType: "fixed" }];
+
+    await computeBookingEarnings(100);
+    expect(state.inserts.filter(e => e.role === "marketing")).toHaveLength(0);
+  });
+
+  it("REVIEW B2: earning marketing từ DỊCH VỤ CỘNG THÊM không được nuốt khoản booking-level (hành vi gốc)", async () => {
+    state.booking = baseBooking({
+      items: [{ serviceName: "Gói A", serviceId: 9, price: 5_000_000, assignedStaff: [] }],
+      assignedStaff: { marketing: 7 },
+      additionalServices: [{
+        id: "extra1", title: "Chạy ads", taskKey: "chay_ads",
+        staffAssignments: [{ staffId: 7, role: "marketing", allocatedQty: 1, castAmount: 300_000 }],
+      }],
+    });
+    state.staffRates = [{ rate: "111000", rateType: "fixed" }];
+
+    await computeBookingEarnings(100);
+    const mk = state.inserts.filter(e => e.role === "marketing").map(e => e.rate).sort();
+    // CẢ 2 khoản: 300k dịch vụ cộng thêm + 111k booking-level — như trên main
+    expect(mk).toEqual(["111000", "300000"]);
+  });
+
   it("booking cancelled: dọn pending, không tạo earning mới", async () => {
     state.booking = baseBooking({
       status: "cancelled",

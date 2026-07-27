@@ -174,6 +174,12 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
     earnings.push({ bookingId, staffId, role, serviceKey: taskKey, serviceName, rate: String(Math.round(rate)), earnedDate, month, year });
   }
 
+  // staffId-role đã được items[] xử lý (kể cả GIÁ TAY 0đ — không tạo row nhưng
+  // vẫn phải chặn nhánh booking-level trả theo bảng). Chỉ ghi từ vòng items,
+  // KHÔNG gồm earning của dịch vụ cộng thêm — để khoản booking-level marketing
+  // hợp lệ không bị nuốt khi cùng người có thêm khoản cộng thêm (hành vi gốc).
+  const itemRolePaid = new Set<string>();
+
   // ── Per line: photographer and makeup ─────────────────────────────────────
   for (const item of items) {
     const lineName = item.serviceName || booking.packageType || "Dịch vụ";
@@ -196,16 +202,54 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
       if (!sa?.staffId || !sa?.role) continue;
       const roleRaw = String(sa.role).toLowerCase();
       const role = roleRaw === "photo" ? "photographer" : roleRaw;
-      if (role !== "photographer" && role !== "makeup") continue;
-      const taskKey = (role === "photographer" ? item.photoTask : item.makeupTask) || "mac_dinh";
       const snapAmt = parseFloat(String(sa.castAmount ?? 0)) || 0;
+      const isManual = sa.castSource === "manual";
+
+      if (role !== "photographer" && role !== "makeup") {
+        // Role khác photographer/makeup:
+        //  • photoshop: module Hậu kỳ own earning riêng (Task #476) — không đụng.
+        //  • sale/sales + GIÁ TAY: "TIỀN CÔNG THỰC HIỆN SHOW" (quyết định nghiệp vụ
+        //    27/07) — persist như cast role khác, role chuẩn hoá 'sale' + nhãn riêng
+        //    để tách bạch với hoa hồng chốt đơn. Hoa hồng % vẫn realtime ở
+        //    salary-estimate (pass 1 + orphan-pass LUÔN bỏ qua persisted role
+        //    'sale' nên khoản persist này không bị estimate cộng lần 2).
+        //    Sale KHÔNG manual: như cũ — không persist (chỉ có hoa hồng realtime).
+        //  • Còn lại (videographer/assistant/assistant_photo/marketing/other...):
+        //    CHỈ persist khi admin đã chốt GIÁ TAY > 0 — số này khớp 1:1 với lương
+        //    realtime (salary-estimate đọc thẳng castAmount manual). Giá theo bảng
+        //    của các role này vẫn realtime-only như trước (không đổi hành vi cũ).
+        //    Manual 0đ = chốt không trả công → không tạo row (realtime cũng ra 0)
+        //    NHƯNG vẫn ghi itemRolePaid để chặn nhánh booking-level trả theo bảng.
+        //    taskKey CỐ ĐỊNH 'mac_dinh' (không tin sa.taskKey từ client — key lạ
+        //    sẽ lách dedupe seen-key và tạo khoản trùng).
+        // Cờ manual đòi castAmount HIỆN DIỆN (không truthy-check) — thiếu amount
+        // không được ngầm hiểu 0đ.
+        if (role === "photoshop") continue;
+        const manualValid = isManual && sa.castAmount != null && snapAmt >= 0;
+        if (role === "sale" || role === "sales") {
+          if (manualValid && snapAmt > 0) {
+            addEarning(sa.staffId, "sale", "mac_dinh", `${lineName} — Công show (giá tay)`, snapAmt);
+          }
+          continue;
+        }
+        if (manualValid) {
+          itemRolePaid.add(`${sa.staffId}-${role}`);
+          if (snapAmt > 0) addEarning(sa.staffId, role, "mac_dinh", lineName, snapAmt);
+        }
+        continue;
+      }
+
+      const taskKey = (role === "photographer" ? item.photoTask : item.makeupTask) || "mac_dinh";
       // Tin castAmount đã chốt khi nguồn là 'manual' (giá tay) hoặc 'staff_pricing'
       // (cast theo GÓI = số tiền TỔNG, khớp đúng snapshot trang lương realtime).
       // Nguồn 'staff_rate' có thể là đơn giá per_photo → phải resolveEarning để
       // nhân số ảnh, không dùng snapshot phẳng.
-      const trustSnapshot = snapAmt > 0 && (sa.castSource === "manual" || sa.castSource === "staff_pricing");
+      // Manual 0đ: admin chốt KHÔNG trả công dòng này → không tạo earning, và chặn
+      // luôn legacy fallback photoId/makeupId phía dưới (không được trả theo bảng).
+      // Cờ manual đòi castAmount HIỆN DIỆN (không truthy-check).
+      const trustSnapshot = (isManual && sa.castAmount != null && snapAmt >= 0) || (snapAmt > 0 && sa.castSource === "staff_pricing");
       if (trustSnapshot) {
-        addEarning(sa.staffId, role, taskKey, lineName, snapAmt);
+        if (snapAmt > 0) addEarning(sa.staffId, role, taskKey, lineName, snapAmt);
         paidViaAssigned.add(`${sa.staffId}-${role}`);
       } else {
         const found = await resolveEarning(sa.staffId, role, taskKey, serviceId, item.price || bookingTotal, photoCount);
@@ -271,6 +315,13 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
   for (const { role, staffKey, taskKey } of bookingLevelRoles) {
     const staffId = assigned[staffKey] as number | undefined;
     if (!staffId) continue;
+
+    // Người này đã được items[] xử lý cùng role (giá tay >0 ĐÃ persist, hoặc giá
+    // tay 0đ = admin chốt KHÔNG trả công) → bỏ qua booking-level: không tạo khoản
+    // thứ 2, và không được lấy bảng rate đè lên chốt 0đ. Dùng itemRolePaid (chỉ
+    // ghi từ items[]) chứ KHÔNG quét mảng earnings — earning của dịch vụ cộng
+    // thêm không được phép nuốt khoản booking-level hợp lệ (hành vi gốc của main).
+    if (itemRolePaid.has(`${staffId}-${role}`)) continue;
 
     const found = await resolveEarning(
       staffId, role, taskKey, firstServiceId, bookingTotal,
@@ -339,6 +390,13 @@ router.get("/job-earnings", async (req, res) => {
 
 // ─── GET /job-earnings/by-booking/:bookingId ─────────────────────────────────
 router.get("/job-earnings/by-booking/:bookingId", async (req, res) => {
+  // Chặn ẩn danh: response chứa tiền công từng nhân sự — trước đây endpoint này
+  // không kiểm token nào (lộ lương cho bất kỳ ai gọi thẳng API).
+  const { verifyToken } = await import("./auth");
+  if (!verifyToken(req.headers.authorization)) {
+    res.status(401).json({ error: "Chưa đăng nhập" });
+    return;
+  }
   const bookingId = parseInt(req.params.bookingId);
   const rows = await db
     .select({

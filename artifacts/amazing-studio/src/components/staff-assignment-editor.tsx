@@ -185,17 +185,18 @@ export function StaffAssignmentEditor({
   const [editingPriceFor, setEditingPriceFor] = useState<string | null>(null);
   const [priceDraft, setPriceDraft] = useState("");
 
-  // Giá tay CHỈ cho photographer/makeup — 2 role duy nhất mà lương chốt + lương
-  // realtime đều chi theo dòng. Role khác gõ tay sẽ lệch giữa các màn hình.
-  const canManualForRole = (role: string) => {
-    const r = (role || "").toLowerCase();
-    return r === "photographer" || r === "photo" || r === "makeup";
-  };
-
+  // Giá tay cho MỌI role đã chọn nhân sự (kể cả dòng đang "Chưa có giá").
+  // Server persist manual vào job-earnings (trừ sale/photoshop có đường tiền riêng)
+  // và lương realtime đọc thẳng castAmount manual — các màn hình cùng 1 số.
   const openPriceEditor = (item: StaffAssignment) => {
-    if (!canManualPrice || !item.staffId || !item.role || !canManualForRole(item.role)) return;
+    if (!canManualPrice || !item.staffId || !item.role) return;
     if (item.castSource === "pending") return; // đang resolve — đợi xong mới cho gõ (tránh race)
-    setPriceDraft(item.castAmount > 0 ? item.castAmount.toLocaleString("vi-VN") : "");
+    // Manual 0đ hiện "0" để phân biệt với chưa-có-giá (ô trống).
+    setPriceDraft(
+      item.castSource === "manual" || item.castAmount > 0
+        ? item.castAmount.toLocaleString("vi-VN")
+        : "",
+    );
     setEditingPriceFor(item.id);
   };
 
@@ -204,12 +205,20 @@ export function StaffAssignmentEditor({
     if (!item.staffId || !item.role) return;
     // Vô hiệu hoá mọi resolve đang bay để response về trễ không đè giá tay vừa gõ.
     resolveSeq.current++;
-    const amt = parseFloat(priceDraft.replace(/\./g, "").replace(/,/g, ""));
-    if (!isFinite(amt) || amt <= 0) {
-      // Xoá/để trống giá tay → quay về giá theo bảng cast
+    const raw = priceDraft.replace(/\./g, "").replace(/,/g, "").trim();
+    if (raw === "") {
+      // Để trống = XOÁ giá tay → quay về giá theo bảng cast (nếu có)
       void fetchAndApplyCast(item.id, item.staffId, item.staffName, item.role);
       return;
     }
+    const amt = parseFloat(raw);
+    if (!isFinite(amt) || amt < 0) {
+      // Giá trị không hợp lệ → coi như xoá, quay về bảng cast
+      void fetchAndApplyCast(item.id, item.staffId, item.staffName, item.role);
+      return;
+    }
+    // amt >= 0: gõ "0" là giá tay 0đ hợp lệ (chốt không trả công dòng này),
+    // KHÁC với "Chưa có giá".
     update(item.id, { castAmount: amt, castSource: "manual" });
   };
 
@@ -438,7 +447,7 @@ export function StaffAssignmentEditor({
                           type="button"
                           onClick={() => commitManualPrice(item)}
                           aria-label="Lưu giá tay"
-                          title="Lưu giá tay (để trống = quay về giá bảng cast)"
+                          title="Lưu giá tay (để trống = quay về giá bảng cast; gõ 0 = chốt 0đ)"
                           className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-md flex-shrink-0"
                         >
                           <Check className="w-3.5 h-3.5" />
@@ -453,7 +462,7 @@ export function StaffAssignmentEditor({
                         </button>
                       </span>
                     ) : (() => {
-                      const canPrice = canManualPrice && !!item.staffId && !!item.role && canManualForRole(item.role);
+                      const canPrice = canManualPrice && !!item.staffId && !!item.role;
                       return (
                       <span
                         className={cn(
@@ -466,11 +475,14 @@ export function StaffAssignmentEditor({
                         }
                         onClick={() => openPriceEditor(item)}
                       >
-                        {item.castSource === "pending" ? "…" : item.castAmount > 0 ? fmtVND(item.castAmount) : "Chưa có giá"}
+                        {item.castSource === "pending" ? "…"
+                          : item.castSource === "manual" ? fmtVND(item.castAmount)
+                          : item.castAmount > 0 ? fmtVND(item.castAmount)
+                          : "Chưa có giá"}
                       </span>
                       );
                     })()}
-                    {canManualPrice && !!item.staffId && !!item.role && canManualForRole(item.role) && editingPriceFor !== item.id && (
+                    {canManualPrice && !!item.staffId && !!item.role && editingPriceFor !== item.id && (
                       <button
                         type="button"
                         onClick={() => openPriceEditor(item)}

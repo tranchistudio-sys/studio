@@ -8,7 +8,7 @@ import { resolveBookingTotal, summarizeItemsForLog } from "../lib/booking-total"
 import { verifyToken, getCallerRole } from "./auth";
 import { computeBookingEarnings } from "./job-earnings";
 import { emitNotification } from "./notifications";
-import { normalizeItemsAssignedStaffCast, buildPrevManualMap } from "../lib/resolve-staff-cast";
+import { normalizeItemsAssignedStaffCast, buildPrevManualMap, sanitizeTopLevelAssignedStaffCast } from "../lib/resolve-staff-cast";
 import { maybeCreatePhotoshopJobForBooking } from "./photoshop-jobs";
 import { getSchemaFlags, bookingColumnsCompat, type SchemaFlags } from "../lib/schema-compat";
 import { bookingRequiresPostProduction } from "../lib/post-production-eligibility";
@@ -110,7 +110,7 @@ type StaffAssignmentLike = { role?: string; staffId?: number; staffName?: string
 async function normalizeBookingItemsCast(
   rawItems: unknown,
   bookingPackageId?: number | null,
-  opts?: { allowManual?: boolean; prevManual?: Map<string, number> },
+  opts?: { allowManual?: boolean; prevManual?: Map<string, number[]> },
 ): Promise<unknown[]> {
   const normalized = await normalizeItemsAssignedStaffCast(rawItems, bookingPackageId, opts);
   return normalizeItemStaff(normalized);
@@ -605,7 +605,9 @@ router.post("/bookings", async (req, res) => {
         deductions: [],
         notes: notes || null,
         internalNotes: internalNotes || null,
-        assignedStaff: assignedStaff || {},
+        // Review #133: strip cờ manual nếu người tạo không phải admin (booking mới
+        // không có giá tay cũ để bảo lãnh) — chống bơm manual vào cột top-level.
+        assignedStaff: sanitizeTopLevelAssignedStaffCast(assignedStaff || {}, { allowManual }),
         isParentContract: true,
         status: isTempQuote ? "temp_quote" : "confirmed",
         createdByStaffId: callerId,
@@ -765,7 +767,8 @@ router.post("/bookings", async (req, res) => {
       deductions: isParentContract ? [] : sanitizeDeductions(deductions),
       notes,
       internalNotes,
-      assignedStaff: assignedStaff || [],
+      // Review #133: strip cờ manual nếu người tạo không phải admin (xem sanitize).
+      assignedStaff: sanitizeTopLevelAssignedStaffCast(assignedStaff || [], { allowManual }),
       parentId: parentId || null,
       serviceLabel: serviceLabel || null,
       isParentContract: isParentContract || false,
@@ -1167,6 +1170,7 @@ router.put("/bookings/:id", async (req, res) => {
   if (surcharges !== undefined) updateData.surcharges = surcharges;
   if (notes !== undefined) updateData.notes = notes;
   if (internalNotes !== undefined) updateData.internalNotes = internalNotes;
+  // assigned_staff: sanitize cast SAU khi đã load oldBooking + allowManual (xem bên dưới).
   if (assignedStaff !== undefined) updateData.assignedStaff = assignedStaff;
   if (serviceLabel !== undefined) updateData.serviceLabel = serviceLabel;
   // parentId / isParentContract KHÔNG nhận qua PUT — xem guard cách ly cha–con bên dưới
@@ -1204,6 +1208,8 @@ router.put("/bookings/:id", async (req, res) => {
       notes: bookingsTable.notes,
       items: bookingsTable.items,
       additionalServices: bookingsTable.additionalServices,
+      // Review #133: cần assignedStaff cũ để sanitize giá tay top-level (prevManual).
+      assignedStaff: bookingsTable.assignedStaff,
     })
     .from(bookingsTable)
     .where(eq(bookingsTable.id, id));
@@ -1251,6 +1257,18 @@ router.put("/bookings/:id", async (req, res) => {
   // chỉ giá tay MỚI/ĐỔI mới bị chặn (chống bơm lương + chống mất giá lặng lẽ).
   const allowManual = (await getCallerRole(req.headers.authorization)) === "admin";
   const prevManual = buildPrevManualMap(oldBooking.items);
+
+  // BẢO MẬT (review #133): cột assigned_staff trước đây nhận verbatim body —
+  // salary-estimate TIN cờ castSource='manual' ở tầng top-level, nên non-admin
+  // có thể bơm manual-0 để xoá lương realtime của đồng nghiệp (hoặc gắn nhãn
+  // manual tuỳ ý). Sanitize như items[]: admin giữ nguyên; non-admin chỉ giữ
+  // entry manual TRÙNG giá tay top-level đang lưu (consume-once); còn lại hạ cấp.
+  if (updateData.assignedStaff !== undefined) {
+    updateData.assignedStaff = sanitizeTopLevelAssignedStaffCast(updateData.assignedStaff, {
+      allowManual,
+      prevManual: buildPrevManualMap([{ assignedStaff: oldBooking.assignedStaff }]),
+    });
+  }
 
   // Task #55: enforce deductions = [] for parent contracts (always, regardless of body)
   if (oldBooking.isParentContract) {
@@ -1335,9 +1353,17 @@ router.put("/bookings/:id", async (req, res) => {
     }));
 
     const [bk] = await db.select({ items: bookingsTable.items }).from(bookingsTable).where(eq(bookingsTable.id, id));
-    const currentItems: Record<string, unknown>[] = bk && Array.isArray(bk.items)
+    let currentItems: Record<string, unknown>[] = bk && Array.isArray(bk.items)
       ? (bk.items as Record<string, unknown>[])
       : [];
+
+    // Review #133 B4: booking CHƯA có items (chưa chốt dịch vụ) mà Giao việc gửi
+    // nhân sự → tạo 1 dòng staff-only (pattern #120 lineHasStaff) để assignment
+    // (kể cả giá tay admin) nằm trong items[] — nguồn canonical duy nhất mà
+    // normalize + salary-estimate tin. Không tạo khi payload rỗng (xoá phân công).
+    if (currentItems.length === 0 && normalizedStaff.length > 0) {
+      currentItems = [{ assignedStaff: [] }];
+    }
 
     const mergedItems = currentItems.map((item) => {
       const result: Record<string, unknown> = { ...item };
@@ -1801,9 +1827,11 @@ router.put("/bookings/:id", async (req, res) => {
       const newCast = collectCast(newItems);
       for (const [key, nv] of newCast) {
         const ov = oldCast.get(key);
-        // Log khi: entry mới là giá tay và khác giá trước đó, hoặc bỏ giá tay quay về bảng cast.
+        // Log khi: entry mới là giá tay và (mới chuyển sang tay HOẶC khác giá trước đó),
+        // hoặc bỏ giá tay quay về bảng cast. `!wasManual` bắt cả case chốt tay 0đ trên
+        // dòng đang 0đ theo bảng — số không đổi nhưng TRẠNG THÁI tiền đã bị khoá tay.
         const wasManual = ov?.manual ?? false;
-        if (nv.manual && (!ov || Math.abs(ov.amount - nv.amount) > 0.01)) {
+        if (nv.manual && (!ov || !wasManual || Math.abs(ov.amount - nv.amount) > 0.01)) {
           changes.push({
             field: `manual_cast_${key}`,
             label: `giá tay ${nv.name}`,

@@ -8,21 +8,21 @@ import {
   collectCrew, crewNameCount, crewFlags, crewDetailLines, crewCompactLine, canonicalRole,
 } from "./crew-display";
 
-const sa = (role: string, staffName: string) => ({ role, staffName });
+const sa = (role: string, staffName: string, staffId?: number) => ({ role, staffName, staffId });
 
-// Fixture DH0248: 11 phân công, 4 người, 8 vai trò — "Long lee" giữ 6 vai trò.
+// Fixture DH0248: 11 phân công, 4 người (staffId 1,2,3,4), 8 vai trò — "Long lee" (2) giữ 6 vai trò.
 const DH0248 = [
-  sa("photographer", "HUY LA THANG - FREELANCER"),
-  sa("photographer", "Long lee make up freelancer"),
-  sa("assistant", "Long lee make up freelancer"),
-  sa("videographer", "Long lee make up freelancer"),
-  sa("marketing", "Long lee make up freelancer"),
-  sa("sales", "Long lee make up freelancer"),
-  sa("makeup", "HUY LA THANG - FREELANCER"),
-  sa("assistant", "MINH CHÂU MAKEUP FREELANCER"),
-  sa("assistant_photo", "Long lee make up freelancer"),
-  sa("other", "MINH CHÂU MAKEUP FREELANCER"),
-  sa("videographer", "NGUYỄN NHẬT TRƯỜNG"),
+  sa("photographer", "HUY LA THANG - FREELANCER", 1),
+  sa("photographer", "Long lee make up freelancer", 2),
+  sa("assistant", "Long lee make up freelancer", 2),
+  sa("videographer", "Long lee make up freelancer", 2),
+  sa("marketing", "Long lee make up freelancer", 2),
+  sa("sales", "Long lee make up freelancer", 2),
+  sa("makeup", "HUY LA THANG - FREELANCER", 1),
+  sa("assistant", "MINH CHÂU MAKEUP FREELANCER", 3),
+  sa("assistant_photo", "Long lee make up freelancer", 2),
+  sa("other", "MINH CHÂU MAKEUP FREELANCER", 3),
+  sa("videographer", "NGUYỄN NHẬT TRƯỜNG", 4),
 ];
 
 describe("collectCrew — DH0248 11 phân công", () => {
@@ -119,6 +119,100 @@ describe("crewCompactLine — card tuần/tháng", () => {
       .reduce((n, s) => n + s.split(", ").length, 0);
     const extraCount = line.extras.reduce((n, e) => n + e.names.length, 0);
     expect(mainCount + extraCount).toBe(11);
+  });
+});
+
+describe("REVIEW #134 — F1 dedupe theo ĐỊNH DANH + F2 taskAssignees lấp đủ + F3 coverage", () => {
+  it("F1: HAI NGƯỜI khác staffId nhưng TRÙNG TÊN → giữ đủ cả hai", () => {
+    const groups = collectCrew({ items: [{ assignedStaff: [
+      sa("photographer", "Nguyễn Văn A", 21),
+      sa("photographer", "Nguyễn Văn A", 22),
+    ] }] });
+    expect(groups.find(g => g.canon === "photographer")!.names).toEqual(["Nguyễn Văn A", "Nguyễn Văn A"]);
+    expect(crewNameCount(groups)).toBe(2);
+  });
+
+  it("F1: cùng staffId lặp 2 lần trong role → chỉ 1 (trùng thật)", () => {
+    const groups = collectCrew({ items: [
+      { assignedStaff: [sa("photographer", "A", 21)] },
+      { assignedStaff: [sa("photographer", "A", 21)] },
+    ] });
+    expect(crewNameCount(groups)).toBe(1);
+  });
+
+  it("F1: legacy-không-id vào TRƯỚC, canonical-có-id cùng tên vào SAU → 1 người (không hiện đôi)", () => {
+    const groups = collectCrew({ items: [
+      { assignedStaff: [], photoName: "B" },          // item 0: chỉ legacy
+      { assignedStaff: [sa("photographer", "B", 30)] }, // item 1: canonical cùng tên
+    ] });
+    expect(groups.find(g => g.canon === "photographer")!.names).toEqual(["B"]);
+  });
+
+  it("F2: role TRỐNG nhận ĐỦ nhiều người từ taskAssignees (không chỉ người đầu)", () => {
+    const groups = collectCrew({
+      items: [{ assignedStaff: [sa("photographer", "P", 40)] }],
+      taskAssignees: [
+        { role: "photoshop", taskType: null, assigneeName: "PTS-A" },
+        { role: "photoshop", taskType: null, assigneeName: "PTS-B" },
+      ],
+    });
+    expect(groups.find(g => g.canon === "photoshop")!.names).toEqual(["PTS-A", "PTS-B"]);
+  });
+
+  it("W (chủ chốt 27/07): role ĐÃ CÓ canonical từ items → tên từ tasks GIỮ ẨN (chống tên stale)", () => {
+    const groups = collectCrew({
+      items: [{ assignedStaff: [sa("photographer", "Mới", 41)] }],
+      taskAssignees: [{ role: "photographer", taskType: null, assigneeName: "Người-chỉ-trong-tasks" }],
+    });
+    expect(groups.find(g => g.canon === "photographer")!.names).toEqual(["Mới"]);
+  });
+
+  it("F3: parentAssignedStaff (hợp đồng cha) được gộp — Sale tầng cha hiện trên chi tiết con", () => {
+    const groups = collectCrew({
+      items: [{ assignedStaff: [sa("photographer", "P", 50)] }],
+      parentAssignedStaff: [sa("sales", "Sale-Cha", 51)],
+    });
+    expect(groups.find(g => g.canon === "sales")!.names).toEqual(["Sale-Cha"]);
+    expect(crewNameCount(groups)).toBe(2);
+  });
+
+  it("F3: 5 và 15 assignment — đếm đủ, không rớt", () => {
+    const five = collectCrew({ items: [{ assignedStaff: [
+      sa("photographer", "A", 61), sa("makeup", "B", 62), sa("videographer", "C", 63),
+      sa("assistant", "D", 64), sa("marketing", "E", 65),
+    ] }] });
+    expect(crewNameCount(five)).toBe(5);
+    const fifteenRows = [
+      ["photographer", 71], ["photographer", 72], ["photographer", 73],
+      ["makeup", 74], ["makeup", 75],
+      ["videographer", 72], ["videographer", 76],
+      ["sales", 77],
+      ["assistant", 74], ["assistant", 78], ["assistant", 79],
+      ["assistant_photo", 79],
+      ["marketing", 80],
+      ["other", 74], ["other", 78],
+    ] as const;
+    const fifteen = collectCrew({ items: [{
+      assignedStaff: fifteenRows.map(([r, id], i) => sa(r, "NV " + id + " tên rất dài để wrap thử " + i, id)),
+    }] });
+    expect(crewNameCount(fifteen)).toBe(15);
+  });
+});
+
+describe("F3: wiring-guard — 4 surface calendar.tsx phải nối vào lib (chặn revert lặng lẽ)", () => {
+  it("calendar.tsx không còn logic crew cũ ở surface sống, có đủ call-site collectCrew", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const src = fs.readFileSync(path.resolve(__dirname, "../pages/calendar.tsx"), "utf8");
+    // Bộ lọc cũ gây sự cố DH0248 phải biến mất khỏi mã sống
+    expect(src.includes("seenNames.has(normName)")).toBe(false);
+    expect(src.includes("const addStaff = (role")).toBe(false);
+    // Đủ call-site lib: detail + day-wrapper + month + week (>= 4 lần collectCrew()
+    const collectCalls = (src.match(/collectCrew\(\{/g) || []).length;
+    expect(collectCalls).toBeGreaterThanOrEqual(4);
+    // getStaffLine chỉ còn được GỌI trong component deprecated (1 call-site duy nhất)
+    const staffLineCalls = (src.match(/getStaffLine\(/g) || []).filter(Boolean).length;
+    expect(staffLineCalls).toBeLessThanOrEqual(2); // 1 định nghĩa "function getStaffLine(" + 1 call deprecated
   });
 });
 

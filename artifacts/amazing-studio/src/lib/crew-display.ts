@@ -15,7 +15,7 @@
  *  - Thuần TS (không React/fetch) để test được bằng vitest node.
  */
 
-export type CrewAssignmentLike = { role?: string | null; staffName?: string | null };
+export type CrewAssignmentLike = { role?: string | null; staffName?: string | null; staffId?: number | null };
 export type CrewItemLike = {
   assignedStaff?: unknown;
   photoName?: string | null;
@@ -91,8 +91,14 @@ function metaOf(canon: string): CrewRoleMeta {
 
 /**
  * Thu thập TOÀN BỘ crew từ mọi nguồn, nhóm theo role canonical.
- * Dedupe trong từng role theo tên lower-case (loại đúng bản ghi trùng thật:
- * cùng người cùng role đọc từ cả legacy field lẫn assignedStaff).
+ * Dedupe trong từng role theo ĐỊNH DANH (review #134 F1):
+ *  - entry có staffId → khoá theo staffId: 2 NGƯỜI KHÁC staffId trùng tên hiển thị
+ *    ĐỦ CẢ HAI; cùng staffId chỉ 1 lần.
+ *  - entry legacy KHÔNG staffId (photoName/makeupName, taskAssignees) → khoá theo
+ *    tên lower-case: trùng tên với người đã có (id hoặc không) = bản sao → bỏ.
+ *  - legacy vào TRƯỚC rồi canonical-có-id cùng tên vào SAU → coi là CÙNG người
+ *    (nâng cấp record, không hiện đôi).
+ * KHÔNG BAO GIỜ dùng tên làm khoá chính khi có staffId.
  */
 export function collectCrew(input: {
   items?: CrewItemLike[] | null;
@@ -100,22 +106,38 @@ export function collectCrew(input: {
   parentAssignedStaff?: unknown;
   taskAssignees?: CrewTaskAssigneeLike[] | null;
 }): CrewGroup[] {
-  const groups = new Map<string, { names: string[]; seen: Set<string> }>();
-  const push = (canon: string, name: string | null | undefined) => {
+  type Group = { names: string[]; seenIds: Set<number>; seenNames: Map<string, { hasId: boolean }> };
+  const groups = new Map<string, Group>();
+  const push = (canon: string, name: string | null | undefined, staffId?: number | null) => {
     const n = (name ?? "").trim();
     if (!n) return;
     let g = groups.get(canon);
-    if (!g) { g = { names: [], seen: new Set() }; groups.set(canon, g); }
+    if (!g) { g = { names: [], seenIds: new Set(), seenNames: new Map() }; groups.set(canon, g); }
     const key = n.toLowerCase();
-    if (g.seen.has(key)) return; // trùng THẬT: cùng người + cùng role
-    g.seen.add(key);
+    if (staffId != null) {
+      if (g.seenIds.has(staffId)) return; // cùng người (theo id) + cùng role — trùng thật
+      const prev = g.seenNames.get(key);
+      if (prev && !prev.hasId) {
+        // legacy (không id) đã vào trước với đúng tên này → cùng người, nâng cấp record
+        prev.hasId = true;
+        g.seenIds.add(staffId);
+        return;
+      }
+      g.seenIds.add(staffId);
+      if (!prev) g.seenNames.set(key, { hasId: true });
+      g.names.push(n); // prev.hasId=true (NGƯỜI KHÁC trùng tên) → vẫn push: đủ cả hai
+      return;
+    }
+    // legacy/không id: trùng tên với bất kỳ ai đã có trong role = bản sao → bỏ
+    if (g.seenNames.has(key)) return;
+    g.seenNames.set(key, { hasId: false });
     g.names.push(n);
   };
   const pushArr = (arr: unknown) => {
     if (!Array.isArray(arr)) return; // legacy object {sale: N} không có tên — bỏ qua như mọi surface hiện tại
     for (const sa of arr as CrewAssignmentLike[]) {
       if (!sa || !sa.staffName) continue;
-      push(canonicalRole(sa.role), sa.staffName);
+      push(canonicalRole(sa.role), sa.staffName, sa.staffId);
     }
   };
 
@@ -129,11 +151,19 @@ export function collectCrew(input: {
   // 2) Nhân sự tầng hợp đồng cha + tầng booking (Sale/PTS gắn ở tầng đơn, Giao việc module)
   pushArr(input.parentAssignedStaff);
   pushArr(input.bookingAssignedStaff);
-  // 3) taskAssignees — CHỈ đắp vào role đang trống (tên trong bảng tasks có thể cũ)
+  // 3) taskAssignees — CHỈ đắp vào role đang trống TÍNH TẠI THỜI ĐIỂM TRƯỚC vòng
+  //    lặp (review #134 F2: snapshot trước — role trống nhận ĐỦ MỌI người từ tasks,
+  //    không phải chỉ người đầu tiên). Role đã có nhân sự canonical từ items[]:
+  //    GIỮ ẨN tên từ tasks (quyết định chủ 27/07 — tên bảng tasks có thể cũ/stale,
+  //    hiện lên card dễ làm nhân viên hiểu nhầm ai thực sự đi show; mục "Giao việc"
+  //    riêng trong panel vẫn liệt kê đầy đủ tasks).
+  const rolesFilledBeforeTasks = new Set(
+    Array.from(groups.entries()).filter(([, g]) => g.names.length > 0).map(([canon]) => canon),
+  );
   for (const ta of input.taskAssignees ?? []) {
     if (!ta?.assigneeName) continue;
     const canon = canonicalRole(ta.role ?? ta.taskType);
-    if ((groups.get(canon)?.names.length ?? 0) === 0) push(canon, ta.assigneeName);
+    if (!rolesFilledBeforeTasks.has(canon)) push(canon, ta.assigneeName);
   }
 
   return Array.from(groups.entries())

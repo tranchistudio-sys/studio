@@ -257,7 +257,12 @@ function extractStaffEntries(
         const cast = typeof castRaw === "number" ? castRaw
           : typeof castRaw === "string" ? parseFloat(castRaw) || 0
           : 0;
-        out.push({ role, taskKey, castAmount: cast, manual: entry.castSource === "manual" });
+        // BẢO MẬT (review #133 B4): KHÔNG tin cờ manual từ TOP-LEVEL assigned_staff —
+        // cột này từng lưu raw không normalize, non-admin có thể gắn manual-0 để xoá
+        // lương realtime đồng nghiệp. Manual chỉ được nhận từ items[] (đã qua
+        // normalizeItemsAssignedStaffCast + kiểm quyền admin). castAmount > 0 top-level
+        // vẫn dùng như trước (nhánh castAmount>0 cũ) — không đổi hành vi legacy.
+        out.push({ role, taskKey, castAmount: cast, manual: false });
       }
     } else if (typeof assigned === "object") {
       const a = assigned as Record<string, unknown>;
@@ -291,7 +296,9 @@ function extractStaffEntries(
           const cast = typeof castRaw === "number" ? castRaw
             : typeof castRaw === "string" ? parseFloat(castRaw) || 0
             : 0;
-          out.push({ role, taskKey, castAmount: cast, manual: s.castSource === "manual" });
+          // Cờ manual đòi castAmount HIỆN DIỆN (không truthy-check): entry manual
+          // thiếu amount trong data cũ không được ngầm hiểu là chốt 0đ.
+          out.push({ role, taskKey, castAmount: cast, manual: s.castSource === "manual" && castRaw != null });
         }
       }
       if (String(it.photoId ?? "") === String(staffId) && !out.find(e => e.role === "photographer")) {
@@ -514,13 +521,33 @@ export async function computeMonthEstimate(
         let percentRateUsed: number | undefined;
         let percentBaseUsed: number | undefined;
 
-        if (ent.manual && Number.isFinite(ent.castAmount) && ent.castAmount >= 0) {
-          // GIÁ TAY admin đã chốt — dùng thẳng cho MỌI role. 0đ cũng là số chốt
-          // (không trả công dòng này) → rate 0, KHÔNG fallback bảng cast/rate.
-          // Sale có giá tay: số CHỐT thay cho % × tiền thu của booking đó.
+        // ── SALE + GIÁ TAY: "TIỀN CÔNG THỰC HIỆN SHOW" — quyết định nghiệp vụ 27/07.
+        // KHÔNG phải hoa hồng và KHÔNG thay thế hoa hồng: đẩy khoản cast CỐ ĐỊNH
+        // (nhãn riêng) TRƯỚC, rồi ép if-chain bên dưới đi vào nhánh % × tiền đã thu
+        // như KHÔNG có manual — người vừa làm show vừa chốt đơn có ĐỦ 2 khoản,
+        // nguồn và nhãn tách bạch, không khoản nào tính trùng nguồn.
+        const isManualEntry = ent.manual && Number.isFinite(ent.castAmount) && ent.castAmount >= 0;
+        const isSaleManualCast = ent.role === "sale" && isManualEntry;
+        if (isSaleManualCast && ent.castAmount > 0) {
+          showItems.push({
+            bookingId: b.id,
+            shootDate: shootDateStr,
+            role: "sale",
+            taskKey: ent.taskKey,
+            serviceName: `${serviceName} — Công show (giá tay)`,
+            rate: ent.castAmount,
+            rateType: "fixed",
+            fromCastAmount: true,
+          });
+          showEarnings += ent.castAmount;
+        }
+
+        if (!isSaleManualCast && isManualEntry) {
+          // GIÁ TAY admin đã chốt (role ngoài sale) — dùng thẳng. 0đ cũng là số
+          // chốt (không trả công dòng này) → rate 0, KHÔNG fallback bảng cast/rate.
           rate = ent.castAmount;
           fromCast = true;
-        } else if (ent.castAmount && ent.castAmount > 0) {
+        } else if (!isSaleManualCast && ent.castAmount && ent.castAmount > 0) {
           rate = ent.castAmount;
           fromCast = true;
         } else {
@@ -856,11 +883,20 @@ export async function computeMonthEstimate(
         // MẢNG-5 dedup (nhánh forecast): giống Pass1, tránh cộng trùng khi nhiều dòng cùng role.
         consumedRoles.add(ent.role);
         let rate = 0;
-        if (ent.manual && Number.isFinite(ent.castAmount) && ent.castAmount >= 0) {
+        // Đồng bộ pass 2: sale + giá tay = CÔNG SHOW (cộng riêng) + hoa hồng %
+        // forecast như thường lệ; role khác manual (kể cả 0đ) dùng thẳng.
+        const fcManual = ent.manual && Number.isFinite(ent.castAmount) && ent.castAmount >= 0;
+        const fcSaleManualCast = ent.role === "sale" && fcManual;
+        if (fcSaleManualCast && ent.castAmount > 0) {
+          fcShowEarnings += ent.castAmount;
+          fcCount += 1;
+          if (isPast) fcPast += 1; else fcFuture += 1;
+        }
+        if (!fcSaleManualCast && fcManual) {
           // GIÁ TAY (kể cả 0đ) — forecast phải khớp realtime pass 2: dùng thẳng,
           // KHÔNG fallback bảng/% (0đ = chốt không trả công → rate 0 → bị skip).
           rate = ent.castAmount;
-        } else if (ent.castAmount && ent.castAmount > 0) {
+        } else if (!fcSaleManualCast && ent.castAmount && ent.castAmount > 0) {
           rate = ent.castAmount;
         } else {
           // Task #496: forecast cho sale = % cast × total_amount (commission khi thu đủ).

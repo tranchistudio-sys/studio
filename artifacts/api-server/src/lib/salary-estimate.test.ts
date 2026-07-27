@@ -318,7 +318,9 @@ describe("computeMonthEstimate", () => {
   });
 
   // ── Giá tay mọi role (fix/calendar-full-crew-manual-cast) ──────────────────
-  function mockOneBooking(assignedStaff: unknown[]) {
+  // Manual đặt trong ITEMS[].assignedStaff — nguồn canonical duy nhất được tin
+  // (top-level assigned_staff KHÔNG còn được tin cờ manual — review #133 B4).
+  function mockItemsBooking(itemAssigned: unknown[], opts?: { paid?: number; topLevel?: unknown }) {
     poolQueryMock.mockImplementation((sql: string) => {
       if (/FROM bookings/i.test(sql) && /assigned_staff IS NOT NULL/i.test(sql)) {
         return Promise.resolve({
@@ -327,13 +329,16 @@ describe("computeMonthEstimate", () => {
             shoot_date: "2026-05-06",
             package_type: "wedding",
             service_label: "Album Cưới",
-            assigned_staff: assignedStaff,
+            assigned_staff: opts?.topLevel ?? null,
             total_amount: 8_000_000,
-            items: [{ serviceId: 1, price: 8_000_000 }],
+            items: [{ serviceId: 99, price: 8_000_000, assignedStaff: itemAssigned }],
             photo_count: 0,
-            service_package_id: null,
+            service_package_id: 99,
           }],
         });
+      }
+      if (/FROM payments/i.test(sql) && (opts?.paid ?? 0) > 0) {
+        return Promise.resolve({ rows: [{ booking_id: 900, paid: String(opts!.paid) }] });
       }
       return Promise.resolve({ rows: [] });
     });
@@ -342,7 +347,7 @@ describe("computeMonthEstimate", () => {
   it("giá tay 0đ: KHÔNG trả công và KHÔNG fallback bảng rate", async () => {
     // Bảng rate 300k sẵn sàng — nếu manual-0 rơi xuống resolveEarning sẽ ra 300k (SAI).
     setupDbForRealtime({ rates: [[{ rate: "300000", rateType: "fixed" }]] });
-    mockOneBooking([
+    mockItemsBooking([
       { staffId: 3, role: "photographer", taskKey: "mac_dinh", castAmount: 0, castSource: "manual" },
     ]);
     const r = await computeMonthEstimate(3, 5, 2026);
@@ -350,9 +355,20 @@ describe("computeMonthEstimate", () => {
     expect(r!.showItems.some(s => s.bookingId === 900)).toBe(false);
   });
 
+  it("B4: manual-0 ở TOP-LEVEL assigned_staff KHÔNG được tin — không zero-out được lương", async () => {
+    // Kẻ xấu bơm manual-0 vào cột top-level (raw): estimate phải BỎ QUA cờ manual
+    // đó và vẫn resolve theo bảng (300k) — lương đồng nghiệp không bị ép về 0.
+    setupDbForRealtime({ rates: [[{ rate: "300000", rateType: "fixed" }]] });
+    mockItemsBooking([], {
+      topLevel: [{ staffId: 3, role: "photographer", taskKey: "mac_dinh", castAmount: 0, castSource: "manual" }],
+    });
+    const r = await computeMonthEstimate(3, 5, 2026);
+    expect(r!.showEarnings).toBe(300_000);
+  });
+
   it("giá tay role KHÁC photographer/makeup (assistant) được tính vào lương realtime", async () => {
     setupDbForRealtime();
-    mockOneBooking([
+    mockItemsBooking([
       { staffId: 3, role: "assistant", taskKey: "mac_dinh", castAmount: 250_000, castSource: "manual" },
     ]);
     const r = await computeMonthEstimate(3, 5, 2026);
@@ -365,7 +381,7 @@ describe("computeMonthEstimate", () => {
   it("FORECAST cũng tôn trọng giá tay 0đ — không fallback bảng (khớp realtime)", async () => {
     // Bảng rate 300k sẵn — nếu nhánh forecast thiếu check manual sẽ dự báo 300k (SAI).
     setupDbForRealtime({ rates: [[{ rate: "300000", rateType: "fixed" }]] });
-    mockOneBooking([
+    mockItemsBooking([
       { staffId: 3, role: "photographer", taskKey: "mac_dinh", castAmount: 0, castSource: "manual" },
     ]);
     const r = await computeMonthEstimate(3, 5, 2026, { includeForecast: true });
@@ -373,16 +389,54 @@ describe("computeMonthEstimate", () => {
     expect(r!.forecastShowEarnings ?? 0).toBe(0);
   });
 
-  it("giá tay SALE = số CHỐT thay cho % × tiền thu của booking đó", async () => {
-    setupDbForRealtime();
-    mockOneBooking([
-      { staffId: 3, role: "sale", taskKey: "mac_dinh", castAmount: 300_000, castSource: "manual" },
-    ]);
+  it("SALE giá tay = CÔNG SHOW riêng + hoa hồng % VẪN tính (không thay thế, không trùng nguồn)", async () => {
+    // pkgCast sale 7%; đã thu 2M/8M; giá tay công show 300k.
+    // Kỳ vọng 2 khoản tách bạch: cast 300k (nhãn Công show) + hoa hồng 140k (7% × 2M).
+    const dbCalls: unknown[][] = [
+      [STAFF],                                       // staffTable
+      [],                                            // existingEarnings
+      [{ amount: "7", rateType: "percent" }],        // pkgCast (label)
+      [{ amount: "7", rateType: "percent" }],        // pkgCast (resolveEarning)
+      [],                                            // payrollsTable
+      [],                                            // staffLeaveRequestsTable
+    ];
+    let dbIdx = 0;
+    dbSelectMock.mockImplementation(() => dbCalls[dbIdx++] ?? []);
+    mockItemsBooking(
+      [{ staffId: 3, role: "sale", taskKey: "mac_dinh", castAmount: 300_000, castSource: "manual" }],
+      { paid: 2_000_000 },
+    );
     const r = await computeMonthEstimate(3, 5, 2026);
-    const sale = r!.showItems.find(s => s.bookingId === 900 && s.role === "sale")!;
-    expect(sale.rate).toBe(300_000);
-    expect(sale.percentRate).toBeUndefined();
-    expect(r!.showEarnings).toBe(300_000);
+    const saleItems = r!.showItems.filter(s => s.bookingId === 900 && s.role === "sale");
+    expect(saleItems).toHaveLength(2);
+    const cast = saleItems.find(s => s.fromCastAmount)!;
+    const comm = saleItems.find(s => !s.fromCastAmount)!;
+    expect(cast.rate).toBe(300_000);
+    expect(cast.serviceName).toContain("Công show");
+    expect(comm.rate).toBe(140_000);           // 7% × 2M đã thu
+    expect(comm.percentRate).toBe(7);
+    expect(r!.showEarnings).toBe(440_000);     // đúng tổng 2 khoản, không nhân đôi
+  });
+
+  it("SALE giá tay 0đ: công show 0 (không có khoản cast) nhưng hoa hồng % vẫn nguyên", async () => {
+    const dbCalls: unknown[][] = [
+      [STAFF], [],
+      [{ amount: "7", rateType: "percent" }],
+      [{ amount: "7", rateType: "percent" }],
+      [], [],
+    ];
+    let dbIdx = 0;
+    dbSelectMock.mockImplementation(() => dbCalls[dbIdx++] ?? []);
+    mockItemsBooking(
+      [{ staffId: 3, role: "sale", taskKey: "mac_dinh", castAmount: 0, castSource: "manual" }],
+      { paid: 2_000_000 },
+    );
+    const r = await computeMonthEstimate(3, 5, 2026);
+    const saleItems = r!.showItems.filter(s => s.bookingId === 900 && s.role === "sale");
+    expect(saleItems).toHaveLength(1);
+    expect(saleItems[0].fromCastAmount).toBe(false);
+    expect(saleItems[0].rate).toBe(140_000);
+    expect(r!.showEarnings).toBe(140_000);
   });
 
   it("VẪN tính earning orphan nếu booking KHÔNG hủy (đối chứng)", async () => {

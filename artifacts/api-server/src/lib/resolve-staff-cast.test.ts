@@ -150,12 +150,13 @@ describe("normalizeItemsAssignedStaffCast — giá tay mọi role", () => {
     expect(sa.map(s => s.role).sort()).toEqual(["makeup", "photographer"]);
   });
 
-  it("buildPrevManualMap giữ cả entry 0đ và ĐỦ nhiều dòng cùng người/role", () => {
+  it("buildPrevManualMap: key GẮN itemIdx, giữ cả 0đ, mỗi dòng 1 entry riêng", () => {
     const m = buildPrevManualMap([
       itemWith([{ staffId: 9, staffName: "I", role: "support", castAmount: 0, castSource: "manual" }]),
       itemWith([{ staffId: 9, staffName: "I", role: "support", castAmount: 100_000, castSource: "manual" }]),
     ]);
-    expect(m.get("9:support")).toEqual([0, 100_000]);
+    expect(m.get("0:9:support")).toEqual([0]);
+    expect(m.get("1:9:support")).toEqual([100_000]);
   });
 
   it("CONSUME-ONCE: non-admin nhân bản 1 giá tay sang item thứ 2 → bản sao bị resolve lại (chặn double-pay)", async () => {

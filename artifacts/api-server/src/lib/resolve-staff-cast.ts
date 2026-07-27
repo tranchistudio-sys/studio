@@ -129,29 +129,30 @@ function assignmentKey(staffId: number, role: string): string {
 //    đó trong lương realtime. photoshop: module Hậu kỳ own earning riêng.
 // Manual 0đ là GIÁ TRỊ HỢP LỆ (chốt 0 công) — khác với "chưa có giá" (resolve bảng).
 
-/** Build map giá tay ĐANG LƯU trong DB: key `staffId:role` → DANH SÁCH amount
- *  (1 phần tử cho MỖI dòng manual đang lưu — cùng người cùng role trên 2 dòng
- *  dịch vụ giữ đủ 2 giá trị, không last-write-wins). Dùng để non-admin lưu lại
- *  booking (sửa giờ/ghi chú) KHÔNG làm mất giá tay admin đã chốt. Mỗi entry chỉ
- *  match được MỘT LẦN (consume-once — xem matchAndConsumePrevManual): chặn việc
- *  nhân bản 1 giá tay của admin thành nhiều dòng để được trả nhiều lần. */
+/** Build map giá tay ĐANG LƯU trong DB, GẮN THEO VỊ TRÍ DÒNG DỊCH VỤ:
+ *  key `itemIdx:staffId:role` → DANH SÁCH amount (1 phần tử mỗi dòng manual).
+ *  Override thuộc về đúng assignment/item của nó — non-admin re-save chỉ giữ
+ *  được manual Ở ĐÚNG VỊ TRÍ item cũ; sao chép sang item khác KHÔNG match →
+ *  bị resolve lại (chặn nhân bản 1 giá tay admin thành nhiều khoản lương).
+ *  Mỗi entry chỉ match được MỘT LẦN (consume-once). Yêu cầu castAmount hiện
+ *  diện — entry manual thiếu amount không được ngầm hiểu 0đ. */
 export function buildPrevManualMap(oldItems: unknown): Map<string, number[]> {
   const m = new Map<string, number[]>();
   if (!Array.isArray(oldItems)) return m;
-  for (const it of oldItems as Record<string, unknown>[]) {
+  (oldItems as Record<string, unknown>[]).forEach((it, itemIdx) => {
     const sa = Array.isArray(it.assignedStaff) ? (it.assignedStaff as StaffAssignmentCastInput[]) : [];
     for (const s of sa) {
-      if (!s?.staffId || !s?.role || s.castSource !== "manual") continue;
-      const amt = typeof s.castAmount === "number" ? s.castAmount : parseFloat(String(s.castAmount ?? 0));
+      if (!s?.staffId || !s?.role || s.castSource !== "manual" || s.castAmount == null) continue;
+      const amt = typeof s.castAmount === "number" ? s.castAmount : parseFloat(String(s.castAmount));
       // >= 0: manual 0đ cũng phải được giữ khi non-admin re-save booking.
       if (Number.isFinite(amt) && amt >= 0) {
-        const key = assignmentKey(s.staffId, s.role);
+        const key = `${itemIdx}:${assignmentKey(s.staffId, s.role)}`;
         const arr = m.get(key) ?? [];
         arr.push(amt);
         m.set(key, arr);
       }
     }
-  }
+  });
   return m;
 }
 
@@ -183,8 +184,9 @@ export function sanitizeTopLevelAssignedStaffCast(
     if (!entry || entry.castSource !== "manual") return entry;
     const amt = typeof entry.castAmount === "number" ? entry.castAmount : parseFloat(String(entry.castAmount ?? 0));
     if (
-      entry.staffId && entry.role && Number.isFinite(amt) && amt >= 0 &&
-      matchAndConsumePrevManual(opts.prevManual, assignmentKey(entry.staffId, entry.role), amt)
+      entry.staffId && entry.role && entry.castAmount != null && Number.isFinite(amt) && amt >= 0 &&
+      // top-level = pseudo-item index 0 (map build từ [{assignedStaff: old}])
+      matchAndConsumePrevManual(opts.prevManual, `0:${assignmentKey(entry.staffId, entry.role)}`, amt)
     ) {
       return entry; // giá tay admin đã chốt, nhân viên re-save giữ nguyên
     }
@@ -244,7 +246,8 @@ export async function normalizeItemsAssignedStaffCast(
         // HIỆN DIỆN — entry manual thiếu amount không được ngầm hiểu là 0đ.
         const manualAmt = typeof raw.castAmount === "number" ? raw.castAmount : parseFloat(String(raw.castAmount ?? 0));
         const isManualReq = raw.castSource === "manual" && raw.castAmount != null && Number.isFinite(manualAmt) && manualAmt >= 0;
-        const matchesPrev = isManualReq && !opts?.allowManual && matchAndConsumePrevManual(prevManual, key, manualAmt);
+        // prevManual key GẮN itemIdx: manual chỉ được bảo lãnh ở ĐÚNG dòng dịch vụ cũ.
+        const matchesPrev = isManualReq && !opts?.allowManual && matchAndConsumePrevManual(prevManual, `${itemIdx}:${key}`, manualAmt);
         if (isManualReq && (opts?.allowManual || matchesPrev)) {
           console.info("[cast-resolve] manual price kept", {
             staffId: raw.staffId,

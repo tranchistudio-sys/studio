@@ -1353,9 +1353,17 @@ router.put("/bookings/:id", async (req, res) => {
     }));
 
     const [bk] = await db.select({ items: bookingsTable.items }).from(bookingsTable).where(eq(bookingsTable.id, id));
-    const currentItems: Record<string, unknown>[] = bk && Array.isArray(bk.items)
+    let currentItems: Record<string, unknown>[] = bk && Array.isArray(bk.items)
       ? (bk.items as Record<string, unknown>[])
       : [];
+
+    // Review #133 B4: booking CHƯA có items (chưa chốt dịch vụ) mà Giao việc gửi
+    // nhân sự → tạo 1 dòng staff-only (pattern #120 lineHasStaff) để assignment
+    // (kể cả giá tay admin) nằm trong items[] — nguồn canonical duy nhất mà
+    // normalize + salary-estimate tin. Không tạo khi payload rỗng (xoá phân công).
+    if (currentItems.length === 0 && normalizedStaff.length > 0) {
+      currentItems = [{ assignedStaff: [] }];
+    }
 
     const mergedItems = currentItems.map((item) => {
       const result: Record<string, unknown> = { ...item };

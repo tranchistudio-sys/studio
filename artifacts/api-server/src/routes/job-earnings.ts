@@ -207,10 +207,13 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
 
       if (role !== "photographer" && role !== "makeup") {
         // Role khác photographer/makeup:
-        //  • sale/sales: KHÔNG persist — hoa hồng tính realtime ở salary-estimate
-        //    (% × tiền đã thu, hoặc giá tay CHỐT thay % nếu admin gõ). Persist ở
-        //    đây sẽ double-count vì estimate luôn bỏ qua persisted sale.
-        //  • photoshop: module Hậu kỳ own earning riêng (Task #476).
+        //  • photoshop: module Hậu kỳ own earning riêng (Task #476) — không đụng.
+        //  • sale/sales + GIÁ TAY: "TIỀN CÔNG THỰC HIỆN SHOW" (quyết định nghiệp vụ
+        //    27/07) — persist như cast role khác, role chuẩn hoá 'sale' + nhãn riêng
+        //    để tách bạch với hoa hồng chốt đơn. Hoa hồng % vẫn realtime ở
+        //    salary-estimate (pass 1 + orphan-pass LUÔN bỏ qua persisted role
+        //    'sale' nên khoản persist này không bị estimate cộng lần 2).
+        //    Sale KHÔNG manual: như cũ — không persist (chỉ có hoa hồng realtime).
         //  • Còn lại (videographer/assistant/assistant_photo/marketing/other...):
         //    CHỈ persist khi admin đã chốt GIÁ TAY > 0 — số này khớp 1:1 với lương
         //    realtime (salary-estimate đọc thẳng castAmount manual). Giá theo bảng
@@ -219,8 +222,17 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
         //    NHƯNG vẫn ghi itemRolePaid để chặn nhánh booking-level trả theo bảng.
         //    taskKey CỐ ĐỊNH 'mac_dinh' (không tin sa.taskKey từ client — key lạ
         //    sẽ lách dedupe seen-key và tạo khoản trùng).
-        if (role === "sale" || role === "sales" || role === "photoshop") continue;
-        if (isManual && snapAmt >= 0) {
+        // Cờ manual đòi castAmount HIỆN DIỆN (không truthy-check) — thiếu amount
+        // không được ngầm hiểu 0đ.
+        if (role === "photoshop") continue;
+        const manualValid = isManual && sa.castAmount != null && snapAmt >= 0;
+        if (role === "sale" || role === "sales") {
+          if (manualValid && snapAmt > 0) {
+            addEarning(sa.staffId, "sale", "mac_dinh", `${lineName} — Công show (giá tay)`, snapAmt);
+          }
+          continue;
+        }
+        if (manualValid) {
           itemRolePaid.add(`${sa.staffId}-${role}`);
           if (snapAmt > 0) addEarning(sa.staffId, role, "mac_dinh", lineName, snapAmt);
         }
@@ -234,7 +246,8 @@ export async function computeBookingEarnings(bookingId: number): Promise<void> {
       // nhân số ảnh, không dùng snapshot phẳng.
       // Manual 0đ: admin chốt KHÔNG trả công dòng này → không tạo earning, và chặn
       // luôn legacy fallback photoId/makeupId phía dưới (không được trả theo bảng).
-      const trustSnapshot = (isManual && snapAmt >= 0) || (snapAmt > 0 && sa.castSource === "staff_pricing");
+      // Cờ manual đòi castAmount HIỆN DIỆN (không truthy-check).
+      const trustSnapshot = (isManual && sa.castAmount != null && snapAmt >= 0) || (snapAmt > 0 && sa.castSource === "staff_pricing");
       if (trustSnapshot) {
         if (snapAmt > 0) addEarning(sa.staffId, role, taskKey, lineName, snapAmt);
         paidViaAssigned.add(`${sa.staffId}-${role}`);

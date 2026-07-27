@@ -126,7 +126,7 @@ describe("computeBookingEarnings — giá tay mọi role, chống trùng", () =>
     state.inserts = [];
   });
 
-  it("persist giá tay marketing/assistant; KHÔNG persist sale; role khác không manual → realtime-only", async () => {
+  it("persist giá tay marketing/assistant + SALE thành CÔNG SHOW (role 'sale', nhãn riêng); role khác không manual → realtime-only", async () => {
     state.booking = baseBooking({
       items: [{
         serviceName: "Gói A",
@@ -154,13 +154,31 @@ describe("computeBookingEarnings — giá tay mọi role, chống trùng", () =>
       "1:photographer:400000",
       "2:makeup:350000",
       "3:assistant:200000",
+      "4:sale:999000",
       "7:marketing:500000",
     ]);
-    // Sale không được persist (hoa hồng realtime); videographer không manual → realtime-only.
-    expect(state.inserts.some(e => e.role === "sale" || e.role === "sales")).toBe(false);
+    // Sale manual = CÔNG SHOW: persist với role chuẩn 'sale' + nhãn tách bạch hoa hồng
+    // (salary-estimate pass1/orphan LUÔN bỏ persisted 'sale' → không cộng lần 2).
+    const saleRow = state.inserts.find(e => e.role === "sale")!;
+    expect(saleRow.serviceName).toContain("Công show");
+    expect(state.inserts.some(e => e.role === "sales")).toBe(false); // role đã chuẩn hoá
+    // Videographer không manual → realtime-only.
     expect(state.inserts.some(e => e.role === "videographer")).toBe(false);
     // Marketing chỉ 1 khoản duy nhất (500k giá tay, không kèm 111k booking-level).
     expect(state.inserts.filter(e => e.role === "marketing")).toHaveLength(1);
+  });
+
+  it("SALE KHÔNG manual: vẫn không persist (hoa hồng realtime thuần)", async () => {
+    state.booking = baseBooking({
+      items: [{
+        serviceName: "Gói A", serviceId: 9, price: 5_000_000,
+        assignedStaff: [
+          { staffId: 4, staffName: "S", role: "sales", castAmount: 0, castSource: "none" },
+        ],
+      }],
+    });
+    await computeBookingEarnings(100);
+    expect(state.inserts).toHaveLength(0);
   });
 
   it("manual 0đ photographer: không tạo earning VÀ chặn legacy fallback photoId", async () => {

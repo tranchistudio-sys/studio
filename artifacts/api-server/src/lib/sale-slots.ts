@@ -40,6 +40,9 @@ const NOT_DECIDED_STRONG = [
   "chua dinh ngay", "chua len ngay", "chua tinh ngay", "chua quyet ngay",
   "khong can ngay", "chua co lich", "chua chot lich", "chua biet khi nao",
   "chua biet chung nao", "khi nao cung duoc", "ngay nao cung duoc",
+  // "khi nào có ngày em báo" — khách chủ động hoãn chuyện ngày.
+  "khi nao co ngay", "co ngay em bao", "co ngay minh bao", "co ngay chi bao",
+  "co ngay anh bao", "co ngay se bao", "co ngay roi bao",
 ];
 // YẾU: chỉ tính khi bot ĐÃ hỏi ngày (khách đang trả lời câu hỏi ngày).
 const NOT_DECIDED_WEAK = [

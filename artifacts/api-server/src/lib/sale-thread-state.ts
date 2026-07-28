@@ -1,5 +1,5 @@
 import { pool } from "@workspace/db";
-import { detectDateSlot, type DateStatus } from "./sale-slots";
+import { detectDateSlot, botAsksDate, type DateStatus } from "./sale-slots";
 import { detectServiceIntentFromText } from "./sale-samples";
 
 /**
@@ -23,6 +23,18 @@ import { detectServiceIntentFromText } from "./sale-samples";
 
 export function isLuluStateEnabled(): boolean {
   return /^(1|true|yes)$/i.test((process.env.LULU_STATE_ENABLED ?? "").trim());
+}
+
+/**
+ * PHẠM VI THỬ NGHIỆM NHỎ: khi LULU_STATE_PSIDS có giá trị (danh sách psid cách nhau
+ * dấu phẩy), trí nhớ CHỈ bật cho đúng các thread đó — pilot trên vài khách trước khi
+ * mở toàn bộ. Để trống = áp dụng mọi thread (khi LULU_STATE_ENABLED bật).
+ */
+export function isLuluStateEnabledFor(psid: string): boolean {
+  if (!isLuluStateEnabled()) return false;
+  const raw = (process.env.LULU_STATE_PSIDS ?? "").trim();
+  if (!raw) return true;
+  return raw.split(",").map((s) => s.trim()).filter(Boolean).includes(psid);
 }
 
 // ─── Kiểu dữ liệu ─────────────────────────────────────────────────────────────
@@ -181,6 +193,17 @@ export async function applyIncomingMessage(psid: string, text: string): Promise<
          updated_at = NOW()`,
       [psid, intentPatch, JSON.stringify(slotPatch)],
     );
+
+    // LOG QUYẾT ĐỊNH (yêu cầu vận hành): trạng thái TRƯỚC + dữ liệu MỚI phát hiện + SAU.
+    // 1 dòng/tin khách, chỉ chạy khi bật cờ — soi được trên log Replit.
+    const before = { date: prior?.slots.date_status ?? "unknown", intent: prior?.serviceIntent ?? null, botAskedDate };
+    const after = {
+      date: slotPatch.date_status ?? before.date,
+      intent: intentPatch ?? before.intent,
+    };
+    console.log(
+      `[LuluState][in] psid=${psid} before=${JSON.stringify(before)} detected=${JSON.stringify({ slots: slotPatch, intent: intentPatch })} after=${JSON.stringify(after)}`,
+    );
   } catch (err) {
     console.error("[LuluState] applyIncomingMessage lỗi (fail-open):", String(err).slice(0, 160));
   }
@@ -274,13 +297,84 @@ export async function recordBotReply(psid: string, info: BotReplyInfo): Promise<
          WHERE facebook_user_id = $1 AND version = $6`,
         [psid, JSON.stringify(asked), JSON.stringify(quoted), JSON.stringify(assets), info.action, state.version],
       );
-      if ((r.rowCount ?? 0) > 0) return;
+      if ((r.rowCount ?? 0) > 0) {
+        // LOG QUYẾT ĐỊNH: hành động đã chọn + trạng thái SAU lượt bot.
+        console.log(
+          `[LuluState][out] psid=${psid} action=${info.action} askedDate=${info.askedDate} quoted=${JSON.stringify(quoted.map((q) => q.code))} samplesSent=${info.sampleUrls.length} askCount=${asked.find((q) => q.key === "ask_date")?.count ?? 0}`,
+        );
+        return;
+      }
       // version lệch (hiếm) → đọc lại merge lại đúng 1 lần.
     }
     console.warn(`[LuluState] recordBotReply psid=${psid} bỏ qua sau 2 lần version lệch`);
   } catch (err) {
     console.error("[LuluState] recordBotReply lỗi (fail-open):", String(err).slice(0, 160));
   }
+}
+
+// ─── MÔ PHỎNG state từ lịch sử (cho sân test Brain Lab — thuần, KHÔNG DB) ─────
+
+const SIM_AT = "(mô phỏng)";
+
+/**
+ * Dựng ThreadState bằng cách REPLAY lịch sử hội thoại qua đúng bộ extractor của luồng
+ * thật (detectDateSlot / botAsksDate / detectServiceIntentFromText) — để sân test
+ * Claude Sale Test / Brain Lab kiểm chứng hành vi trí nhớ TRƯỚC khi bật cờ prod,
+ * mà không ghi/đọc bảng lulu_thread_state (không đụng dữ liệu khách thật).
+ *
+ * Giới hạn mô phỏng: quoted_packages không tái tạo được từ text history (mã gói không
+ * nằm trong lời thoại) → truyền qua opts.quotedCodes (FE tích lũy từ các response trước).
+ */
+export function simulateThreadStateFromHistory(
+  history: Array<{ direction: "incoming" | "outgoing"; message: string }>,
+  opts?: { quotedCodes?: string[]; now?: Date },
+): ThreadState {
+  const state: ThreadState = {
+    facebookUserId: "(test)",
+    currentStage: "new",
+    previousStage: null,
+    serviceIntent: null,
+    customerStatus: "lead",
+    lastAction: null,
+    slots: {},
+    askedQuestions: [],
+    quotedPackages: [],
+    sentAssets: {},
+    lastUserMessageAt: null,
+    lastBotMessageAt: null,
+    version: 0,
+  };
+  let askCount = 0;
+  const sampleUrls: string[] = [];
+
+  for (const h of history ?? []) {
+    const msg = (h?.message ?? "").trim();
+    if (!msg) continue;
+    if (h.direction === "outgoing") {
+      const img = /^\[image:(.+?)\]$/.exec(msg);
+      if (img) {
+        if (img[1] && !sampleUrls.includes(img[1])) sampleUrls.push(img[1]);
+        continue;
+      }
+      if (botAsksDate(msg)) askCount++;
+      state.lastBotMessageAt = SIM_AT;
+    } else {
+      if (!msg.startsWith("[image:")) {
+        const slot = detectDateSlot(msg, { botAskedDate: askCount > 0, now: opts?.now });
+        if (slot) {
+          state.slots = { ...state.slots, date_status: slot.status, event_date: slot.eventDate, date_text: slot.dateText };
+        }
+        const intent = detectServiceIntentFromText(msg);
+        if (intent !== "unknown" && intent !== "new_concept_idea") state.serviceIntent = intent;
+      }
+      state.lastUserMessageAt = SIM_AT;
+    }
+  }
+
+  if (askCount > 0) state.askedQuestions = [{ key: "ask_date", at: SIM_AT, count: askCount }];
+  state.quotedPackages = mergeQuotedPackages([], opts?.quotedCodes ?? [], SIM_AT);
+  state.sentAssets = { sample_urls: sampleUrls };
+  return state;
 }
 
 // ─── Khối "TRẠNG THÁI KHÁCH" chèn vào context (thuần — test được) ─────────────

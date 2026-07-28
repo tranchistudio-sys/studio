@@ -13,6 +13,7 @@ import { getScheduleContext } from "../lib/sale-calendar";
 import { getMasterEnabled } from "../lib/sale-master";
 import { detectEscalation } from "../lib/sale-lead-flags";
 import { HOLD_MESSAGE, imageEscalationReason } from "../lib/sale-human-review";
+import { simulateThreadStateFromHistory, buildThreadStateBlock } from "../lib/sale-thread-state";
 
 /**
  * KARU / Claude Sale Test — sân test nội bộ cho admin.
@@ -76,6 +77,8 @@ router.post("/claude-sale-test/chat", async (req, res) => {
     messages?: Array<{ direction?: string; text?: string }>;
     imageBase64?: string;
     imageMediaType?: string;
+    /** Mã gói đã báo giá ở các lượt trước (FE tích lũy từ field quotedCodes của response) — để mô phỏng trí nhớ "ĐÃ BÁO GIÁ". */
+    quotedCodes?: string[];
   };
   const message = (body.message ?? "").trim();
   const imageBase64 = (body.imageBase64 ?? "").trim();
@@ -125,6 +128,16 @@ router.post("/claude-sale-test/chat", async (req, res) => {
         if (ideas) context += `\n\n${ideas}`;
       }
     }
+    // TRÍ NHỚ MÔ PHỎNG (sân test LUÔN bật — không phụ thuộc LULU_STATE_ENABLED, KHÔNG đụng
+    // bảng lulu_thread_state thật): replay history qua đúng bộ extractor của luồng Messenger
+    // rồi chèn khối "TRẠNG THÁI KHÁCH" y hệt. Admin dùng đây để nghiệm thu trước khi bật prod.
+    const simQuotedCodes = Array.isArray(body.quotedCodes)
+      ? body.quotedCodes.filter((c): c is string => typeof c === "string").slice(0, 30)
+      : [];
+    const simState = simulateThreadStateFromHistory(history, { quotedCodes: simQuotedCodes });
+    const stateBlock = buildThreadStateBlock(simState);
+    if (stateBlock) context += `\n\n${stateBlock}`;
+
     const styleGuide = await getActivePlaybook();
     const brainRules = await getActiveBrainRules();
     const settings = await getClaudeSaleSettings();
@@ -148,9 +161,13 @@ router.post("/claude-sale-test/chat", async (req, res) => {
     // Ảnh bảng giá nhóm (theo marker <<PRICE_IMAGE: MÃ>> của Claude) → trả objectPath
     // để sân test render INLINE. Đã qua gate ai_image_url + public_for_customer.
     let priceImages: string[] = [];
+    let newQuotedCodes: string[] = [];
     try {
       const hits = await resolvePriceImagesByCodes(reply.priceImageCodes ?? []);
       priceImages = hits.map((h) => h.objectPath);
+      // Mã gói THẬT SỰ có ảnh bảng giá để hiển thị (giống điều kiện "đến được khách" ở
+      // luồng Messenger) — FE cộng dồn vào body.quotedCodes cho lượt sau.
+      newQuotedCodes = hits.map((h) => h.code).filter(Boolean);
     } catch { /* không chặn câu trả lời nếu lỗi ảnh */ }
 
     // ẢNH MẪU THẬT (gallery / cho thuê đồ / ý tưởng) — gửi HÌNH trực tiếp thay vì link.
@@ -231,6 +248,19 @@ router.post("/claude-sale-test/chat", async (req, res) => {
       sampleNote,
       // Kết quả AI Vision (DEV MODE) — null nếu khách không gửi ảnh.
       imageIntent,
+      // TRÍ NHỚ MÔ PHỎNG (DEV MODE): state suy từ history + khối đã chèn vào prompt —
+      // admin nghiệm thu hành vi trí nhớ (không hỏi lại ngày, không bung lại bảng giá...).
+      threadState: {
+        simulated: true,
+        slots: simState.slots,
+        serviceIntent: simState.serviceIntent,
+        askedQuestions: simState.askedQuestions,
+        quotedPackages: simState.quotedPackages,
+        sentSampleCount: simState.sentAssets.sample_urls?.length ?? 0,
+        block: stateBlock || null,
+      },
+      // Mã gói vừa được báo giá lượt này — FE cộng dồn rồi gửi lại qua body.quotedCodes.
+      quotedCodes: newQuotedCodes,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

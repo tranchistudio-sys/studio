@@ -35,7 +35,7 @@ import {
   HOLD_MESSAGE, imageEscalationReason, upsertOpenHumanReview, markHoldSent,
 } from "../lib/sale-human-review";
 import {
-  isLuluStateEnabled, applyIncomingMessage, getThreadState, buildThreadStateBlock,
+  isLuluStateEnabledFor, applyIncomingMessage, getThreadState, buildThreadStateBlock,
   recordBotReply, type ThreadState,
 } from "../lib/sale-thread-state";
 import { botAsksDate } from "../lib/sale-slots";
@@ -529,10 +529,10 @@ export async function processIncomingFacebookMessage(
   if (detectPhone(text)) markPhoneCaptured(psid).catch(() => {});
   if (detectAppointmentIntent(text)) markAppointmentIntent(psid).catch(() => {});
 
-  // TRÍ NHỚ CÓ CẤU TRÚC (cờ LULU_STATE_ENABLED, mặc định tắt): rút slot ngày/nhu cầu từ
-  // tin khách vào lulu_thread_state TRƯỚC khi build prompt để lượt này đọc được ngay.
-  // Fail-open: lỗi DB → hàm tự nuốt, bot chạy tiếp như cũ.
-  if (isLuluStateEnabled()) {
+  // TRÍ NHỚ CÓ CẤU TRÚC (cờ LULU_STATE_ENABLED + allowlist pilot LULU_STATE_PSIDS):
+  // rút slot ngày/nhu cầu từ tin khách vào lulu_thread_state TRƯỚC khi build prompt
+  // để lượt này đọc được ngay. Fail-open: lỗi DB → hàm tự nuốt, bot chạy tiếp như cũ.
+  if (isLuluStateEnabledFor(psid)) {
     await applyIncomingMessage(psid, text);
   }
 
@@ -839,7 +839,7 @@ async function handleClaudeSaleReply(
     }
     // TRẠNG THÁI KHÁCH (trí nhớ có cấu trúc) → chèn khối nhắc vào context để Lulu không
     // hỏi lại ngày / không bung lại bảng giá đã báo. "" khi tắt cờ hoặc chưa có gì đáng nói.
-    if (isLuluStateEnabled()) {
+    if (isLuluStateEnabledFor(psid)) {
       threadState = await getThreadState(psid);
       const stateBlock = buildThreadStateBlock(threadState);
       if (stateBlock) context += `\n\n${stateBlock}`;
@@ -980,7 +980,7 @@ async function handleClaudeSaleReply(
     await markIncoming(escalationReason ? "claude_escalated_empty" : "claude_empty");
     // Tin chỉ-có-marker <<SAMPLE>> vẫn có thể ĐÃ gửi ảnh ở trên → ghi vào trí nhớ trước khi
     // return, kẻo sent_assets thiếu sự thật (consumer chống-lặp-ảnh sau này sẽ gửi lại).
-    if (isLuluStateEnabled() && sentSampleUrlsForState.length > 0) {
+    if (isLuluStateEnabledFor(psid) && sentSampleUrlsForState.length > 0) {
       await recordBotReply(psid, {
         action: "reply",
         askedDate: false,
@@ -1032,14 +1032,24 @@ async function handleClaudeSaleReply(
   // state ghi "đã hỏi" thừa — hướng lỗi bảo thủ (bot không hỏi lại), chấp nhận được.
   // quotedCodes = quotedCodesForState (chỉ mã bảng giá THẬT SỰ đến khách qua ảnh/link,
   // không phải mọi marker Claude đặt). Fail-open.
-  if (isLuluStateEnabled()) {
+  if (isLuluStateEnabledFor(psid)) {
+    const decidedAction = escalationReason ? "reply_escalated" : quotedCodesForState.length ? "quote" : "reply";
     await recordBotReply(psid, {
-      action: escalationReason ? "reply_escalated" : quotedCodesForState.length ? "quote" : "reply",
+      action: decidedAction,
       askedDate: botAsksDate(chunks.join("\n")),
       quotedCodes: quotedCodesForState,
       sampleUrls: sentSampleUrlsForState,
       priceGroupIds: sentPriceGroupIdsForState,
     });
+    // LOG QUYẾT ĐỊNH (mảnh cuối, ghép với [LuluState][in]/[out]): trạng thái lúc build
+    // prompt + hành động + câu trả lời cuối — đủ 5 trường soi lại từng lượt trên log.
+    console.log(
+      `[LuluState][decision] psid=${psid} stateAtPrompt=${JSON.stringify({
+        date: threadState?.slots.date_status ?? "unknown",
+        intent: threadState?.serviceIntent ?? null,
+        quoted: (threadState?.quotedPackages ?? []).map((p) => p.code),
+      })} action=${decidedAction} reply="${(chunks[0] ?? "").slice(0, 80).replace(/\n/g, " ")}" bubbles=${chunks.length}`,
+    );
   }
 
   // Tốc độ trả lời: delay theo độ dài tin KHÁCH (cấu hình + random ±30%). Áp dụng cho bubble đầu.

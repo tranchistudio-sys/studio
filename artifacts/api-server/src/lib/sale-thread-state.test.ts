@@ -8,6 +8,7 @@ import {
   mergeQuotedPackages,
   mergeSentAssets,
   buildThreadStateBlock,
+  simulateThreadStateFromHistory,
   type ThreadState,
 } from "./sale-thread-state";
 
@@ -91,5 +92,97 @@ describe("buildThreadStateBlock", () => {
     );
     expect(block).toContain("ST-LUXURY, CG-BASIC");
     expect(block).toContain("KHÔNG tự bung lại");
+  });
+});
+
+// ─── 9 tình huống nghiệm thu (Bước 5) — replay qua ĐÚNG bộ extractor luồng thật ───
+
+const NOW = new Date(2026, 6, 28, 10, 0, 0);
+type H = { direction: "incoming" | "outgoing"; message: string };
+const sim = (history: H[], quotedCodes: string[] = []) =>
+  simulateThreadStateFromHistory(history, { quotedCodes, now: NOW });
+
+describe("simulateThreadStateFromHistory — 9 tình huống nghiệm thu", () => {
+  it("1. Khách chưa biết ngày → not_decided, block cấm hỏi lại ngày", () => {
+    const s = sim([
+      { direction: "outgoing", message: "Anh dự định chụp khi nào ạ?" },
+      { direction: "incoming", message: "chưa biết ngày em ơi" },
+    ]);
+    expect(s.slots.date_status).toBe("not_decided");
+    expect(buildThreadStateBlock(s)).toContain("KHÔNG hỏi lại ngày");
+  });
+
+  it("2. Khách chỉ tham khảo giá (sau khi bot hỏi ngày) → not_decided + hướng báo giá tham khảo", () => {
+    const s = sim([
+      { direction: "outgoing", message: "Mình định chụp ngày nào ạ?" },
+      { direction: "incoming", message: "em chỉ tham khảo giá trước thôi" },
+    ]);
+    expect(s.slots.date_status).toBe("not_decided");
+    expect(buildThreadStateBlock(s)).toContain("GIÁ THAM KHẢO");
+  });
+
+  it("3. Khách đã cho ngày → known + block dùng đúng mốc", () => {
+    const s = sim([{ direction: "incoming", message: "bên mình chụp 20/12 nha" }]);
+    expect(s.slots.date_status).toBe("known");
+    expect(s.slots.event_date).toBe("2026-12-20");
+    expect(buildThreadStateBlock(s)).toContain("2026-12-20");
+  });
+
+  it("4. Bị hỏi ngày một lần chưa trả lời → block 'ĐÃ HỎI ngày', không lặp lại", () => {
+    const s = sim([
+      { direction: "outgoing", message: "Anh dự định chụp khi nào ạ?" },
+      { direction: "incoming", message: "cho em xem thêm mẫu beauty đi" },
+    ]);
+    expect(s.askedQuestions).toEqual([{ key: "ask_date", at: "(mô phỏng)", count: 1 }]);
+    expect(s.slots.date_status).toBeUndefined();
+    expect(buildThreadStateBlock(s)).toContain("ĐÃ HỎI ngày");
+  });
+
+  it("5. Khách đổi dịch vụ → intent theo tin MỚI nhất của khách", () => {
+    const s = sim([
+      { direction: "incoming", message: "em muốn chụp album cưới" },
+      { direction: "outgoing", message: "Dạ mình thích tone nào ạ?" },
+      { direction: "incoming", message: "à mà cho hỏi thuê váy cưới luôn" },
+    ]);
+    expect(s.serviceIntent).toBe("rental_outfit");
+  });
+
+  it("6. Khách hỏi thêm sau khi ĐÃ nhận bảng giá → block 'ĐÃ BÁO GIÁ', không bung lại", () => {
+    const s = sim(
+      [
+        { direction: "incoming", message: "chụp cổng giá sao em" },
+        { direction: "outgoing", message: "Dạ em gửi bảng giá mình xem nha" },
+        { direction: "incoming", message: "gói đó gồm những gì vậy" },
+      ],
+      ["CG-BASIC"],
+    );
+    expect(s.quotedPackages.map((p) => p.code)).toEqual(["CG-BASIC"]);
+    expect(buildThreadStateBlock(s)).toContain("ĐÃ BÁO GIÁ các gói: CG-BASIC");
+  });
+
+  it("7. Khách đã nhận ảnh mẫu → sent_assets ghi đủ URL", () => {
+    const s = sim([
+      { direction: "incoming", message: "cho xem mẫu chụp cổng đi em" },
+      { direction: "outgoing", message: "[image:https://cdn/x/a.jpg]" },
+      { direction: "outgoing", message: "[image:https://cdn/x/b.jpg]" },
+      { direction: "outgoing", message: "Dạ em gửi 2 mẫu gần mood nhất nha" },
+    ]);
+    expect(s.sentAssets.sample_urls).toEqual(["https://cdn/x/a.jpg", "https://cdn/x/b.jpg"]);
+  });
+
+  it("8. 'nhà em 2-3 người' KHÔNG thành ngày (kể cả sau khi bot hỏi ngày)", () => {
+    const s = sim([
+      { direction: "outgoing", message: "Anh dự định chụp khi nào ạ?" },
+      { direction: "incoming", message: "nhà em 2-3 người thôi" },
+    ]);
+    expect(s.slots.date_status).toBeUndefined();
+  });
+
+  it("9. 'bé 3 tháng 10 ngày' KHÔNG thành ngày chụp", () => {
+    const s = sim([{ direction: "incoming", message: "bé nhà em được 3 tháng 10 ngày, chụp gói nào" }]);
+    expect(s.slots.date_status).toBeUndefined();
+    // Intent bảo thủ: câu này chưa đủ tín hiệu nhóm ("bé" không nằm trong FAMILY_RE) → null,
+    // Lulu sẽ hỏi lại nhu cầu — đúng hướng an toàn, không đoán bừa.
+    expect(s.serviceIntent).toBeNull();
   });
 });

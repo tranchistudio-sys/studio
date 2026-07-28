@@ -1,7 +1,7 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { pool } from "@workspace/db";
 import { verifyToken } from "./auth";
-import { callChat } from "../lib/ai-orchestrator";
+import { callChat, resolveTestProviderOverride } from "../lib/ai-orchestrator";
 import { DEFAULT_BRAIN_RULES } from "../lib/claude-sale";
 import { simulateReply } from "../lib/sale-brain-runner";
 import {
@@ -292,6 +292,7 @@ router.post("/lulu-brain/ai-draft", async (req, res) => {
       maxTokens: 4096,            // ~8K ký tự ≈ 3K token → 4096 đủ (repro xác nhận); 8192 từng gây lỗi
       timeoutMs: 150000,          // viết lại toàn bộ bộ luật mất 15-90s → vượt timeout mặc định 12s
       label: "brain-lab-draft",   // KHÔNG jsonMode (Claude bỏ qua; chỉ OpenAI dùng) — parse JSON ở dưới
+      claudeOverride: resolveTestProviderOverride(), // TEST-ONLY: ShopAIKey nếu bật cờ; undefined = Anthropic
     });
     if (!result.ok) {
       const detail = (result as { adminAlert?: string }).adminAlert ?? result.reason;
@@ -481,6 +482,7 @@ router.post("/lulu-brain/analyze-screenshot", async (req, res) => {
       timeoutMs: 45000,           // vision đọc ảnh ~5-30s
       jsonMode: true,             // OpenAI fallback dùng; Claude bỏ qua → parse JSON-substring bên dưới
       label: "brain-lab-analyze",
+      claudeOverride: resolveTestProviderOverride(), // TEST-ONLY: ShopAIKey nếu bật cờ; undefined = Anthropic
     });
     if (!result.ok) {
       const detail = (result as { adminAlert?: string }).adminAlert ?? result.reason;
@@ -536,7 +538,8 @@ router.post("/lulu-brain/test", async (req, res) => {
     // Override của bản ĐANG CHẠY THẬT (để cột so sánh "Đang chạy" cũng đúng với thực tế).
     const activeOverrides = b.compareWithActive !== false ? await getActiveImageOverrides() : [];
 
-    const common = { message, prior, imageBase64: b.imageBase64, imageMediaType: b.imageMediaType };
+    // TEST-ONLY: Brain Lab test tab dùng ShopAIKey nếu bật cờ; undefined = Anthropic như cũ.
+    const common = { message, prior, imageBase64: b.imageBase64, imageMediaType: b.imageMediaType, providerOverride: resolveTestProviderOverride() };
     // Chạy song song: bản nháp (nếu có) + bản đang chạy thật (để so sánh — TAB 4).
     const [draft, active] = await Promise.all([
       draftRules != null ? simulateReply({ ...common, brainRules: draftRules, imageOverrides: draftOverrides }) : Promise.resolve(null),

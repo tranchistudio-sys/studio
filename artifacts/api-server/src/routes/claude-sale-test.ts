@@ -2,6 +2,7 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { pool } from "@workspace/db";
 import { verifyToken } from "./auth";
 import { askClaudeForReply, resolveModel, type ClaudeHistoryItem } from "../lib/claude-sale";
+import { resolveTestProviderOverride } from "../lib/ai-orchestrator";
 import { getSaleContext, getSaleContextInfo, resolvePriceImagesByCodes, wantsNewConcept, getPhotoIdeasBlock } from "../lib/sale-context";
 import { classifyCustomerImageFromData, buildImageRoutingBlock } from "../lib/sale-vision";
 import { selectSampleImages, extractRecentSampleUrls, SAMPLES_EXHAUSTED_NOTE } from "../lib/sale-samples";
@@ -166,6 +167,8 @@ router.post("/claude-sale-test/chat", async (req, res) => {
     if (settings.calendarEnabled) {
       try { scheduleContext = await getScheduleContext(settings.calWindowDays); } catch { /* bỏ qua */ }
     }
+    // TEST-ONLY: sân test dùng ShopAIKey nếu bật cờ (LULU_TEST_PROVIDER=shopaikey). undefined = Anthropic như cũ.
+    const testOverride = resolveTestProviderOverride();
     const reply = await askClaudeForReply({
       apiKey,
       model,
@@ -177,6 +180,7 @@ router.post("/claude-sale-test/chat", async (req, res) => {
       settings,
       scheduleContext,
       brainRules,
+      providerOverride: testOverride,
     });
     const responseTimeMs = Date.now() - startedAt;
     // Ảnh bảng giá nhóm (theo marker <<PRICE_IMAGE: MÃ>> của Claude) → trả objectPath
@@ -269,6 +273,9 @@ router.post("/claude-sale-test/chat", async (req, res) => {
       raw: reply.raw,
       replyText: reply.raw,
       model,
+      // TEST-ONLY: provider + model THỰC TẾ đã trả lời (panel/log biết đang chạy ShopAIKey hay Anthropic).
+      provider: testOverride?.label ?? "anthropic",
+      aiModelUsed: reply.modelUsed ?? model,
       responseTimeMs,
       // Delay cấu hình theo độ dài tin khách (để sân test mô phỏng đúng tốc độ Fanpage).
       replyDelayMs: computeReplyDelayMs(incomingText, settings),

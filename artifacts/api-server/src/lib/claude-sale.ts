@@ -7,7 +7,7 @@ import {
   PRICE_IMAGE_MARKER_RE,
   SAMPLE_IMAGE_MARKER_RE,
 } from "./sale-settings";
-import { callChat, type ChatMessage } from "./ai-orchestrator";
+import { callChat, type ChatMessage, type ClaudeProviderOverride } from "./ai-orchestrator";
 import { ALL_FAILED_CUSTOMER_MESSAGE, type AiProviderName } from "./ai-provider";
 import { formatLuluHumanChatMessages, type LuluChatChunk } from "./sale-human-chat";
 import { inferKnownIntent, buildAntiDriftRule } from "./sale-conversation-discipline";
@@ -29,6 +29,8 @@ export type AskClaudeInput = {
   /** Không còn dùng trực tiếp — tổng đài (ai-orchestrator) tự đọc key theo provider. Giữ để tương thích caller cũ. */
   apiKey?: string;
   model?: string;
+  /** TEST-ONLY: override provider Claude (ShopAIKey) — CHỈ route sân test/admin truyền. Messenger KHÔNG. */
+  providerOverride?: ClaudeProviderOverride;
   customerMessage: string;
   customerName?: string | null;
   history: ClaudeHistoryItem[];
@@ -65,6 +67,8 @@ export type ClaudeReply = {
   sampleIntents: string[];
   /** Provider thực tế đã trả lời (null nếu tất cả lỗi → cần nhân viên). */
   providerUsed: AiProviderName | null;
+  /** Model thực tế đã trả lời (để sân test hiển thị). null nếu tất cả lỗi. */
+  modelUsed?: string | null;
   /** true nếu provider chính lỗi và đã fallback sang provider khác. */
   fallbackUsed: boolean;
   /** Lý do fallback, vd "claude_timeout" (null nếu không fallback). */
@@ -317,6 +321,7 @@ export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeRe
     maxTokens: 1024,
     label: "sale",
     ...(input.model && input.model.trim() ? { modelOverride: { claude: input.model.trim() } } : {}),
+    ...(input.providerOverride ? { claudeOverride: input.providerOverride } : {}),
   });
 
   // Tất cả provider lỗi (hoặc lỗi cấu hình/safety) → KHÔNG im lặng: câu chuyển nhân viên + escalation.
@@ -337,6 +342,7 @@ export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeRe
       sampleRequested: false,
       sampleIntents: [],
       providerUsed: null,
+      modelUsed: null,
       fallbackUsed: false,
       fallbackReason: null,
     };
@@ -400,6 +406,7 @@ export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeRe
     sampleRequested,
     sampleIntents,
     providerUsed: result.providerUsed,
+    modelUsed: result.modelUsed,
     fallbackUsed: result.fallbackUsed,
     fallbackReason: result.fallbackReason,
   };

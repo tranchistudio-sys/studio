@@ -43,6 +43,9 @@ import {
   isThreadLockEnabled, threadDebounceMs, latestIncomingId, isSuperseded,
   markDecisionById, withThreadLock,
 } from "../lib/sale-thread-lock";
+import {
+  isLuluNotifyEnabled, botOffKey, newLeadKey, phoneKey, apptKey, escKey, errorKey,
+} from "../lib/sale-notify";
 import { emitNotification } from "./notifications";
 import multer from "multer";
 import { randomUUID } from "crypto";
@@ -450,6 +453,29 @@ export async function processIncomingFacebookMessage(
     myMsgId = await latestIncomingId(psid);
   }
 
+  // KHÁCH MỚI lần đầu nhắn page (PR-B, cờ LULU_NOTIFY_ENABLED): phát hiện bằng "không có
+  // tin incoming nào CŨ HƠN" — đúng cho mọi đường vào (text/ảnh/postback), không phụ thuộc
+  // nơi tạo lead. Dedupe TRỌN ĐỜI theo psid. Fail-open.
+  if (isLuluNotifyEnabled() && myMsgId != null) {
+    try {
+      const older = await pool.query(
+        `SELECT 1 FROM fb_inbox_messages WHERE facebook_user_id = $1 AND direction = 'incoming' AND id < $2 LIMIT 1`,
+        [psid, myMsgId],
+      );
+      if (older.rows.length === 0) {
+        emitNotification({
+          staffId: null,
+          type: "lulu_new_lead",
+          priority: "normal",
+          title: "🆕 Khách MỚI nhắn page",
+          message: `Tin đầu tiên: "${text.slice(0, 80)}"`,
+          targetModule: "facebook-inbox-ai",
+          dedupeKey: newLeadKey(psid),
+        });
+      }
+    } catch { /* fail-open — notify không được làm chậm/chết luồng trả lời */ }
+  }
+
   const cfg = await getConfig();
 
   // Tạo lead nếu chưa có
@@ -539,8 +565,35 @@ export async function processIncomingFacebookMessage(
   const aiMode = lead?.ai_mode ?? "active";
 
   // Cờ AI tự ghi (Monitor) — cập nhật bất kể AI có trả lời hay không. Read-only với CRM.
-  if (detectPhone(text)) markPhoneCaptured(psid).catch(() => {});
-  if (detectAppointmentIntent(text)) markAppointmentIntent(psid).catch(() => {});
+  // PR-B: kèm notification lead nóng (chống spam bằng dedupe key theo ngày).
+  if (detectPhone(text)) {
+    markPhoneCaptured(psid).catch(() => {});
+    if (isLuluNotifyEnabled()) {
+      emitNotification({
+        staffId: null,
+        type: "lulu_phone_captured",
+        priority: "high",
+        title: "📞 Khách để lại SĐT — gọi ngay",
+        message: `${lead?.name ?? `FB …${psid.slice(-4)}`}: "${text.slice(0, 80)}"`,
+        targetModule: "facebook-inbox-ai",
+        dedupeKey: phoneKey(psid, new Date()),
+      });
+    }
+  }
+  if (detectAppointmentIntent(text)) {
+    markAppointmentIntent(psid).catch(() => {});
+    if (isLuluNotifyEnabled()) {
+      emitNotification({
+        staffId: null,
+        type: "lulu_booking_intent",
+        priority: "high",
+        title: "🗓️ Khách muốn ĐẶT LỊCH",
+        message: `${lead?.name ?? `FB …${psid.slice(-4)}`}: "${text.slice(0, 80)}"`,
+        targetModule: "facebook-inbox-ai",
+        dedupeKey: apptKey(psid, new Date()),
+      });
+    }
+  }
 
   // TRÍ NHỚ CÓ CẤU TRÚC (cờ LULU_STATE_ENABLED + allowlist pilot LULU_STATE_PSIDS):
   // rút slot ngày/nhu cầu từ tin khách vào lulu_thread_state TRƯỚC khi build prompt
@@ -596,6 +649,19 @@ export async function processIncomingFacebookMessage(
   }
   // MỌI trường hợp còn lại (master tắt HOẶC lead không 'active') → KHÔNG trả lời.
   // Tin & lead đã lưu ở trên; chỉ ghi lý do. Không rơi xuống bot ChatGPT cũ.
+  // PR-B: BOT ĐANG TẮT mà khách nhắn → báo người trực NGAY (gốc vụ 5 khách treo 7 ngày).
+  // Chỉ báo khi master TẮT — paused/takeover nghĩa là NGƯỜI THẬT đang chăm, không dội noti.
+  if (!masterOn && isLuluNotifyEnabled()) {
+    emitNotification({
+      staffId: null,
+      type: "lulu_bot_off_message",
+      priority: "high",
+      title: "⚠️ BOT ĐANG TẮT — khách nhắn không được trả lời",
+      message: `${lead?.name ?? `FB …${psid.slice(-4)}`}: "${text.slice(0, 80)}" — cần người trực inbox rep tay.`,
+      targetModule: "facebook-inbox-ai",
+      dedupeKey: botOffKey(psid, new Date()),
+    });
+  }
   await pool.query(
     `UPDATE fb_inbox_messages SET ai_decision = $1
      WHERE id = (SELECT id FROM fb_inbox_messages WHERE facebook_user_id = $2 AND direction = 'incoming' ORDER BY id DESC LIMIT 1)`,
@@ -910,6 +976,18 @@ async function handleClaudeSaleReply(
   } catch (err) {
     console.error(`[Claude] psid=${psid} lỗi gọi Claude:`, err);
     await markIncoming("claude_error");
+    // PR-B: lỗi nghiêm trọng khiến Lulu KHÔNG trả lời được — báo admin (1 noti/giờ toàn hệ).
+    if (isLuluNotifyEnabled()) {
+      emitNotification({
+        staffId: null,
+        type: "lulu_error",
+        priority: "high",
+        title: "🔥 Lulu lỗi — khách không được trả lời",
+        message: `psid=${psid}: ${String(err).slice(0, 140)}. Kiểm tra log + trực inbox tay.`,
+        targetModule: "facebook-inbox-ai",
+        dedupeKey: errorKey(new Date()),
+      });
+    }
     return;
   }
 
@@ -960,6 +1038,19 @@ async function handleClaudeSaleReply(
       await escalateToHuman(psid, lead?.name, escalationReason);
     } else {
       await markNeedsHuman(psid, escalationReason);
+      // PR-B: lỗ hổng cũ — nhánh autoPause=false tạo báo đỏ mà KHÔNG notify ai (nhân viên
+      // chỉ thấy khi tự mở trang). Bổ sung notify cùng dedupe key với escalateToHuman.
+      if (isLuluNotifyEnabled()) {
+        emitNotification({
+          staffId: null,
+          type: "claude_sale_escalation",
+          priority: "high",
+          title: "🔴 Lulu cần người tiếp quản (báo đỏ mới)",
+          message: `${lead?.name ?? `FB …${psid.slice(-4)}`}: ${escalationReason}`,
+          targetModule: "facebook-inbox-ai",
+          dedupeKey: escKey(psid, new Date()),
+        });
+      }
     }
     console.log(`[Claude] psid=${psid} HUMAN REVIEW (hr=${hr.id}, created=${hr.created}): ${escalationReason}`);
     return;
@@ -1136,6 +1227,8 @@ async function escalateToHuman(psid: string, leadName: string | undefined, reaso
     title: "Claude Sale cần người tiếp quản",
     message: `${who}: ${reason}. AI đã tạm dừng ở hội thoại này, cần nhân viên xác nhận/xử lý.`,
     targetModule: "facebook-inbox-ai",
+    // PR-B: trước đây KHÔNG dedupe — mỗi lần escalate cùng khách là 1 noti mới. 1/khách/ngày.
+    dedupeKey: escKey(psid, new Date()),
   });
   console.log(`[Claude] psid=${psid} ESCALATE → takeover + notify: ${reason}`);
 }

@@ -4,6 +4,9 @@ import { crmLeadsTable, settingsTable } from "@workspace/db/schema";
 import { eq, inArray } from "drizzle-orm";
 import { processIncomingFacebookMessage, ensureFbInboxTable } from "./fb-inbox";
 import { logWebhookEvent as logEvent } from "./webhook-log";
+import {
+  isPostbackEnabled, extractPostbackText, extractOptinText, buildPostbackPseudoMid,
+} from "../lib/webhook-events";
 
 const router: IRouter = Router();
 
@@ -154,6 +157,37 @@ router.post("/webhook/facebook", async (req, res) => {
         // is_echo: cờ FB gắn cho mọi message echo (không phụ thuộc activePageId)
         const isEcho: boolean = msg?.is_echo === true;
         const isPageMessage = isEcho || (!!activePageId && senderId === activePageId);
+
+        // POSTBACK / OPTIN (khách bấm nút Click-to-Messenger, ice-breaker, Get Started,
+        // opt-in checkbox) — event KHÔNG có message.text nên trước đây RƠI hoàn toàn.
+        // Cờ WEBHOOK_POSTBACK_ENABLED (mặc định TẮT). Dedupe qua PSEUDO-MID ổn định
+        // (Meta giao at-least-once) — tái dùng unique index idx_fb_inbox_mid.
+        const postback = e.postback as Record<string, unknown> | undefined;
+        const optin = e.optin as Record<string, unknown> | undefined;
+        if (!isPageMessage && senderId && (postback || optin) && isPostbackEnabled()) {
+          try {
+            const pbText = postback ? extractPostbackText(postback) : extractOptinText(optin);
+            const pseudoMid = buildPostbackPseudoMid(
+              senderId,
+              e.timestamp,
+              postback?.payload ?? optin?.ref ?? pbText,
+            );
+            logEvent({
+              at: new Date().toISOString(),
+              type: "message",
+              summary: `🔘 [${senderId}] ${postback ? "postback" : "optin"}: "${pbText.slice(0, 60)}"`,
+              psid: senderId,
+            });
+            // processIncomingFacebookMessage tự: insert (dedupe mid) + tạo lead + trả lời bot.
+            processIncomingFacebookMessage(senderId, pbText, pseudoMid, activePageId).catch((err) => {
+              console.error("[CRM] processIncomingFacebookMessage (postback) error:", err);
+            });
+          } catch (err) {
+            // Event dị dạng không được làm rơi các event khác trong cùng batch.
+            console.error("[CRM] postback/optin xử lý lỗi (bỏ qua event này):", String(err).slice(0, 200));
+          }
+          continue;
+        }
 
         // Xử lý attachment ảnh từ khách (khi không có text)
         if (!text && !isPageMessage && senderId) {

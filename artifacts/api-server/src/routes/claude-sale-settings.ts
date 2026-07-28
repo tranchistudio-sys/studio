@@ -10,7 +10,8 @@ import {
   buildCalendarRulesBlock,
   type ClaudeSaleSettings,
 } from "../lib/sale-settings";
-import { getMasterEnabled, setMasterEnabled } from "../lib/sale-master";
+import { getMasterEnabled, setMasterEnabled, getMasterMeta } from "../lib/sale-master";
+import { emitNotification } from "./notifications";
 import { getMonitorStats, getMonitorLeads, clearNeedsHuman } from "../lib/sale-lead-flags";
 import { scanReengageCandidates } from "../lib/sale-reengage";
 import { getSaleContext } from "../lib/sale-context";
@@ -29,7 +30,10 @@ import {
 
 /**
  * Module "Cài đặt Claude Sale" + Monitor + Follow-up khách cũ.
- * Tất cả endpoint CHỈ admin. KHÔNG đụng booking/tài chính/CRM-logic/khách hàng.
+ * PHÂN QUYỀN THẬT (comment cũ "tất cả CHỈ admin" là SAI): đa số endpoint mở cho MỌI
+ * staff đăng nhập (quyết định chủ studio); CHỈ admin: /ai-provider và /master
+ * (cầu dao tổng — sau sự cố 28/06 bot bị tắt không truy được ai).
+ * KHÔNG đụng booking/tài chính/CRM-logic/khách hàng.
  */
 
 const router: IRouter = Router();
@@ -113,14 +117,32 @@ router.get("/claude-sale/settings/prompt-preview", async (req, res) => {
 
 router.get("/claude-sale/master", async (req, res) => {
   if (!(await requireAuth(req, res))) return;
-  res.json({ enabled: await getMasterEnabled() });
+  // lastChanged: ai bật/tắt lần cuối, lúc nào — hiển thị cạnh công tắc.
+  res.json({ enabled: await getMasterEnabled(), lastChanged: await getMasterMeta() });
 });
 
+// CẦU DAO TỔNG — CHỈ ADMIN (siết lại sau sự cố 28/06: bot bị tắt bởi ai đó không truy
+// được; trước đây mọi staff bấm được). Mỗi lần bấm: ghi audit + notification broadcast.
 router.put("/claude-sale/master", async (req, res) => {
-  if (!(await requireAuth(req, res))) return;
+  const callerId = await requireAdmin(req, res);
+  if (!callerId) return;
   const enabled = !!(req.body as { enabled?: boolean }).enabled;
-  await setMasterEnabled(enabled);
-  res.json({ enabled });
+  let callerName: string | null = null;
+  try {
+    const r = await pool.query(`SELECT name FROM staff WHERE id = $1`, [callerId]);
+    callerName = (r.rows[0] as { name?: string } | undefined)?.name ?? null;
+  } catch { /* tên chỉ để audit — lỗi thì ghi null */ }
+  await setMasterEnabled(enabled, { staffId: callerId, name: callerName });
+  emitNotification({
+    staffId: null, // broadcast — mọi người cần biết bot vừa bật/tắt
+    senderStaffId: callerId,
+    type: "claude_sale_master_changed",
+    priority: "high",
+    title: enabled ? "Lulu Sale Bot: ĐÃ BẬT" : "Lulu Sale Bot: ĐÃ TẮT",
+    message: `${callerName ?? `Staff #${callerId}`} vừa ${enabled ? "BẬT" : "TẮT"} cầu dao tổng chatbot.${enabled ? "" : " Khách nhắn trong lúc tắt sẽ KHÔNG được trả lời tự động — cần người trực inbox."}`,
+    targetModule: "facebook-inbox-ai",
+  });
+  res.json({ enabled, lastChanged: await getMasterMeta() });
 });
 
 // ─── Monitor ──────────────────────────────────────────────────────────────────

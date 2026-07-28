@@ -31,10 +31,42 @@ export async function getMasterEnabled(): Promise<boolean> {
   }
 }
 
-export async function setMasterEnabled(enabled: boolean): Promise<void> {
+// AUDIT: ai bật/tắt, lúc nào — sự cố 28/06 (bot bị tắt, 5 khách treo 7 ngày) không truy
+// được thủ phạm vì switch không ghi vết. Lưu ở settings key riêng (KV — không cần DDL).
+const META_KEY = "claude_sale_master_meta";
+
+export type MasterMeta = { enabled: boolean; byStaffId: number | null; byName: string | null; at: string };
+
+export async function getMasterMeta(): Promise<MasterMeta | null> {
+  try {
+    const r = await pool.query(`SELECT value FROM settings WHERE key = $1 LIMIT 1`, [META_KEY]);
+    if (r.rows.length === 0) return null;
+    const v = JSON.parse(String(r.rows[0].value ?? "null")) as MasterMeta | null;
+    return v && typeof v === "object" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function setMasterEnabled(
+  enabled: boolean,
+  by?: { staffId: number | null; name: string | null },
+): Promise<void> {
   await pool.query(
     `INSERT INTO settings (key, value) VALUES ($1, $2)
      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
     [KEY, enabled ? "1" : "0"],
   );
+  const meta: MasterMeta = {
+    enabled,
+    byStaffId: by?.staffId ?? null,
+    byName: by?.name ?? null,
+    at: new Date().toISOString(),
+  };
+  await pool.query(
+    `INSERT INTO settings (key, value) VALUES ($1, $2)
+     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+    [META_KEY, JSON.stringify(meta)],
+  ).catch((err) => console.error("[ClaudeSale] ghi master meta lỗi (switch vẫn đã đổi):", String(err).slice(0, 120)));
+  console.log(`[ClaudeSale] master ${enabled ? "BẬT" : "TẮT"} bởi staff#${meta.byStaffId ?? "?"} ${meta.byName ?? ""} lúc ${meta.at}`);
 }

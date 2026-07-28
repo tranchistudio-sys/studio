@@ -6,7 +6,10 @@ const NOW = new Date(2026, 6, 28, 10, 0, 0);
 
 describe("detectDateSlot — khách CHƯA CHỐT ngày", () => {
   it("cụm MẠNH tự nhắc ngày → not_decided kể cả khi bot chưa hỏi", () => {
-    for (const msg of ["Chưa biết ngày.", "chua biet ngay nha em", "Không cần ngày đâu, cho mình xin giá trước"]) {
+    for (const msg of [
+      "Chưa biết ngày.", "chua biet ngay nha em", "Không cần ngày đâu, cho mình xin giá trước",
+      "khi nào có ngày em báo nha", "khi nao co ngay chi bao em",
+    ]) {
       const r = detectDateSlot(msg, { botAskedDate: false, now: NOW });
       expect(r?.status, msg).toBe("not_decided");
     }

@@ -14,6 +14,12 @@ import { getMasterEnabled } from "../lib/sale-master";
 import { detectEscalation } from "../lib/sale-lead-flags";
 import { HOLD_MESSAGE, imageEscalationReason } from "../lib/sale-human-review";
 import { simulateThreadStateFromHistory, buildThreadStateBlock } from "../lib/sale-thread-state";
+import { routeSaleAction } from "../lib/sale-workflow";
+import { validateSaleReply, type CatalogItem } from "../lib/sale-workflow-validator";
+import { detectDateSlot } from "../lib/sale-slots";
+import { detectServiceIntentFromText } from "../lib/sale-samples";
+import { auditPackages, pkgDiscountCfg, groupDiscountCfg } from "../lib/sale-context";
+import { resolveDiscount } from "../lib/pricing-discount";
 
 /**
  * KARU / Claude Sale Test — sân test nội bộ cho admin.
@@ -138,6 +144,21 @@ router.post("/claude-sale-test/chat", async (req, res) => {
     const stateBlock = buildThreadStateBlock(simState);
     if (stateBlock) context += `\n\n${stateBlock}`;
 
+    // DEBUG TRACE (shadow mode): tính từng tầng của pipeline để admin thấy "vì sao Lulu nói
+    // câu này" — Router/Validator V1 CHƯA ép câu trả lời (chỉ quan sát), đúng chỉ đạo
+    // "State ổn mới bật Router+Validator".
+    const stateBefore = simulateThreadStateFromHistory(prior, { quotedCodes: simQuotedCodes });
+    const botAskedDateBefore = stateBefore.askedQuestions.some((q) => q.key === "ask_date");
+    const extractedSlots = {
+      dateSlot: detectDateSlot(incomingText, { botAskedDate: botAskedDateBefore }),
+      serviceIntent: incomingText.startsWith("[image:") ? null : detectServiceIntentFromText(incomingText),
+    };
+    const routerDecision = routeSaleAction({
+      customerMessage: incomingText,
+      threadState: simState,
+      isFirstContact: prior.length === 0,
+    });
+
     const styleGuide = await getActivePlaybook();
     const brainRules = await getActiveBrainRules();
     const settings = await getClaudeSaleSettings();
@@ -219,6 +240,28 @@ router.post("/claude-sale-test/chat", async (req, res) => {
       || imageEscalationReason(imageIntent, settings.lowConfidenceThreshold);
     const wouldEscalate = !!escalationReason && settings.humanReviewEnabled;
 
+    // ── VALIDATOR (shadow): chấm câu trả lời THẬT của LLM trên catalog giá thật ──
+    // Lỗi dựng catalog → bỏ qua check giá (fail-open, không chặn oan) — bench chỉ hiển thị.
+    let validatorResult: ReturnType<typeof validateSaleReply>;
+    try {
+      let catalog: CatalogItem[] | undefined;
+      try {
+        const { kept } = await auditPackages();
+        catalog = kept.map((r) => {
+          const d = resolveDiscount({ basePrice: r.price, pkg: pkgDiscountCfg(r), group: groupDiscountCfg(r) });
+          return {
+            code: (r.code ?? "").trim().toUpperCase(),
+            name: r.pkg_name,
+            price: Math.round(Number(r.price)),
+            finalPrice: d.discountApplied ? Math.round(Number(d.finalPrice)) : null,
+          };
+        });
+      } catch { catalog = undefined; }
+      validatorResult = validateSaleReply({ threadState: simState, decision: routerDecision, reply: reply.raw, catalog });
+    } catch {
+      validatorResult = { verdict: "PASS" };
+    }
+
     return res.json({
       reply: reply.messages.length > 0 ? reply.messages : reply.raw ? [reply.raw] : ["(Claude không trả về nội dung)"],
       // Bong bóng có nhịp (human chat pacing) — FE render tuần tự theo delayMs.
@@ -248,6 +291,32 @@ router.post("/claude-sale-test/chat", async (req, res) => {
       sampleNote,
       // Kết quả AI Vision (DEV MODE) — null nếu khách không gửi ảnh.
       imageIntent,
+      // DEBUG TRACE (DEV MODE, shadow): toàn bộ pipeline từng tầng — khi Lulu trả lời sai,
+      // nhìn trace biết sai Ở TẦNG NÀO (extractor / state / router / LLM / validator),
+      // không sửa prompt theo cảm giác.
+      trace: {
+        shadowMode: true, // Router/Validator chỉ QUAN SÁT — chưa ép câu trả lời
+        message: incomingText,
+        extractedSlots,
+        stateBefore: {
+          dateStatus: stateBefore.slots.date_status ?? "unset",
+          serviceIntent: stateBefore.serviceIntent,
+          askedQuestions: stateBefore.askedQuestions,
+          quotedPackages: stateBefore.quotedPackages.map((p) => p.code),
+        },
+        // State SAU khi nuốt tin khách, TRƯỚC câu trả lời bot lượt này — hành động bot
+        // (câu hỏi ngày / gói vừa báo) chỉ vào state ở lượt kế tiếp (FE cộng dồn quotedCodes).
+        stateAfterIncoming: {
+          dateStatus: simState.slots.date_status ?? "unset",
+          eventDate: simState.slots.event_date ?? null,
+          serviceIntent: simState.serviceIntent,
+          askedQuestions: simState.askedQuestions,
+          quotedPackages: simState.quotedPackages.map((p) => p.code),
+        },
+        routerDecision,
+        knowledgeUsed: routerDecision.knowledgeNeeded,
+        validator: validatorResult,
+      },
       // TRÍ NHỚ MÔ PHỎNG (DEV MODE): state suy từ history + khối đã chèn vào prompt —
       // admin nghiệm thu hành vi trí nhớ (không hỏi lại ngày, không bung lại bảng giá...).
       threadState: {

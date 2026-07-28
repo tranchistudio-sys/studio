@@ -1,4 +1,5 @@
 import { askClaudeForReply, resolveModel, type ClaudeHistoryItem } from "./claude-sale";
+import { type ClaudeProviderOverride } from "./ai-orchestrator";
 import { formatLuluHumanChatMessages, splitExactReplyMessages, type LuluChatChunk } from "./sale-human-chat";
 import {
   getSaleContext, resolvePriceImagesByCodes, wantsNewConcept, getPhotoIdeasBlock,
@@ -46,6 +47,8 @@ export type SimulateInput = {
   brainRules?: string | null;
   /** Override ảnh "admin dạy" của version đang test (rulesJson.imageOverrides). Rỗng → không thay ảnh. */
   imageOverrides?: ImageOverride[] | null;
+  /** TEST-ONLY: override provider Claude (ShopAIKey) cho Brain Lab. undefined = Anthropic như cũ. */
+  providerOverride?: ClaudeProviderOverride;
 };
 
 export type SimulateResult = {
@@ -145,6 +148,7 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
     settings,
     scheduleContext,
     brainRules: input.brainRules ?? null,
+    providerOverride: input.providerOverride,
   });
   const responseTimeMs = Date.now() - startedAt;
 

@@ -16,6 +16,12 @@ import {
 // Re-export để các importer cũ của ChatMessage từ module này vẫn chạy nguyên vẹn.
 export type { ChatMessage, ChatImage } from "./ai-message-builders";
 
+// TEST-ONLY override (ShopAIKey) — định nghĩa ở module THUẦN (không import db) để unit-test được.
+// Re-export tại đây để các importer cũ (routes/claude-sale) không phải đổi đường import.
+import { type ClaudeProviderOverride, resolveTestProviderOverride, buildClaudeClientOptions } from "./ai-test-provider";
+export { resolveTestProviderOverride, buildClaudeClientOptions } from "./ai-test-provider";
+export type { ClaudeProviderOverride } from "./ai-test-provider";
+
 /**
  * TỔNG ĐÀI AI (provider fallback) — lõi dùng chung cho mọi chatbot/assistant.
  *
@@ -46,6 +52,9 @@ export type ChatRequest = {
   modelOverride?: Partial<Record<AiProviderName, string>>;
   /** Nhãn để log (vd "fb-messenger", "website-advisor", "copilot"). */
   label?: string;
+  /** TEST-ONLY: ép client Claude sang provider khác (vd ShopAIKey) cho route sân test/admin.
+   *  undefined = provider production (ANTHROPIC_API_KEY, base URL Anthropic). fb-inbox KHÔNG set. */
+  claudeOverride?: ClaudeProviderOverride;
 };
 
 export type ErrorClass =
@@ -134,10 +143,11 @@ function resolveModelFor(provider: AiProviderName, req: ChatRequest): string {
 // ─── Adapter từng provider (cùng khuôn: nhận system+messages → text) ──────────
 
 async function callClaude(apiKey: string, model: string, req: ChatRequest, timeoutMs: number): Promise<string> {
-  const client = new Anthropic({ apiKey, maxRetries: 0, timeout: timeoutMs });
+  const client = new Anthropic(buildClaudeClientOptions(apiKey, req.claudeOverride, timeoutMs));
+  const useModel = req.claudeOverride?.model?.trim() || model;
   try {
     const resp = await client.messages.create({
-      model,
+      model: useModel,
       max_tokens: req.maxTokens ?? 1024,
       system: req.system,
       messages: buildClaudeMessages(req.messages),
@@ -220,14 +230,17 @@ async function callOneProvider(
 
 export async function callChat(req: ChatRequest): Promise<AiChatResult> {
   const cfg = await getAiProviderConfig();
-  const chain = resolveProviderChain(cfg);
+  // TEST-ONLY: có override (ShopAIKey) → CHỈ chạy provider claude với client override, KHÔNG fallback,
+  // để sân test hiện đúng kết quả/lỗi ShopAIKey (không lẫn sang OpenAI). Production: chain như cũ.
+  const chain = req.claudeOverride ? (["claude"] as AiProviderName[]) : resolveProviderChain(cfg);
   const attempts: AiAttempt[] = [];
   const startAll = Date.now();
   const lbl = req.label ? `[${req.label}] ` : "";
 
   for (let i = 0; i < chain.length; i++) {
     const provider = chain[i];
-    const apiKey = await resolveApiKey(provider);
+    // Với override, slot 'claude' dùng key ShopAIKey (không phụ thuộc ANTHROPIC_API_KEY).
+    const apiKey = provider === "claude" && req.claudeOverride ? req.claudeOverride.apiKey : await resolveApiKey(provider);
 
     if (!apiKey) {
       attempts.push({ provider, ok: false, latencyMs: 0, errorClass: "no_key", errorMsg: `${provider} chưa cấu hình key` });
@@ -235,7 +248,9 @@ export async function callChat(req: ChatRequest): Promise<AiChatResult> {
       continue;
     }
 
-    const model = resolveModelFor(provider, req);
+    const model = provider === "claude" && req.claudeOverride?.model?.trim()
+      ? req.claudeOverride.model.trim()
+      : resolveModelFor(provider, req);
     const timeoutMs = req.timeoutMs && req.timeoutMs > 0 ? req.timeoutMs : cfg.timeoutMs;
     let lastErr: ProviderError | null = null;
 

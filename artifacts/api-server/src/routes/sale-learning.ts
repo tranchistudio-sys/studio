@@ -3,6 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { pool } from "@workspace/db";
 import { verifyToken } from "./auth";
 import { resolveModel } from "../lib/claude-sale";
+import { resolveTestProviderOverride } from "../lib/ai-orchestrator";
 import { ensureSalePlaybookTable, clearPlaybookCache } from "../lib/sale-playbook";
 
 /**
@@ -145,8 +146,10 @@ router.post("/sale-learning/scan", async (req, res) => {
 router.post("/sale-learning/generate", async (req, res) => {
   const caller = await requireAdmin(req, res);
   if (!caller) return;
+  // TEST-ONLY: dùng ShopAIKey nếu bật cờ; undefined = Anthropic như cũ.
+  const testOverride = resolveTestProviderOverride();
   const apiKey = (process.env.ANTHROPIC_API_KEY ?? "").trim();
-  if (!apiKey) return res.status(400).json({ error: "Chưa cấu hình ANTHROPIC_API_KEY" });
+  if (!testOverride && !apiKey) return res.status(400).json({ error: "Chưa cấu hình ANTHROPIC_API_KEY" });
 
   try {
     await ensureSalePlaybookTable();
@@ -170,8 +173,11 @@ router.post("/sale-learning/generate", async (req, res) => {
     }
     if (used === 0) return res.status(400).json({ error: "Không trích được transcript hợp lệ" });
 
-    const model = resolveModel();
-    const client = new Anthropic({ apiKey });
+    const model = testOverride?.model?.trim() || resolveModel();
+    const client = new Anthropic({
+      apiKey: testOverride?.apiKey ?? apiKey,
+      ...(testOverride?.baseURL ? { baseURL: testOverride.baseURL } : {}),
+    });
     const system = `Bạn là chuyên gia huấn luyện sale. Dưới đây là các đoạn chat THẬT giữa khách và nhân viên studio ảnh cưới Amazing Studio (đã ẩn số điện thoại). Hãy ĐÚC KẾT thành một SALE PLAYBOOK để dạy phong cách tư vấn cho nhân viên mới (tên Hoa).
 
 QUAN TRỌNG:

@@ -78,11 +78,11 @@ function formatDateVn(v: string | Date | null): string {
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`;
 }
 
-/** DiscountConfig cấp gói / cấp nhóm rút từ 1 PkgRow. */
-function pkgDiscountCfg(r: PkgRow): DiscountConfig {
+/** DiscountConfig cấp gói / cấp nhóm rút từ 1 PkgRow. (export: Validator/sân test dựng catalog giá) */
+export function pkgDiscountCfg(r: PkgRow): DiscountConfig {
   return { enabled: r.p_d_enabled, type: r.p_d_type, value: r.p_d_value, startDate: r.p_d_start, endDate: r.p_d_end, name: r.p_d_name, description: r.p_d_desc };
 }
-function groupDiscountCfg(r: PkgRow): DiscountConfig {
+export function groupDiscountCfg(r: PkgRow): DiscountConfig {
   return { enabled: r.g_d_enabled, type: r.g_d_type, value: r.g_d_value, startDate: r.g_d_start, endDate: r.g_d_end, name: r.g_d_name, description: r.g_d_desc };
 }
 

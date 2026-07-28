@@ -4,6 +4,7 @@ import { getImageSrc } from "@/lib/imageUtils";
 import {
   Send, Trash2, Bot, User, Sparkles, Clock, Package, AlertTriangle, Loader2,
   Image as ImageIcon, X, Eye,
+  Search, ShieldCheck, ShieldAlert, ChevronDown, ChevronRight, Code2, Route, Brain,
 } from "lucide-react";
 
 /**
@@ -37,13 +38,15 @@ type SampleLink = { title: string; url: string };
 
 type ChatMsg = {
   id: string;
-  from: "customer" | "claude" | "error" | "vision" | "sample" | "sampleDev";
+  from: "customer" | "claude" | "error" | "vision" | "sample" | "sampleDev" | "trace";
   text: string;
   ts: number;
   image?: string;          // data URL ảnh khách gửi (bubble khách)
   intent?: ImageIntent;    // kết quả classifier (bubble "vision")
   sample?: SampleImage;    // 1 ảnh mẫu Lulu gửi (bubble "sample")
   samples?: SampleImage[]; // nguồn ảnh mẫu (card DEV "sampleDev")
+  trace?: SaleTrace;       // trace Workflow V1 shadow (panel "trace")
+  llmResponse?: string;    // câu trả lời LLM gắn kèm panel trace
 };
 type Info = { model: string; hasApiKey: boolean; packageCount: number; totalActive: number; fbBotEnabled: boolean };
 type Attached = { dataUrl: string; mediaType: string; name: string };
@@ -179,6 +182,321 @@ function SampleSourceCard({ samples }: { samples: SampleImage[] }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TRACE WORKFLOW V1 (shadow) — hiển thị "vì sao Lulu trả lời câu này" ngay trên
+// sân test, không cần mở DevTools. FE-ONLY: chỉ đọc object `trace` backend đã trả.
+// ─────────────────────────────────────────────────────────────────────────────
+type TraceDateSlot = { status: string; eventDate: string | null; dateText: string | null } | null;
+type StateSnapshot = {
+  dateStatus: string;
+  eventDate?: string | null;
+  serviceIntent: string | null;
+  askedQuestions: Array<{ key: string }>;
+  quotedPackages: string[];
+};
+type RouterDecisionFE = {
+  stage: string;
+  action: string;
+  reason: string;
+  requiredData: string[];
+  missingData: string[];
+  allowedQuestions: string[];
+  forbiddenQuestions: string[];
+  knowledgeNeeded: string[];
+  shouldEscalate: boolean;
+};
+type ValidatorFE =
+  | { verdict: "PASS" }
+  | { verdict: "BLOCK"; reason: string; violatedRule: string; severity: "critical" | "major" | "minor"; suggestedRecovery: string }
+  | { verdict: "WARN"; reason?: string; violatedRule?: string };
+type SaleTrace = {
+  shadowMode: boolean;
+  message: string;
+  extractedSlots: { dateSlot: TraceDateSlot; serviceIntent: string | null };
+  stateBefore: StateSnapshot;
+  stateAfterIncoming: StateSnapshot;
+  routerDecision: RouterDecisionFE;
+  knowledgeUsed: string[];
+  validator: ValidatorFE;
+};
+
+// Nhãn tiếng Việt cho chủ studio (không cần hiểu mã code). Thiếu mã → hiện mã gốc.
+const STAGE_LABEL: Record<string, string> = {
+  NEW_LEAD: "Khách mới xuất hiện",
+  DISCOVERY: "Đang tìm hiểu nhu cầu",
+  CONSULTING: "Tư vấn gu / mẫu",
+  QUOTE_REFERENCE: "Báo giá tham khảo (chưa có ngày)",
+  QUOTED: "Đã báo giá",
+  CONSIDERING: "Khách phân vân / so sánh",
+  BOOKING_INTENT: "Khách muốn giữ lịch / cọc",
+  WAITING: "Chờ khách trả lời",
+  HUMAN_REVIEW: "Cần người thật xử lý",
+  BOOKED: "Đã cọc / đã thành khách",
+};
+const ACTION_LABEL: Record<string, string> = {
+  GREET: "Chào hỏi",
+  IDENTIFY_SERVICE: "Đào sâu nhóm dịch vụ",
+  ASK_SERVICE: "Hỏi khách cần dịch vụ gì",
+  ASK_DATE: "Hỏi ngày chụp",
+  QUOTE_REFERENCE: "Báo giá tham khảo",
+  QUOTE_EXACT: "Báo giá chính xác",
+  SEND_PRICE: "Gửi bảng giá",
+  SEND_SAMPLE: "Gửi ảnh mẫu",
+  ANSWER_FAQ: "Trả lời câu hỏi thường gặp",
+  HANDLE_OBJECTION: "Xử lý chê giá / phân vân",
+  ASK_FOR_BOOKING: "Mời giữ lịch",
+  ASK_PHONE: "Xin số điện thoại",
+  ESCALATE_HUMAN: "Chuyển người thật",
+  WAIT: "Đáp nhẹ, không đẩy bước",
+};
+const INTENT_LABEL: Record<string, string> = {
+  beauty: "Beauty / Trang điểm",
+  wedding_album: "Album cưới",
+  wedding_gate: "Cổng cưới / Phóng sự",
+  wedding_party: "Tiệc cưới",
+  rental_outfit: "Thuê trang phục",
+  maternity: "Chụp bầu",
+  family: "Gia đình",
+  new_concept_idea: "Concept mới / Ý tưởng",
+  unknown: "Chưa rõ",
+};
+const KNOWLEDGE_LABEL: Record<string, string> = {
+  "faq:address": "FAQ · Địa chỉ",
+  "faq:hours": "FAQ · Giờ làm việc",
+  "faq:delivery": "FAQ · Giao ảnh",
+  "faq:package_detail": "FAQ · Chi tiết gói",
+  "faq:services": "FAQ · Danh mục dịch vụ",
+  "faq:payment": "FAQ · Thanh toán / cọc",
+  pricing: "Bảng giá",
+};
+const DATESTATUS_LABEL: Record<string, string> = {
+  unset: "chưa rõ",
+  unknown: "chưa rõ",
+  known: "đã có ngày",
+  not_decided: "khách chưa chốt ngày",
+};
+const ASKED_LABEL: Record<string, string> = {
+  ask_date: "đã hỏi ngày",
+  ask_service: "đã hỏi dịch vụ",
+  ask_phone: "đã xin SĐT",
+};
+const SEVERITY_LABEL: Record<string, string> = {
+  critical: "nghiêm trọng",
+  major: "nặng",
+  minor: "nhẹ",
+};
+const stageLabel = (s: string) => STAGE_LABEL[s] ?? s;
+const actionLabel = (a: string) => ACTION_LABEL[a] ?? a;
+const intentLabel = (i: string | null | undefined) => (i ? (INTENT_LABEL[i] ?? i) : "—");
+const dateStatusLabel = (d: string) => DATESTATUS_LABEL[d] ?? d;
+
+type ChipTone = "slate" | "green" | "red" | "indigo" | "amber";
+function Chip({ children, tone = "slate" }: { children: React.ReactNode; tone?: ChipTone }) {
+  const map: Record<ChipTone, string> = {
+    slate: "bg-slate-100 text-slate-700 border-slate-200",
+    green: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    red: "bg-rose-50 text-rose-700 border-rose-200",
+    indigo: "bg-indigo-50 text-indigo-700 border-indigo-200",
+    amber: "bg-amber-50 text-amber-700 border-amber-200",
+  };
+  return <span className={`inline-block px-1.5 py-0.5 rounded border text-[11px] ${map[tone]}`}>{children}</span>;
+}
+function TraceField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="grid grid-cols-[96px_1fr] gap-2 items-start">
+      <span className="text-slate-500 text-[11px] pt-0.5">{label}</span>
+      <div className="text-[12px] text-slate-800 flex flex-wrap gap-1 items-center">{children}</div>
+    </div>
+  );
+}
+function TraceSection({ icon, title, children }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
+  return (
+    <div className="border-t border-slate-200 pt-2 mt-2">
+      <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-600 mb-1">{icon}{title}</div>
+      {children}
+    </div>
+  );
+}
+function StateSnapshotView({ s }: { s: StateSnapshot }) {
+  const asked = Array.isArray(s?.askedQuestions) ? s.askedQuestions : [];
+  const quoted = Array.isArray(s?.quotedPackages) ? s.quotedPackages : [];
+  return (
+    <div className="space-y-1">
+      <TraceField label="Ngày">
+        <b>{dateStatusLabel(s?.dateStatus ?? "unset")}</b>
+        {s?.eventDate ? <span className="text-slate-500">· {s.eventDate}</span> : null}
+      </TraceField>
+      <TraceField label="Nhu cầu">{intentLabel(s?.serviceIntent)}</TraceField>
+      <TraceField label="Gói đã báo">
+        {quoted.length ? quoted.map((c, i) => <Chip key={i} tone="indigo">{c}</Chip>) : <span className="text-slate-400">chưa có</span>}
+      </TraceField>
+      <TraceField label="Đã hỏi">
+        {asked.length ? asked.map((q, i) => <Chip key={i}>{ASKED_LABEL[q?.key] ?? q?.key ?? "?"}</Chip>) : <span className="text-slate-400">chưa hỏi gì</span>}
+      </TraceField>
+    </div>
+  );
+}
+function ValidatorView({ v }: { v: ValidatorFE }) {
+  if (!v || v.verdict === "PASS") {
+    return (
+      <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+        <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0" />
+        <span className="text-[13px] font-semibold text-emerald-700">Câu trả lời HỢP LỆ — PASS</span>
+      </div>
+    );
+  }
+  if (v.verdict === "BLOCK") {
+    return (
+      <div className="bg-rose-50 border-2 border-rose-400 rounded-lg px-3 py-2 space-y-1">
+        <div className="flex items-center gap-2">
+          <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0" />
+          <span className="text-[13px] font-bold text-rose-700">BỊ CHẶN — BLOCK</span>
+          <Chip tone="red">{SEVERITY_LABEL[v.severity] ?? v.severity}</Chip>
+        </div>
+        <TraceField label="Luật vi phạm"><b className="text-rose-700">{v.violatedRule}</b></TraceField>
+        <TraceField label="Lý do">{v.reason}</TraceField>
+        <TraceField label="Cách sửa">{v.suggestedRecovery}</TraceField>
+      </div>
+    );
+  }
+  return (
+    <div className="bg-amber-50 border border-amber-300 rounded-lg px-3 py-2 space-y-1">
+      <div className="flex items-center gap-2">
+        <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+        <span className="text-[13px] font-semibold text-amber-700">CẢNH BÁO — WARN</span>
+      </div>
+      {v.violatedRule ? <TraceField label="Luật">{v.violatedRule}</TraceField> : null}
+      {v.reason ? <TraceField label="Lý do">{v.reason}</TraceField> : null}
+    </div>
+  );
+}
+
+/** Panel trace 1 lượt chat: input → slot → state → router → knowledge → LLM → validator. */
+function SaleTracePanel({ trace, llmResponse }: { trace: SaleTrace; llmResponse: string }) {
+  const [open, setOpen] = useState(true);
+  const [rawOpen, setRawOpen] = useState(false);
+  const r = trace.routerDecision ?? ({} as RouterDecisionFE);
+  const blocked = trace.validator?.verdict === "BLOCK";
+  const warned = trace.validator?.verdict === "WARN";
+  const allowedQ = Array.isArray(r.allowedQuestions) ? r.allowedQuestions : [];
+  const forbiddenQ = Array.isArray(r.forbiddenQuestions) ? r.forbiddenQuestions : [];
+  const requiredD = Array.isArray(r.requiredData) ? r.requiredData : [];
+  const missingD = Array.isArray(r.missingData) ? r.missingData : [];
+  const knowledge = Array.isArray(trace.knowledgeUsed) ? trace.knowledgeUsed : [];
+  const ds = trace.extractedSlots?.dateSlot ?? null;
+  return (
+    <div
+      className={`max-w-[92%] mx-auto w-full rounded-xl border overflow-hidden ${
+        blocked ? "border-rose-300 bg-rose-50/40" : warned ? "border-amber-300 bg-amber-50/40" : "border-indigo-200 bg-indigo-50/40"
+      }`}
+    >
+      {/* Header — bấm để thu/mở; verdict luôn hiện để so nhanh khi cuộn lịch sử */}
+      <button onClick={() => setOpen((o) => !o)} className="w-full flex items-center gap-2 px-3 py-2 text-left">
+        <Search className="w-3.5 h-3.5 text-indigo-600 shrink-0" />
+        <span className="text-[12px] font-semibold text-indigo-700 shrink-0">Trace Workflow V1</span>
+        <span className="text-[11px] text-slate-500 truncate">{stageLabel(r.stage)} → {actionLabel(r.action)}</span>
+        <span className="ml-auto flex items-center gap-1.5 shrink-0">
+          {blocked ? (
+            <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white text-[11px] font-bold">BLOCK</span>
+          ) : warned ? (
+            <span className="px-2 py-0.5 rounded-full bg-amber-500 text-white text-[11px] font-bold">WARN</span>
+          ) : (
+            <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[11px] font-semibold">PASS</span>
+          )}
+          {open ? <ChevronDown className="w-4 h-4 text-slate-400" /> : <ChevronRight className="w-4 h-4 text-slate-400" />}
+        </span>
+      </button>
+
+      {open && (
+        <div className="px-3 pb-3">
+          <div className="mb-1">
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-200 text-slate-600 text-[10px] font-medium">
+              SHADOW · chỉ quan sát, chưa ép câu trả lời khách
+            </span>
+          </div>
+
+          <TraceSection icon={<User className="w-3 h-3" />} title="Tin khách (input)">
+            <div className="text-[12px] text-slate-800 bg-white border border-slate-200 rounded px-2 py-1 whitespace-pre-wrap break-words">
+              {trace.message || <span className="text-slate-400">(trống)</span>}
+            </div>
+          </TraceSection>
+
+          <TraceSection icon={<Sparkles className="w-3 h-3" />} title="Slot rút được từ tin">
+            <TraceField label="Ngày">
+              {ds ? (
+                <>
+                  <b>{dateStatusLabel(ds.status)}</b>
+                  {ds.dateText ? <span className="text-slate-500">· {ds.dateText}</span> : null}
+                  {ds.eventDate ? <span className="text-slate-500">· {ds.eventDate}</span> : null}
+                </>
+              ) : (
+                <span className="text-slate-400">không rút được</span>
+              )}
+            </TraceField>
+            <TraceField label="Nhu cầu">{intentLabel(trace.extractedSlots?.serviceIntent)}</TraceField>
+          </TraceSection>
+
+          <div className="border-t border-slate-200 pt-2 mt-2 grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <div className="text-[11px] font-semibold text-slate-600 mb-1">Trạng thái TRƯỚC lượt này</div>
+              <StateSnapshotView s={trace.stateBefore} />
+            </div>
+            <div>
+              <div className="text-[11px] font-semibold text-slate-600 mb-1">SAU khi đọc tin khách</div>
+              <StateSnapshotView s={trace.stateAfterIncoming} />
+            </div>
+          </div>
+
+          <TraceSection icon={<Route className="w-3 h-3" />} title="Router quyết định">
+            <TraceField label="Giai đoạn"><Chip tone="indigo">{stageLabel(r.stage)}</Chip><span className="text-slate-400 text-[10px]">{r.stage}</span></TraceField>
+            <TraceField label="Hành động"><Chip tone="indigo">{actionLabel(r.action)}</Chip><span className="text-slate-400 text-[10px]">{r.action}</span></TraceField>
+            <TraceField label="Lý do">{r.reason || "—"}</TraceField>
+            <TraceField label="Được phép hỏi">
+              {allowedQ.length ? allowedQ.map((q, i) => <Chip key={i} tone="green">{q}</Chip>) : <span className="text-slate-400">—</span>}
+            </TraceField>
+            <TraceField label="Bị cấm hỏi">
+              {forbiddenQ.length ? forbiddenQ.map((q, i) => <Chip key={i} tone="red">{q}</Chip>) : <span className="text-slate-400">—</span>}
+            </TraceField>
+            <TraceField label="Cần dữ kiện">
+              {requiredD.length ? requiredD.map((d, i) => <Chip key={i}>{d}</Chip>) : <span className="text-slate-400">—</span>}
+            </TraceField>
+            <TraceField label="Còn thiếu">
+              {missingD.length ? missingD.map((d, i) => <Chip key={i} tone="red">{d}</Chip>) : <span className="text-slate-400">đủ</span>}
+            </TraceField>
+            <TraceField label="Chuyển người">{r.shouldEscalate ? <Chip tone="red">CÓ</Chip> : <span className="text-slate-500">không</span>}</TraceField>
+          </TraceSection>
+
+          <TraceSection icon={<Brain className="w-3 h-3" />} title="Kiến thức cần nạp">
+            {knowledge.length ? knowledge.map((k, i) => <Chip key={i} tone="amber">{KNOWLEDGE_LABEL[k] ?? k}</Chip>) : <span className="text-slate-400">không cần</span>}
+          </TraceSection>
+
+          <TraceSection icon={<Bot className="w-3 h-3" />} title="Câu trả lời Lulu (LLM)">
+            <div className="text-[12px] text-slate-800 bg-white border border-slate-200 rounded px-2 py-1 whitespace-pre-wrap break-words">
+              {llmResponse || <span className="text-slate-400">(trống)</span>}
+            </div>
+          </TraceSection>
+
+          <TraceSection icon={<ShieldCheck className="w-3 h-3" />} title="Validator chấm câu trả lời">
+            <ValidatorView v={trace.validator} />
+          </TraceSection>
+
+          <div className="border-t border-slate-200 pt-2 mt-2">
+            <button onClick={() => setRawOpen((o) => !o)} className="flex items-center gap-1 text-[11px] text-slate-500 hover:text-slate-700">
+              <Code2 className="w-3 h-3" /> {rawOpen ? "Ẩn JSON thô" : "Xem JSON thô"}
+              {rawOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+            </button>
+            {rawOpen && (
+              <pre className="mt-1 max-h-64 overflow-auto text-[10px] leading-snug bg-slate-800 text-slate-100 rounded-lg p-2 whitespace-pre-wrap break-words">
+                {JSON.stringify({ ...trace, llmResponse }, null, 2)}
+              </pre>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -322,6 +640,18 @@ export default function ClaudeSaleTestPage() {
           await sleep(400);
           setMessages((prev) => [...prev, { id: newId(), from: "claude", text: data.sampleNote, ts: Date.now() }]);
         }
+        // PANEL TRACE (shadow, 1 panel/lượt): để chủ studio soi "vì sao Lulu trả lời câu này"
+        // ngay trên sân test, không cần mở DevTools. Chỉ đọc trace backend đã trả — FE thuần.
+        if (data.trace) {
+          setMessages((prev) => [...prev, {
+            id: newId(),
+            from: "trace",
+            text: "",
+            ts: Date.now(),
+            trace: data.trace as SaleTrace,
+            llmResponse: typeof data.replyText === "string" ? data.replyText : (typeof data.raw === "string" ? data.raw : ""),
+          }]);
+        }
       }
     } catch (e) {
       setMessages((prev) => [...prev, { id: newId(), from: "error", text: `Lỗi kết nối: ${String(e).slice(0, 200)}`, ts: Date.now() }]);
@@ -419,6 +749,9 @@ export default function ClaudeSaleTestPage() {
           }
           if (m.from === "sampleDev" && m.samples) {
             return <div key={m.id} className="flex justify-center"><SampleSourceCard samples={m.samples} /></div>;
+          }
+          if (m.from === "trace" && m.trace) {
+            return <div key={m.id} className="flex justify-center"><SaleTracePanel trace={m.trace} llmResponse={m.llmResponse ?? ""} /></div>;
           }
           if (m.from === "sample" && m.sample) {
             return <SampleBubble key={m.id} sample={m.sample} onZoom={setZoom} />;

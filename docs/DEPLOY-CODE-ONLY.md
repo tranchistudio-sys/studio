@@ -33,6 +33,14 @@ Màn Replit Publishing hiện "Development database changes detected" và sinh m
    - Hiện "No changes"/không có lệnh nào → tiếp tục.
    - Còn **BẤT KỲ** dòng `DROP` / `ALTER … DROP` / `TRUNCATE` nào → **Cancel ngay**, không Approve,
      báo lại để điều tra drift mới. KHÔNG bao giờ "Approve cho xong".
+   - **NGOẠI LỆ CÓ CHỦ ĐÍCH — publish ĐẦU TIÊN sau khi merge PR #135 (lulu-thread-state):**
+     màn migration SẼ hiện đúng các lệnh additive sau (vì prod chưa có bảng, dev vừa được Run tạo):
+     `CREATE TABLE lulu_thread_state` + `CREATE UNIQUE INDEX idx_lulu_thread_state_user`
+     + `CREATE INDEX idx_lulu_thread_state_updated` (và có thể `CREATE TABLE sale_playbooks`
+     nếu prod chưa từng chạy Sale Learning). Đây là DỰ KIẾN → **được Approve**.
+     CHỈ các lệnh CREATE nêu trên; nếu kèm bất kỳ dòng DROP/ALTER…DROP/TRUNCATE nào → vẫn Cancel.
+     (Cách thay thế thỏa Quy tắc sắt #3: chạy tay chính các câu DDL `IF NOT EXISTS` đó lên PROD DB
+     trước khi Republish để màn hình ra "No changes".)
 5. Không bấm Promote Database / copy data trong bất kỳ bước nào.
 6. Sau publish: smoke test `https://tranchistudio.com/api/healthz` + 1 trang chính.
 

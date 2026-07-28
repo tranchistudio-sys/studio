@@ -81,6 +81,42 @@ describe("detectDateSlot — chống nhầm số thường thành ngày", () => 
     expect(detectDateSlot("0909123456", { botAskedDate: true, now: NOW })).toBeNull();
     expect(detectDateSlot("[image:https://x/y.jpg]", { botAskedDate: true, now: NOW })).toBeNull();
   });
+
+  // Regression từ review PR #135 — các ca ĐÃ TỪNG bị parse nhầm thành ngày chụp.
+  it("khoảng số người/nơi/thời lượng KHÔNG phải ngày (kể cả khi câu có chữ 'ngày' chỗ khác)", () => {
+    for (const msg of [
+      "nhà mình có 3/4 người chụp chung được không",
+      "gói này chụp 1/2 ngày phải không",
+      "bên em chụp nửa ngày hay 1.5 ngày vậy",
+      "shop tư vấn 10/10 luôn",
+      "chụp ngày cưới cho 2 - 3 người thì giá sao em",
+      "chụp gia đình 4 - 5 người, ngày thường có rẻ hơn không",
+      "bên em chụp được 2-3 nơi trong ngày không",
+      "tháng này bên em còn lịch không, tầm 2-3 người",
+    ]) {
+      expect(detectDateSlot(msg, { botAskedDate: false, now: NOW }), msg).toBeNull();
+    }
+  });
+
+  it("cụm CHƯA CHỐT mạnh THẮNG khoảng số trong cùng tin (không bịa ngày từ '2-3 người')", () => {
+    for (const msg of ["chưa biết ngày, nhà em 2-3 người thôi", "ngày nào cũng được, nhà mình đi 2-3 người"]) {
+      expect(detectDateSlot(msg, { botAskedDate: false, now: NOW })?.status, msg).toBe("not_decided");
+    }
+  });
+
+  it("tuổi bé 'X tháng Y ngày' KHÔNG phải ngày chụp; 'ngày đó' sau mốc vẫn là ngày", () => {
+    expect(detectDateSlot("bé nhà em được 3 tháng 10 ngày, chụp gói nào", { botAskedDate: false, now: NOW })).toBeNull();
+    expect(detectDateSlot("20 tháng 12 ngày đó mình rảnh", { botAskedDate: false, now: NOW })?.eventDate).toBe("2026-12-20");
+  });
+
+  it("ứng viên đầu bị loại không nuốt mất ngày thật đứng sau", () => {
+    expect(
+      detectDateSlot("tầm 2-3 triệu thì mình chụp 20/12 được không", { botAskedDate: false, now: NOW })?.eventDate,
+    ).toBe("2026-12-20");
+    expect(
+      detectDateSlot("giá 1/2 triệu thôi, chụp 20/12 nha", { botAskedDate: false, now: NOW })?.eventDate,
+    ).toBe("2026-12-20");
+  });
 });
 
 describe("botAsksDate — nhận diện bot hỏi ngày", () => {
@@ -104,5 +140,21 @@ describe("botAsksDate — nhận diện bot hỏi ngày", () => {
     ]) {
       expect(botAsksDate(msg), msg).toBe(false);
     }
+  });
+
+  // Regression từ review PR #135 — câu TRẤN AN / câu kể từng bị tính nhầm là hỏi ngày.
+  it("câu trấn an 'khi nào cũng được' / câu kể có 'bao giờ' → false", () => {
+    for (const msg of [
+      "chị muốn chụp khi nào cũng được ạ, bên em nhận lịch linh hoạt",
+      "mình cứ chốt gói trước, chụp khi nào cũng sắp xếp được ạ",
+      "chụp ngày nào cũng được ạ",
+      "bao giờ chụp xong em gửi ảnh gốc cho mình nha",
+    ]) {
+      expect(botAsksDate(msg), msg).toBe(false);
+    }
+  });
+
+  it("hỏi ngày thật ở một câu, câu khác trấn an → vẫn true (xét từng câu)", () => {
+    expect(botAsksDate("Anh dự định chụp khi nào ạ?\n\nBên em nhận lịch linh hoạt lắm nha.")).toBe(true);
   });
 });

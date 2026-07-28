@@ -324,15 +324,17 @@ async function sendPriceImagesSequentially(
 /**
  * Gửi 1–2 ẢNH MẪU THẬT (bộ ảnh/đồ thuê/concept) qua Messenger attachment — gửi
  * HÌNH trực tiếp thay vì link. Resolve URL công khai (toPublicImageUrl) cho cả
- * /uploads lẫn /objects. Trả số ảnh gửi thành công. KHÔNG throw.
+ * /uploads lẫn /objects. Trả số ảnh gửi thành công + DANH SÁCH URL public đã gửi
+ * (ảnh fail/skip ở giữa không được đếm — không dùng prefix slice). KHÔNG throw.
  */
 async function sendSampleImagesSequentially(
   psid: string,
   pageAccessToken: string,
   samples: SampleImage[],
   settings?: AiSettings,
-): Promise<number> {
+): Promise<{ sent: number; sentUrls: string[] }> {
   let sent = 0;
+  const sentUrls: string[] = [];
   for (let i = 0; i < samples.length; i++) {
     const url = toPublicImageUrl(samples[i].imageUrl);
     if (!url) continue;
@@ -341,6 +343,7 @@ async function sendSampleImagesSequentially(
     const { ok, mid } = await sendFacebookImageAttachment(psid, url, pageAccessToken);
     if (ok) {
       sent++;
+      sentUrls.push(url);
       await pool.query(
         `INSERT INTO fb_inbox_messages (facebook_user_id, direction, message, sent_status, ai_decision, mid)
          VALUES ($1, 'outgoing', $2, 'sent', $3, $4)
@@ -355,7 +358,7 @@ async function sendSampleImagesSequentially(
       );
     }
   }
-  return sent;
+  return { sent, sentUrls };
 }
 
 async function fetchFacebookProfile(psid: string, pageAccessToken: string): Promise<{ name: string | null; avatarUrl: string | null; errorMsg?: string }> {
@@ -917,8 +920,9 @@ async function handleClaudeSaleReply(
   // Đặt TRƯỚC guard "chunks rỗng" để tin chỉ-có-marker (<<SAMPLE>>) vẫn gửi được ảnh.
   // Marker <<SAMPLE>> của Claude hoặc tự suy nhóm từ ảnh/tin khách. Lỗi/không có ảnh → bỏ qua, vẫn gửi text.
   let samplesExhausted = false;
-  const sentSampleUrlsForState: string[] = []; // URL ảnh mẫu đã gửi lượt này (ghi vào thread state)
+  const sentSampleUrlsForState: string[] = []; // URL public ảnh mẫu ĐÃ GỬI THÀNH CÔNG lượt này
   const sentPriceGroupIdsForState: number[] = []; // id nhóm giá đã gửi ảnh bảng giá
+  const quotedCodesForState: string[] = []; // mã gói mà bảng giá THẬT SỰ đến được khách (ảnh hoặc link)
   try {
     const contextText = history
       .filter((h) => !h.message.startsWith("[image:"))
@@ -955,9 +959,9 @@ async function handleClaudeSaleReply(
       console.log(`[Claude] psid=${psid} dùng ẢNH ADMIN DẠY (override ${finalSel.overrideId})`);
     }
     if (finalSel.images.length > 0) {
-      const nSent = await sendSampleImagesSequentially(psid, cfg.pageAccessToken, finalSel.images);
+      const { sent: nSent, sentUrls } = await sendSampleImagesSequentially(psid, cfg.pageAccessToken, finalSel.images);
       console.log(`[Claude] psid=${psid} gửi ${nSent}/${finalSel.images.length} ảnh mẫu (nhóm: ${finalSel.resolvedIntents.join(",")})`);
-      for (const img of finalSel.images.slice(0, nSent)) sentSampleUrlsForState.push(img.imageUrl);
+      sentSampleUrlsForState.push(...sentUrls);
     }
     samplesExhausted = finalSel.exhausted;
   } catch (e) {
@@ -974,6 +978,17 @@ async function handleClaudeSaleReply(
   if (chunks.length === 0) {
     console.warn(`[Claude] psid=${psid} Claude trả về rỗng`);
     await markIncoming(escalationReason ? "claude_escalated_empty" : "claude_empty");
+    // Tin chỉ-có-marker <<SAMPLE>> vẫn có thể ĐÃ gửi ảnh ở trên → ghi vào trí nhớ trước khi
+    // return, kẻo sent_assets thiếu sự thật (consumer chống-lặp-ảnh sau này sẽ gửi lại).
+    if (isLuluStateEnabled() && sentSampleUrlsForState.length > 0) {
+      await recordBotReply(psid, {
+        action: "reply",
+        askedDate: false,
+        quotedCodes: [],
+        sampleUrls: sentSampleUrlsForState,
+        priceGroupIds: [],
+      });
+    }
     if (escalationReason) await escalateToHuman(psid, lead?.name, escalationReason);
     return;
   }
@@ -989,12 +1004,19 @@ async function handleClaudeSaleReply(
         const imgsSent = await sendPriceImagesSequentially(psid, cfg.pageAccessToken, objectPaths, "claude_price_img");
         if (imgsSent) {
           console.log(`[Claude] psid=${psid} đã gửi ${hits.length} ảnh bảng giá nhóm: ${hits.map((h) => h.groupName).join(", ")}`);
-          for (const h of hits) sentPriceGroupIdsForState.push(h.groupId);
+          for (const h of hits) {
+            sentPriceGroupIdsForState.push(h.groupId);
+            if (h.code) quotedCodesForState.push(h.code);
+          }
         } else {
           // Fallback: gửi LINK ảnh public dạng text để khách vẫn xem được.
           const links = objectPaths.map((p) => resolveImagePath(p)).filter(Boolean).join("\n");
           if (links) {
-            try { await sendFacebookMessage(psid, `Dạ em gửi bảng giá để mình xem nha 😊\n${links}`, cfg.pageAccessToken); } catch { /* bỏ qua */ }
+            try {
+              await sendFacebookMessage(psid, `Dạ em gửi bảng giá để mình xem nha 😊\n${links}`, cfg.pageAccessToken);
+              // Link đến được khách = khách vẫn xem được bảng giá → tính là đã báo giá.
+              for (const h of hits) if (h.code) quotedCodesForState.push(h.code);
+            } catch { /* bỏ qua */ }
             console.log(`[Claude] psid=${psid} ảnh attachment lỗi → đã fallback gửi link ảnh bảng giá`);
           }
         }
@@ -1004,23 +1026,27 @@ async function handleClaudeSaleReply(
     }
   }
 
+  // Ghi "bot vừa làm gì" vào trí nhớ TRƯỚC khi gửi chuỗi bubble (chuỗi typing-delay có thể
+  // kéo 5-15s; khách rep nhanh trong cửa sổ đó phải đọc được ask_date rồi — đóng race
+  // "tham khảo thôi" bị bỏ qua vì botAskedDate=false). Đổi lại: nếu gửi fail toàn bộ thì
+  // state ghi "đã hỏi" thừa — hướng lỗi bảo thủ (bot không hỏi lại), chấp nhận được.
+  // quotedCodes = quotedCodesForState (chỉ mã bảng giá THẬT SỰ đến khách qua ảnh/link,
+  // không phải mọi marker Claude đặt). Fail-open.
+  if (isLuluStateEnabled()) {
+    await recordBotReply(psid, {
+      action: escalationReason ? "reply_escalated" : quotedCodesForState.length ? "quote" : "reply",
+      askedDate: botAsksDate(chunks.join("\n")),
+      quotedCodes: quotedCodesForState,
+      sampleUrls: sentSampleUrlsForState,
+      priceGroupIds: sentPriceGroupIdsForState,
+    });
+  }
+
   // Tốc độ trả lời: delay theo độ dài tin KHÁCH (cấu hình + random ±30%). Áp dụng cho bubble đầu.
   const replyDelayMs = computeReplyDelayMs(text, settings);
   const allSent = await sendChunksWithTyping(psid, cfg.pageAccessToken, chunks, "claude_replied", undefined, replyDelayMs, perChunkDelays);
   await markIncoming(allSent ? (escalationReason ? "claude_replied_escalated" : "claude_replied") : "claude_partial_failed");
   console.log(`[Claude] psid=${psid} đã gửi ${chunks.length} tin (allSent=${allSent})`);
-
-  // Ghi "bot vừa làm gì" vào trí nhớ: đã hỏi ngày chưa, đã báo giá gói nào, đã gửi ảnh nào —
-  // lượt sau buildThreadStateBlock dùng để không hỏi lại / không bung lại. Fail-open.
-  if (isLuluStateEnabled()) {
-    await recordBotReply(psid, {
-      action: escalationReason ? "reply_escalated" : reply.priceImageCodes?.length ? "quote" : "reply",
-      askedDate: botAsksDate(chunks.join("\n")),
-      quotedCodes: reply.priceImageCodes ?? [],
-      sampleUrls: sentSampleUrlsForState,
-      priceGroupIds: sentPriceGroupIdsForState,
-    });
-  }
 
   // Sau khi đã gửi câu chuyển tiếp lịch sự → chuyển nhân viên thật tiếp quản.
   if (escalationReason) await escalateToHuman(psid, lead?.name, escalationReason);

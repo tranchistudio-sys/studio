@@ -87,12 +87,15 @@ export async function ensureThreadStateTable(): Promise<void> {
       updated_at            TIMESTAMP NOT NULL DEFAULT NOW()
     )
   `);
+  // KHÔNG nuốt lỗi CREATE INDEX: unique index là điều kiện sống của mọi câu
+  // ON CONFLICT (facebook_user_id) bên dưới. Index fail → throw ra caller (mọi caller
+  // đều fail-open) và createdTable KHÔNG được set → lần gọi sau tự thử lại.
   await pool.query(
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_lulu_thread_state_user ON lulu_thread_state (facebook_user_id)`,
-  ).catch(() => {});
+  );
   await pool.query(
     `CREATE INDEX IF NOT EXISTS idx_lulu_thread_state_updated ON lulu_thread_state (updated_at DESC)`,
-  ).catch(() => {});
+  );
   createdTable = true;
 }
 
@@ -162,7 +165,9 @@ export async function applyIncomingMessage(psid: string, text: string): Promise<
     }
 
     // Nhu cầu: "khách chủ động nói" thắng giá trị cũ; unknown/new_concept_idea không ghi đè.
-    const intent = detectServiceIntentFromText(text);
+    // Tin ảnh "[image:URL]" bỏ qua — URL CDN chứa token ngẫu nhiên ("gym", "bau"...) có thể
+    // match nhầm regex intent và đè intent thật (cùng guard với detectDateSlot).
+    const intent = text.trim().startsWith("[image:") ? "unknown" : detectServiceIntentFromText(text);
     const intentPatch = intent !== "unknown" && intent !== "new_concept_idea" ? intent : null;
 
     await pool.query(

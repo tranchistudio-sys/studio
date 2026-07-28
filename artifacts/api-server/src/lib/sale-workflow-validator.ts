@@ -33,10 +33,15 @@ export type ValidatorInput = {
 
 export type ValidatorResult =
   | { verdict: "PASS" }
-  | { verdict: "BLOCK"; reason: string; violatedRule: string; suggestedRecovery: string };
+  | { verdict: "BLOCK"; reason: string; violatedRule: string; severity: "critical" | "major" | "minor"; suggestedRecovery: string };
 
-function block(violatedRule: string, reason: string, suggestedRecovery: string): ValidatorResult {
-  return { verdict: "BLOCK", reason, violatedRule, suggestedRecovery };
+function block(
+  violatedRule: string,
+  reason: string,
+  suggestedRecovery: string,
+  severity: "critical" | "major" | "minor" = "major",
+): ValidatorResult {
+  return { verdict: "BLOCK", reason, violatedRule, severity, suggestedRecovery };
 }
 
 function normalizeVi(text: string): string {
@@ -57,14 +62,24 @@ const MONEY_RES: Array<{ re: RegExp; toVnd: (m: RegExpExecArray) => number | nul
     re: /(\d{1,3}(?:[.,]\d{3}){1,3})\s*(?:d|dong|vnd|vnđ)\b/g,
     toVnd: (m) => Number(m[1].replace(/[.,]/g, "")),
   },
-  // 3tr9 / 3tr / 3,5tr / 3.5tr
+  // 2.500.000 KHÔNG kèm đơn vị: ≥2 nhóm nghìn trong chat Việt gần như chắc chắn là tiền
+  // (chặn lỗ giá bịa "2.500.000 ạ" lọt gate). Guard: không dính chuỗi số dài (SĐT) + biên hợp lý.
   {
-    re: /(\d{1,3})(?:[.,](\d{1,2}))?\s*tr(?:ieu)?\s*(\d)?\b/g,
+    re: /(?<!\d)(\d{1,3}(?:[.,]\d{3}){2,3})(?![\d.,]?\d)/g,
+    toVnd: (m) => {
+      const v = Number(m[1].replace(/[.,]/g, ""));
+      return v >= 100_000 && v <= 100_000_000 ? v : null;
+    },
+  },
+  // 3tr9 / 3tr / 3,5tr / 3,95 triệu / 3 triệu rưỡi
+  {
+    re: /(\d{1,3})(?:[.,](\d{1,2}))?\s*tr(?:ieu)?\s*(?:(\d)\b|(ruoi)\b)?/g,
     toVnd: (m) => {
       const whole = Number(m[1]);
       if (!Number.isFinite(whole)) return null;
+      if (m[4]) return whole * 1_000_000 + 500_000; // "3 triệu rưỡi"
       if (m[3] != null) return whole * 1_000_000 + Number(m[3]) * 100_000; // 3tr9
-      if (m[2] != null) return whole * 1_000_000 + Number(m[2].padEnd(1, "0").slice(0, 1)) * 100_000; // 3,9 triệu
+      if (m[2] != null) return whole * 1_000_000 + Math.round(Number(`0.${m[2]}`) * 1_000_000); // 3,95 triệu
       return whole * 1_000_000;
     },
   },
@@ -90,8 +105,13 @@ export function extractMoneyVnd(reply: string): number[] {
 // ─── Các rule ─────────────────────────────────────────────────────────────────
 
 // Tự giảm giá / tự hứa ưu đãi — bot không có quyền deal. Check trên text đã bỏ dấu.
+// "giam con" TÁCH RIÊNG: là cách nói chuẩn khi báo finalPrice của ưu đãi thật ("đang ưu đãi
+// giảm còn 3.500.000đ") — chỉ block khi KHÔNG có catalog đối chiếu / không kèm số (hứa suông).
 const SELF_DISCOUNT_NORM_RE =
-  /((em|ben em|ben minh|shop)\s*(giam|bot|tang them|khuyen mai rieng)|giam con\b|bot cho (anh|chi|minh)|em bot\b|giam them cho|tang rieng|uu dai rieng cho|gia dac biet cho)/;
+  /((em|ben em|ben minh|shop)\s*(chac\s*|se\s*)?(giam|bot|tang them|khuyen mai rieng)|bot cho (anh|chi|minh)|em bot\b|giam them cho|tang rieng|uu dai rieng cho|gia dac biet cho)/;
+const GIAM_CON_RE = /giam con\b/;
+// Lộ nội bộ: marker hệ thống / khối prompt — TUYỆT ĐỐI không được ra khách.
+const LEAK_INTERNAL_RE = /(<<|>>|TRẠNG THÁI KHÁCH|system prompt|instruction nội bộ|RÀNG BUỘC \(BẮT BUỘC)/i;
 
 // Map ServiceIntent (thread state) → KnownIntent (detectServiceDrift).
 const INTENT_TO_KNOWN: Record<string, KnownIntent> = {
@@ -147,7 +167,12 @@ export function validateSaleReply(input: ValidatorInput): ValidatorResult {
     const validPrices = new Set<number>();
     for (const c of input.catalog) {
       if (Number.isFinite(c.price)) validPrices.add(c.price);
-      if (c.finalPrice != null && Number.isFinite(c.finalPrice)) validPrices.add(c.finalPrice);
+      if (c.finalPrice != null && Number.isFinite(c.finalPrice)) {
+        validPrices.add(c.finalPrice);
+        // MỨC GIẢM (price − finalPrice) cũng là số hợp lệ — chính context bắt Lulu nêu
+        // "giảm 500.000đ" khi có ưu đãi fixed (sale-context.ts khối ƯU ĐÃI).
+        if (Number.isFinite(c.price) && c.price > c.finalPrice) validPrices.add(c.price - c.finalPrice);
+      }
     }
     for (const amount of extractMoneyVnd(reply)) {
       if (!validPrices.has(amount)) {
@@ -155,27 +180,47 @@ export function validateSaleReply(input: ValidatorInput): ValidatorResult {
           "price_mismatch",
           `Reply nêu số tiền ${amount.toLocaleString("vi-VN")}đ không có trong catalog`,
           "Tái sinh với bảng giá chèn lại; vẫn sai → escalate người thật, KHÔNG gửi giá sai",
+          "critical",
         );
       }
     }
   }
 
-  // 5. Tự giảm giá / tự hứa ưu đãi.
-  if (SELF_DISCOUNT_NORM_RE.test(t)) {
+  // 5. Tự giảm giá / tự hứa ưu đãi. "giảm còn <số>" hợp lệ khi có catalog đối chiếu
+  // (số bậy đã bị rule 4 chặn trước đó); không catalog / không số = hứa suông → block.
+  if (
+    SELF_DISCOUNT_NORM_RE.test(t) ||
+    (GIAM_CON_RE.test(t) && !(input.catalog?.length && extractMoneyVnd(reply).length > 0))
+  ) {
     return block(
       "self_discount",
       "Reply tự giảm giá / hứa ưu đãi ngoài catalog — bot không có quyền deal",
       "Thay bằng câu 'để em hỏi quản lý giúp mình' + escalate",
+      "critical",
     );
   }
 
-  // 6. Trôi dịch vụ (service drift) — nâng từ log-only thành CHẶN.
+  // 5b. Lộ marker/prompt nội bộ ra khách.
+  if (LEAK_INTERNAL_RE.test(reply)) {
+    return block(
+      "leak_internal",
+      "Reply chứa marker/khối prompt nội bộ (<<...>>, TRẠNG THÁI KHÁCH...)",
+      "Cắt phần nội bộ khỏi reply; tái sinh nếu phần còn lại rỗng",
+      "critical",
+    );
+  }
+
+  // 6. Trôi dịch vụ (service drift) — nâng từ log-only thành CHẶN, NHƯNG chỉ khi ĐÃ khóa
+  // nhu cầu và Router không chủ động yêu cầu hỏi/chào (GREET/ASK_SERVICE/IDENTIFY_SERVICE
+  // có nhiệm vụ hỏi "mình muốn chụp gì" — không được chặn chính câu Router yêu cầu).
   const known = state.serviceIntent ? INTENT_TO_KNOWN[state.serviceIntent] ?? null : null;
-  const drift = detectServiceDrift(reply, known);
+  const driftExempt =
+    decision.action === "GREET" || decision.action === "ASK_SERVICE" || decision.action === "IDENTIFY_SERVICE";
+  const drift = known && !driftExempt ? detectServiceDrift(reply, known) : [];
   if (drift.length > 0) {
     return block(
       "service_drift",
-      `Reply trôi khỏi nhu cầu đang khóa (${state.serviceIntent ?? "?"}): ${drift.join(", ")}`,
+      `Reply trôi khỏi nhu cầu đang khóa (${state.serviceIntent}): ${drift.join(", ")}`,
       "Tái sinh với khóa nhu cầu nhấn mạnh; vẫn trôi → escalate",
     );
   }
@@ -186,7 +231,20 @@ export function validateSaleReply(input: ValidatorInput): ValidatorResult {
       "too_many_questions",
       `Reply chứa ${countQuestions(reply)} câu hỏi — quy tắc mỗi lượt 1 câu chính`,
       "Tái sinh chỉ giữ 1 câu hỏi quan trọng nhất",
+      "minor",
     );
+  }
+
+  // 8. Cần người thật nhưng reply vẫn "cố bán" (bung giá / hỏi dồn) — phải DỪNG đúng lúc,
+  // chỉ được giữ khách lịch sự rồi bàn giao.
+  if (decision.shouldEscalate && decision.action === "ESCALATE_HUMAN") {
+    if (extractMoneyVnd(reply).length > 0 || countQuestions(reply) >= 2) {
+      return block(
+        "escalate_but_selling",
+        "Decision là bàn giao người thật nhưng reply vẫn bung giá / hỏi dồn tiếp",
+        "Thay bằng câu giữ khách ngắn + xác nhận nhân viên sẽ liên hệ",
+      );
+    }
   }
 
   return { verdict: "PASS" };

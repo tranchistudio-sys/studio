@@ -142,10 +142,13 @@ const RESET_PHRASES = [
 ];
 
 // Từ khóa dịch vụ KHÁC — nếu xuất hiện khi đã khóa nhu cầu = trôi nhóm (heuristic, đã bỏ dấu).
+// LƯU Ý token (bài học cùng lớp với INTENT_SIGNALS dòng 44): KHÔNG để "co dau"/"chu re"
+// trần — sau bỏ dấu chúng trùng "có đâu"/"chứ rẻ" ("Dạ không có đâu ạ" bị bắt oan).
+// Chỉ giữ cụm ghép "co dau chu re".
 const OFF_INTENT_WORDS: Record<KnownIntent, string[]> = {
   wedding_gate: ["beauty", "gia dinh", "bau", "san pham", "doanh nhan"],
   wedding: ["beauty", "gia dinh", "bau", "san pham", "doanh nhan"],
-  beauty: ["chup cuoi", "co dau", "chu re", "gia dinh", "bau", "thue vay"],
+  beauty: ["chup cuoi", "co dau chu re", "gia dinh", "bau", "thue vay"],
   rental: ["beauty", "gia dinh", "bau", "chup cuoi", "san pham"],
   maternity: ["beauty", "chup cuoi", "gia dinh", "thue vay", "san pham"],
   family: ["beauty", "chup cuoi", "bau", "thue vay", "san pham"],
@@ -162,7 +165,8 @@ export function detectServiceDrift(reply: string, knownIntent: KnownIntent | nul
   const hits: string[] = [];
   for (const p of RESET_PHRASES) if (t.includes(p)) hits.push(`reset:${p}`);
   if (knownIntent) {
-    for (const w of OFF_INTENT_WORDS[knownIntent]) if (t.includes(w)) hits.push(`offintent:${w}`);
+    // hasKeyword (ranh giới từ) thay cho substring — chống va chạm kiểu "cá nhân"/"cả nhà".
+    for (const w of OFF_INTENT_WORDS[knownIntent]) if (hasKeyword(t, w)) hits.push(`offintent:${w}`);
   }
   return [...new Set(hits)];
 }

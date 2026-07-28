@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 // sale-workflow → sale-lead-flags → @workspace/db (throw nếu thiếu DATABASE_URL) → mock theo convention.
 vi.mock("@workspace/db", () => ({ pool: { query: vi.fn(async () => ({ rows: [] })) } }));
-import { GOLDEN_CASES, type GoldenCase } from "./sale-workflow-golden-set";
+import { allGoldenCases, type GoldenCase } from "./sale-workflow-golden-set";
+const GOLDEN_CASES = allGoldenCases();
 import { simulateThreadStateFromHistory } from "./sale-thread-state";
 import { routeSaleAction, type RouterDecision } from "./sale-workflow";
 import type { ThreadState } from "./sale-thread-state";

@@ -304,7 +304,9 @@ router.post("/claude-sale-test/chat", async (req, res) => {
           askedQuestions: stateBefore.askedQuestions,
           quotedPackages: stateBefore.quotedPackages.map((p) => p.code),
         },
-        stateAfter: {
+        // State SAU khi nuốt tin khách, TRƯỚC câu trả lời bot lượt này — hành động bot
+        // (câu hỏi ngày / gói vừa báo) chỉ vào state ở lượt kế tiếp (FE cộng dồn quotedCodes).
+        stateAfterIncoming: {
           dateStatus: simState.slots.date_status ?? "unset",
           eventDate: simState.slots.event_date ?? null,
           serviceIntent: simState.serviceIntent,

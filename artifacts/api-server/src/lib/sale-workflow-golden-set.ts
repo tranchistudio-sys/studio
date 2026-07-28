@@ -251,4 +251,157 @@ export const GOLDEN_CASES: GoldenCase[] = [
     message: "vậy giữ lịch cho chị nha",
     expected: { stage: "BOOKING_INTENT", action: "ASK_PHONE", forbiddenAction: "ASK_DATE" },
   },
+
+  // ── KHÓA HÀNH VI TỪ VÒNG REVIEW ĐỐI KHÁNG #137 (14 lỗi đã xác nhận) ──────────
+  {
+    id: "G34", name: "Khách CHỐT MUA 'chốt gói này nha' sau báo giá → booking, KHÔNG phải FAQ",
+    history: [{ direction: "incoming", message: "chụp cưới giá sao em" }, ASKED_DATE, { direction: "incoming", message: "chưa biết ngày, tham khảo thôi" }, { direction: "outgoing", message: "Dạ em gửi giá tham khảo nha" }],
+    message: "Ok chốt gói này nha em",
+    quotedCodes: ["ST-BASIC"],
+    expected: { stage: "BOOKING_INTENT", action: "ASK_DATE", forbiddenAction: "ANSWER_FAQ", stateChange: "chốt mua = lý do nghiệp vụ mới → mở lại hỏi ngày" },
+  },
+  {
+    id: "G35", name: "'em lấy gói basic nha' → booking",
+    history: [{ direction: "incoming", message: "chụp cổng giá sao" }, ASKED_DATE, { direction: "incoming", message: "chưa chốt ngày" }, { direction: "outgoing", message: "Dạ em gửi giá tham khảo nha" }],
+    message: "em lấy gói basic nha",
+    quotedCodes: ["CG-BASIC"],
+    expected: { stage: "BOOKING_INTENT", action: "ASK_DATE", forbiddenAction: "ANSWER_FAQ" },
+  },
+  {
+    id: "G36", name: "Chốt lịch khi ĐÃ hỏi ngày 2 lần → xin SĐT + bàn giao (không FAQ, không hỏi ngày lần 3)",
+    history: [
+      { direction: "incoming", message: "chụp cưới nha" }, ASKED_DATE,
+      { direction: "incoming", message: "để chị coi đã" }, ASKED_DATE,
+    ],
+    message: "ok chốt lịch giúp chị đi",
+    expected: { stage: "BOOKING_INTENT", action: "ASK_PHONE", forbiddenAction: "ANSWER_FAQ", shouldEscalate: true },
+  },
+  {
+    id: "G37", name: "Tin đầu 'Chào em, chị muốn chụp gia đình' → GREET có intent (không bị hạ về FAQ)",
+    history: [], message: "Chào em, chị muốn chụp gia đình",
+    expected: { serviceIntent: "family", stage: "NEW_LEAD", action: "GREET", forbiddenAction: "ANSWER_FAQ" },
+  },
+  {
+    id: "G38", name: "'bao nhiêu NGƯỜI' là câu số lượng, không phải giá — không bung giá, không hỏi ngày",
+    history: [{ direction: "incoming", message: "chụp gia đình nha em" }, ASKED_DATE, { direction: "incoming", message: "chưa biết ngày" }],
+    message: "gói này chụp được bao nhiêu người vậy em?",
+    expected: { dateStatus: "not_decided", forbiddenAction: "ASK_DATE", forbiddenQuestionsInclude: ["ask_date"] },
+  },
+  {
+    id: "G39", name: "'chụp CHO GIA đình được không' không phải hỏi giá — không đốt lượt hỏi ngày",
+    history: [], message: "chụp cho gia đình được không em?",
+    expected: { serviceIntent: "family", action: "GREET", forbiddenAction: "ASK_DATE" },
+  },
+  {
+    id: "G40", name: "'để chị xem thử rồi báo lại' sau báo giá = trì hoãn → WAIT, không bung ảnh",
+    history: [{ direction: "incoming", message: "chụp cưới giá sao" }, ASKED_DATE, { direction: "incoming", message: "20/12" }, { direction: "outgoing", message: "Dạ gói bên em 3.900.000đ ạ" }],
+    message: "để chị xem thử rồi báo lại em nha",
+    quotedCodes: ["ST-BASIC"],
+    expected: { stage: "QUOTED", action: "WAIT", forbiddenAction: "SEND_SAMPLE" },
+  },
+  {
+    id: "G41", name: "'chụp xong khi nào cho hình' = hỏi thời gian trả ảnh → FAQ, không gửi mẫu",
+    history: [{ direction: "incoming", message: "chụp gia đình nha" }],
+    message: "chụp xong khi nào cho hình vậy em?",
+    expected: { action: "ANSWER_FAQ", forbiddenAction: "SEND_SAMPLE" },
+  },
+  {
+    id: "G42", name: "Khách cũ 'ok ạ' (ack 2 từ) → WAIT",
+    history: [{ direction: "incoming", message: "chụp cưới nha" }, { direction: "outgoing", message: "Dạ bên em có cổng, album, ngoại cảnh ạ" }],
+    message: "ok ạ",
+    expected: { action: "WAIT" },
+  },
+  {
+    id: "G43", name: "Khách cũ nhắn 'chào' trần → WAIT (không đẩy bước)",
+    history: [{ direction: "incoming", message: "chụp beauty nha" }, { direction: "outgoing", message: "Dạ mình thích tone nào ạ?" }],
+    message: "chào",
+    expected: { action: "WAIT" },
+  },
+  {
+    id: "G44", name: "'khi nào có ngày em báo' → not_decided, cấm hỏi ngày",
+    history: [{ direction: "incoming", message: "chụp cưới nha" }, ASKED_DATE],
+    message: "khi nào có ngày em báo nha",
+    expected: { dateStatus: "not_decided", forbiddenAction: "ASK_DATE", forbiddenQuestionsInclude: ["ask_date"] },
+  },
+  {
+    id: "G45", name: "'cho chị xin giá trước đi' khi đã hỏi ngày 1 lần → giá tham khảo, không lặp",
+    history: [{ direction: "incoming", message: "chụp cưới nha" }, ASKED_DATE],
+    message: "cho chị xin giá trước đi em",
+    expected: { action: "QUOTE_REFERENCE", forbiddenAction: "ASK_DATE" },
+  },
+  {
+    id: "G46", name: "Slang viết tắt 'z gia sao e' → vẫn hiểu là hỏi giá",
+    history: [{ direction: "incoming", message: "chụp cổng nha em" }, ASKED_DATE],
+    message: "z gia sao e",
+    expected: { action: "QUOTE_REFERENCE", forbiddenAction: "ASK_DATE" },
+  },
+  {
+    id: "G47", name: "'ngày 20-12 nha em' (dấu gạch) → known, không hỏi lại",
+    history: [{ direction: "incoming", message: "chụp cưới" }, ASKED_DATE],
+    message: "ngày 20-12 nha em",
+    expected: { dateStatus: "known", eventDate: "2026-12-20", forbiddenQuestionsInclude: ["ask_date"] },
+  },
+  {
+    id: "G48", name: "Khách bỏ qua câu hỏi ngày 2 lần rồi hỏi váy → chuyển rental, vẫn cấm hỏi ngày",
+    history: [
+      { direction: "incoming", message: "chụp cưới nha" }, ASKED_DATE,
+      { direction: "incoming", message: "mà bên em chụp đẹp không" }, ASKED_DATE,
+    ],
+    message: "bên em có cho thuê váy cưới không?",
+    expected: { serviceIntent: "rental_outfit", action: "ANSWER_FAQ", forbiddenAction: "ASK_DATE", forbiddenQuestionsInclude: ["ask_date"] },
+  },
+  {
+    id: "G49", name: "4 tin dồn dập kết bằng chốt lịch → state gộp đủ, booking",
+    history: [
+      { direction: "incoming", message: "e oi" },
+      { direction: "incoming", message: "chụp cưới nha" },
+      { direction: "incoming", message: "20/12" },
+    ],
+    message: "chốt lịch luôn nha",
+    expected: { dateStatus: "known", eventDate: "2026-12-20", stage: "BOOKING_INTENT", action: "ASK_PHONE" },
+  },
+  {
+    id: "G50", name: "Objection slang không dấu 'bot chut duoc k e' → xử lý băn khoăn + báo người thật",
+    history: [{ direction: "incoming", message: "chụp cưới giá sao" }, ASKED_DATE, { direction: "incoming", message: "20/12" }, { direction: "outgoing", message: "Dạ gói bên em 3.900.000đ ạ" }],
+    message: "bot chut duoc k e",
+    quotedCodes: ["ST-BASIC"],
+    expected: { action: "HANDLE_OBJECTION", shouldEscalate: true },
+  },
+  {
+    id: "G51", name: "Sample slang 'e oi cho xem mau vay cuoi' → gửi mẫu rental",
+    history: [],
+    message: "e oi cho xem mau vay cuoi voi",
+    expected: { serviceIntent: "rental_outfit", action: "SEND_SAMPLE" },
+  },
+  {
+    id: "G52", name: "'chị hỏi thật, hôm bữa em báo nhiêu tiền ấy nhỉ' — khách quay lại hỏi giá cũ",
+    history: [{ direction: "incoming", message: "chụp cổng giá sao" }, ASKED_DATE, { direction: "incoming", message: "chưa biết ngày" }, { direction: "outgoing", message: "Dạ em gửi giá tham khảo nha" }],
+    message: "chị hỏi thật, hôm bữa em báo nhiêu tiền ấy nhỉ",
+    quotedCodes: ["CG-BASIC"],
+    expected: { stage: "QUOTED", action: "QUOTE_REFERENCE", forbiddenAction: "ASK_DATE" },
+  },
 ];
+
+// ─── BIẾN THỂ KHÔNG DẤU (slang/typo layer) ───────────────────────────────────
+// Khách Việt gõ không dấu rất nhiều — mọi extractor/router đều normalize nên hành vi
+// PHẢI y hệt bản có dấu. Sinh tự động 1 biến thể/case (id + "-nd") với message + history
+// đã bỏ dấu; expected giữ nguyên.
+
+function stripDiacritics(s: string): string {
+  return s.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d").replace(/Đ/g, "D");
+}
+
+export function buildNoDiacriticVariants(cases: GoldenCase[]): GoldenCase[] {
+  return cases.map((c) => ({
+    ...c,
+    id: `${c.id}-nd`,
+    name: `${c.name} (không dấu)`,
+    history: c.history.map((h) => ({ ...h, message: stripDiacritics(h.message) })),
+    message: stripDiacritics(c.message),
+  }));
+}
+
+/** Bộ đầy đủ: case gốc + biến thể không dấu (dùng cho runner + report). */
+export function allGoldenCases(): GoldenCase[] {
+  return [...GOLDEN_CASES, ...buildNoDiacriticVariants(GOLDEN_CASES)];
+}

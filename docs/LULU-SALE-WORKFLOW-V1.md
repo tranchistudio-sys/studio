@@ -49,21 +49,24 @@ lời sai thì nhìn trace biết sai Ở TẦNG NÀO** — hết sửa prompt t
 Response BLOCK **không bao giờ** được gửi cho khách (khi nối thật: tái sinh 1 lần → cắt câu
 vi phạm → escalate).
 
-## Golden Test Set — 33 hội thoại thật của studio
+## Golden Test Set — 104 case (52 hội thoại thật × biến thể KHÔNG DẤU tự sinh)
 
 Chấm bằng expected có cấu trúc (slot/stage/action/forbidden/state change), không chấm
-"nghe hay". Kết quả hiện tại:
+"nghe hay". Phủ: date, pricing, intent, ảnh, gói, objection, booking, handoff,
+multi-message, khách quay lại, số-không-phải-ngày, slang/không dấu — gồm đúng các lỗi
+từng gặp thật ("chưa biết ngày", "2-3 người", "bé 3 tháng 10 ngày", "khi nào có ngày em
+báo", "chốt gói này nha"...). Kết quả sau vòng review đối kháng (14 lỗi xác nhận → đã sửa):
 
 | Metric | Kết quả | Mục tiêu trước pilot |
 |---|---|---|
-| Slot Accuracy | 100% (16/16) | — |
-| Correct Action Rate | 100% (30/30) | — |
-| Correct Stage Rate | 100% (12/12) | — |
-| Escalation Accuracy | 100% (5/5) | — |
+| Slot Accuracy | 100% (48/48) | — |
+| Correct Action Rate | 100% (92/92) | — |
+| Correct Stage Rate | 100% (38/38) | — |
+| Escalation Accuracy | 100% (14/14) | — |
 | Repeated Question Violations (rule cứng) | **0** | **0** |
 | Business Rule Violations (deterministic) | **0** | **0** |
 | Validator Catch Rate (bộ reply lỗi) | 100% | — |
-| Price Accuracy (khi có catalog) | enforce bởi rule 4 | 100% |
+| Price Accuracy (khi có catalog) | enforce bởi rule 4 (critical) | 100% |
 
 Chạy lại: `pnpm exec vitest run src/lib/sale-workflow-golden.test.ts --disableConsoleIntercept`
 (in bảng metric); thêm `GOLDEN_TRACE=1` để in 5 trace tiêu biểu.

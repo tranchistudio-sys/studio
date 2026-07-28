@@ -3,8 +3,10 @@ import { sql } from "drizzle-orm";
 
 /**
  * Não Sale AI "Lulu" — các bảng được TẠO LAZY lúc chạy (CREATE TABLE IF NOT EXISTS) ở:
- *   - artifacts/api-server/src/lib/sale-brain-lab.ts   (lulu_brain_*)
- *   - artifacts/api-server/src/lib/sale-human-review.ts (lulu_human_reviews)
+ *   - artifacts/api-server/src/lib/sale-brain-lab.ts     (lulu_brain_*)
+ *   - artifacts/api-server/src/lib/sale-human-review.ts  (lulu_human_reviews)
+ *   - artifacts/api-server/src/lib/sale-playbook.ts      (sale_playbooks)
+ *   - artifacts/api-server/src/lib/sale-thread-state.ts  (lulu_thread_state)
  *
  * KHAI BÁO ở đây để drizzle-kit (bước "Generated migrations" khi deploy Replit) HIỂU rằng các bảng
  * này là CỐ Ý — KHÔNG còn tự sinh migration "DROP TABLE" làm mất dữ liệu thật trên production.
@@ -106,4 +108,51 @@ export const luluHumanReviews = pgTable("lulu_human_reviews", {
   // 1 review 'open' / khách (partial unique) + tra cứu theo status.
   openUser: uniqueIndex("idx_lulu_hr_open_user").on(t.facebookUserId).where(sql`status = 'open'`),
   statusCreated: index("idx_lulu_hr_status_created").on(t.status, t.createdAt),
+}));
+
+// Playbook phong cách sale (học từ chat thật, có kiểm duyệt) — tạo lazy ở sale-playbook.ts.
+// Khai báo tại đây để drizzle-kit không đề xuất DROP (bảng bị SÓT khi vá sự cố 24/07 ở PR #132).
+export const salePlaybooks = pgTable("sale_playbooks", {
+  id: serial("id").primaryKey(),
+  title: text("title").notNull().default("Sale Playbook"),
+  status: text("status").notNull().default("draft"),
+  content: text("content").notNull().default(""),
+  contentOriginal: text("content_original"),
+  conversationsUsed: integer("conversations_used").notNull().default(0),
+  sourceSummary: text("source_summary"),
+  createdBy: integer("created_by"),
+  createdByName: text("created_by_name"),
+  approvedBy: integer("approved_by"),
+  approvedByName: text("approved_by_name"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  approvedAt: timestamp("approved_at"),
+  activatedAt: timestamp("activated_at"),
+});
+
+// Trí nhớ hội thoại Lulu (Đợt 2) — trạng thái có cấu trúc per khách: slot ngày chụp,
+// nhu cầu, câu đã hỏi, gói đã báo giá, ảnh đã gửi. Tạo lazy + ensure startup ở
+// sale-thread-state.ts; cấu trúc cột phải khớp đúng CREATE TABLE trong file đó.
+export const luluThreadState = pgTable("lulu_thread_state", {
+  id: serial("id").primaryKey(),
+  facebookUserId: text("facebook_user_id").notNull(),
+  pageId: text("page_id"),
+  customerId: integer("customer_id"),
+  currentStage: text("current_stage").notNull().default("new"),
+  previousStage: text("previous_stage"),
+  serviceIntent: text("service_intent"),
+  customerStatus: text("customer_status").notNull().default("lead"),
+  lastAction: text("last_action"),
+  slots: jsonb("slots").notNull().default(sql`'{}'::jsonb`),
+  askedQuestions: jsonb("asked_questions").notNull().default(sql`'[]'::jsonb`),
+  quotedPackages: jsonb("quoted_packages").notNull().default(sql`'[]'::jsonb`),
+  sentAssets: jsonb("sent_assets").notNull().default(sql`'{}'::jsonb`),
+  lastUserMessageAt: timestamp("last_user_message_at"),
+  lastBotMessageAt: timestamp("last_bot_message_at"),
+  version: integer("version").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (t) => ({
+  user: uniqueIndex("idx_lulu_thread_state_user").on(t.facebookUserId),
+  updated: index("idx_lulu_thread_state_updated").on(t.updatedAt),
 }));

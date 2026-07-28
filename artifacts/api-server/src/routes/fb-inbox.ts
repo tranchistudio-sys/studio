@@ -34,6 +34,11 @@ import {
 import {
   HOLD_MESSAGE, imageEscalationReason, upsertOpenHumanReview, markHoldSent,
 } from "../lib/sale-human-review";
+import {
+  isLuluStateEnabled, applyIncomingMessage, getThreadState, buildThreadStateBlock,
+  recordBotReply, type ThreadState,
+} from "../lib/sale-thread-state";
+import { botAsksDate } from "../lib/sale-slots";
 import { emitNotification } from "./notifications";
 import multer from "multer";
 import { randomUUID } from "crypto";
@@ -521,6 +526,13 @@ export async function processIncomingFacebookMessage(
   if (detectPhone(text)) markPhoneCaptured(psid).catch(() => {});
   if (detectAppointmentIntent(text)) markAppointmentIntent(psid).catch(() => {});
 
+  // TRÍ NHỚ CÓ CẤU TRÚC (cờ LULU_STATE_ENABLED, mặc định tắt): rút slot ngày/nhu cầu từ
+  // tin khách vào lulu_thread_state TRƯỚC khi build prompt để lượt này đọc được ngay.
+  // Fail-open: lỗi DB → hàm tự nuốt, bot chạy tiếp như cũ.
+  if (isLuluStateEnabled()) {
+    await applyIncomingMessage(psid, text);
+  }
+
   // ══ BỘ NÃO SALE CLAUDE (Giai đoạn 1 — chỉ tư vấn) ════════════════════════════
   // CẦU DAO TỔNG (DB) thay cho biến môi trường: 1 công tắc cho cả Test & Messenger.
   // Khi TẮT: webhook vẫn nhận tin, vẫn lưu lead + lịch sử (ở trên) — chỉ KHÔNG trả lời.
@@ -796,6 +808,7 @@ async function handleClaudeSaleReply(
 
   let reply;
   let visionIntent: CustomerImageIntent | null = null;
+  let threadState: ThreadState | null = null;
   try {
     let context = await getSaleContext();
     // "Ý tưởng chụp ảnh" là NGUỒN PHỤ: chỉ nạp khi khách thật sự muốn concept mới/lạ.
@@ -820,6 +833,13 @@ async function handleClaudeSaleReply(
         if (ideas) context += `\n\n${ideas}`;
       }
       console.log(`[Vision] psid=${psid} ảnh → intent=${intent.service_intent} (conf=${intent.confidence})`);
+    }
+    // TRẠNG THÁI KHÁCH (trí nhớ có cấu trúc) → chèn khối nhắc vào context để Lulu không
+    // hỏi lại ngày / không bung lại bảng giá đã báo. "" khi tắt cờ hoặc chưa có gì đáng nói.
+    if (isLuluStateEnabled()) {
+      threadState = await getThreadState(psid);
+      const stateBlock = buildThreadStateBlock(threadState);
+      if (stateBlock) context += `\n\n${stateBlock}`;
     }
     const styleGuide = await getActivePlaybook();
     const brainRules = await getActiveBrainRules();
@@ -897,6 +917,8 @@ async function handleClaudeSaleReply(
   // Đặt TRƯỚC guard "chunks rỗng" để tin chỉ-có-marker (<<SAMPLE>>) vẫn gửi được ảnh.
   // Marker <<SAMPLE>> của Claude hoặc tự suy nhóm từ ảnh/tin khách. Lỗi/không có ảnh → bỏ qua, vẫn gửi text.
   let samplesExhausted = false;
+  const sentSampleUrlsForState: string[] = []; // URL ảnh mẫu đã gửi lượt này (ghi vào thread state)
+  const sentPriceGroupIdsForState: number[] = []; // id nhóm giá đã gửi ảnh bảng giá
   try {
     const contextText = history
       .filter((h) => !h.message.startsWith("[image:"))
@@ -935,6 +957,7 @@ async function handleClaudeSaleReply(
     if (finalSel.images.length > 0) {
       const nSent = await sendSampleImagesSequentially(psid, cfg.pageAccessToken, finalSel.images);
       console.log(`[Claude] psid=${psid} gửi ${nSent}/${finalSel.images.length} ảnh mẫu (nhóm: ${finalSel.resolvedIntents.join(",")})`);
+      for (const img of finalSel.images.slice(0, nSent)) sentSampleUrlsForState.push(img.imageUrl);
     }
     samplesExhausted = finalSel.exhausted;
   } catch (e) {
@@ -966,6 +989,7 @@ async function handleClaudeSaleReply(
         const imgsSent = await sendPriceImagesSequentially(psid, cfg.pageAccessToken, objectPaths, "claude_price_img");
         if (imgsSent) {
           console.log(`[Claude] psid=${psid} đã gửi ${hits.length} ảnh bảng giá nhóm: ${hits.map((h) => h.groupName).join(", ")}`);
+          for (const h of hits) sentPriceGroupIdsForState.push(h.groupId);
         } else {
           // Fallback: gửi LINK ảnh public dạng text để khách vẫn xem được.
           const links = objectPaths.map((p) => resolveImagePath(p)).filter(Boolean).join("\n");
@@ -985,6 +1009,18 @@ async function handleClaudeSaleReply(
   const allSent = await sendChunksWithTyping(psid, cfg.pageAccessToken, chunks, "claude_replied", undefined, replyDelayMs, perChunkDelays);
   await markIncoming(allSent ? (escalationReason ? "claude_replied_escalated" : "claude_replied") : "claude_partial_failed");
   console.log(`[Claude] psid=${psid} đã gửi ${chunks.length} tin (allSent=${allSent})`);
+
+  // Ghi "bot vừa làm gì" vào trí nhớ: đã hỏi ngày chưa, đã báo giá gói nào, đã gửi ảnh nào —
+  // lượt sau buildThreadStateBlock dùng để không hỏi lại / không bung lại. Fail-open.
+  if (isLuluStateEnabled()) {
+    await recordBotReply(psid, {
+      action: escalationReason ? "reply_escalated" : reply.priceImageCodes?.length ? "quote" : "reply",
+      askedDate: botAsksDate(chunks.join("\n")),
+      quotedCodes: reply.priceImageCodes ?? [],
+      sampleUrls: sentSampleUrlsForState,
+      priceGroupIds: sentPriceGroupIdsForState,
+    });
+  }
 
   // Sau khi đã gửi câu chuyển tiếp lịch sự → chuyển nhân viên thật tiếp quản.
   if (escalationReason) await escalateToHuman(psid, lead?.name, escalationReason);

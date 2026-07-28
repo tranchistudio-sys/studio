@@ -39,6 +39,10 @@ import {
   recordBotReply, type ThreadState,
 } from "../lib/sale-thread-state";
 import { botAsksDate } from "../lib/sale-slots";
+import {
+  isThreadLockEnabled, threadDebounceMs, latestIncomingId, isSuperseded,
+  markDecisionById, withThreadLock,
+} from "../lib/sale-thread-lock";
 import { emitNotification } from "./notifications";
 import multer from "multer";
 import { randomUUID } from "crypto";
@@ -422,12 +426,16 @@ export async function processIncomingFacebookMessage(
 
   await ensureFbInboxTable();
 
+  // id dòng tin CỦA LƯỢT NÀY — dùng cho debounce "tin mới nhất thắng" (PR-C).
+  let myMsgId: number | null = null;
+
   // Ảnh đã được webhook lưu sẵn (alreadyInserted) → bỏ qua bước insert + check trùng mid.
   if (!opts?.alreadyInserted) {
     const insertResult = await pool.query(
       `INSERT INTO fb_inbox_messages (facebook_user_id, direction, message, sent_status, mid)
        VALUES ($1, 'incoming', $2, 'received', $3)
-       ON CONFLICT (mid) WHERE mid IS NOT NULL DO NOTHING`,
+       ON CONFLICT (mid) WHERE mid IS NOT NULL DO NOTHING
+       RETURNING id`,
       [psid, text, mid ?? null],
     );
 
@@ -435,6 +443,11 @@ export async function processIncomingFacebookMessage(
       console.log(`[FBInbox] Duplicate mid=${mid} for psid=${psid} — skipping`);
       return;
     }
+    const insertedId = (insertResult.rows[0] as { id?: number } | undefined)?.id;
+    myMsgId = typeof insertedId === "number" ? insertedId : insertedId != null ? Number(insertedId) : null;
+  } else {
+    // Ảnh: webhook đã insert trước — lấy id tin incoming mới nhất làm mốc (best-effort).
+    myMsgId = await latestIncomingId(psid);
   }
 
   const cfg = await getConfig();
@@ -532,8 +545,25 @@ export async function processIncomingFacebookMessage(
   // TRÍ NHỚ CÓ CẤU TRÚC (cờ LULU_STATE_ENABLED + allowlist pilot LULU_STATE_PSIDS):
   // rút slot ngày/nhu cầu từ tin khách vào lulu_thread_state TRƯỚC khi build prompt
   // để lượt này đọc được ngay. Fail-open: lỗi DB → hàm tự nuốt, bot chạy tiếp như cũ.
+  // LƯU Ý thứ tự với debounce bên dưới: slot của TỪNG tin (kể cả tin sẽ bị nhường
+  // quyền trả lời) đều PHẢI vào state — chỉ phần TRẢ LỜI bị gộp.
   if (isLuluStateEnabledFor(psid)) {
     await applyIncomingMessage(psid, text);
+  }
+
+  // GỘP TIN DỒN DẬP (Đợt 1 PR-C, cờ LULU_THREAD_LOCK_ENABLED): ngủ debounce rồi so id —
+  // có tin MỚI HƠN của cùng khách → lượt này NHƯỜNG (không trả lời). Tin của lượt này đã
+  // nằm trong history + state nên handler của tin mới nhất trả lời GỘP đủ ngữ cảnh
+  // ("chụp cưới" + "chưa biết ngày" + "gửi giá" = MỘT câu trả lời). Không tin nào mất.
+  if (isThreadLockEnabled()) {
+    const waitMs = threadDebounceMs();
+    if (waitMs > 0) await sleep(waitMs);
+    const latest = await latestIncomingId(psid);
+    if (isSuperseded(myMsgId, latest)) {
+      await markDecisionById(myMsgId, "claude_superseded");
+      console.log(`[ThreadLock] psid=${psid} msg#${myMsgId} nhường tin mới hơn #${latest}`);
+      return;
+    }
   }
 
   // ══ BỘ NÃO SALE CLAUDE (Giai đoạn 1 — chỉ tư vấn) ════════════════════════════
@@ -542,7 +572,26 @@ export async function processIncomingFacebookMessage(
   // Khi lead ở 'paused'/'takeover': nhân viên đang chăm → AI im.
   const masterOn = await getMasterEnabled();
   if (masterOn && aiMode === "active") {
-    await handleClaudeSaleReply(psid, text, lead, cfg, opts?.imageUrls);
+    if (!isThreadLockEnabled()) {
+      await handleClaudeSaleReply(psid, text, lead, cfg, opts?.imageUrls);
+      return;
+    }
+    // SERIALIZE per-thread (autoscale-safe, advisory lock DB): mỗi thread chỉ MỘT luồng
+    // trả lời tại một thời điểm giữa mọi instance. Sau khi CÓ khóa re-check tin mới nhất
+    // (tin có thể đến trong lúc chờ khóa) → nhường nếu bị vượt.
+    const lockRes = await withThreadLock(psid, async () => {
+      const latest = await latestIncomingId(psid);
+      if (isSuperseded(myMsgId, latest)) return "superseded" as const;
+      await handleClaudeSaleReply(psid, text, lead, cfg, opts?.imageUrls);
+      return "done" as const;
+    });
+    if (!lockRes.ran) {
+      await markDecisionById(myMsgId, "claude_lock_timeout");
+      console.warn(`[ThreadLock] psid=${psid} msg#${myMsgId} bỏ lượt (${lockRes.reason}) — thread đang có luồng trả lời khác`);
+    } else if (lockRes.result === "superseded") {
+      await markDecisionById(myMsgId, "claude_superseded");
+      console.log(`[ThreadLock] psid=${psid} msg#${myMsgId} nhường sau khi chờ khóa`);
+    }
     return;
   }
   // MỌI trường hợp còn lại (master tắt HOẶC lead không 'active') → KHÔNG trả lời.

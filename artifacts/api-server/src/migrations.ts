@@ -2,6 +2,8 @@ import { pool } from "@workspace/db";
 import { withStartupDdlLock } from "./lib/startup-ddl";
 import { ensureBrainLabTables } from "./lib/sale-brain-lab";
 import { ensureHumanReviewTable } from "./lib/sale-human-review";
+import { ensureSalePlaybookTable } from "./lib/sale-playbook";
+import { ensureThreadStateTable } from "./lib/sale-thread-state";
 
 async function runMigrationsUnlocked() {
   const client = await pool.connect();
@@ -1206,6 +1208,13 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
   try {
     await ensureBrainLabTables();
     await ensureHumanReviewTable();
+    // sale_playbooks: cùng lớp runtime-managed nhưng bị SÓT ở PR #132 (chỉ tạo lazy khi
+    // Sale Learning chạy — thường là prod) → prod-có-dev-thiếu = nguy cơ Replit đề xuất
+    // DROP TABLE y hệt sự cố 24/07. Ensure ở đây để DEV DB luôn có.
+    await ensureSalePlaybookTable();
+    // lulu_thread_state: trí nhớ hội thoại Lulu (Đợt 2) — ensure từ ngày đầu để không
+    // bao giờ rơi vào nhóm "bảng lazy chỉ có trên prod".
+    await ensureThreadStateTable();
     console.log("[migrations] lulu_* runtime-managed tables OK");
   } catch (err) {
     console.error("[migrations] lulu_* runtime-managed tables:", err);

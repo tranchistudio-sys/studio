@@ -41,6 +41,8 @@ const DENY_KEYWORDS = [
 
 export type PkgRow = {
   id: number; group_id: number; group_name: string; pkg_name: string; price: string; code: string | null; description?: string | null;
+  // Chi tiết gói (cho bảng Báo giá chi tiết) — additive, các consumer cũ bỏ qua.
+  photo_count?: number | null; includes_makeup?: boolean | null; print_cost?: string | null; service_type?: string | null;
   // Ưu đãi cấp GÓI (discount_* trên service_packages)
   p_d_enabled?: boolean | null; p_d_type?: string | null; p_d_value?: string | null;
   p_d_start?: string | Date | null; p_d_end?: string | Date | null; p_d_name?: string | null; p_d_desc?: string | null;
@@ -109,6 +111,7 @@ function unsafeReason(r: PkgRow): string | null {
 async function fetchActivePackages(): Promise<PkgRow[]> {
   const res = await pool.query(
     `SELECT p.id, g.id AS group_id, g.name AS group_name, p.name AS pkg_name, p.price, p.code, p.description,
+            p.photo_count, p.includes_makeup, p.print_cost, p.service_type,
             p.discount_enabled AS p_d_enabled, p.discount_type AS p_d_type, p.discount_value AS p_d_value,
             p.discount_start_date AS p_d_start, p.discount_end_date AS p_d_end,
             p.discount_name AS p_d_name, p.discount_description AS p_d_desc,

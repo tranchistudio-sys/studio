@@ -605,7 +605,7 @@ type TreeNodeFE = {
   meta?: { groupName?: string | null; packageCount?: number; situationCount?: number; priceConnected?: boolean; showPricing?: boolean; imageUrl?: string | null };
   scenario?: { name: string; enabled: boolean; status: string; whenText: string; missing?: boolean } | null;
 };
-type EffPkg = { code: string; name: string; groupName: string; basePrice: number; effectivePrice: number; promoActive: boolean; promoName: string | null; promoEnd: string | null };
+type EffPkg = { code: string; name: string; groupName: string; basePrice: number; effectivePrice: number; promoActive: boolean; promoName: string | null; promoEnd: string | null; description?: string | null; photoCount?: number | null; includesMakeup?: boolean };
 
 const vnd = (n: number) => (Number.isFinite(n) && n > 0 ? n.toLocaleString("vi-VN") + "đ" : "liên hệ");
 
@@ -640,21 +640,35 @@ function PricingNode({ serviceKey, groupName }: { serviceKey: string | null; gro
       {!groups && !err && <p className="text-gray-400 mt-1">Đang đọc bảng giá…</p>}
       {groups && groups.length === 0 && <p className="text-amber-600 mt-1">Chưa có gói nào khớp — mở "Dịch vụ &amp; Bảng giá" thêm gói cho nhóm này.</p>}
       {groups?.map((g) => (
-        <div key={g.groupName} className="mt-1.5">
-          <p className="font-medium text-gray-700">{g.groupName}</p>
-          <table className="text-[12px] mt-0.5"><tbody>
-            {g.packages.slice(0, 8).map((p) => (
-              <tr key={p.code}>
-                <td className="pr-3 text-gray-600">{p.name || p.code}</td>
-                <td className="pr-3">
-                  {p.promoActive
-                    ? <span><span className="line-through text-gray-400">{vnd(p.basePrice)}</span> <b className="text-rose-600">{vnd(p.effectivePrice)}</b></span>
-                    : <b>{vnd(p.effectivePrice)}</b>}
-                </td>
-                <td className="text-emerald-600">{p.promoActive ? `KM${p.promoName ? " " + p.promoName : ""}${p.promoEnd ? ` (đến ${new Date(p.promoEnd).toLocaleDateString("vi-VN")})` : ""}` : ""}</td>
-              </tr>
+        <div key={g.groupName} className="mt-2">
+          <p className="font-medium text-gray-700 mb-1">{g.groupName}</p>
+          <div className="space-y-1.5">
+            {g.packages.slice(0, 12).map((p) => (
+              <div key={p.code} className="border border-gray-200 rounded-lg px-2.5 py-2 bg-white">
+                <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                  <span className="font-medium text-gray-800">{p.name || p.code}</span>
+                  <span className="whitespace-nowrap">
+                    {p.promoActive
+                      ? <span><span className="line-through text-gray-400 mr-1">{vnd(p.basePrice)}</span><b className="text-rose-600 text-[13px]">{vnd(p.effectivePrice)}</b></span>
+                      : <b className="text-[13px] text-gray-800">{vnd(p.effectivePrice)}</b>}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5 flex-wrap mt-1">
+                  {p.promoActive && (
+                    <span className="text-[10px] bg-rose-50 text-rose-600 border border-rose-200 rounded-full px-1.5 py-0.5">
+                      🔻 {p.promoName || "Đang giảm"}{p.promoEnd ? ` · đến ${new Date(p.promoEnd).toLocaleDateString("vi-VN")}` : ""}
+                    </span>
+                  )}
+                  {typeof p.photoCount === "number" && p.photoCount > 0 && (
+                    <span className="text-[10px] bg-gray-100 text-gray-600 rounded-full px-1.5 py-0.5">📷 {p.photoCount} ảnh</span>
+                  )}
+                  {p.includesMakeup && <span className="text-[10px] bg-gray-100 text-gray-600 rounded-full px-1.5 py-0.5">💄 makeup</span>}
+                  <span className="text-[10px] text-gray-300 font-mono">{p.code}</span>
+                </div>
+                {p.description && <p className="text-[11px] text-gray-500 mt-1 line-clamp-2"><span className="text-gray-400">Gồm: </span>{p.description}</p>}
+              </div>
             ))}
-          </tbody></table>
+          </div>
         </div>
       ))}
       <a href={`/pricing${groups && groups[0]?.groupName ? `?group=${encodeURIComponent(groups[0].groupName)}` : ""}`}

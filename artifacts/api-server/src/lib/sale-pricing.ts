@@ -30,6 +30,10 @@ export type EffectivePackage = {
   promoType: "percent" | "fixed" | null;
   savedAmount: number;
   promoEnd: string | null; // ISO — để Lulu nói "ưu đãi đến dd/mm"
+  // Chi tiết gói (cho bảng Báo giá chi tiết) — realtime từ service_packages.
+  description: string | null; // thành phần "Gồm: …"
+  photoCount: number | null;
+  includesMakeup: boolean;
 };
 
 export type ServicePricePreview = {
@@ -74,6 +78,9 @@ function toEffective(r: AuditRow, now: Date): EffectivePackage {
     promoType: d.discountType,
     savedAmount: d.savedAmount,
     promoEnd: d.discountEndDate,
+    description: (r.description ?? "").toString().trim() || null,
+    photoCount: r.photo_count != null ? Number(r.photo_count) : null,
+    includesMakeup: !!r.includes_makeup,
   };
 }
 

@@ -254,6 +254,47 @@ const REOPEN_DATE_RE = /(giu lich|chot lich|dat lich|book lich|dat coc|coc giu|k
 const CLOSE_DEAL_RE =
   /(?<!chua )(?<!khong )(?<!dung )(chot (goi|don|luon|lun|nhe|di\b)|\b(lay|chon)\s+goi|dong y (chot|lam|dat)|ok chot)/;
 
+// ─── Tín hiệu tin khách (export cho Scenario Manager) ─────────────────────────
+// Gom các detector THUẦN của Router thành 1 hàm export để tầng Scenario (data-driven)
+// match trigger bằng ĐÚNG bộ regex đã test — không nhân bản regex (1 nguồn sự thật).
+// KHÔNG đổi hành vi routeSaleAction (hàm này chỉ đọc, không side-effect).
+
+export type MessageSignals = {
+  priceQuestion: boolean;
+  wantPricelist: boolean;
+  wantSample: boolean;
+  greetingOnly: boolean;
+  /** Ack cụt ("ok ạ") hoặc thăm dò "còn đó không". */
+  shortAckOrPresence: boolean;
+  /** "faq:address" | "faq:hours" | "faq:package_detail" | "faq:payment" | ... | null */
+  faqTopic: string | null;
+  wantHuman: boolean;
+  hasPhone: boolean;
+  /** Muốn giữ lịch / kiểm tra lịch / hẹn — lý do nghiệp vụ mở lại câu hỏi ngày. */
+  bookingIntent: boolean;
+  closeDeal: boolean;
+  /** Lý do escalation cứng từ detectEscalation (null nếu không có). */
+  escalation: string | null;
+};
+
+export function detectMessageSignals(customerMessage: string): MessageSignals {
+  const msg = (customerMessage ?? "").trim();
+  const t = normalizeVi(msg);
+  return {
+    priceQuestion: PRICE_QUESTION_RE.test(t),
+    wantPricelist: SEND_PRICELIST_RE.test(t),
+    wantSample: WANT_SAMPLE_RE.test(t),
+    greetingOnly: GREETING_ONLY_RE.test(t),
+    shortAckOrPresence: isShortAck(t) || PRESENCE_CHECK_RE.test(t),
+    faqTopic: detectFaqTopic(t),
+    wantHuman: WANT_HUMAN_RE.test(t),
+    hasPhone: detectPhone(msg),
+    bookingIntent: REOPEN_DATE_RE.test(t) || detectAppointmentIntent(msg),
+    closeDeal: CLOSE_DEAL_RE.test(t),
+    escalation: detectEscalation(msg),
+  };
+}
+
 // ─── Suy stage từ state (V1: stage suy mỗi lượt, chưa persist current_stage) ──
 
 export function deriveStage(state: ThreadState, opts?: { isFirstContact?: boolean }): SaleStage {
@@ -311,8 +352,9 @@ export function computeForbiddenQuestions(state: ThreadState, reopenDate: boolea
   return [...forbidden];
 }
 
-/** Áp playbook: action nằm ngoài allowedActions của stage → hạ về fallback an toàn. */
-function enforcePlaybook(d: RouterDecision): RouterDecision {
+/** Áp playbook: action nằm ngoài allowedActions của stage → hạ về fallback an toàn.
+ *  Export cho Scenario Resolver dùng CHUNG lưới an toàn (không nhân bản logic). */
+export function enforcePlaybook(d: RouterDecision): RouterDecision {
   const def = SALE_PLAYBOOK_V1[d.stage];
   if (def.allowedActions.includes(d.action)) return d;
   const fallback: SaleAction = def.allowedActions.includes("ANSWER_FAQ") ? "ANSWER_FAQ" : "WAIT";

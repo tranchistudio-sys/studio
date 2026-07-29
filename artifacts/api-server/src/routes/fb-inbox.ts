@@ -36,9 +36,13 @@ import {
 } from "../lib/sale-human-review";
 import {
   isLuluStateEnabledFor, applyIncomingMessage, getThreadState, buildThreadStateBlock,
-  recordBotReply, type ThreadState,
+  recordBotReply, simulateThreadStateFromHistory, type ThreadState,
 } from "../lib/sale-thread-state";
 import { botAsksDate } from "../lib/sale-slots";
+// Scenario Manager (flag-gated, fail-open): shadow chỉ ghi log; enforce pilot chèn hướng dẫn thẻ.
+import { isScenarioShadowEnabled, isScenarioEnforceEnabledFor } from "../lib/sale-scenario-types";
+import { loadActiveScenarioDefs } from "../lib/sale-scenario-store";
+import { resolveScenario, buildScenarioGuidanceBlock } from "../lib/sale-scenario-resolver";
 import { emitNotification } from "./notifications";
 import multer from "multer";
 import { randomUUID } from "crypto";
@@ -843,6 +847,37 @@ async function handleClaudeSaleReply(
       threadState = await getThreadState(psid);
       const stateBlock = buildThreadStateBlock(threadState);
       if (stateBlock) context += `\n\n${stateBlock}`;
+    }
+    // ── SCENARIO MANAGER (mặc định TẮT — fail-open tuyệt đối) ──────────────────
+    // Shadow (LULU_SCENARIO_SHADOW_ENABLED): resolver chạy song song CHỈ GHI LOG trace,
+    // KHÔNG đổi câu trả lời. Enforce pilot (LULU_SCENARIO_ENFORCE_ENABLED + PSID trong
+    // LULU_SCENARIO_PSIDS): chèn khối hướng dẫn thẻ thắng vào context. Mọi lỗi ở tầng
+    // này đều nuốt — Messenger KHÔNG BAO GIỜ đứng vì scenario (nguyên tắc X.12).
+    try {
+      if (isScenarioShadowEnabled() || isScenarioEnforceEnabledFor(psid)) {
+        const scenarioDefs = await loadActiveScenarioDefs();
+        if (scenarioDefs.length > 0) {
+          const scenarioState = threadState ?? simulateThreadStateFromHistory(history);
+          const scenarioResolve = resolveScenario({
+            customerMessage: text, threadState: scenarioState,
+            isFirstContact: history.length === 0, scenarios: scenarioDefs,
+          });
+          console.log(
+            `[ScenarioShadow] psid=${psid} winner=${scenarioResolve.winner?.key ?? "none"} ` +
+            `action=${scenarioResolve.decision.action} base=${scenarioResolve.baseline.action} ` +
+            `changed=${scenarioResolve.actionChanged} losers=${scenarioResolve.losers.length}`,
+          );
+          if (isScenarioEnforceEnabledFor(psid)) {
+            const guidanceBlock = buildScenarioGuidanceBlock(scenarioResolve);
+            if (guidanceBlock) {
+              context += `\n\n${guidanceBlock}`;
+              console.log(`[ScenarioEnforce] psid=${psid} áp thẻ '${scenarioResolve.winner?.name}' vào context`);
+            }
+          }
+        }
+      }
+    } catch (scErr) {
+      console.error("[ScenarioShadow] lỗi (fail-open, bot chạy tiếp):", String(scErr).slice(0, 120));
     }
     const styleGuide = await getActivePlaybook();
     const brainRules = await getActiveBrainRules();

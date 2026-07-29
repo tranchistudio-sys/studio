@@ -17,6 +17,10 @@ import { HOLD_MESSAGE, imageEscalationReason } from "../lib/sale-human-review";
 import { simulateThreadStateFromHistory, buildThreadStateBlock } from "../lib/sale-thread-state";
 import { routeSaleAction } from "../lib/sale-workflow";
 import { validateSaleReply, type CatalogItem } from "../lib/sale-workflow-validator";
+// Scenario Manager (shadow trace trên sân test — additive, flag OFF = không hiện gì).
+import { isScenarioShadowEnabled, isScenarioManagerEnabled } from "../lib/sale-scenario-types";
+import { loadActiveScenarioDefs } from "../lib/sale-scenario-store";
+import { resolveScenario } from "../lib/sale-scenario-resolver";
 import { detectDateSlot } from "../lib/sale-slots";
 import { detectServiceIntentFromText } from "../lib/sale-samples";
 import { auditPackages, pkgDiscountCfg, groupDiscountCfg } from "../lib/sale-context";
@@ -159,6 +163,33 @@ router.post("/claude-sale-test/chat", async (req, res) => {
       threadState: simState,
       isFirstContact: prior.length === 0,
     });
+
+    // SCENARIO SHADOW trên sân test (flag-gated, fail-open): thẻ nào SẼ thắng + vì sao.
+    // Không đổi câu trả lời — chỉ thêm field trace cho panel #143 / debug.
+    let scenarioTrace: {
+      winner: { key: string; name: string } | null;
+      action: string; baselineAction: string; actionChanged: boolean;
+      losers: Array<{ key: string; name: string; reason: string }>;
+      explain: string;
+    } | null = null;
+    if (isScenarioShadowEnabled() || isScenarioManagerEnabled()) {
+      try {
+        const scenarioDefs = await loadActiveScenarioDefs();
+        if (scenarioDefs.length > 0) {
+          const r = resolveScenario({
+            customerMessage: incomingText, threadState: simState,
+            isFirstContact: prior.length === 0, scenarios: scenarioDefs,
+          });
+          scenarioTrace = {
+            winner: r.winner ? { key: r.winner.key, name: r.winner.name } : null,
+            action: r.decision.action, baselineAction: r.baseline.action,
+            actionChanged: r.actionChanged,
+            losers: r.losers.map((l) => ({ key: l.key, name: l.name, reason: l.reason })),
+            explain: r.explain,
+          };
+        }
+      } catch { scenarioTrace = null; /* fail-open — sân test vẫn chạy như cũ */ }
+    }
 
     const styleGuide = await getActivePlaybook();
     const brainRules = await getActiveBrainRules();
@@ -323,6 +354,8 @@ router.post("/claude-sale-test/chat", async (req, res) => {
         routerDecision,
         knowledgeUsed: routerDecision.knowledgeNeeded,
         validator: validatorResult,
+        // SCENARIO SHADOW (flag-gated): thẻ kịch bản nào SẼ thắng + vì sao. null = tắt cờ.
+        scenarioTrace,
       },
       // TRÍ NHỚ MÔ PHỎNG (DEV MODE): state suy từ history + khối đã chèn vào prompt —
       // admin nghiệm thu hành vi trí nhớ (không hỏi lại ngày, không bung lại bảng giá...).

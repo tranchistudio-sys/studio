@@ -32,6 +32,7 @@ import MyProfilePage from "@/pages/my-profile";
 import CrmLeadsPage from "@/pages/crm-leads";
 import FacebookInboxAiPage from "@/pages/facebook-inbox-ai";
 import AiSaleScriptsPage from "@/pages/ai-sale-scripts";
+import LuluSaleScenariosPage from "@/pages/lulu-sale-scenarios";
 import AiTestRoomPage from "@/pages/ai-test-room";
 import ClaudeSaleSettingsPage from "@/pages/claude-sale-settings";
 import ClaudeSaleMonitorPage from "@/pages/claude-sale-monitor";
@@ -103,7 +104,7 @@ const INTERNAL_PREFIXES = [
   "/pricing", "/services", "/staff", "/accounting", "/ai-assistant", "/settings",
   "/bookings", "/payments", "/expenses", "/revenue", "/contracts", "/reports",
   "/my-profile", "/photoshop-jobs", "/attendance",
-  "/crm-leads", "/facebook-inbox-ai", "/ai-sale-scripts", "/ai-test", "/claude-sale-test", "/claude-sale-settings", "/claude-sale-monitor", "/claude-sale-reengage", "/sale-learning", "/lulu-human-review", "/lulu-brain-lab", "/auto-post-facebook", "/notifications",
+  "/crm-leads", "/facebook-inbox-ai", "/ai-sale-scripts", "/ai-test", "/claude-sale-test", "/claude-sale-settings", "/claude-sale-monitor", "/claude-sale-reengage", "/sale-learning", "/lulu-human-review", "/lulu-brain-lab", "/lulu-sale-scenarios", "/auto-post-facebook", "/notifications",
   "/cms",
 ];
 
@@ -290,6 +291,7 @@ function InternalRouter() {
         <Route path="/claude-sale-reengage" component={ClaudeSaleReengagePage} />
         <Route path="/sale-learning" component={SaleLearningPage} />
         <Route path="/lulu-human-review" component={LuluHumanReviewPage} />
+        <Route path="/lulu-sale-scenarios" component={LuluSaleScenariosPage} />
         <Route path="/lulu-brain-lab" component={LuluBrainLabPage} />
         <Route path="/auto-post-facebook" component={AutoPostFacebookPage} />
         <Route path="/notifications" component={NotificationsPage} />

@@ -23,3 +23,4 @@ export * from "./legacy";
 export * from "./cms";
 export * from "./autopost";
 export * from "./lulu-brain";
+export * from "./lulu-scenarios";

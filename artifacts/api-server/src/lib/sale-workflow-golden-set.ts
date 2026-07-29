@@ -380,6 +380,19 @@ export const GOLDEN_CASES: GoldenCase[] = [
     quotedCodes: ["CG-BASIC"],
     expected: { stage: "QUOTED", action: "QUOTE_REFERENCE", forbiddenAction: "ASK_DATE" },
   },
+  {
+    // 30/07 — phát hiện từ demo live Scenario Manager: "cho chị tham khảo giá trước" là cách
+    // hỏi giá rất phổ biến mà PRICE_QUESTION_RE cũ bỏ sót → router rơi về IDENTIFY_SERVICE.
+    id: "G53", name: "'chưa chốt ngày, cho chị tham khảo giá trước' → giá tham khảo, cấm hỏi ngày",
+    history: [{ direction: "incoming", message: "Chào em, chị muốn chụp album cưới" }],
+    message: "chị chưa chốt ngày đâu, cho chị tham khảo giá trước nha",
+    expected: {
+      serviceIntent: "wedding_album", dateStatus: "not_decided",
+      stage: "QUOTE_REFERENCE", action: "QUOTE_REFERENCE",
+      forbiddenQuestionsInclude: ["ask_date"],
+      stateChange: "tham khảo giá = hỏi giá; chưa chốt ngày → báo tham khảo, không hỏi ngày",
+    },
+  },
 ];
 
 // ─── BIẾN THỂ KHÔNG DẤU (slang/typo layer) ───────────────────────────────────

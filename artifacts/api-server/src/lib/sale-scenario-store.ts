@@ -467,21 +467,26 @@ export async function rollbackToVersion(versionId: number, actor: Actor):
     );
     let restored = 0;
     for (const s of snapshot) {
-      // QUAN TRỌNG: rollback chỉ khôi phục BẢN CHẠY THẬT (card/status/enabled/thứ tự).
-      // draft_json GIỮ NGUYÊN — nháp ai đang sửa dở không bị rollback nuốt mất.
+      // QUAN TRỌNG: rollback khôi phục BẢN CHẠY THẬT (card/status/enabled/thứ tự).
+      // draft_json: GIỮ nháp hiện tại nếu đang có (không nuốt công sửa dở của ai);
+      // nếu hiện KHÔNG có nháp thì khôi phục nháp từ snapshot — tránh "thẻ ma"
+      // (thẻ draft-only được Apply rồi Rollback: card về NULL mà draft cũng NULL).
       const r = await client.query(
         `INSERT INTO lulu_sale_scenarios
-           (scenario_key, sort_order, status, enabled, is_core, version, card_json,
+           (scenario_key, sort_order, status, enabled, is_core, version, card_json, draft_json,
             updated_by, updated_by_name)
-         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9)
+         VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10)
          ON CONFLICT (scenario_key) DO UPDATE SET
            sort_order = EXCLUDED.sort_order, status = EXCLUDED.status,
            enabled = EXCLUDED.enabled, version = EXCLUDED.version,
            card_json = EXCLUDED.card_json,
+           draft_json = COALESCE(lulu_sale_scenarios.draft_json, EXCLUDED.draft_json),
            updated_by = EXCLUDED.updated_by, updated_by_name = EXCLUDED.updated_by_name,
            updated_at = NOW()`,
         [s.scenario_key, s.sort_order, s.status, s.enabled, s.is_core, s.version,
-         s.card != null ? JSON.stringify(s.card) : null, actor.id, actor.name],
+         s.card != null ? JSON.stringify(s.card) : null,
+         s.draft != null ? JSON.stringify(s.draft) : null,
+         actor.id, actor.name],
       );
       restored += r.rowCount ?? 0;
     }

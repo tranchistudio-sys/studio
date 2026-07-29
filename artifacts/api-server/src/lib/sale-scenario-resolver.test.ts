@@ -270,6 +270,21 @@ describe("Overlay an toàn — thẻ không nới lỏng được luật lõi", 
     expect(r.decision.knowledgeNeeded).toContain("gallery:beauty");
   });
 
+  it("REGRESSION ENGINE: routeSaleAction không trả ASK_PHONE khi ask_phone đã hỏi >=2 lần — bàn giao người thật", () => {
+    const state = freshState({
+      serviceIntent: "wedding_album",
+      askedQuestions: [
+        { key: "ask_date", at: "x", count: 2 },
+        { key: "ask_phone", at: "x", count: 2 },
+      ],
+    });
+    const d = routeSaleAction({ customerMessage: "chốt lịch cho em nhé", threadState: state, isFirstContact: false });
+    expect(d.action).not.toBe("ASK_PHONE");
+    expect(d.action).not.toBe("ASK_DATE");
+    expect(d.action).toBe("ESCALATE_HUMAN");
+    expect(d.shouldEscalate).toBe(true);
+  });
+
   it("guidance + closing của thẻ thắng được trả ra cho prompt", () => {
     const state = freshState({ serviceIntent: "beauty", slots: { date_status: "not_decided" } });
     const r = resolveScenario({

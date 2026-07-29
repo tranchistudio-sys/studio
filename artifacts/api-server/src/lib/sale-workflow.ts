@@ -209,8 +209,10 @@ function normalizeVi(text: string): string {
 
 // "bao nhieu" trần chỉ tính khi KHÔNG theo sau bởi danh từ đếm ("bao nhiêu người/kiểu/phút"
 // là câu hỏi số lượng, không phải giá). Đã bỏ `cho.{0,8}gia` (dính "cho gia đình").
+// "tham khao gia" (30/07, demo thật): "cho chị tham khảo giá trước" — cách hỏi giá RẤT phổ biến
+// của khách Việt mà bộ cũ bỏ sót (golden G53).
 const PRICE_QUESTION_RE =
-  /(gia (sao|the nao|nhieu|bao nhieu)|bao nhieu(?!\s*(nguoi|khach|kieu|tam|buc|phut|tieng|gio|ngay|buoi|thang|tuoi|kg|cm|cai|bo|noi))|nhieu tien|gia ca|bang gia|hoi gia|xin gia|gia goi|combo bao nhieu)/;
+  /(gia (sao|the nao|nhieu|bao nhieu)|bao nhieu(?!\s*(nguoi|khach|kieu|tam|buc|phut|tieng|gio|ngay|buoi|thang|tuoi|kg|cm|cai|bo|noi))|nhieu tien|gia ca|bang gia|hoi gia|xin gia|gia goi|combo bao nhieu|tham khao gia)/;
 const SEND_PRICELIST_RE = /((gui|xin|cho)[^.?!\n]{0,15}bang gia|bang gia day du|gui gia\b)/;
 // Khách đòi gặp người thật — check trên text ĐÃ BỎ DẤU vì detectEscalation (prod) dùng
 // class [oơ] không chứa "ờ" nên "người thật" gõ đủ dấu KHÔNG match (bug tiềm ẩn prod,
@@ -401,6 +403,20 @@ export function routeSaleAction(input: RouterInput): RouterDecision {
         alt.shouldEscalate = d.shouldEscalate;
         d = alt;
       }
+    }
+    // RULE CỨNG (30/07, review đối kháng): tương tự ask_date — KHÔNG BAO GIỜ trả ASK_PHONE
+    // khi 'ask_phone' đang bị cấm (đã hỏi >=2 lần). Khách muốn chốt mà hết quota hỏi
+    // → bàn giao người thật chủ động liên hệ (đúng tinh thần BOOKING_INTENT luôn có người chốt).
+    // Đặt SAU guard ask_date vì nhánh alt của guard đó cũng có thể sinh ASK_PHONE.
+    if (d.action === "ASK_PHONE" && d.forbiddenQuestions.includes("ask_phone")) {
+      const alt = baseDecision(
+        d.stage,
+        "ESCALATE_HUMAN",
+        `${d.reason} → NHƯNG ask_phone đã hỏi đủ, không lặp — bàn giao người thật chủ động liên hệ chốt`,
+      );
+      alt.forbiddenQuestions = d.forbiddenQuestions;
+      alt.shouldEscalate = true;
+      d = alt;
     }
     // Áp playbook TRƯỚC khi tính knowledge/requiredData — decision cuối phải nhất quán
     // action↔knowledge (hết chuyện ANSWER_FAQ mang knowledge của action đã bị hạ).

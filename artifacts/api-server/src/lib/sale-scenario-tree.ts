@@ -51,6 +51,7 @@ export type TreeNode = TreeRow & {
     priceConnected?: boolean;     // service: đã nối bảng giá chưa
     showPricing?: boolean;        // step Báo giá: hiện bảng giá realtime phía trên
     imageUrl?: string | null;     // service/pricing: ảnh bảng giá nhóm (đồng bộ Dịch vụ & Bảng giá)
+    hasScript?: boolean;          // leaf: tình huống này ĐÃ có golden chưa (chấm xanh/✓)
   };
   /** leaf: tóm tắt scenario để hiện nhanh (không cần mở). */
   scenario?: { name: string; enabled: boolean; status: string; whenText: string; missing?: boolean } | null;
@@ -251,8 +252,9 @@ function mapRow(r: Record<string, unknown>): TreeRow {
   };
 }
 
-const leafNode = (nodeKey: string, title: string, serviceKey: string | null, order: number): TreeNode => ({
-  nodeKey, parentKey: null, nodeType: "leaf", title, serviceKey, priceSource: null, scenarioKey: null, sortOrder: order, children: [],
+const leafNode = (nodeKey: string, title: string, serviceKey: string | null, order: number, hasScript = false): TreeNode => ({
+  nodeKey, parentKey: null, nodeType: "leaf", title, serviceKey, priceSource: null, scenarioKey: null, sortOrder: order,
+  children: [], meta: { hasScript },
 });
 
 /**
@@ -267,14 +269,17 @@ export async function buildScenarioTree(): Promise<TreeNode[]> {
     const allGroups = await getServicePricePreview(null).catch(
       () => [] as Awaited<ReturnType<typeof getServicePricePreview>>,
     );
-    // Đếm số tình huống ĐÃ có golden theo dịch vụ (slug) — hiện tiến độ trên card. Fail-soft.
+    // Tình huống (node_key) ĐÃ có golden → chấm xanh/✓; đếm theo dịch vụ → tiến độ card. Fail-soft.
+    const scriptedNodes = new Set<string>();
     const filledByService = new Map<string, number>();
     try {
       const r = await pool.query(
-        `SELECT service_key, COUNT(DISTINCT node_key)::int AS n FROM lulu_sale_script_examples
-         WHERE service_key IS NOT NULL AND ideal_response <> '' AND is_active = true GROUP BY service_key`,
+        `SELECT DISTINCT node_key, service_key FROM lulu_sale_script_examples WHERE ideal_response <> '' AND is_active = true`,
       );
-      for (const row of r.rows as Array<{ service_key: string; n: number }>) filledByService.set(row.service_key, Number(row.n));
+      for (const row of r.rows as Array<{ node_key: string; service_key: string | null }>) {
+        scriptedNodes.add(row.node_key);
+        if (row.service_key) filledByService.set(row.service_key, (filledByService.get(row.service_key) ?? 0) + 1);
+      }
     } catch { /* chưa có bảng/rows → 0 */ }
 
     const roots: TreeNode[] = [];
@@ -284,8 +289,8 @@ export async function buildScenarioTree(): Promise<TreeNode[]> {
     roots.push({
       nodeKey: greetKey, parentKey: null, nodeType: "greeting", title: "🌐 Chào hỏi chung",
       serviceKey: null, priceSource: null, scenarioKey: null, sortOrder: 0,
-      meta: { situationCount: GREETING_SITUATIONS.length },
-      children: GREETING_SITUATIONS.map((s, i) => leafNode(`${greetKey}::${s.key}`, s.title, null, (i + 1) * 10)),
+      meta: { situationCount: GREETING_SITUATIONS.length, filledCount: GREETING_SITUATIONS.filter((s) => scriptedNodes.has(`${greetKey}::${s.key}`)).length },
+      children: GREETING_SITUATIONS.map((s, i) => leafNode(`${greetKey}::${s.key}`, s.title, null, (i + 1) * 10, scriptedNodes.has(`${greetKey}::${s.key}`))),
     });
 
     // Root 2..n — mỗi NHÓM GIÁ 1 card → 7 bước RIÊNG → tình huống. serviceKey = slug tên nhóm
@@ -298,7 +303,7 @@ export async function buildScenarioTree(): Promise<TreeNode[]> {
       const steps: TreeNode[] = SERVICE_STEPS.map((step, si) => {
         const stepKey = `${svcKey}::${step.key}`;
         const situations = step.situations.map((sit, ci) =>
-          leafNode(`${stepKey}::${sit.key}`, sit.title, svcSlug, (ci + 1) * 10));
+          leafNode(`${stepKey}::${sit.key}`, sit.title, svcSlug, (ci + 1) * 10, scriptedNodes.has(`${stepKey}::${sit.key}`)));
         return {
           nodeKey: stepKey, parentKey: svcKey, nodeType: step.showPricing ? "pricing" : "step",
           title: step.title, serviceKey: svcSlug, priceSource: groupName, scenarioKey: null,

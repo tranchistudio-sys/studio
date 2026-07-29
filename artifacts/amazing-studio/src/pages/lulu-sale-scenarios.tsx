@@ -9,7 +9,7 @@ import {
 import {
   NotebookPen, Plus, Wand2, Pencil, FlaskConical, Copy, History, Loader2, Check,
   AlertTriangle, X, ChevronDown, ChevronUp, Lock, ShieldCheck, GripVertical,
-  RotateCcw, Save, Trash2, Search, Power, ArrowRight, Bot, User, Archive,
+  RotateCcw, Save, Trash2, Search, Power, ArrowRight, Bot, User, Archive, BookOpen,
 } from "lucide-react";
 
 /**
@@ -602,7 +602,7 @@ type TreeNodeFE = {
   nodeType: "greeting" | "service" | "step" | "leaf" | "pricing" | "stage" | "group" | "subgroup";
   title: string; serviceKey: string | null; scenarioKey: string | null; priceSource?: string | null;
   children: TreeNodeFE[];
-  meta?: { groupName?: string | null; packageCount?: number; situationCount?: number; filledCount?: number; priceConnected?: boolean; showPricing?: boolean; imageUrl?: string | null };
+  meta?: { groupName?: string | null; packageCount?: number; situationCount?: number; filledCount?: number; priceConnected?: boolean; showPricing?: boolean; imageUrl?: string | null; hasScript?: boolean };
   scenario?: { name: string; enabled: boolean; status: string; whenText: string; missing?: boolean } | null;
 };
 type EffPkg = { code: string; name: string; groupName: string; basePrice: number; effectivePrice: number; promoActive: boolean; promoName: string | null; promoEnd: string | null; description?: string | null; photoCount?: number | null; includesMakeup?: boolean };
@@ -959,41 +959,51 @@ function TreeRowView({ node, depth, expanded, toggle, onOpenScript, ctx }: {
 
   // TÌNH HUỐNG (leaf) — bấm mở thẳng bảng Excel Hỏi & Trả lời (không còn scenario editor).
   if (node.nodeType === "leaf") {
+    const has = node.meta?.hasScript;
     return (
       <button id={`tree-node-${node.nodeKey}`} onClick={openScript} style={pad}
         title="Mở bảng Hỏi & Trả lời"
-        className="w-full text-left flex items-center gap-2 py-1.5 pr-2 rounded hover:bg-violet-50 text-[13px] group">
-        <span className="text-gray-300">•</span>
-        <span className="flex-1 min-w-0">{node.title}</span>
-        <span className="text-[11px] text-violet-600 border border-violet-200 rounded px-1.5 py-0.5 shrink-0 flex items-center gap-1 opacity-60 group-hover:opacity-100">
-          <NotebookPen className="w-3 h-3" /> Hỏi & Trả lời
-        </span>
+        className={`w-full text-left flex items-center gap-2.5 py-1.5 pr-2 rounded-lg text-[13px] group transition-colors ${has ? "hover:bg-emerald-50/60" : "hover:bg-violet-50"}`}>
+        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${has ? "bg-emerald-500" : "bg-gray-300"}`} />
+        <span className={`flex-1 min-w-0 truncate ${has ? "text-gray-800" : "text-gray-600"}`}>{node.title}</span>
+        {has
+          ? <span className="text-[11px] text-emerald-600 shrink-0 flex items-center gap-1"><Check className="w-3 h-3" /> đã có<span className="text-gray-300 group-hover:text-violet-500 ml-1">· sửa</span></span>
+          : <span className="text-[11px] text-violet-600 border border-violet-200 rounded-full px-2 py-0.5 shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"><Plus className="w-3 h-3" /> Soạn</span>}
       </button>
     );
   }
 
-  // DỊCH VỤ (service) — card lớn: tên + số gói · giá realtime · số tình huống.
+  // DỊCH VỤ (service) — card lớn: ảnh + tên + tiến độ + chip số gói/giá.
   if (node.nodeType === "service") {
     const m = node.meta ?? {};
+    const total = m.situationCount ?? 0;
+    const filled = m.filledCount ?? 0;
+    const pct = total > 0 ? Math.round((filled / total) * 100) : 0;
     return (
-      <div id={`tree-node-${node.nodeKey}`} className="border border-gray-200 rounded-xl mb-2 overflow-hidden bg-white">
-        <button onClick={() => toggle(node.nodeKey)}
-          className="w-full text-left flex items-center gap-3 px-3 py-2.5 hover:bg-gray-50">
-          <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform shrink-0 ${isOpen ? "" : "-rotate-90"}`} />
-          {m.imageUrl && <img src={getImageSrc(m.imageUrl) ?? ""} alt="" className="w-9 h-9 rounded-lg object-cover ring-1 ring-gray-200 shrink-0" />}
-          <span className="font-semibold text-[15px] flex-1 min-w-0">{node.title}</span>
-          <span className="flex items-center gap-2 text-[11px] shrink-0">
-            <span className="text-gray-500">{m.packageCount ?? 0} gói</span>
-            <span className={m.priceConnected ? "text-emerald-600" : "text-amber-600"}>
+      <div id={`tree-node-${node.nodeKey}`} className={`border rounded-xl mb-2 overflow-hidden bg-white transition-shadow ${isOpen ? "border-violet-200 shadow-sm" : "border-gray-200 hover:shadow-sm hover:border-gray-300"}`}>
+        <button onClick={() => toggle(node.nodeKey)} className="w-full text-left flex items-center gap-3 px-3 py-2.5">
+          <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform shrink-0 ${isOpen ? "text-violet-500" : "-rotate-90"}`} />
+          {m.imageUrl
+            ? <img src={getImageSrc(m.imageUrl) ?? ""} alt="" className="w-10 h-10 rounded-lg object-cover ring-1 ring-gray-200 shrink-0" />
+            : <span className="w-10 h-10 rounded-lg bg-violet-50 text-violet-400 grid place-items-center shrink-0"><BookOpen className="w-5 h-5" /></span>}
+          <div className="flex-1 min-w-0">
+            <p className="font-semibold text-[15px] truncate">{node.title}</p>
+            <div className="flex items-center gap-2 mt-1">
+              <div className="h-1.5 rounded-full bg-gray-100 overflow-hidden flex-1 max-w-[160px]">
+                <div className={`h-full rounded-full ${pct > 0 ? "bg-emerald-400" : ""}`} style={{ width: `${pct}%` }} />
+              </div>
+              <span className="text-[11px] text-gray-400 shrink-0">{filled}/{total} tình huống có kịch bản</span>
+            </div>
+          </div>
+          <span className="flex flex-col items-end gap-1 text-[11px] shrink-0">
+            <span className="bg-gray-100 text-gray-600 rounded-full px-2 py-0.5">{m.packageCount ?? 0} gói</span>
+            <span className={`rounded-full px-2 py-0.5 ${m.priceConnected ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-600"}`}>
               {m.priceConnected ? "💰 giá realtime" : "⚠ chưa nối giá"}
-            </span>
-            <span className={(m.filledCount ?? 0) > 0 ? "text-violet-600" : "text-gray-400"}>
-              {m.filledCount ?? 0}/{m.situationCount ?? 0} có kịch bản
             </span>
           </span>
         </button>
         {isOpen && (
-          <div className="border-t border-gray-100 py-1">
+          <div className="border-t border-gray-100 py-1 bg-gray-50/40">
             {node.children.map((c) => (
               <TreeRowView key={c.nodeKey} node={c} depth={1} expanded={expanded} toggle={toggle} onOpenScript={onOpenScript} ctx={childCtx} />
             ))}
@@ -1090,11 +1100,13 @@ function ScenarioTreeView({ reloadKey, onOpenScript, showErr, autoOpenServiceKey
   const expandAll = () => { const all = new Set<string>(); const walk = (ns: TreeNodeFE[]) => ns.forEach((n) => { if (n.children.length || n.nodeType === "pricing") { all.add(n.nodeKey); walk(n.children); } }); if (tree) walk(tree); setExpanded(all); };
   if (!tree) return <p className="text-gray-400 text-sm py-6">Đang tải cây kịch bản…</p>;
   const firstServiceKey = tree.find((n) => n.nodeType === "service")?.nodeKey;
+  const svcCount = tree.filter((n) => n.nodeType === "service").length;
   return (
     <div className="space-y-1">
-      <div className="flex gap-3 px-1 py-1 text-[11px] text-gray-400">
-        <button onClick={expandAll} className="hover:text-gray-600">Mở tất cả</button>
-        <button onClick={() => setExpanded(new Set())} className="hover:text-gray-600">Thu gọn tất cả</button>
+      <div className="flex items-center gap-2 px-1 py-1">
+        <span className="text-[12px] text-gray-400 mr-auto">{svcCount} dịch vụ</span>
+        <button onClick={expandAll} className="text-[12px] text-gray-500 border border-gray-200 rounded-full px-2.5 py-1 hover:bg-gray-50">Mở tất cả</button>
+        <button onClick={() => setExpanded(new Set())} className="text-[12px] text-gray-500 border border-gray-200 rounded-full px-2.5 py-1 hover:bg-gray-50">Thu gọn tất cả</button>
       </div>
       {tree.map((n) => (
         <div key={n.nodeKey}>
@@ -1234,10 +1246,10 @@ export default function LuluSaleScenariosPage() {
       <div className="flex items-start justify-between flex-wrap gap-2">
         <div>
           <h1 className="text-xl font-semibold flex items-center gap-2"><NotebookPen className="w-6 h-6 text-violet-600" /> Kịch bản tư vấn Lulu</h1>
-          <p className="text-sm text-gray-500 mt-0.5">Mỗi thẻ = một tình huống khách. Sửa bằng tiếng Việt, Test thử, rồi Áp dụng. Kéo thả để đổi ưu tiên.</p>
+          <p className="text-sm text-gray-500 mt-0.5">Chọn dịch vụ → mở 7 bước sale → soạn câu Lulu trả lời cho từng tình huống. Giá luôn lấy realtime từ Bảng giá.</p>
         </div>
         <div className="flex gap-2">
-          {effectiveIsAdmin && (
+          {effectiveIsAdmin && view === "list" && (
             <>
               <button onClick={() => { setAiOpen(true); setEditing(null!); setEditingSeed(null); }}
                 className="border border-violet-300 text-violet-700 text-sm px-3 py-2 rounded-lg hover:bg-violet-50 flex items-center gap-1.5">
@@ -1261,7 +1273,7 @@ export default function LuluSaleScenariosPage() {
         </div>
       </div>
 
-      {draftCount > 0 && effectiveIsAdmin && (
+      {draftCount > 0 && effectiveIsAdmin && view === "list" && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-center justify-between flex-wrap gap-2">
           <p className="text-sm text-amber-800">Đang có <b>{draftCount} bản nháp</b> chưa chạy thật. Test kỹ rồi áp dụng cả bộ (có snapshot khôi phục).</p>
           <button disabled={busy} onClick={applyAll}

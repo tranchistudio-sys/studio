@@ -966,7 +966,7 @@ function TreeRowView({ node, depth, expanded, toggle, onOpenScript }: {
           <span className="text-[11px] text-gray-400">(bảng giá realtime)</span>
         </button>
         {isOpen && <>
-          <PricingNode serviceKey={node.serviceKey} />
+          <PricingNode serviceKey={node.serviceKey} groupName={node.priceSource} />
           {node.children.map((c) => (
             <TreeRowView key={c.nodeKey} node={c} depth={depth + 1} expanded={expanded} toggle={toggle} onOpenScript={onOpenScript} />
           ))}

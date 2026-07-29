@@ -1,23 +1,32 @@
 import { pool } from "@workspace/db";
 import { listScenarios } from "./sale-scenario-store";
 import { summarizeWhenServer } from "./sale-scenario-types";
+import { getServicePricePreview } from "./sale-pricing";
+import { normalizeVi } from "./sale-text-normalize";
+
+/** Slug ổn định từ tên nhóm giá → dùng làm serviceKey/nodeKey (không lộ id số). */
+function slugifyGroup(name: string): string {
+  return normalizeVi(name).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "nhom";
+}
 
 /**
- * CÂY KỊCH BẢN LULU — lớp TỔ CHỨC cho con người (Sales Brain V1, yêu cầu 30/07).
+ * CÂY KỊCH BẢN LULU — SERVICE-FIRST (luật chủ 29/07: Dịch vụ là TRUNG TÂM).
  *
- * Chủ studio quản lý kịch bản dạng CÂY THƯ MỤC thu gọn được (7 chặng → nhóm dịch vụ →
- * Concept/Báo giá/Chốt/Không chốt → tình huống), thay cho danh sách phẳng.
+ * Trang đầu: 🌐 Chào hỏi chung (script toàn studio) → rồi DANH SÁCH DỊCH VỤ (mỗi nhóm bảng
+ * giá = 1 CARD/FOLDER lớn, mặc định thu gọn). Mở 1 dịch vụ → hiện 7 BƯỚC RIÊNG của dịch vụ
+ * đó (Tìm hiểu → Tư vấn → Báo giá → Xử lý phân vân → Chốt → Không chốt → Sau chốt), mỗi bước
+ * có các TÌNH HUỐNG, mỗi tình huống có bảng Excel Hỏi & Trả lời RIÊNG (khoá theo node_key
+ * = service::step::situation → KHÔNG trộn script giữa các dịch vụ).
  *
- * QUAN TRỌNG: cây chỉ là CÁCH SẮP XẾP — KHÔNG thay engine. Resolver vẫn chạy PHẲNG trên
- * các scenario active (lulu_sale_scenarios) như cũ. Leaf trong cây chỉ TRỎ tới scenario_key
- * (một scenario có thể xuất hiện ở nhiều nhánh — chia sẻ, không nhân bản hành vi).
- * Node "pricing" (Báo giá) KHÔNG chứa số tiền — chỉ giữ service_key trỏ nguồn "Dịch vụ & Bảng giá".
+ * Cây được SINH ĐỘNG từ lulu_service_map (nguồn dịch vụ) + template 7 bước — KHÔNG hard-code
+ * từng dịch vụ. Giá đọc realtime từ "Dịch vụ & Bảng giá" (node Báo giá). Engine phía dưới
+ * (lulu_sale_scenarios + resolver) GIỮ NGUYÊN; cây này chỉ là lớp TỔ CHỨC/soạn golden cho người.
  *
- * AN TOÀN: bảng RIÊNG additive (không đụng lulu_sale_scenarios), CREATE IF NOT EXISTS +
- * seed skeleton chỉ khi rỗng (UPSERT-missing để bản cập nhật thêm node mới, không đè node chủ sửa).
+ * Bảng lulu_scenario_tree (cũ) vẫn giữ (additive, chống DROP) nhưng UI KHÔNG render từ nó nữa.
  */
 
-export type TreeNodeType = "stage" | "group" | "subgroup" | "leaf" | "pricing";
+export type TreeNodeType = "greeting" | "service" | "step" | "leaf" | "pricing"
+  | "stage" | "group" | "subgroup"; // giữ type cũ cho seed/table (không dùng ở UI mới)
 
 export type TreeRow = {
   nodeKey: string;
@@ -33,9 +42,59 @@ export type TreeRow = {
 /** Node cây đã dựng (nested) cho FE. */
 export type TreeNode = TreeRow & {
   children: TreeNode[];
+  /** service/step/pricing: cờ hiển thị + số liệu tóm tắt cho card. */
+  meta?: {
+    groupName?: string | null;    // service: tên nhóm giá CRM đang nối
+    packageCount?: number;        // service: số gói đang bán (realtime)
+    situationCount?: number;      // service/step: số tình huống bên trong
+    priceConnected?: boolean;     // service: đã nối bảng giá chưa
+    showPricing?: boolean;        // step Báo giá: hiện bảng giá realtime phía trên
+    imageUrl?: string | null;     // service/pricing: ảnh bảng giá nhóm (đồng bộ Dịch vụ & Bảng giá)
+  };
   /** leaf: tóm tắt scenario để hiện nhanh (không cần mở). */
   scenario?: { name: string; enabled: boolean; status: string; whenText: string; missing?: boolean } | null;
 };
+
+// ─── TEMPLATE 7 BƯỚC + TÌNH HUỐNG (dùng CHUNG cho mọi dịch vụ) ─────────────────
+// Mỗi dịch vụ áp template này → tạo node RIÊNG (node_key có service_key) → script riêng.
+
+type StepTpl = { key: string; title: string; showPricing?: boolean; situations: Array<{ key: string; title: string }> };
+const S = (key: string, title: string) => ({ key, title });
+
+const SERVICE_STEPS: StepTpl[] = [
+  { key: "tim-hieu", title: "1. Tìm hiểu nhu cầu", situations: [
+    S("chua-ro-nhu-cau", "Chưa rõ nhu cầu"), S("chup-dip-gi", "Chụp dịp gì"), S("so-nguoi-doi-tuong", "Số người / đối tượng"),
+  ]},
+  { key: "tu-van", title: "2. Tư vấn & Concept", situations: [
+    S("xem-anh-mau", "Xem ảnh mẫu"), S("chua-biet-gu", "Chưa biết gu"), S("phong-cach-han", "Phong cách Hàn"),
+    S("tu-nhien", "Tự nhiên"), S("sang-trong", "Sang trọng"), S("lo-khong-an-anh", "Lo không ăn ảnh"),
+    S("chon-dia-diem", "Chọn địa điểm"), S("trang-phuc", "Trang phục"), S("makeup", "Makeup"),
+  ]},
+  { key: "bao-gia", title: "3. Báo giá", showPricing: true, situations: [
+    S("hoi-gia", "Hỏi giá"), S("goi-gom-gi", "Gói gồm gì"), S("so-sanh-goi", "So sánh gói"),
+  ]},
+  { key: "xu-ly-phan-van", title: "4. Xử lý phân vân", situations: [
+    S("gia-cao", "Giá cao"), S("xin-giam", "Xin giảm"), S("ben-khac-re-hon", "Bên khác rẻ hơn"),
+    S("hoi-chong-gia-dinh", "Cần hỏi chồng / gia đình"), S("can-suy-nghi", "Cần suy nghĩ"),
+    S("chua-du-ngan-sach", "Chưa đủ ngân sách"), S("lo-chup-khong-dep", "Lo chụp không đẹp"), S("muon-xem-them", "Muốn xem thêm"),
+  ]},
+  { key: "chot", title: "5. Chốt sale", situations: [
+    S("chon-goi", "Chọn gói"), S("kiem-tra-lich", "Kiểm tra lịch"), S("giu-lich", "Giữ lịch"),
+    S("coc", "Cọc"), S("thong-tin-lien-he", "Thông tin liên hệ"), S("chuyen-nhan-vien", "Chuyển nhân viên"),
+  ]},
+  { key: "khong-chot", title: "6. Không chốt", situations: [
+    S("tu-choi", "Từ chối"), S("hen-lai", "Hẹn lại"), S("follow-up", "Follow-up"),
+  ]},
+  { key: "sau-chot", title: "7. Sau chốt / chuyển người", situations: [
+    S("xac-nhan-lich", "Xác nhận lịch"), S("nhac-chuan-bi", "Nhắc chuẩn bị"), S("chuyen-nguoi-that", "Chuyển người thật"),
+  ]},
+];
+const SITUATIONS_PER_SERVICE = SERVICE_STEPS.reduce((n, s) => n + s.situations.length, 0);
+
+const GREETING_SITUATIONS: Array<{ key: string; title: string }> = [
+  S("chao-hoi", "Chào hỏi"), S("chua-ro-dich-vu", "Chưa rõ khách cần gì"), S("hoi-studio-co-gi", "Hỏi studio có dịch vụ gì"),
+  S("gap-nguoi-that", "Muốn gặp người thật"), S("khieu-nai", "Khiếu nại"),
+];
 
 let ensured = false;
 export async function ensureScenarioTreeTable(): Promise<void> {
@@ -191,49 +250,76 @@ function mapRow(r: Record<string, unknown>): TreeRow {
   };
 }
 
+const leafNode = (nodeKey: string, title: string, serviceKey: string | null, order: number): TreeNode => ({
+  nodeKey, parentKey: null, nodeType: "leaf", title, serviceKey, priceSource: null, scenarioKey: null, sortOrder: order, children: [],
+});
+
 /**
- * Cây đầy đủ (nested), leaf đính kèm tóm tắt scenario. KHÔNG bao giờ throw (lỗi → []).
- * KHÔNG nạp giá ở đây (nặng) — FE gọi /price-preview khi mở node pricing.
+ * CÂY SERVICE-FIRST (nested) — SINH ĐỘNG từ lulu_service_map + template 7 bước.
+ * Root 1 = 🌐 Chào hỏi chung; sau đó mỗi DỊCH VỤ là 1 card (thu gọn) → 7 bước → tình huống.
+ * Số gói/giá đọc realtime 1 lần (getServicePricePreview) để hiện trên card. KHÔNG throw (lỗi → []).
  */
 export async function buildScenarioTree(): Promise<TreeNode[]> {
   try {
-    await ensureScenarioTreeTable();
-    const [treeRes, scenarios] = await Promise.all([
-      pool.query(`SELECT * FROM lulu_scenario_tree ORDER BY sort_order ASC, node_key ASC`),
-      listScenarios(),
-    ]);
-    const scMap = new Map(scenarios.map((s) => [s.scenarioKey, s]));
-    const rows = (treeRes.rows as Array<Record<string, unknown>>).map(mapRow);
+    await ensureScenarioTreeTable(); // giữ bảng cũ tồn tại (chống DROP), UI không đọc từ nó
+    // MỖI NHÓM BẢNG GIÁ (service_groups active) = 1 CARD dịch vụ. Nguồn dịch vụ = chính bảng giá.
+    const allGroups = await getServicePricePreview(null).catch(
+      () => [] as Awaited<ReturnType<typeof getServicePricePreview>>,
+    );
 
-    const nodes = new Map<string, TreeNode>();
-    for (const r of rows) {
-      const node: TreeNode = { ...r, children: [] };
-      if (r.nodeType === "leaf" && r.scenarioKey) {
-        const sc = scMap.get(r.scenarioKey);
-        const card = sc ? (sc.draftCard ?? sc.card) : null;
-        node.scenario = sc && card
-          ? { name: card.name, enabled: sc.enabled, status: sc.status, whenText: summarizeWhenServer(card), missing: false }
-          : { name: r.scenarioKey, enabled: false, status: "draft", whenText: "", missing: true };
-        if (!node.title) node.title = node.scenario.name;
-      }
-      nodes.set(r.nodeKey, node);
-    }
     const roots: TreeNode[] = [];
-    for (const node of nodes.values()) {
-      if (node.parentKey && nodes.has(node.parentKey)) nodes.get(node.parentKey)!.children.push(node);
-      else roots.push(node);
+
+    // Root 1 — 🌐 Chào hỏi chung (script toàn studio, serviceKey null).
+    const greetKey = "global-chao-hoi";
+    roots.push({
+      nodeKey: greetKey, parentKey: null, nodeType: "greeting", title: "🌐 Chào hỏi chung",
+      serviceKey: null, priceSource: null, scenarioKey: null, sortOrder: 0,
+      meta: { situationCount: GREETING_SITUATIONS.length },
+      children: GREETING_SITUATIONS.map((s, i) => leafNode(`${greetKey}::${s.key}`, s.title, null, (i + 1) * 10)),
+    });
+
+    // Root 2..n — mỗi NHÓM GIÁ 1 card → 7 bước RIÊNG → tình huống. serviceKey = slug tên nhóm
+    // (khoá bền, không lộ id); priceSource = tên nhóm (đọc giá realtime). KHÔNG trộn script.
+    let svcOrder = 100;
+    for (const g of allGroups) {
+      const groupName = g.groupName;
+      const svcSlug = slugifyGroup(groupName);
+      const svcKey = `svc::${svcSlug}`;
+      const steps: TreeNode[] = SERVICE_STEPS.map((step, si) => {
+        const stepKey = `${svcKey}::${step.key}`;
+        const situations = step.situations.map((sit, ci) =>
+          leafNode(`${stepKey}::${sit.key}`, sit.title, svcSlug, (ci + 1) * 10));
+        return {
+          nodeKey: stepKey, parentKey: svcKey, nodeType: step.showPricing ? "pricing" : "step",
+          title: step.title, serviceKey: svcSlug, priceSource: groupName, scenarioKey: null,
+          sortOrder: (si + 1) * 10,
+          meta: { situationCount: situations.length, showPricing: !!step.showPricing },
+          children: situations,
+        } as TreeNode;
+      });
+      roots.push({
+        nodeKey: svcKey, parentKey: null, nodeType: "service", title: groupName,
+        serviceKey: svcSlug, priceSource: groupName, scenarioKey: null, sortOrder: svcOrder,
+        meta: {
+          groupName,
+          packageCount: (g.packages ?? []).length,
+          situationCount: SITUATIONS_PER_SERVICE,
+          priceConnected: true,
+          imageUrl: g.imageUrl ?? null,
+        },
+        children: steps,
+      });
+      svcOrder += 10;
     }
-    const sortRec = (arr: TreeNode[]) => {
-      arr.sort((a, b) => a.sortOrder - b.sortOrder || a.nodeKey.localeCompare(b.nodeKey));
-      for (const n of arr) sortRec(n.children);
-    };
-    sortRec(roots);
     return roots;
   } catch (err) {
     console.error("[ScenarioTree] buildScenarioTree lỗi (fail-soft):", String(err).slice(0, 160));
     return [];
   }
 }
+
+// Giữ để không vỡ import cũ (mapRow/listScenarios/summarizeWhenServer) — không dùng ở cây mới.
+void mapRow; void listScenarios; void summarizeWhenServer;
 
 /** Thêm leaf (trỏ scenario có sẵn) vào 1 node cha. Trả false nếu cha không tồn tại. */
 export async function addLeafToNode(parentKey: string, scenarioKey: string): Promise<boolean> {

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { apiUrl } from "@/lib/api-base";
+import { getImageSrc } from "@/lib/imageUtils";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import {
   type ScenarioCard, type ScenarioRecord, type ScenarioLabels,
@@ -598,28 +599,43 @@ function AiDraftBox({ onDraft, onClose, showErr }: {
 
 type TreeNodeFE = {
   nodeKey: string; parentKey: string | null;
-  nodeType: "stage" | "group" | "subgroup" | "leaf" | "pricing";
-  title: string; serviceKey: string | null; scenarioKey: string | null;
+  nodeType: "greeting" | "service" | "step" | "leaf" | "pricing" | "stage" | "group" | "subgroup";
+  title: string; serviceKey: string | null; scenarioKey: string | null; priceSource?: string | null;
   children: TreeNodeFE[];
+  meta?: { groupName?: string | null; packageCount?: number; situationCount?: number; priceConnected?: boolean; showPricing?: boolean; imageUrl?: string | null };
   scenario?: { name: string; enabled: boolean; status: string; whenText: string; missing?: boolean } | null;
 };
 type EffPkg = { code: string; name: string; groupName: string; basePrice: number; effectivePrice: number; promoActive: boolean; promoName: string | null; promoEnd: string | null };
 
 const vnd = (n: number) => (Number.isFinite(n) && n > 0 ? n.toLocaleString("vi-VN") + "đ" : "liên hệ");
 
-function PricingNode({ serviceKey }: { serviceKey: string | null }) {
-  const [groups, setGroups] = useState<Array<{ groupName: string; packages: EffPkg[] }> | null>(null);
+function PricingNode({ serviceKey, groupName }: { serviceKey: string | null; groupName?: string | null }) {
+  const [groups, setGroups] = useState<Array<{ groupName: string; packages: EffPkg[]; imageUrl?: string | null }> | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [zoom, setZoom] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
-    apiGet<{ groups: Array<{ groupName: string; packages: EffPkg[] }> }>(`/lulu-scenarios/price-preview?service=${encodeURIComponent(serviceKey ?? "")}`)
+    // Card = nhóm giá → đọc theo TÊN NHÓM (chính xác tuyệt đối); fallback service_key nếu thiếu.
+    const qs = groupName ? `group=${encodeURIComponent(groupName)}` : `service=${encodeURIComponent(serviceKey ?? "")}`;
+    apiGet<{ groups: Array<{ groupName: string; packages: EffPkg[]; imageUrl?: string | null }> }>(`/lulu-scenarios/price-preview?${qs}`)
       .then((r) => { if (alive) setGroups(r.groups); })
       .catch((e) => { if (alive) setErr(String((e as Error).message)); });
     return () => { alive = false; };
-  }, [serviceKey]);
+  }, [serviceKey, groupName]);
   return (
     <div className="ml-6 my-1 border-l-2 border-emerald-200 pl-3 py-1 text-[12px]">
-      <p className="text-emerald-700 font-medium">Nguồn giá: Dịch vụ &amp; Bảng giá {serviceKey ? `→ ${serviceKey}` : ""} · <span className="text-gray-400">đọc realtime, không nhập tay</span></p>
+      <p className="text-emerald-700 font-medium">Nguồn giá: Dịch vụ &amp; Bảng giá {groupName ? `→ ${groupName}` : ""} · <span className="text-gray-400">đọc realtime, không nhập tay</span></p>
+      {groups?.map((g) => g.imageUrl ? (
+        <img key={"img-" + g.groupName} src={getImageSrc(g.imageUrl) ?? ""} alt={`Bảng giá ${g.groupName}`}
+          onClick={() => setZoom(getImageSrc(g.imageUrl) ?? null)}
+          className="mt-1.5 rounded-lg border border-emerald-200 max-h-56 w-auto cursor-zoom-in hover:opacity-90"
+          title="Ảnh bảng giá (đồng bộ từ Dịch vụ & Bảng giá) — bấm để phóng to" />
+      ) : null)}
+      {zoom && (
+        <div onClick={() => setZoom(null)} className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-6 cursor-zoom-out">
+          <img src={zoom} alt="Bảng giá" className="max-h-[90vh] max-w-[90vw] rounded-lg shadow-2xl" />
+        </div>
+      )}
       {err && <p className="text-rose-600 mt-1">Không đọc được giá: {err}</p>}
       {!groups && !err && <p className="text-gray-400 mt-1">Đang đọc bảng giá…</p>}
       {groups && groups.length === 0 && <p className="text-amber-600 mt-1">Chưa có gói nào khớp — mở "Dịch vụ &amp; Bảng giá" thêm gói cho nhóm này.</p>}
@@ -887,33 +903,59 @@ function ScriptTablePanel({ nodeKey, scenarioKey, title, serviceKey, isAdmin, on
   );
 }
 
-function TreeRowView({ node, depth, expanded, toggle, onEditLeaf, onOpenScript }: {
+function TreeRowView({ node, depth, expanded, toggle, onOpenScript }: {
   node: TreeNodeFE; depth: number; expanded: Set<string>; toggle: (k: string) => void;
-  onEditLeaf: (scenarioKey: string) => void;
   onOpenScript: (nodeKey: string, scenarioKey: string | null, title: string, serviceKey: string | null) => void;
 }) {
   const isOpen = expanded.has(node.nodeKey);
-  const pad = { paddingLeft: `${depth * 18 + 4}px` };
-  const scriptBtn = (
-    <button onClick={(e) => { e.stopPropagation(); onOpenScript(node.nodeKey, node.scenarioKey, node.scenario?.name || node.title, node.serviceKey); }}
-      title="Bảng Kịch bản Sale (Hỏi & Trả lời)"
-      className="text-[11px] text-violet-600 border border-violet-200 rounded px-1.5 py-0.5 hover:bg-violet-50 shrink-0 flex items-center gap-1">
-      <NotebookPen className="w-3 h-3" /> Hỏi & Trả lời
-    </button>
-  );
+  const pad = { paddingLeft: `${depth * 16 + 4}px` };
+  const openScript = () => onOpenScript(node.nodeKey, node.scenarioKey, node.title, node.serviceKey);
+
+  // TÌNH HUỐNG (leaf) — bấm mở thẳng bảng Excel Hỏi & Trả lời (không còn scenario editor).
   if (node.nodeType === "leaf") {
     return (
-      <div id={`tree-node-${node.nodeKey}`} style={pad} className="flex items-center gap-2 py-1.5 pr-2 rounded hover:bg-violet-50 text-[13px]">
-        <button onClick={() => node.scenarioKey && onEditLeaf(node.scenarioKey)} className="flex items-center gap-2 text-left flex-1 min-w-0">
-          <span className="text-gray-300">•</span>
-          <span className={node.scenario?.missing ? "text-rose-500" : ""}>{node.scenario?.name || node.title}</span>
-          {node.scenario && !node.scenario.enabled && <span className="text-[10px] text-gray-400">(đang tắt)</span>}
-          <Pencil className="w-3 h-3 text-gray-300 shrink-0" />
+      <button id={`tree-node-${node.nodeKey}`} onClick={openScript} style={pad}
+        title="Mở bảng Hỏi & Trả lời"
+        className="w-full text-left flex items-center gap-2 py-1.5 pr-2 rounded hover:bg-violet-50 text-[13px] group">
+        <span className="text-gray-300">•</span>
+        <span className="flex-1 min-w-0">{node.title}</span>
+        <span className="text-[11px] text-violet-600 border border-violet-200 rounded px-1.5 py-0.5 shrink-0 flex items-center gap-1 opacity-60 group-hover:opacity-100">
+          <NotebookPen className="w-3 h-3" /> Hỏi & Trả lời
+        </span>
+      </button>
+    );
+  }
+
+  // DỊCH VỤ (service) — card lớn: tên + số gói · giá realtime · số tình huống.
+  if (node.nodeType === "service") {
+    const m = node.meta ?? {};
+    return (
+      <div id={`tree-node-${node.nodeKey}`} className="border border-gray-200 rounded-xl mb-2 overflow-hidden bg-white">
+        <button onClick={() => toggle(node.nodeKey)}
+          className="w-full text-left flex items-center gap-3 px-3 py-2.5 hover:bg-gray-50">
+          <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform shrink-0 ${isOpen ? "" : "-rotate-90"}`} />
+          {m.imageUrl && <img src={getImageSrc(m.imageUrl) ?? ""} alt="" className="w-9 h-9 rounded-lg object-cover ring-1 ring-gray-200 shrink-0" />}
+          <span className="font-semibold text-[15px] flex-1 min-w-0">{node.title}</span>
+          <span className="flex items-center gap-2 text-[11px] shrink-0">
+            <span className="text-gray-500">{m.packageCount ?? 0} gói</span>
+            <span className={m.priceConnected ? "text-emerald-600" : "text-amber-600"}>
+              {m.priceConnected ? "💰 giá realtime" : "⚠ chưa nối giá"}
+            </span>
+            <span className="text-gray-400">{m.situationCount ?? 0} tình huống</span>
+          </span>
         </button>
-        {scriptBtn}
+        {isOpen && (
+          <div className="border-t border-gray-100 py-1">
+            {node.children.map((c) => (
+              <TreeRowView key={c.nodeKey} node={c} depth={1} expanded={expanded} toggle={toggle} onOpenScript={onOpenScript} />
+            ))}
+          </div>
+        )}
       </div>
     );
   }
+
+  // BÁO GIÁ (pricing step) — folder: mở ra hiện BẢNG GIÁ realtime trên cùng + tình huống bên dưới.
   if (node.nodeType === "pricing") {
     return (
       <div id={`tree-node-${node.nodeKey}`}>
@@ -921,27 +963,31 @@ function TreeRowView({ node, depth, expanded, toggle, onEditLeaf, onOpenScript }
           className="w-full text-left flex items-center gap-2 py-1.5 pr-2 rounded hover:bg-emerald-50 text-[13px]">
           <ChevronDown className={`w-3.5 h-3.5 text-emerald-500 transition-transform ${isOpen ? "" : "-rotate-90"}`} />
           <span className="font-medium text-emerald-700">💰 {node.title}</span>
-          <span className="text-[11px] text-gray-400">(giá sống từ Bảng giá)</span>
-          {scriptBtn}
+          <span className="text-[11px] text-gray-400">(bảng giá realtime)</span>
         </button>
-        {isOpen && <PricingNode serviceKey={node.serviceKey} />}
+        {isOpen && <>
+          <PricingNode serviceKey={node.serviceKey} />
+          {node.children.map((c) => (
+            <TreeRowView key={c.nodeKey} node={c} depth={depth + 1} expanded={expanded} toggle={toggle} onOpenScript={onOpenScript} />
+          ))}
+        </>}
       </div>
     );
   }
-  // stage / group / subgroup = folder
-  const leafCount = countLeaves(node);
+
+  // BƯỚC (step) / greeting / folder cũ = thư mục thu gọn.
+  const isGreeting = node.nodeType === "greeting";
+  const count = node.meta?.situationCount ?? countLeaves(node);
   return (
-    <div id={`tree-node-${node.nodeKey}`}>
-      <div style={pad} className={`flex items-center gap-2 py-2 pr-2 rounded hover:bg-gray-50 ${node.nodeType === "stage" ? "font-semibold text-[15px]" : "text-[13px] font-medium text-gray-700"}`}>
-        <button onClick={() => toggle(node.nodeKey)} className="flex items-center gap-2 text-left flex-1 min-w-0">
-          <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${isOpen ? "" : "-rotate-90"}`} />
-          <span>{node.title}</span>
-          {leafCount > 0 && <span className="text-[11px] text-gray-400 font-normal">({leafCount})</span>}
-        </button>
-        {node.nodeType !== "stage" && scriptBtn}
-      </div>
+    <div id={`tree-node-${node.nodeKey}`} className={isGreeting ? "border border-amber-200 bg-amber-50/40 rounded-xl mb-2" : ""}>
+      <button onClick={() => toggle(node.nodeKey)} style={isGreeting ? undefined : pad}
+        className={`w-full text-left flex items-center gap-2 pr-2 rounded hover:bg-gray-50 ${isGreeting ? "px-3 py-2.5 font-semibold text-[15px]" : "py-1.5 text-[13px] font-medium text-gray-700"}`}>
+        <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform shrink-0 ${isOpen ? "" : "-rotate-90"}`} />
+        <span className="flex-1 min-w-0">{node.title}</span>
+        {count > 0 && <span className="text-[11px] text-gray-400 font-normal shrink-0">{count} tình huống</span>}
+      </button>
       {isOpen && node.children.map((c) => (
-        <TreeRowView key={c.nodeKey} node={c} depth={depth + 1} expanded={expanded} toggle={toggle} onEditLeaf={onEditLeaf} onOpenScript={onOpenScript} />
+        <TreeRowView key={c.nodeKey} node={c} depth={depth + 1} expanded={expanded} toggle={toggle} onOpenScript={onOpenScript} />
       ))}
     </div>
   );
@@ -952,19 +998,25 @@ function countLeaves(node: TreeNodeFE): number {
   return node.children.reduce((s, c) => s + countLeaves(c), 0);
 }
 
-// Đường nodeKey từ gốc tới node ĐẦU TIÊN có serviceKey khớp (để mở + cuộn khi deep-link).
-function findServicePath(nodes: TreeNodeFE[], serviceKey: string, trail: string[] = []): string[] | null {
+// Đường nodeKey từ gốc tới card DỊCH VỤ khớp (theo tên nhóm/serviceKey) — để mở + cuộn khi deep-link.
+function findServicePath(nodes: TreeNodeFE[], key: string, trail: string[] = []): string[] | null {
+  const k = key.trim().toLowerCase();
   for (const n of nodes) {
     const here = [...trail, n.nodeKey];
-    if (n.serviceKey === serviceKey) return here;
-    const sub = findServicePath(n.children, serviceKey, here);
+    const match = n.nodeType === "service" && (
+      (n.serviceKey ?? "").toLowerCase() === k ||
+      (n.title ?? "").toLowerCase() === k ||
+      (n.meta?.groupName ?? n.priceSource ?? "").toLowerCase() === k
+    );
+    if (match) return here;
+    const sub = findServicePath(n.children, key, here);
     if (sub) return sub;
   }
   return null;
 }
 
-function ScenarioTreeView({ reloadKey, onEditLeaf, onOpenScript, showErr, autoOpenServiceKey }: {
-  reloadKey: number; onEditLeaf: (scenarioKey: string) => void;
+function ScenarioTreeView({ reloadKey, onOpenScript, showErr, autoOpenServiceKey }: {
+  reloadKey: number;
   onOpenScript: (nodeKey: string, scenarioKey: string | null, title: string, serviceKey: string | null) => void;
   showErr: (m: string) => void;
   autoOpenServiceKey?: string | null;
@@ -989,14 +1041,20 @@ function ScenarioTreeView({ reloadKey, onEditLeaf, onOpenScript, showErr, autoOp
   const toggle = (k: string) => setExpanded((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
   const expandAll = () => { const all = new Set<string>(); const walk = (ns: TreeNodeFE[]) => ns.forEach((n) => { if (n.children.length || n.nodeType === "pricing") { all.add(n.nodeKey); walk(n.children); } }); if (tree) walk(tree); setExpanded(all); };
   if (!tree) return <p className="text-gray-400 text-sm py-6">Đang tải cây kịch bản…</p>;
+  const firstServiceKey = tree.find((n) => n.nodeType === "service")?.nodeKey;
   return (
-    <div className="bg-white border rounded-xl p-2">
-      <div className="flex gap-3 px-2 py-1 text-[11px] text-gray-400">
+    <div className="space-y-1">
+      <div className="flex gap-3 px-1 py-1 text-[11px] text-gray-400">
         <button onClick={expandAll} className="hover:text-gray-600">Mở tất cả</button>
         <button onClick={() => setExpanded(new Set())} className="hover:text-gray-600">Thu gọn tất cả</button>
       </div>
       {tree.map((n) => (
-        <TreeRowView key={n.nodeKey} node={n} depth={0} expanded={expanded} toggle={toggle} onEditLeaf={onEditLeaf} onOpenScript={onOpenScript} />
+        <div key={n.nodeKey}>
+          {n.nodeKey === firstServiceKey && (
+            <p className="text-[11px] uppercase tracking-wide text-gray-400 font-semibold mt-3 mb-1 px-1">Dịch vụ</p>
+          )}
+          <TreeRowView node={n} depth={0} expanded={expanded} toggle={toggle} onOpenScript={onOpenScript} />
+        </div>
       ))}
     </div>
   );
@@ -1025,25 +1083,14 @@ export default function LuluSaleScenariosPage() {
   const [scriptNode, setScriptNode] = useState<{ nodeKey: string; scenarioKey: string | null; title: string; serviceKey: string | null } | null>(null);
   const [autoOpenServiceKey, setAutoOpenServiceKey] = useState<string | null>(null);
 
-  // Deep-link từ trang Bảng giá: /lulu-sale-scenarios?service=<tên nhóm hoặc service_key>.
-  // Resolve qua bản đồ dịch vụ (admin KHÔNG cần biết khoá), rồi mở đúng nhánh + xoá param khỏi URL.
+  // Deep-link từ trang Bảng giá: /lulu-sale-scenarios?service=<TÊN NHÓM giá>. Card dịch vụ mang
+  // tên nhóm nên khớp thẳng — admin KHÔNG cần biết khoá. Mở đúng card + xoá param khỏi URL.
   useEffect(() => {
     const param = new URLSearchParams(window.location.search).get("service");
-    if (!param) return;
-    apiGet<{ services: Array<{ serviceKey: string; displayName: string; groupName: string | null }> }>("/lulu-scenarios/service-map")
-      .then((r) => {
-        const p = param.trim().toLowerCase();
-        const hit = r.services.find((s) => s.serviceKey.toLowerCase() === p)
-          || r.services.find((s) => (s.groupName ?? "").toLowerCase() === p)
-          || r.services.find((s) => (s.displayName ?? "").toLowerCase() === p);
-        if (hit) { setAutoOpenServiceKey(hit.serviceKey); setView("tree"); }
-      })
-      .catch(() => { /* không resolve được thì thôi, không chặn trang */ })
-      .finally(() => {
-        const url = new URL(window.location.href);
-        url.searchParams.delete("service");
-        window.history.replaceState({}, "", url.toString());
-      });
+    if (param) { setAutoOpenServiceKey(param); setView("tree"); }
+    const url = new URL(window.location.href);
+    url.searchParams.delete("service");
+    window.history.replaceState({}, "", url.toString());
   }, []);
 
   const showOk = (msg: string) => { setToast({ ok: true, msg }); setTimeout(() => setToast(null), 3500); };
@@ -1237,11 +1284,6 @@ export default function LuluSaleScenariosPage() {
 
       {view === "tree" && (
         <ScenarioTreeView reloadKey={treeReloadKey}
-          onEditLeaf={(scenarioKey) => {
-            const rec = records.find((r) => r.scenarioKey === scenarioKey);
-            if (rec) { setEditing(rec); setEditingSeed(null); setAiOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); }
-            else showErr("Không tìm thấy thẻ — thử tải lại trang.");
-          }}
           onOpenScript={(nodeKey, scenarioKey, title, serviceKey) => { setScriptNode({ nodeKey, scenarioKey, title, serviceKey }); setEditing(null!); window.scrollTo({ top: 0, behavior: "smooth" }); }}
           showErr={showErr} autoOpenServiceKey={autoOpenServiceKey} />
       )}

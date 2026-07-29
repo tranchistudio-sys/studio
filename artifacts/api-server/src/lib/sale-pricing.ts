@@ -1,3 +1,4 @@
+import { pool } from "@workspace/db";
 import { auditPackages, pkgDiscountCfg, groupDiscountCfg, type AuditRow } from "./sale-context";
 import { resolveDiscount } from "./pricing-discount";
 
@@ -34,7 +35,18 @@ export type EffectivePackage = {
 export type ServicePricePreview = {
   groupName: string;
   packages: EffectivePackage[];
+  imageUrl: string | null; // ai_image_url của nhóm — ĐỒNG BỘ ảnh bảng giá với module Dịch vụ & Bảng giá
 };
+
+/** name → ai_image_url của các nhóm giá (fail-soft → Map rỗng). */
+async function getGroupImages(): Promise<Map<string, string>> {
+  const m = new Map<string, string>();
+  try {
+    const r = await pool.query(`SELECT name, ai_image_url FROM service_groups WHERE ai_image_url IS NOT NULL AND ai_image_url <> ''`);
+    for (const row of r.rows as Array<{ name: string; ai_image_url: string }>) m.set((row.name ?? "").trim(), row.ai_image_url);
+  } catch { /* không có ảnh cũng không sao */ }
+  return m;
+}
 
 // service_key (intent) → keyword khớp tên NHÓM trong "Dịch vụ & Bảng giá" (admin đặt tự do).
 // Chỉ để GỢI Ý nguồn giá; admin có thể ghim nguồn chính xác qua price_source của node cây.
@@ -89,7 +101,10 @@ export async function getServicePricePreview(
     if (!byGroup.has(eff.groupName)) byGroup.set(eff.groupName, []);
     byGroup.get(eff.groupName)!.push(eff);
   }
-  let groups = [...byGroup.entries()].map(([groupName, packages]) => ({ groupName, packages }));
+  const images = await getGroupImages();
+  let groups = [...byGroup.entries()].map(([groupName, packages]) => ({
+    groupName, packages, imageUrl: images.get(groupName.trim()) ?? null,
+  }));
 
   const pinned = (opts?.pinnedGroup ?? "").trim();
   if (pinned) {

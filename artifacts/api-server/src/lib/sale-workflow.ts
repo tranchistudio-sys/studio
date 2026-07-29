@@ -1,6 +1,6 @@
 import type { ThreadState } from "./sale-thread-state";
 import { detectPhone, detectAppointmentIntent, detectEscalation } from "./sale-lead-flags";
-import { detectRefusal } from "./sale-slots-extra";
+import { detectRefusal, detectObjection } from "./sale-slots-extra";
 
 /**
  * SALE WORKFLOW V1 — Router + Playbook máy-đọc-được cho Lulu ("khúc giữa" tầng 2-3).
@@ -235,7 +235,7 @@ const SEND_PRICELIST_RE = /((gui|xin|cho)[^.?!\n]{0,15}bang gia|bang gia day du|
 const WANT_HUMAN_RE = /((gap|noi chuyen voi|cho (gap|noi chuyen))\s*(nguoi that|nhan vien|nguoi tu van|ai do)|can nguoi that|nguoi that (tu van|tra loi))/;
 // Đã bỏ `xem thu` trần (dính "để chị xem thử rồi báo lại" = khách xin suy nghĩ).
 const WANT_SAMPLE_RE =
-  /(xem (anh|hinh|mau|album|bo anh)|cho.{0,10}(mau|anh mau|hinh)|co (mau|anh mau|hinh mau)|gui (anh|hinh|mau)|mau (nao )?dep|anh (that|chup) (cua )?ben|cho coi|xem thu (anh|hinh|mau|album)|con mau (khac|nao)|gui xem|mau khac (khong|ko|di)|concept (nao )?(dep|la|hay)|xem concept|co concept)/;
+  /(xem (anh|hinh|mau|album|bo anh)|cho.{0,10}(mau|anh mau|hinh)|co (mau|anh mau|hinh mau)|gui (anh|hinh|mau)|mau (nao )?dep|anh (that|chup) (cua )?ben|cho coi|xem thu (anh|hinh|mau|album)|con mau (khac|nao)|gui xem|mau khac (khong|ko|di)|concept (nao )?(dep|la|hay)|xem concept|co concept|cho xem(?!.{0,8}(bang gia|gia|lich))|mau .{0,10}dep)/;
 const GREETING_ONLY_RE = /^((hi+|hello+|alo+)( em| chi| shop)?( oi)?|chao( em| shop| ban| anh| chi)?|xin chao|cho hoi|e oi|em oi|shop oi)( a| nha| nhe)?[.!~\s]*$/;
 // Ack cụt theo TOKEN (chống backtracking + bắt được ack 2-3 từ "ok ạ"/"dạ vâng"/"ok nha").
 // Text vào đã bỏ dấu nên chỉ cần token không dấu.
@@ -253,7 +253,7 @@ const FAQ_TOPICS: Array<{ topic: string; re: RegExp }> = [
   { topic: "faq:address", re: /(dia chi|o dau|cho nao|nam o|studio o|toi dau|den dau|duong nao)/ },
   { topic: "faq:hours", re: /(may gio|gio mo|gio lam viec|mo cua|dong cua)/ },
   { topic: "faq:delivery", re: /((bao lau|khi nao|bao gio|may ngay)\s*(thi\s*)?(co|nhan|lay|tra|gui|cho|xong)\s*(anh|hinh)|bao lau xong)/ },
-  { topic: "faq:package_detail", re: /(gom (nhung )?gi|bao gom|co nhung gi|trong goi co|goi nay (co|gom))/ },
+  { topic: "faq:package_detail", re: /(gom (nhung )?gi|bao gom|co nhung gi|trong goi co|goi nay (co|gom)|(chup|quay|lam)?\s*(may|bao nhieu) (tieng|gio dong ho)|chup trong bao lau)/ },
   { topic: "faq:services", re: /(co (vay|ao dai|vest|makeup|trang diem|quay phim|make up)|ben (em|minh) co)/ },
   { topic: "faq:payment", re: /(thanh toan|tra gop|coc bao nhieu|dat coc bao nhieu|coc (sao|the nao|nhu nao)|dat coc (sao|the nao))/ },
 ];
@@ -480,6 +480,19 @@ export function routeSaleAction(input: RouterInput): RouterDecision {
     return finish(d);
   }
 
+  // ── 1d. Chê giá THUẦN ("mắc vậy", "đắt quá") không kèm xin giảm — xử lý băn khoăn
+  //        bằng giá trị, KHÔNG escalate (xin giảm cụ thể mới cần người thật ở nhánh 1) ──
+  const objLite = detectObjection(msg);
+  if (objLite?.type === "PRICE_OBJECTION") {
+    const d = baseDecision(
+      state.quotedPackages.length ? "CONSIDERING" : stage,
+      "HANDLE_OBJECTION",
+      `Khách chê giá ("${objLite.quote.slice(0, 30)}") — đồng cảm + nêu giá trị, TUYỆT ĐỐI không tự giảm`,
+    );
+    d.forbiddenQuestions.push("self_discount");
+    return finish(d);
+  }
+
   // ── 2. Khách để SĐT → bàn giao người thật chốt ──
   if (detectPhone(msg)) {
     const d = baseDecision("BOOKING_INTENT", "ESCALATE_HUMAN", "Khách để lại SĐT — cảm ơn + hẹn nhân viên liên hệ, bàn giao ngay");
@@ -573,6 +586,14 @@ export function routeSaleAction(input: RouterInput): RouterDecision {
     d.knowledgeNeeded = [`services:${intent}`];
     d.allowedQuestions.push("ask_style");
     return finish(d);
+  }
+  // HOÀN TẤT Ý ĐỊNH CŨ (V2 Sales Brain, phát hiện qua nghiệm thu 30/07): bot đã hỏi ngày
+  // (lý do gốc: khách hỏi giá) và khách ĐÃ TRẢ LỜI mốc ngày → đừng quay lại đào gu —
+  // BÁO GIÁ CHÍNH THỨC luôn. (Ack cụt đã bị chặn ở bước 7 nên không rơi vào đây.)
+  if (state.slots.date_status === "known" && state.quotedPackages.length === 0
+      && state.askedQuestions.some((q) => q.key === "ask_date")) {
+    return finish(baseDecision("QUOTED", "QUOTE_EXACT",
+      "Khách đã cho mốc ngày sau khi được hỏi (xuất phát từ hỏi giá) — hoàn tất ý định: báo giá chính thức"));
   }
   // GOLDEN FLOW: khách vừa chốt "chưa biết ngày / tham khảo" (thường là câu trả lời cho
   // câu hỏi ngày sau khi hỏi giá) → giao ngay GIÁ THAM KHẢO thay vì hỏi thêm.

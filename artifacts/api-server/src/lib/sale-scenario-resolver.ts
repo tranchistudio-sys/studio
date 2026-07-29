@@ -89,7 +89,9 @@ function triggerMatches(trigger: TriggerKey, s: MessageSignals, msg: string): bo
     case "cho_sdt": return s.hasPhone;
     case "muon_giu_lich": return s.bookingIntent || /chuyển khoản|đặt cọc/.test(s.escalation ?? "");
     case "chot_goi": return s.closeDeal;
-    case "che_gia_xin_giam": return /giảm giá|so sánh|than mắc/.test(s.escalation ?? "");
+    case "che_gia_xin_giam":
+      return /giảm giá|so sánh|than mắc/.test(s.escalation ?? "")
+        || detectObjection(msg)?.type === "PRICE_OBJECTION" || detectDiscountRequest(msg);
     // ── V2: 12 loại khách chưa chốt (detector thuần sale-slots-extra, nhận raw message) ──
     case "hoi_chong_gia_dinh": return detectPostpone(msg)?.kind === "partner";
     case "xin_suy_nghi": return detectPostpone(msg)?.kind === "time";

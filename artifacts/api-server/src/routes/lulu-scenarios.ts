@@ -88,6 +88,24 @@ function sanitizeHistory(raw: unknown): Array<{ direction: "incoming" | "outgoin
 }
 const MAX_TEST_MESSAGE = 4000;
 
+// Lượt bot synthetic khi thiếu AI key — đúng dấu vết mỗi action (botAsksDate…).
+const SYNTH_BOT_LINE: Record<string, string> = {
+  GREET: "Dạ em chào mình ạ, mình đang quan tâm dịch vụ nào ạ?",
+  ASK_SERVICE: "Dạ mình đang cần chụp cưới, beauty hay gia đình ạ?",
+  IDENTIFY_SERVICE: "Dạ mình thích tone nhẹ nhàng hay sang trọng ạ?",
+  ASK_DATE: "Dạ mình dự định chụp khi nào ạ?",
+  QUOTE_REFERENCE: "Dạ em gửi mình mức giá tham khảo nha.",
+  QUOTE_EXACT: "Dạ giá gói của mình đây ạ.",
+  SEND_PRICE: "Dạ em gửi bảng giá cho mình nha.",
+  SEND_SAMPLE: "Em gửi mình 2 mẫu gần gu nhất nha.",
+  ANSWER_FAQ: "Dạ em trả lời mình nè.",
+  HANDLE_OBJECTION: "Dạ em hiểu mà, để em nói rõ quyền lợi cho mình nha.",
+  ASK_FOR_BOOKING: "Mình muốn em giữ lịch giúp không ạ?",
+  ASK_PHONE: "Mình để lại số điện thoại giúp em nha.",
+  ESCALATE_HUMAN: "Dạ em báo nhân viên hỗ trợ mình ngay nha.",
+  WAIT: "Dạ vâng ạ, mình cứ thoải mái nha.",
+};
+
 // ─── Diễn giải tiếng Việt cho sandbox (mục 15 Sales Brain — chủ không đọc JSON) ──
 
 const STAGE_VN: Record<string, string> = {
@@ -327,6 +345,8 @@ async function runScenarioTest(opts: {
   message: string;
   history: Array<{ direction: "incoming" | "outgoing"; message: string }>;
   draftOf: string | null;   // test bản NHÁP của thẻ này (các thẻ khác dùng active)
+  /** Mã gói đã báo ở các lượt trước (multi-turn tích luỹ — thiếu LLM vẫn giữ trí nhớ đã-báo-giá). */
+  quotedCodes?: string[];
   useDraft: boolean;        // false = bộ ACTIVE thuần (cột "trước khi sửa")
   caller: Caller;
   record: boolean;
@@ -334,10 +354,11 @@ async function runScenarioTest(opts: {
   const defs = opts.useDraft && opts.draftOf ? await loadDefsWithDraftOf(opts.draftOf) : await loadActiveScenarioDefs();
   // State NUỐT tin khách hiện tại (đúng chuẩn simState của claude-sale-test + golden harness):
   // slot "chưa chốt ngày"/nhóm dịch vụ trong CHÍNH câu đang test phải được tính cho lượt này.
-  const stateBefore = simulateThreadStateFromHistory(opts.history);
-  const state = simulateThreadStateFromHistory([
-    ...opts.history, { direction: "incoming" as const, message: opts.message },
-  ]);
+  const stateBefore = simulateThreadStateFromHistory(opts.history, { quotedCodes: opts.quotedCodes ?? [] });
+  const state = simulateThreadStateFromHistory(
+    [...opts.history, { direction: "incoming" as const, message: opts.message }],
+    { quotedCodes: opts.quotedCodes ?? [] },
+  );
   const resolve = resolveScenario({
     customerMessage: opts.message, threadState: state,
     isFirstContact: opts.history.length === 0, scenarios: defs,
@@ -350,7 +371,14 @@ async function runScenarioTest(opts: {
   const testOverride = resolveTestProviderOverride();
   if (testOverride) providerLabel = testOverride.label ?? "shopaikey";
   const apiKey = (process.env.ANTHROPIC_API_KEY ?? "").trim();
-  if (testOverride || apiKey) {
+  // Tổng đài (callChat) tự resolve chuỗi provider Claude → OpenAI — route chỉ cần biết
+  // CÓ ÍT NHẤT 1 provider khả dụng (kể cả cổng OpenAI fallback), không tự gate hẹp hơn tổng đài.
+  const anyProvider = !!(
+    testOverride || apiKey
+    || (process.env.OPENAI_API_KEY ?? "").trim()
+    || (process.env.AI_INTEGRATIONS_OPENAI_API_KEY ?? "").trim()
+  );
+  if (anyProvider) {
     try {
       let context = await getSaleContext();
       const stateBlock = buildThreadStateBlock(state);
@@ -476,13 +504,20 @@ router.post("/lulu-scenarios/test-conversation", async (req, res) => {
   try {
     const turns: Array<Awaited<ReturnType<typeof runScenarioTest>> & { message: string }> = [];
     let history: Array<{ direction: "incoming" | "outgoing"; message: string }> = [];
+    const quotedCodes: string[] = [];
     for (const message of msgs) {
-      const t = await runScenarioTest({ message, history, draftOf, useDraft: !!draftOf, caller, record: false });
+      const t = await runScenarioTest({ message, history, draftOf, useDraft: !!draftOf, caller, record: false, quotedCodes });
+      if (["QUOTE_REFERENCE", "QUOTE_EXACT", "SEND_PRICE"].includes(t.action)) quotedCodes.push(`GOI-${quotedCodes.length + 1}`);
       turns.push({ ...t, message });
+      // KHÔNG có LLM (thiếu key) → vẫn phải chèn LƯỢT BOT synthetic theo action để trí nhớ
+      // multi-turn trung thực (bot đã hỏi ngày / đã gửi mẫu... — nếu thiếu, state các lượt sau sai).
+      const botLine = t.replyText ?? SYNTH_BOT_LINE[t.action] ?? "Dạ vâng ạ.";
       history = [
         ...history,
         { direction: "incoming", message },
-        ...(t.replyText ? [{ direction: "outgoing" as const, message: t.replyText }] : []),
+        ...(t.action === "SEND_SAMPLE" && !t.replyText
+          ? [{ direction: "outgoing" as const, message: "[image:https://sandbox/mau.jpg]" }] : []),
+        { direction: "outgoing" as const, message: botLine },
       ];
     }
     res.json({ turns });

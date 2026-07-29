@@ -420,6 +420,14 @@ export const GOLDEN_CASES: GoldenCase[] = [
     message: "thôi khỏi em ơi, chị chốt bên khác rồi",
     expected: { stage: "LOST", action: "WAIT", forbiddenAction: "QUOTE_REFERENCE", shouldEscalate: false },
   },
+  {
+    // Nghiệm thu 30/07 (T05): khách hỏi giá → bot hỏi ngày → khách trả lời "tháng 12"
+    // KHÔNG kèm chữ giá — phải HOÀN TẤT ý định cũ (báo giá), không quay lại đào gu.
+    id: "G58", name: "Trả lời ngày sau câu hỏi ngày (không nhắc giá) → báo giá luôn, không đào gu",
+    history: [{ direction: "incoming", message: "chụp cổng giá nhiêu vậy" }, ASKED_DATE],
+    message: "tháng 12 gì đó em",
+    expected: { serviceIntent: "wedding_gate", dateStatus: "known", stage: "QUOTED", action: "QUOTE_EXACT", forbiddenQuestionsInclude: ["ask_date"] },
+  },
 ];
 
 // ─── BIẾN THỂ KHÔNG DẤU (slang/typo layer) ───────────────────────────────────

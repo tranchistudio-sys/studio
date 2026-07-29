@@ -707,7 +707,7 @@ export default function LuluSaleScenariosPage() {
                 <div className="flex items-center gap-2 flex-wrap">
                   <p className="font-medium text-sm">{card.name}</p>
                   <StatusBadge rec={rec} />
-                  {rec.isCore && <span className="text-[10px] text-blue-600 flex items-center gap-0.5"><ShieldCheck className="w-3 h-3" /> lõi</span>}
+                  {rec.isCore && <span title="Thẻ an toàn — không xoá được, chỉ tắt tạm" className="text-[10px] text-blue-600 flex items-center gap-0.5"><ShieldCheck className="w-3 h-3" /> an toàn</span>}
                   {rec.lastTestResult && <VerdictBadge verdict={rec.lastTestResult} />}
                 </div>
                 <p className="text-[12px] text-gray-500 mt-0.5"><b>Khi khách:</b> {summarizeWhen(card, labels)}</p>

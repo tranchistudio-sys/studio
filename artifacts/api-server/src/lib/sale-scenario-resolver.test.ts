@@ -221,6 +221,55 @@ describe("Overlay an toàn — thẻ không nới lỏng được luật lõi", 
     expect(r.decision.knowledgeNeeded).toEqual(expect.arrayContaining(["pricing:beauty", "gallery:beauty"]));
   });
 
+  // ── Regression từ review đối kháng 30/07 ──
+
+  it("REGRESSION: thẻ KHÔNG mở lại được ASK_PHONE khi ask_phone đang bị cấm (hỏi >=2 lần)", () => {
+    const state = freshState({
+      serviceIntent: "wedding_album",
+      quotedPackages: [{ code: "A", at: "x" }],
+      askedQuestions: [{ key: "ask_phone", at: "x", count: 2 }],
+    });
+    const r = resolveScenario({
+      customerMessage: "gói này gồm những gì", threadState: state, isFirstContact: false,
+      scenarios: [mk({ triggers: ["hoi_chi_tiet_goi"], primaryAction: "ASK_PHONE" })],
+    });
+    expect(r.decision.action).not.toBe("ASK_PHONE");
+    expect(r.decision.action).toBe(r.baseline.action);
+  });
+
+  it("REGRESSION: def bẩn (conditions thiếu / phần tử null) KHÔNG crash — fail-open", () => {
+    const dirty = cardToDef("dirty", { name: "x", triggers: ["bat_ky"] } as never, 10, true);
+    expect(dirty.conditions.serviceIntent).toBe("any");
+    const state = freshState({ serviceIntent: "beauty" });
+    const r = resolveScenario({
+      customerMessage: "giá bao nhiêu", threadState: state, isFirstContact: false,
+      scenarios: [null as never, dirty],
+    });
+    expect(r.decision.action).toBeTruthy(); // không throw, có quyết định
+  });
+
+  it("REGRESSION: thẻ chọn ESCALATE_HUMAN → shouldEscalate phải bật cùng (không bàn giao câm)", () => {
+    const state = freshState({ serviceIntent: "beauty" });
+    const r = resolveScenario({
+      customerMessage: "bên mình có váy không", threadState: state, isFirstContact: false,
+      scenarios: [mk({ triggers: ["bat_ky"], primaryAction: "ESCALATE_HUMAN" })],
+    });
+    if (r.decision.action === "ESCALATE_HUMAN") expect(r.decision.shouldEscalate).toBe(true);
+  });
+
+  it("REGRESSION: action đổi → requiredData/missingData/knowledge tính lại theo action mới", () => {
+    // Thẻ ép SEND_SAMPLE khi intent đã rõ → requiredData=['service_intent'], knowledge có gallery.
+    const state = freshState({ serviceIntent: "beauty" });
+    const r = resolveScenario({
+      customerMessage: "giá bao nhiêu", threadState: state, isFirstContact: false,
+      scenarios: [mk({ triggers: ["hoi_gia"], primaryAction: "SEND_SAMPLE" })],
+    });
+    expect(r.decision.action).toBe("SEND_SAMPLE");
+    expect(r.decision.requiredData).toEqual(["service_intent"]);
+    expect(r.decision.missingData).toEqual([]);
+    expect(r.decision.knowledgeNeeded).toContain("gallery:beauty");
+  });
+
   it("guidance + closing của thẻ thắng được trả ra cho prompt", () => {
     const state = freshState({ serviceIntent: "beauty", slots: { date_status: "not_decided" } });
     const r = resolveScenario({

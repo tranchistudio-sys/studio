@@ -163,8 +163,10 @@ export function compileCard(raw: unknown): CompileResult {
     }
   }
 
-  // Quét lời dẫn + câu kết tìm vi phạm (giảm giá tự tạo, giá cứng, tự chốt cọc).
-  for (const issue of scanGuidanceViolations(`${guidance}\n${closingLine}`)) errors.push(issue);
+  // Quét MỌI kênh text tự do sẽ vào prompt (tên + mô tả + lời dẫn + câu kết) tìm vi phạm
+  // (giảm giá tự tạo, giá cứng, tự chốt cọc) — buildScenarioGuidanceBlock chèn cả `name`
+  // vào prompt nên name cũng phải qua lưới quét (chặn prompt-injection qua ai-draft).
+  for (const issue of scanGuidanceViolations(`${name}\n${description}\n${guidance}\n${closingLine}`)) errors.push(issue);
 
   const card: ScenarioCard = {
     name, description, triggers, conditions, requiredSlots, primaryAction,

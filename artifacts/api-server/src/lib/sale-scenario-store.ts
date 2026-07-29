@@ -92,27 +92,40 @@ export async function ensureScenarioTables(): Promise<void> {
      ON lulu_scenario_test_runs (scenario_key, created_at DESC)`,
   ).catch(() => {});
 
-  ensured = true;
+  // Seed TRƯỚC khi đánh dấu ensured: seed lỗi giữa chừng → ensured vẫn false → lần gọi
+  // sau tự thử lại (không bao giờ kẹt ở bộ thẻ thiếu một cách im lặng).
   await seedDefaultScenarios();
+  ensured = true;
 }
 
-/** Seed 12+ thẻ mẫu — CHỈ khi bảng đang rỗng (không đè dữ liệu chủ đã sửa). */
+/** Seed 12+ thẻ mẫu — CHỈ khi bảng đang rỗng (không đè dữ liệu chủ đã sửa).
+ *  Chạy trong 1 TRANSACTION: hoặc đủ bộ, hoặc không có gì (chết giữa chừng → rollback). */
 async function seedDefaultScenarios(): Promise<void> {
   const r = await pool.query(`SELECT COUNT(*)::int AS n FROM lulu_sale_scenarios`);
   if (Number(r.rows[0]?.n ?? 0) > 0) return;
-  let order = 10;
-  for (const s of SEED_SCENARIOS) {
-    const compiled = compileCard(s.card);
-    await pool.query(
-      `INSERT INTO lulu_sale_scenarios
-         (scenario_key, sort_order, status, enabled, is_core, version, card_json, created_by_name)
-       VALUES ($1, $2, 'active', true, $3, 1, $4::jsonb, 'Hệ thống')
-       ON CONFLICT (scenario_key) DO NOTHING`,
-      [s.key, order, s.isCore, JSON.stringify(compiled.card)],
-    );
-    order += 10;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    let order = 10;
+    for (const s of SEED_SCENARIOS) {
+      const compiled = compileCard(s.card);
+      await client.query(
+        `INSERT INTO lulu_sale_scenarios
+           (scenario_key, sort_order, status, enabled, is_core, version, card_json, created_by_name)
+         VALUES ($1, $2, 'active', true, $3, 1, $4::jsonb, 'Hệ thống')
+         ON CONFLICT (scenario_key) DO NOTHING`,
+        [s.key, order, s.isCore, JSON.stringify(compiled.card)],
+      );
+      order += 10;
+    }
+    await client.query("COMMIT");
+    console.log(`[ScenarioMgr] seed ${SEED_SCENARIOS.length} thẻ kịch bản mẫu (bảng trống)`);
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
   }
-  console.log(`[ScenarioMgr] seed ${SEED_SCENARIOS.length} thẻ kịch bản mẫu (bảng trống)`);
 }
 
 // ─── Map row ──────────────────────────────────────────────────────────────────
@@ -222,9 +235,17 @@ export async function saveDraft(key: string, card: ScenarioCard, actor: Actor): 
   return r.rows.length ? mapRow(r.rows[0] as Record<string, unknown>) : null;
 }
 
-/** Hủy nháp (giữ bản active nguyên vẹn). */
+/** Hủy nháp (giữ bản active nguyên vẹn). Thẻ MỚI TẠO chưa từng Apply (card_json NULL)
+ *  → xoá luôn dòng (giải phóng khoá, không để lại "thẻ ma" không card không draft;
+ *  chưa từng chạy thật nên xoá là an toàn — khác thẻ active tuyệt đối không xoá). */
 export async function discardDraft(key: string, actor: Actor): Promise<ScenarioRecord | null> {
   await ensureScenarioTables();
+  const cur = await getScenario(key);
+  if (!cur) return null;
+  if (!cur.card) {
+    await pool.query(`DELETE FROM lulu_sale_scenarios WHERE scenario_key = $1 AND card_json IS NULL`, [key]);
+    return { ...cur, draftCard: null };
+  }
   const r = await pool.query(
     `UPDATE lulu_sale_scenarios
         SET draft_json = NULL, updated_by = $2, updated_by_name = $3, updated_at = NOW()
@@ -245,18 +266,25 @@ export async function toggleScenario(key: string, enabled: boolean, actor: Actor
   return r.rows.length ? mapRow(r.rows[0] as Record<string, unknown>) : null;
 }
 
-/** Kéo thả thứ tự ưu tiên: nhận danh sách key theo thứ tự mới. */
+/** Kéo thả thứ tự ưu tiên: nhận danh sách key theo thứ tự mới.
+ *  Danh sách gửi lên có thể THIẾU thẻ (bug client / gọi tay) → resequence TOÀN BỘ:
+ *  key gửi lên đứng trước theo thứ tự gửi, thẻ còn lại giữ thứ tự hiện tại phía sau —
+ *  không bao giờ để 2 thẻ trùng sort_order làm đảo ưu tiên ngoài ý muốn. */
 export async function reorderScenarios(keysInOrder: string[], actor: Actor): Promise<number> {
   await ensureScenarioTables();
+  const all = await listScenarios();
+  const sent = keysInOrder.filter((k) => all.some((r) => r.scenarioKey === k));
+  const rest = all.map((r) => r.scenarioKey).filter((k) => !sent.includes(k));
+  const finalOrder = [...sent, ...rest];
   let n = 0;
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    for (let i = 0; i < keysInOrder.length; i++) {
+    for (let i = 0; i < finalOrder.length; i++) {
       const r = await client.query(
         `UPDATE lulu_sale_scenarios SET sort_order = $2, updated_by = $3, updated_by_name = $4, updated_at = NOW()
          WHERE scenario_key = $1`,
-        [keysInOrder[i], (i + 1) * 10, actor.id, actor.name],
+        [finalOrder[i], (i + 1) * 10, actor.id, actor.name],
       );
       n += r.rowCount ?? 0;
     }
@@ -287,15 +315,30 @@ export async function cloneScenario(key: string, actor: Actor):
   return { ok: false, error: "Đã nhân bản quá nhiều lần — hãy xoá bớt bản nháp cũ." };
 }
 
-/** Lưu trữ thẻ (soft) — KHÔNG xoá vĩnh viễn; thẻ lõi không lưu trữ được. */
+/** Lưu trữ thẻ (soft) — KHÔNG xoá vĩnh viễn; thẻ lõi không lưu trữ được.
+ *  Chặn khi còn thẻ khác đang CHUYỂN TIẾP tới thẻ này (tránh tham chiếu chết
+ *  làm kẹt mọi lần Áp dụng sau đó với lỗi khó hiểu ở thẻ khác). */
 export async function archiveScenario(key: string, actor: Actor):
   Promise<{ ok: boolean; error?: string; record?: ScenarioRecord }> {
   const cur = await getScenario(key);
   if (!cur) return { ok: false, error: "Không tìm thấy kịch bản" };
   if (cur.isCore) return { ok: false, error: "Thẻ lõi an toàn — không lưu trữ được (chỉ tắt tạm bằng công tắc)." };
+  const all = await listScenarios();
+  const referers = all.filter((r) =>
+    r.scenarioKey !== key && r.status !== "archived"
+    && [...(r.card?.nextScenarios ?? []), ...(r.draftCard?.nextScenarios ?? [])].some((n) => n.scenarioKey === key),
+  );
+  if (referers.length > 0) {
+    const names = referers.map((r) => `'${(r.draftCard ?? r.card)?.name ?? r.scenarioKey}'`).join(", ");
+    return {
+      ok: false,
+      error: `Thẻ này đang được ${names} chuyển tiếp tới — gỡ dòng chuyển tiếp ở thẻ đó trước rồi mới lưu trữ (tránh chuyển tiếp bị đứt).`,
+    };
+  }
   const r = await pool.query(
     `UPDATE lulu_sale_scenarios
-        SET status = 'archived', enabled = false, updated_by = $2, updated_by_name = $3, updated_at = NOW()
+        SET status = 'archived', enabled = false, draft_json = NULL,
+            updated_by = $2, updated_by_name = $3, updated_at = NOW()
       WHERE scenario_key = $1 RETURNING *`,
     [key, actor.id, actor.name],
   );
@@ -307,6 +350,8 @@ export async function archiveScenario(key: string, actor: Actor):
 type SnapshotEntry = {
   scenario_key: string; sort_order: number; status: string; enabled: boolean;
   is_core: boolean; version: number; card: ScenarioCard | null;
+  /** Nháp đang sửa dở tại thời điểm snapshot — để rollback không làm mất công sửa của ai. */
+  draft?: ScenarioCard | null;
 };
 
 async function buildSnapshot(): Promise<SnapshotEntry[]> {
@@ -314,6 +359,7 @@ async function buildSnapshot(): Promise<SnapshotEntry[]> {
   return rows.map((r) => ({
     scenario_key: r.scenarioKey, sort_order: r.sortOrder, status: r.status,
     enabled: r.enabled, is_core: r.isCore, version: r.version, card: r.card,
+    draft: r.draftCard,
   }));
 }
 
@@ -360,11 +406,13 @@ export async function applyAllDrafts(actor: Actor, note?: string): Promise<
       [(note ?? "").slice(0, 500) || `Áp dụng ${drafts.length} thẻ nháp`, JSON.stringify(snapshot), actor.id, actor.name],
     );
     for (const d of drafts) {
+      // Guard "WHERE draft_json IS NOT NULL": nếu ai đó vừa HỦY nháp giữa lúc admin đọc
+      // và COMMIT thì không promote bản đã hủy (giảm cửa sổ mất-cập-nhật TOCTOU).
       await client.query(
         `UPDATE lulu_sale_scenarios
             SET card_json = $2::jsonb, draft_json = NULL, status = 'active',
                 version = version + 1, updated_by = $3, updated_by_name = $4, updated_at = NOW()
-          WHERE scenario_key = $1`,
+          WHERE scenario_key = $1 AND draft_json IS NOT NULL`,
         [d.scenarioKey, JSON.stringify(compiledDrafts.get(d.scenarioKey)), actor.id, actor.name],
       );
     }
@@ -419,6 +467,8 @@ export async function rollbackToVersion(versionId: number, actor: Actor):
     );
     let restored = 0;
     for (const s of snapshot) {
+      // QUAN TRỌNG: rollback chỉ khôi phục BẢN CHẠY THẬT (card/status/enabled/thứ tự).
+      // draft_json GIỮ NGUYÊN — nháp ai đang sửa dở không bị rollback nuốt mất.
       const r = await client.query(
         `INSERT INTO lulu_sale_scenarios
            (scenario_key, sort_order, status, enabled, is_core, version, card_json,
@@ -427,7 +477,7 @@ export async function rollbackToVersion(versionId: number, actor: Actor):
          ON CONFLICT (scenario_key) DO UPDATE SET
            sort_order = EXCLUDED.sort_order, status = EXCLUDED.status,
            enabled = EXCLUDED.enabled, version = EXCLUDED.version,
-           card_json = EXCLUDED.card_json, draft_json = NULL,
+           card_json = EXCLUDED.card_json,
            updated_by = EXCLUDED.updated_by, updated_by_name = EXCLUDED.updated_by_name,
            updated_at = NOW()`,
         [s.scenario_key, s.sort_order, s.status, s.enabled, s.is_core, s.version,

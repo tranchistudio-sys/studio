@@ -130,7 +130,10 @@ function matchScenario(
 
 // ─── Overlay thẻ thắng lên baseline (chỉ SIẾT, không NỚI) ─────────────────────
 
-function overlayWinner(baseline: RouterDecision, winner: ScenarioDef, intent: string | null): {
+function overlayWinner(
+  baseline: RouterDecision, winner: ScenarioDef, intent: string | null,
+  dateStatus: string | undefined,
+): {
   decision: RouterDecision; actionChanged: boolean; note: string;
 } {
   let d: RouterDecision = { ...baseline, forbiddenQuestions: [...baseline.forbiddenQuestions], knowledgeNeeded: [...baseline.knowledgeNeeded] };
@@ -149,17 +152,22 @@ function overlayWinner(baseline: RouterDecision, winner: ScenarioDef, intent: st
   //    - baseline không phải WAIT an toàn (không cho thẻ đè WAIT để "cố bán");
   //    - action nằm trong allowedActions của playbook stage hiện tại;
   //    - không nằm trong cấm bổ sung của chính thẻ;
-  //    - không phải ASK_DATE khi ask_date đang bị cấm.
+  //    - action-hỏi (ASK_DATE/ASK_PHONE) không được mở lại câu hỏi ĐANG BỊ CẤM
+  //      (rule cứng "hỏi >=2 lần thì cấm" áp cho MỌI câu hỏi, không riêng ask_date).
   let actionChanged = false;
   const want = winner.primaryAction;
+  const questionOf: Partial<Record<SaleAction, string>> = { ASK_DATE: "ask_date", ASK_PHONE: "ask_phone" };
+  const wantQuestion = want ? questionOf[want] : undefined;
   if (
     want != null && want !== d.action
     && !baseline.shouldEscalate && baseline.action !== "ESCALATE_HUMAN" && baseline.action !== "WAIT"
     && SALE_PLAYBOOK_V1[d.stage].allowedActions.includes(want)
     && !extraForbiddenActions.has(want)
-    && !(want === "ASK_DATE" && d.forbiddenQuestions.includes("ask_date"))
+    && !(wantQuestion && d.forbiddenQuestions.includes(wantQuestion))
   ) {
     d = { ...d, action: want, reason: `${d.reason} → thẻ '${winner.name}' chọn hành động '${want}'` };
+    // Thẻ chuyển người thật → cờ escalate phải bật cùng (không "bàn giao câm").
+    if (want === "ESCALATE_HUMAN") d.shouldEscalate = true;
     actionChanged = true;
   }
 
@@ -179,6 +187,23 @@ function overlayWinner(baseline: RouterDecision, winner: ScenarioDef, intent: st
 
   // 5. Lưới cuối: playbook enforce (dùng CHUNG hàm của Workflow V1).
   d = enforcePlaybook(d);
+
+  // 6. Action ĐÃ ĐỔI → tính lại requiredData/missingData/knowledge theo ĐÚNG luật của
+  //    router (invariant "action↔knowledge↔missingData nhất quán" — sale-workflow.ts finish()):
+  //    thẻ không bao giờ được tạo decision báo-giá mà thiếu cờ thiếu-dữ-liệu / thiếu pricing.
+  if (actionChanged) {
+    if (d.action === "QUOTE_EXACT") d.requiredData = ["service_intent", "event_date"];
+    else if (d.action === "QUOTE_REFERENCE" || d.action === "SEND_PRICE" || d.action === "SEND_SAMPLE") d.requiredData = ["service_intent"];
+    else d.requiredData = [];
+    d.missingData = d.requiredData.filter((k) =>
+      k === "service_intent" ? !intent : k === "event_date" ? dateStatus !== "known" : false,
+    );
+    const needK =
+      d.action === "QUOTE_EXACT" || d.action === "QUOTE_REFERENCE" || d.action === "SEND_PRICE"
+        ? [`pricing:${intent ?? "all"}`]
+        : d.action === "SEND_SAMPLE" ? [`gallery:${intent ?? "all"}`] : [];
+    for (const k of needK) if (!d.knowledgeNeeded.includes(k)) d.knowledgeNeeded.push(k);
+  }
   return { decision: d, actionChanged, note };
 }
 
@@ -192,11 +217,28 @@ export function resolveScenario(input: ScenarioResolveInput): ScenarioResolveRes
     isFirstContact: input.isFirstContact,
   });
 
+  // FAIL-OPEN THẬT SỰ: bất kỳ lỗi nào ở tầng scenario (def bẩn từ DB, bug matching…)
+  // → trả nguyên quyết định Workflow V1, không bao giờ throw ra caller.
+  try {
+    return resolveWithBaseline(input, baseline);
+  } catch (err) {
+    console.error("[ScenarioResolver] lỗi (fail-open về Workflow V1):", String(err).slice(0, 160));
+    return {
+      decision: baseline, baseline, winner: null, losers: [],
+      actionChanged: false, guidance: null, closingLine: null, knowledge: [],
+      source: "engine_fallback",
+      explain: "Tầng kịch bản gặp lỗi — dùng nguyên quyết định của hệ thống (Workflow V1).",
+    };
+  }
+}
+
+function resolveWithBaseline(input: ScenarioResolveInput, baseline: RouterDecision): ScenarioResolveResult {
   const signals = detectMessageSignals(input.customerMessage);
   const losers: ScenarioLoser[] = [];
   const matched: Array<{ def: ScenarioDef; specificity: number }> = [];
 
-  for (const def of input.scenarios ?? []) {
+  // filter(Boolean): phần tử null/undefined trong danh sách (dữ liệu bẩn) bị bỏ qua an toàn.
+  for (const def of (input.scenarios ?? []).filter((d): d is ScenarioDef => !!d)) {
     const m = matchScenario(def, signals, input.threadState, input.isFirstContact);
     if (m.matched) matched.push({ def, specificity: m.specificity });
     else losers.push({ key: def.key, name: def.name, reason: m.reason ?? "trigger_khong_khop", detail: m.detail });
@@ -227,7 +269,9 @@ export function resolveScenario(input: ScenarioResolveInput): ScenarioResolveRes
     };
   }
 
-  const { decision, actionChanged, note } = overlayWinner(baseline, winner, input.threadState.serviceIntent);
+  const { decision, actionChanged, note } = overlayWinner(
+    baseline, winner, input.threadState.serviceIntent, input.threadState.slots.date_status,
+  );
   const explain =
     `Chọn thẻ '${winner.name}' (khớp tình huống${matched[0].specificity > 0 ? `, độ cụ thể ${matched[0].specificity}` : ""}). `
     + (actionChanged ? `Hành động: ${decision.action}. ` : `Giữ hành động hệ thống: ${decision.action}. `)

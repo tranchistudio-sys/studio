@@ -74,6 +74,20 @@ function requireFeature(res: Response): boolean {
 
 const actorOf = (c: Caller): Actor => ({ id: c.id, name: c.name });
 
+/** Làm sạch history từ body: bỏ phần tử không phải object (null → TypeError), cap độ dài
+ *  từng tin (chống nhồi prompt khổng lồ đốt token / phình bảng test_runs) + cap số lượng. */
+function sanitizeHistory(raw: unknown): Array<{ direction: "incoming" | "outgoing"; message: string }> {
+  return (Array.isArray(raw) ? raw : [])
+    .filter((h): h is Record<string, unknown> => !!h && typeof h === "object")
+    .map((h) => ({
+      direction: h.direction === "outgoing" ? "outgoing" as const : "incoming" as const,
+      message: String(h.message ?? "").slice(0, 4000),
+    }))
+    .filter((h) => h.message)
+    .slice(-40);
+}
+const MAX_TEST_MESSAGE = 4000;
+
 // ─── Trạng thái + danh mục nhãn (FE render tiếng Việt từ đây — 1 nguồn) ───────
 
 router.get("/lulu-scenarios/status", async (req, res) => {
@@ -224,12 +238,11 @@ router.post("/lulu-scenarios/resolve-preview", async (req, res) => {
   const caller = await requireStaff(req, res);
   if (!caller) return;
   if (!requireFeature(res)) return;
-  const b = req.body as { message?: string; history?: Array<{ direction: string; message: string }>; draftOf?: string };
-  const message = String(b?.message ?? "").trim();
+  const b = req.body as { message?: string; history?: unknown; draftOf?: string };
+  const message = String(b?.message ?? "").trim().slice(0, MAX_TEST_MESSAGE);
   if (!message) { res.status(400).json({ error: "Thiếu câu khách" }); return; }
-  const history = (Array.isArray(b?.history) ? b.history : [])
-    .map((h) => ({ direction: h.direction === "outgoing" ? "outgoing" as const : "incoming" as const, message: String(h.message ?? "") }))
-    .slice(-40);
+  try {
+  const history = sanitizeHistory(b?.history);
   const defs = b?.draftOf ? await loadDefsWithDraftOf(String(b.draftOf)) : await loadActiveScenarioDefs();
   const state = simulateThreadStateFromHistory(history);
   const result = resolveScenario({ customerMessage: message, threadState: state, isFirstContact: history.length === 0, scenarios: defs });
@@ -246,6 +259,10 @@ router.post("/lulu-scenarios/resolve-preview", async (req, res) => {
     actionChanged: result.actionChanged,
     source: result.source,
   });
+  } catch (err) {
+    console.error("[ScenarioMgr] resolve-preview lỗi:", String(err).slice(0, 160));
+    res.status(500).json({ error: "Xem trước lỗi: " + String(err).slice(0, 120) });
+  }
 });
 
 // ─── Test thử (1 câu hoặc nhiều lượt) — mô phỏng + gọi LLM + validator ────────
@@ -361,14 +378,10 @@ router.post("/lulu-scenarios/:key/test", async (req, res) => {
   const caller = await requireStaff(req, res);
   if (!caller) return;
   if (!requireFeature(res)) return;
-  const b = req.body as {
-    message?: string; history?: Array<{ direction: string; message: string }>; compare?: boolean;
-  };
-  const message = String(b?.message ?? "").trim();
+  const b = req.body as { message?: string; history?: unknown; compare?: boolean };
+  const message = String(b?.message ?? "").trim().slice(0, MAX_TEST_MESSAGE);
   if (!message) { res.status(400).json({ error: "Nhập câu khách để test" }); return; }
-  const history = (Array.isArray(b?.history) ? b.history : [])
-    .map((h) => ({ direction: h.direction === "outgoing" ? "outgoing" as const : "incoming" as const, message: String(h.message ?? "") }))
-    .slice(-40);
+  const history = sanitizeHistory(b?.history);
   const key = String(req.params.key);
   try {
     const after = await runScenarioTest({ message, history, draftOf: key, useDraft: true, caller, record: true });
@@ -392,7 +405,7 @@ router.post("/lulu-scenarios/test-conversation", async (req, res) => {
   if (!caller) return;
   if (!requireFeature(res)) return;
   const b = req.body as { messages?: string[]; draftOf?: string };
-  const msgs = (Array.isArray(b?.messages) ? b.messages : []).map((m) => String(m ?? "").trim()).filter(Boolean).slice(0, 8);
+  const msgs = (Array.isArray(b?.messages) ? b.messages : []).map((m) => String(m ?? "").trim().slice(0, MAX_TEST_MESSAGE)).filter(Boolean).slice(0, 8);
   if (msgs.length === 0) { res.status(400).json({ error: "Nhập ít nhất 1 câu khách" }); return; }
   const draftOf = b?.draftOf ? String(b.draftOf) : null;
   try {

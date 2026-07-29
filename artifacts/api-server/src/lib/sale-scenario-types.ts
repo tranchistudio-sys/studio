@@ -264,20 +264,28 @@ export type ScenarioDef = {
 };
 
 export function cardToDef(key: string, card: ScenarioCard, priority: number, enabled: boolean): ScenarioDef {
+  // Card từ DB (JSONB) có thể bẩn/thiếu field (sửa tay SQL, drift) — default MỌI field
+  // để resolver không bao giờ crash vì dữ liệu (fail-open là hợp đồng số 1).
+  const c = (card?.conditions ?? {}) as Partial<ScenarioConditions>;
   return {
     key,
-    name: card.name,
+    name: card?.name ?? key,
     priority,
     enabled,
-    triggers: card.triggers ?? [],
-    conditions: card.conditions,
-    requiredSlots: card.requiredSlots ?? [],
-    primaryAction: ACTION_KEY_TO_SALE_ACTION[card.primaryAction] ?? null,
-    forbiddenExtra: card.forbiddenExtra ?? [],
-    knowledge: card.knowledge ?? [],
-    guidance: card.guidance ?? "",
-    closingLine: card.closingLine ?? "",
-    nextScenarios: card.nextScenarios ?? [],
+    triggers: card?.triggers ?? [],
+    conditions: {
+      serviceIntent: c.serviceIntent ?? "any",
+      dateStatus: c.dateStatus ?? "any",
+      quoted: c.quoted ?? "any",
+      firstContact: c.firstContact ?? "any",
+    },
+    requiredSlots: card?.requiredSlots ?? [],
+    primaryAction: ACTION_KEY_TO_SALE_ACTION[card?.primaryAction as ActionKey] ?? null,
+    forbiddenExtra: card?.forbiddenExtra ?? [],
+    knowledge: card?.knowledge ?? [],
+    guidance: card?.guidance ?? "",
+    closingLine: card?.closingLine ?? "",
+    nextScenarios: card?.nextScenarios ?? [],
   };
 }
 

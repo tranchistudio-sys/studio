@@ -174,7 +174,7 @@ function TestPanel({ scenarioKey, hasDraft, onClose }: { scenarioKey: string; ha
             className="flex-1 border rounded-lg px-3 py-2 text-sm" />
         ) : (
           <input value={message} onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter" && message.trim()) run(); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && message.trim() && !running) run(); }}
             placeholder="Chị chưa biết ngày, cho chị tham khảo giá trước…"
             className="flex-1 border rounded-lg px-3 py-2 text-sm" />
         )}
@@ -490,6 +490,7 @@ export default function LuluSaleScenariosPage() {
   const [editing, setEditing] = useState<ScenarioRecord | null | "new">(null!);
   const [editingSeed, setEditingSeed] = useState<{ card: ScenarioCard; issues: Issue[] } | null>(null);
   const [aiOpen, setAiOpen] = useState(false);
+  const [newNonce, setNewNonce] = useState(0);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [versions, setVersions] = useState<Array<{ id: number; kind: string; note: string | null; count: number; createdByName: string | null; createdAt: string }>>([]);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -499,6 +500,11 @@ export default function LuluSaleScenariosPage() {
 
   const showOk = (msg: string) => { setToast({ ok: true, msg }); setTimeout(() => setToast(null), 3500); };
   const showErr = (msg: string) => { setToast({ ok: false, msg }); setTimeout(() => setToast(null), 5000); };
+
+  const loadVersions = useCallback(async () => {
+    try { const r = await apiGet<{ versions: { id: number; kind: string; note: string | null; count: number; createdByName: string | null; createdAt: string }[] }>("/lulu-scenarios/versions"); setVersions(r.versions); }
+    catch { /* panel đóng thì thôi */ }
+  }, []);
 
   const reload = useCallback(async () => {
     try {
@@ -514,7 +520,7 @@ export default function LuluSaleScenariosPage() {
   }, []);
   useEffect(() => { reload(); }, [reload]);
 
-  const draftCount = records.filter((r) => r.draftCard).length;
+  const draftCount = records.filter((r) => r.draftCard && r.status !== "archived").length;
 
   const visible = useMemo(() => {
     let list = records;
@@ -548,6 +554,7 @@ export default function LuluSaleScenariosPage() {
       const out = await apiSend<{ applied: string[] }>("POST", "/lulu-scenarios/apply", {});
       showOk(`Đã áp dụng ${out.applied.length} thẻ — có snapshot khôi phục trong Lịch sử`);
       reload();
+      if (versionsOpen) loadVersions();
     } catch (e) {
       const anyE = e as { issues?: Issue[]; message?: string };
       if (anyE.issues?.length) setApplyIssues(anyE.issues);
@@ -592,7 +599,7 @@ export default function LuluSaleScenariosPage() {
                 className="border border-violet-300 text-violet-700 text-sm px-3 py-2 rounded-lg hover:bg-violet-50 flex items-center gap-1.5">
                 <Wand2 className="w-4 h-4" /> Nhờ AI viết
               </button>
-              <button onClick={() => { setEditing("new"); setEditingSeed(null); setAiOpen(false); }}
+              <button onClick={() => { setEditing("new"); setEditingSeed(null); setAiOpen(false); setNewNonce((n) => n + 1); }}
                 className="bg-violet-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-violet-700 flex items-center gap-1.5">
                 <Plus className="w-4 h-4" /> Kịch bản mới
               </button>
@@ -639,7 +646,7 @@ export default function LuluSaleScenariosPage() {
               {effectiveIsAdmin && (
                 <button onClick={async () => {
                   if (!confirm(`Khôi phục CẢ BỘ kịch bản về snapshot #${v.id}?`)) return;
-                  try { await apiSend("POST", "/lulu-scenarios/rollback", { versionId: v.id }); showOk("Đã khôi phục cả bộ"); reload(); }
+                  try { await apiSend("POST", "/lulu-scenarios/rollback", { versionId: v.id }); showOk("Đã khôi phục cả bộ"); reload(); loadVersions(); }
                   catch (e) { showErr(String((e as Error).message)); }
                 }} className="text-amber-700 border border-amber-300 rounded-lg px-2 py-1 hover:bg-amber-50 flex items-center gap-1">
                   <RotateCcw className="w-3 h-3" /> Khôi phục
@@ -651,10 +658,11 @@ export default function LuluSaleScenariosPage() {
       )}
 
       {aiOpen && <AiDraftBox onClose={() => setAiOpen(false)} showErr={showErr}
-        onDraft={(card, issues) => { setAiOpen(false); setEditingSeed({ card, issues }); setEditing("new"); }} />}
+        onDraft={(card, issues) => { setAiOpen(false); setEditingSeed({ card, issues }); setEditing("new"); setNewNonce((n) => n + 1); }} />}
 
       {(editing === "new" || editing) && (
-        <CardEditorWrapper editing={editing} editingSeed={editingSeed} labels={labels} records={records}
+        <CardEditorWrapper key={editing === "new" ? `new-${newNonce}` : (editing as ScenarioRecord).scenarioKey}
+          editing={editing} editingSeed={editingSeed} labels={labels} records={records}
           isAdmin={effectiveIsAdmin} onSaved={() => { setEditing(null!); setEditingSeed(null); reload(); }}
           onClose={() => { setEditing(null!); setEditingSeed(null); }} showOk={showOk} showErr={showErr} />
       )}

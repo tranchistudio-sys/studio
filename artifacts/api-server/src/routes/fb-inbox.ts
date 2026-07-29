@@ -858,9 +858,12 @@ async function handleClaudeSaleReply(
         const scenarioDefs = await loadActiveScenarioDefs();
         if (scenarioDefs.length > 0) {
           const scenarioState = threadState ?? simulateThreadStateFromHistory(history);
+          // isFirstContact: tin khách HIỆN TẠI đã được INSERT vào fb_inbox_messages trước khi
+          // query history (nằm cuối danh sách) → tin đầu tiên thật = history.length <= 1
+          // (khác sân test dùng prior.length === 0 vì prior CHƯA gồm tin hiện tại).
           const scenarioResolve = resolveScenario({
             customerMessage: text, threadState: scenarioState,
-            isFirstContact: history.length === 0, scenarios: scenarioDefs,
+            isFirstContact: history.length <= 1, scenarios: scenarioDefs,
           });
           console.log(
             `[ScenarioShadow] psid=${psid} winner=${scenarioResolve.winner?.key ?? "none"} ` +

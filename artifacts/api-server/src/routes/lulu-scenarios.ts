@@ -244,7 +244,7 @@ router.post("/lulu-scenarios/resolve-preview", async (req, res) => {
   try {
   const history = sanitizeHistory(b?.history);
   const defs = b?.draftOf ? await loadDefsWithDraftOf(String(b.draftOf)) : await loadActiveScenarioDefs();
-  const state = simulateThreadStateFromHistory(history);
+  const state = simulateThreadStateFromHistory([...history, { direction: "incoming" as const, message }]);
   const result = resolveScenario({ customerMessage: message, threadState: state, isFirstContact: history.length === 0, scenarios: defs });
   res.json({
     stateBefore: state,
@@ -276,7 +276,12 @@ async function runScenarioTest(opts: {
   record: boolean;
 }) {
   const defs = opts.useDraft && opts.draftOf ? await loadDefsWithDraftOf(opts.draftOf) : await loadActiveScenarioDefs();
-  const state = simulateThreadStateFromHistory(opts.history);
+  // State NUỐT tin khách hiện tại (đúng chuẩn simState của claude-sale-test + golden harness):
+  // slot "chưa chốt ngày"/nhóm dịch vụ trong CHÍNH câu đang test phải được tính cho lượt này.
+  const stateBefore = simulateThreadStateFromHistory(opts.history);
+  const state = simulateThreadStateFromHistory([
+    ...opts.history, { direction: "incoming" as const, message: opts.message },
+  ]);
   const resolve = resolveScenario({
     customerMessage: opts.message, threadState: state,
     isFirstContact: opts.history.length === 0, scenarios: defs,
@@ -349,7 +354,7 @@ async function runScenarioTest(opts: {
   if (opts.record) {
     await recordTestRun({
       scenarioKey: opts.draftOf, inputMessage: opts.message, history: opts.history,
-      stateBefore: state, winnerKey: resolve.winner?.key ?? null, losers: resolve.losers,
+      stateBefore, winnerKey: resolve.winner?.key ?? null, losers: resolve.losers,
       action: resolve.decision.action, forbidden: resolve.decision.forbiddenQuestions,
       knowledge: resolve.decision.knowledgeNeeded, replyText, validator, verdict,
       stateAfter, createdBy: opts.caller.id,
@@ -357,7 +362,7 @@ async function runScenarioTest(opts: {
   }
 
   return {
-    stateBefore: state,
+    stateBefore,
     winner: resolve.winner ? { key: resolve.winner.key, name: resolve.winner.name } : null,
     losers: resolve.losers,
     explain: resolve.explain,

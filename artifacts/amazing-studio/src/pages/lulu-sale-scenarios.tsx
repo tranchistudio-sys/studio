@@ -602,10 +602,17 @@ type TreeNodeFE = {
   nodeType: "greeting" | "service" | "step" | "leaf" | "pricing" | "stage" | "group" | "subgroup";
   title: string; serviceKey: string | null; scenarioKey: string | null; priceSource?: string | null;
   children: TreeNodeFE[];
-  meta?: { groupName?: string | null; packageCount?: number; situationCount?: number; priceConnected?: boolean; showPricing?: boolean; imageUrl?: string | null };
+  meta?: { groupName?: string | null; packageCount?: number; situationCount?: number; filledCount?: number; priceConnected?: boolean; showPricing?: boolean; imageUrl?: string | null };
   scenario?: { name: string; enabled: boolean; status: string; whenText: string; missing?: boolean } | null;
 };
 type EffPkg = { code: string; name: string; groupName: string; basePrice: number; effectivePrice: number; promoActive: boolean; promoName: string | null; promoEnd: string | null; description?: string | null; photoCount?: number | null; includesMakeup?: boolean };
+
+// Ngữ cảnh khi mở 1 bảng Hỏi & Trả lời — đủ để hiện breadcrumb + đọc đúng bảng giá + tự điền.
+type ScriptTarget = {
+  nodeKey: string; scenarioKey: string | null; serviceKey: string | null;
+  title: string; groupName?: string | null; serviceTitle?: string; stepTitle?: string; situationTitle?: string;
+};
+type TreeCtx = { serviceTitle?: string; groupName?: string | null; stepTitle?: string };
 
 const vnd = (n: number) => (Number.isFinite(n) && n > 0 ? n.toLocaleString("vi-VN") + "đ" : "liên hệ");
 
@@ -721,10 +728,14 @@ const suggestPriceReplace = (t: string) => (t ?? "").replace(MONEY_RE_G, "{{PRIC
 type PasteState = { text: string; matrix: string[][]; mapping: (ScriptField | "skip")[]; dropHeader: boolean };
 const MAP_CHOICES: (ScriptField | "skip")[] = ["groupLabel", "situationLabel", "customerText", "idealResponse", "notes", "skip"];
 
-function ScriptTablePanel({ nodeKey, scenarioKey, title, serviceKey, isAdmin, onClose, showOk, showErr }: {
+function ScriptTablePanel({ nodeKey, scenarioKey, title, serviceKey, groupName, serviceTitle, stepTitle, situationTitle, isAdmin, onClose, onSaved, showOk, showErr }: {
   nodeKey: string; scenarioKey: string | null; title: string; serviceKey: string | null;
-  isAdmin: boolean; onClose: () => void; showOk: (m: string) => void; showErr: (m: string) => void;
+  groupName?: string | null; serviceTitle?: string; stepTitle?: string; situationTitle?: string;
+  isAdmin: boolean; onClose: () => void; onSaved?: () => void; showOk: (m: string) => void; showErr: (m: string) => void;
 }) {
+  // Tự điền Nhóm = tên dịch vụ, Tình huống = tên tình huống (chủ khỏi gõ lại).
+  const newRow = (): ScriptRowFE => ({ ...EMPTY_ROW(), groupLabel: serviceTitle ?? "", situationLabel: situationTitle ?? title ?? "" });
+  const breadcrumb = [serviceTitle, stepTitle, situationTitle ?? title].filter(Boolean).join(" › ");
   const [rows, setRows] = useState<ScriptRowFE[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -749,16 +760,17 @@ function ScriptTablePanel({ nodeKey, scenarioKey, title, serviceKey, isAdmin, on
   }, [nodeKey]);
 
   const setRow = (i: number, patch: Partial<ScriptRowFE>) => setRows((rs) => rs.map((r, j) => j === i ? { ...r, ...patch } : r));
-  const addRow = () => setRows((rs) => [...rs, EMPTY_ROW()]);
+  const addRow = () => setRows((rs) => [...rs, newRow()]);
   const dupRow = (i: number) => setRows((rs) => [...rs.slice(0, i + 1), { ...rs[i] }, ...rs.slice(i + 1)]);
   const delRow = (i: number) => setRows((rs) => rs.filter((_, j) => j !== i));
 
   const save = async () => {
     setSaving(true);
     try {
-      const r = await apiSend<{ rows: ScriptRowFE[]; priceWarnings: number[] }>("PUT", `/lulu-scenarios/scripts/${encodeURIComponent(nodeKey)}`, { scenarioKey, rows });
+      const r = await apiSend<{ rows: ScriptRowFE[]; priceWarnings: number[] }>("PUT", `/lulu-scenarios/scripts/${encodeURIComponent(nodeKey)}`, { scenarioKey, serviceKey, rows });
       setRows(normRows(r.rows));
       showOk(`Đã lưu ${r.rows.length} dòng${r.priceWarnings.length ? ` (⚠ ${r.priceWarnings.length} dòng có số tiền — nên dùng {{PRICE}} vì giá lấy từ bảng giá)` : ""}`);
+      onSaved?.();
     } catch (e) { showErr(String((e as Error).message)); }
     finally { setSaving(false); }
   };
@@ -775,7 +787,13 @@ function ScriptTablePanel({ nodeKey, scenarioKey, title, serviceKey, isAdmin, on
   const previewMissingResp = previewRows.filter((r) => r.customerText && !r.idealResponse).length;
   const previewPriced = previewRows.filter((r) => hasHardcodedPriceFE(r.idealResponse)).length;
   const commitPaste = () => {
-    setRows((rs) => [...rs, ...previewRows]);
+    // Điền sẵn Nhóm/Tình huống cho dòng dán còn trống = dịch vụ/tình huống đang mở.
+    const filled = previewRows.map((r) => ({
+      ...r,
+      groupLabel: r.groupLabel || (serviceTitle ?? ""),
+      situationLabel: r.situationLabel || (situationTitle ?? title ?? ""),
+    }));
+    setRows((rs) => [...rs, ...filled]);
     setPaste(null);
     showOk(`Đã thêm ${previewRows.length} dòng${previewPriced ? ` — ${previewPriced} dòng có số tiền, cân nhắc {{PRICE}}` : ""} — nhớ bấm Lưu bảng`);
   };
@@ -793,16 +811,19 @@ function ScriptTablePanel({ nodeKey, scenarioKey, title, serviceKey, isAdmin, on
 
   return (
     <div className="bg-white border rounded-xl p-4 space-y-3">
-      <div className="flex items-center justify-between">
-        <p className="font-medium flex items-center gap-2"><NotebookPen className="w-4 h-4 text-violet-600" /> Bảng Kịch bản Sale: {title}</p>
-        <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          {breadcrumb && <p className="text-[11px] text-gray-400 truncate">{breadcrumb}</p>}
+          <p className="font-medium flex items-center gap-2"><NotebookPen className="w-4 h-4 text-violet-600 shrink-0" /> Bảng Hỏi &amp; Trả lời: {situationTitle ?? title}</p>
+        </div>
+        <button onClick={onClose} className="text-gray-400 hover:text-gray-600 shrink-0"><X className="w-4 h-4" /></button>
       </div>
       <p className="text-[12px] text-gray-500">Chủ tự viết câu khách hay hỏi ↔ câu Lulu nên trả lời. Lulu học GIỌNG/cách dẫn — không đọc y nguyên, giá luôn lấy từ bảng giá (dùng <code>{"{{PRICE}}"}</code> thay cho số tiền).</p>
 
-      {serviceKey && (
+      {(groupName || serviceKey) && (
         <details className="text-[12px]">
-          <summary className="cursor-pointer text-emerald-700">💰 Xem bảng giá sống của nhóm này</summary>
-          <PricingNode serviceKey={serviceKey} />
+          <summary className="cursor-pointer text-emerald-700">💰 Xem bảng giá sống {groupName ? `— ${groupName}` : "của nhóm này"}</summary>
+          <PricingNode serviceKey={serviceKey} groupName={groupName} />
         </details>
       )}
 
@@ -917,13 +938,24 @@ function ScriptTablePanel({ nodeKey, scenarioKey, title, serviceKey, isAdmin, on
   );
 }
 
-function TreeRowView({ node, depth, expanded, toggle, onOpenScript }: {
+function TreeRowView({ node, depth, expanded, toggle, onOpenScript, ctx }: {
   node: TreeNodeFE; depth: number; expanded: Set<string>; toggle: (k: string) => void;
-  onOpenScript: (nodeKey: string, scenarioKey: string | null, title: string, serviceKey: string | null) => void;
+  onOpenScript: (t: ScriptTarget) => void;
+  ctx?: TreeCtx;
 }) {
   const isOpen = expanded.has(node.nodeKey);
   const pad = { paddingLeft: `${depth * 16 + 4}px` };
-  const openScript = () => onOpenScript(node.nodeKey, node.scenarioKey, node.title, node.serviceKey);
+  const openScript = () => onOpenScript({
+    nodeKey: node.nodeKey, scenarioKey: node.scenarioKey, serviceKey: node.serviceKey, title: node.title,
+    groupName: ctx?.groupName ?? node.priceSource ?? null,
+    serviceTitle: ctx?.serviceTitle, stepTitle: ctx?.stepTitle, situationTitle: node.title,
+  });
+  // Ngữ cảnh truyền xuống con: service đặt tên+nhóm; step/pricing/greeting bổ sung tên bước.
+  const childCtx: TreeCtx =
+    node.nodeType === "service" ? { serviceTitle: node.title, groupName: node.meta?.groupName ?? node.priceSource ?? null }
+    : node.nodeType === "greeting" ? { serviceTitle: "Chào hỏi chung", groupName: null }
+    : (node.nodeType === "step" || node.nodeType === "pricing") ? { ...ctx, stepTitle: node.title }
+    : (ctx ?? {});
 
   // TÌNH HUỐNG (leaf) — bấm mở thẳng bảng Excel Hỏi & Trả lời (không còn scenario editor).
   if (node.nodeType === "leaf") {
@@ -955,13 +987,15 @@ function TreeRowView({ node, depth, expanded, toggle, onOpenScript }: {
             <span className={m.priceConnected ? "text-emerald-600" : "text-amber-600"}>
               {m.priceConnected ? "💰 giá realtime" : "⚠ chưa nối giá"}
             </span>
-            <span className="text-gray-400">{m.situationCount ?? 0} tình huống</span>
+            <span className={(m.filledCount ?? 0) > 0 ? "text-violet-600" : "text-gray-400"}>
+              {m.filledCount ?? 0}/{m.situationCount ?? 0} có kịch bản
+            </span>
           </span>
         </button>
         {isOpen && (
           <div className="border-t border-gray-100 py-1">
             {node.children.map((c) => (
-              <TreeRowView key={c.nodeKey} node={c} depth={1} expanded={expanded} toggle={toggle} onOpenScript={onOpenScript} />
+              <TreeRowView key={c.nodeKey} node={c} depth={1} expanded={expanded} toggle={toggle} onOpenScript={onOpenScript} ctx={childCtx} />
             ))}
           </div>
         )}
@@ -982,7 +1016,7 @@ function TreeRowView({ node, depth, expanded, toggle, onOpenScript }: {
         {isOpen && <>
           <PricingNode serviceKey={node.serviceKey} groupName={node.priceSource} />
           {node.children.map((c) => (
-            <TreeRowView key={c.nodeKey} node={c} depth={depth + 1} expanded={expanded} toggle={toggle} onOpenScript={onOpenScript} />
+            <TreeRowView key={c.nodeKey} node={c} depth={depth + 1} expanded={expanded} toggle={toggle} onOpenScript={onOpenScript} ctx={childCtx} />
           ))}
         </>}
       </div>
@@ -1001,7 +1035,7 @@ function TreeRowView({ node, depth, expanded, toggle, onOpenScript }: {
         {count > 0 && <span className="text-[11px] text-gray-400 font-normal shrink-0">{count} tình huống</span>}
       </button>
       {isOpen && node.children.map((c) => (
-        <TreeRowView key={c.nodeKey} node={c} depth={depth + 1} expanded={expanded} toggle={toggle} onOpenScript={onOpenScript} />
+        <TreeRowView key={c.nodeKey} node={c} depth={depth + 1} expanded={expanded} toggle={toggle} onOpenScript={onOpenScript} ctx={childCtx} />
       ))}
     </div>
   );
@@ -1031,7 +1065,7 @@ function findServicePath(nodes: TreeNodeFE[], key: string, trail: string[] = [])
 
 function ScenarioTreeView({ reloadKey, onOpenScript, showErr, autoOpenServiceKey }: {
   reloadKey: number;
-  onOpenScript: (nodeKey: string, scenarioKey: string | null, title: string, serviceKey: string | null) => void;
+  onOpenScript: (t: ScriptTarget) => void;
   showErr: (m: string) => void;
   autoOpenServiceKey?: string | null;
 }) {
@@ -1094,7 +1128,7 @@ export default function LuluSaleScenariosPage() {
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState<"tree" | "list">("tree");
   const [treeReloadKey, setTreeReloadKey] = useState(0);
-  const [scriptNode, setScriptNode] = useState<{ nodeKey: string; scenarioKey: string | null; title: string; serviceKey: string | null } | null>(null);
+  const [scriptNode, setScriptNode] = useState<ScriptTarget | null>(null);
   const [autoOpenServiceKey, setAutoOpenServiceKey] = useState<string | null>(null);
 
   // Deep-link từ trang Bảng giá: /lulu-sale-scenarios?service=<TÊN NHÓM giá>. Card dịch vụ mang
@@ -1292,13 +1326,14 @@ export default function LuluSaleScenariosPage() {
 
       {scriptNode && (
         <ScriptTablePanel key={scriptNode.nodeKey} nodeKey={scriptNode.nodeKey} scenarioKey={scriptNode.scenarioKey}
-          title={scriptNode.title} serviceKey={scriptNode.serviceKey} isAdmin={effectiveIsAdmin}
-          onClose={() => setScriptNode(null)} showOk={showOk} showErr={showErr} />
+          title={scriptNode.title} serviceKey={scriptNode.serviceKey} groupName={scriptNode.groupName ?? null}
+          serviceTitle={scriptNode.serviceTitle} stepTitle={scriptNode.stepTitle} situationTitle={scriptNode.situationTitle}
+          isAdmin={effectiveIsAdmin} onClose={() => setScriptNode(null)} onSaved={() => setTreeReloadKey((k) => k + 1)} showOk={showOk} showErr={showErr} />
       )}
 
       {view === "tree" && (
         <ScenarioTreeView reloadKey={treeReloadKey}
-          onOpenScript={(nodeKey, scenarioKey, title, serviceKey) => { setScriptNode({ nodeKey, scenarioKey, title, serviceKey }); setEditing(null!); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+          onOpenScript={(t) => { setScriptNode(t); setEditing(null!); window.scrollTo({ top: 0, behavior: "smooth" }); }}
           showErr={showErr} autoOpenServiceKey={autoOpenServiceKey} />
       )}
 

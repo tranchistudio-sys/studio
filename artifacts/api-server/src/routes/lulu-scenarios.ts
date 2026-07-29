@@ -247,14 +247,14 @@ router.put("/lulu-scenarios/scripts/:nodeKey", async (req, res) => {
   const caller = await requireStaff(req, res);
   if (!caller) return;
   if (!requireFeature(res) || !requireAdmin(caller, res)) return;
-  const b = req.body as { scenarioKey?: string | null; rows?: Array<{ groupLabel?: string; situationLabel?: string; customerText?: string; idealResponse?: string; notes?: string; isActive?: boolean }> };
+  const b = req.body as { scenarioKey?: string | null; serviceKey?: string | null; rows?: Array<{ groupLabel?: string; situationLabel?: string; customerText?: string; idealResponse?: string; notes?: string; isActive?: boolean }> };
   const rows = (Array.isArray(b?.rows) ? b.rows : []).map((r) => ({
     groupLabel: String(r.groupLabel ?? ""), situationLabel: String(r.situationLabel ?? ""),
     customerText: String(r.customerText ?? ""), idealResponse: String(r.idealResponse ?? ""),
     notes: String(r.notes ?? ""), isActive: r.isActive !== false,
   }));
   try {
-    const out = await saveScripts(String(req.params.nodeKey), b?.scenarioKey ?? null, rows);
+    const out = await saveScripts(String(req.params.nodeKey), b?.scenarioKey ?? null, rows, b?.serviceKey ?? null);
     res.json(out);
   } catch (err) {
     console.error("[ScriptLib] save lỗi:", String(err).slice(0, 160));

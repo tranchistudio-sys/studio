@@ -47,6 +47,7 @@ export type TreeNode = TreeRow & {
     groupName?: string | null;    // service: tên nhóm giá CRM đang nối
     packageCount?: number;        // service: số gói đang bán (realtime)
     situationCount?: number;      // service/step: số tình huống bên trong
+    filledCount?: number;         // service: số tình huống ĐÃ có golden (tiến độ)
     priceConnected?: boolean;     // service: đã nối bảng giá chưa
     showPricing?: boolean;        // step Báo giá: hiện bảng giá realtime phía trên
     imageUrl?: string | null;     // service/pricing: ảnh bảng giá nhóm (đồng bộ Dịch vụ & Bảng giá)
@@ -266,6 +267,15 @@ export async function buildScenarioTree(): Promise<TreeNode[]> {
     const allGroups = await getServicePricePreview(null).catch(
       () => [] as Awaited<ReturnType<typeof getServicePricePreview>>,
     );
+    // Đếm số tình huống ĐÃ có golden theo dịch vụ (slug) — hiện tiến độ trên card. Fail-soft.
+    const filledByService = new Map<string, number>();
+    try {
+      const r = await pool.query(
+        `SELECT service_key, COUNT(DISTINCT node_key)::int AS n FROM lulu_sale_script_examples
+         WHERE service_key IS NOT NULL AND ideal_response <> '' AND is_active = true GROUP BY service_key`,
+      );
+      for (const row of r.rows as Array<{ service_key: string; n: number }>) filledByService.set(row.service_key, Number(row.n));
+    } catch { /* chưa có bảng/rows → 0 */ }
 
     const roots: TreeNode[] = [];
 
@@ -304,6 +314,7 @@ export async function buildScenarioTree(): Promise<TreeNode[]> {
           groupName,
           packageCount: (g.packages ?? []).length,
           situationCount: SITUATIONS_PER_SERVICE,
+          filledCount: filledByService.get(svcSlug) ?? 0,
           priceConnected: true,
           imageUrl: g.imageUrl ?? null,
         },

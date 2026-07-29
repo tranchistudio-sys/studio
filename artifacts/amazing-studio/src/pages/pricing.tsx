@@ -221,6 +221,22 @@ export default function PricingPage() {
     queryFn: () => fetch(`${BASE}/api/surcharges`, { headers: authHeaders }).then(r => r.json()),
   });
 
+  // Deep-link ngược từ Kịch bản Lulu: /pricing?group=<tên nhóm> → mở đúng nhóm đó.
+  useEffect(() => {
+    const param = new URLSearchParams(window.location.search).get("group");
+    if (!param || groups.length === 0) return;
+    const g = groups.find((x) => (x.name ?? "").toLowerCase() === param.trim().toLowerCase());
+    if (g) {
+      setTab("packages");
+      setFilterGroup(g.id);
+      setExpandedGroups(new Set([g.id]));
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete("group");
+    window.history.replaceState({}, "", url.toString());
+  }, [groups]);
+
   const allExpanded = useMemo(() => {
     if (expandedGroups.size === 0 && packages.length > 0) {
       const ids = new Set<number>();
@@ -722,6 +738,17 @@ export default function PricingPage() {
                           >
                             <Tag className="w-4 h-4" />
                             {group.discountStatus === "active" && <span className="hidden lg:inline text-[10px] font-medium">Đang giảm</span>}
+                          </button>
+                          {/* Kịch bản Sale của dịch vụ này (deep-link sang module Kịch bản Lulu) */}
+                          <button
+                            type="button"
+                            title={`Kịch bản Sale của "${group.name}" — Lulu tư vấn nhóm này thế nào`}
+                            aria-label={`Kịch bản Sale nhóm ${group.name}`}
+                            onClick={(e) => { e.stopPropagation(); e.preventDefault(); navigate(`/lulu-sale-scenarios?service=${encodeURIComponent(group.name)}`); }}
+                            className="flex items-center gap-1 rounded-lg px-1.5 py-1 hover:bg-violet-100 text-violet-600 transition-colors"
+                          >
+                            <BookOpen className="w-4 h-4" />
+                            <span className="hidden lg:inline text-[10px] font-medium">Kịch bản Sale</span>
                           </button>
                           {/* Xoá / ẩn nhóm (an toàn — không xoá thẳng nhóm còn gói) */}
                           <button

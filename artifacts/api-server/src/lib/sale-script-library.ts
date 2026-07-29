@@ -16,6 +16,7 @@ export type ScriptRow = {
   id: number;
   nodeKey: string;             // nhánh cây sở hữu bảng này
   scenarioKey: string | null;  // leaf → dùng cho retrieval theo scenario; container → null
+  serviceKey: string | null;   // dịch vụ sở hữu (service-rooted) → retrieval theo dịch vụ
   groupLabel: string;          // NHÓM (Album cưới / Phóng sự…) — nhãn từ export ChatGPT/Excel
   situationLabel: string;      // TÌNH HUỐNG (Hỏi giá / Chê giá…) — dùng để lọc trong bảng
   customerText: string;
@@ -47,8 +48,12 @@ export async function ensureScriptTable(): Promise<void> {
   // Additive cho bảng đã tồn tại (bản trước 3 cột) — thêm 2 cột nhãn, KHÔNG destructive.
   await pool.query(`ALTER TABLE lulu_sale_script_examples ADD COLUMN IF NOT EXISTS group_label TEXT NOT NULL DEFAULT ''`);
   await pool.query(`ALTER TABLE lulu_sale_script_examples ADD COLUMN IF NOT EXISTS situation_label TEXT NOT NULL DEFAULT ''`);
+  // (Service-rooted) service_key = khoá BỀN của dịch vụ sở hữu golden này → retrieval theo DỊCH VỤ
+  // trực tiếp (không chỉ theo scenario_key). Additive, nullable.
+  await pool.query(`ALTER TABLE lulu_sale_script_examples ADD COLUMN IF NOT EXISTS service_key TEXT`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_lulu_script_node ON lulu_sale_script_examples (node_key, sort_order)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_lulu_script_scenario ON lulu_sale_script_examples (scenario_key) WHERE scenario_key IS NOT NULL`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_lulu_script_service ON lulu_sale_script_examples (service_key) WHERE service_key IS NOT NULL`);
   ensured = true;
 }
 
@@ -57,6 +62,7 @@ function mapRow(r: Record<string, unknown>): ScriptRow {
     id: Number(r.id),
     nodeKey: String(r.node_key),
     scenarioKey: (r.scenario_key as string) ?? null,
+    serviceKey: (r.service_key as string) ?? null,
     groupLabel: (r.group_label as string) ?? "",
     situationLabel: (r.situation_label as string) ?? "",
     customerText: (r.customer_text as string) ?? "",
@@ -94,7 +100,7 @@ export type ScriptInput = { groupLabel?: string; situationLabel?: string; custom
  * Trả về danh sách sau lưu + cảnh báo dòng có vẻ chứa giá cứng.
  */
 export async function saveScripts(
-  nodeKey: string, scenarioKey: string | null, rows: ScriptInput[],
+  nodeKey: string, scenarioKey: string | null, rows: ScriptInput[], serviceKey: string | null = null,
 ): Promise<{ rows: ScriptRow[]; priceWarnings: number[] }> {
   await ensureScriptTable();
   const clean = (rows ?? [])
@@ -119,9 +125,9 @@ export async function saveScripts(
     for (const r of clean) {
       await client.query(
         `INSERT INTO lulu_sale_script_examples
-           (node_key, scenario_key, group_label, situation_label, customer_text, ideal_response, notes, is_active, sort_order)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [nodeKey, scenarioKey, r.groupLabel, r.situationLabel, r.customerText, r.idealResponse, r.notes, r.isActive, order],
+           (node_key, scenario_key, service_key, group_label, situation_label, customer_text, ideal_response, notes, is_active, sort_order)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [nodeKey, scenarioKey, serviceKey, r.groupLabel, r.situationLabel, r.customerText, r.idealResponse, r.notes, r.isActive, order],
       );
       order += 10;
     }
@@ -254,6 +260,18 @@ export function buildGoldenExamplesBlock(examples: GoldenExample[]): string {
   const lines = examples.map((e, i) =>
     `Ví dụ ${i + 1}:\n  Khách: ${e.customerText}\n  Sale trả lời (mẫu): ${e.idealResponse}${e.notes ? `\n  (Lưu ý: ${e.notes})` : ""}`,
   );
-  return `CÁCH SALE THẬT CỦA STUDIO XỬ LÝ TÌNH HUỐNG NÀY (GOLDEN EXAMPLES — học GIỌNG, CÁCH DẪN, TÂM LÝ; ` +
-    `KHÔNG đọc y nguyên; con số giá LẤY TỪ DỮ LIỆU BẢNG GIÁ ở trên, KHÔNG lấy số trong ví dụ):\n${lines.join("\n")}`;
+  // STATIC-vs-DYNAMIC (luật chủ mục A/C/D/E/G): ví dụ = GUIDANCE (cách nói), KHÔNG phải FACTS.
+  // Giá/khuyến mãi trong ví dụ là HISTORICAL — tuyệt đối không lặp lại; luôn lấy số hiện tại từ CRM.
+  return (
+    `CÁCH SALE THẬT CỦA STUDIO XỬ LÝ TÌNH HUỐNG NÀY (GOLDEN EXAMPLES — chỉ để học GIỌNG, CÁCH DẪN, TÂM LÝ, THỨ TỰ Ý):\n` +
+    `${lines.join("\n")}\n` +
+    `RÀNG BUỘC KHI DÙNG VÍ DỤ:\n` +
+    `- KHÔNG đọc y nguyên — diễn đạt lại tự nhiên theo ngữ cảnh khách.\n` +
+    `- MỌI con số GIÁ trong ví dụ là DỮ LIỆU CŨ (historical). BỎ QUA nó. Con số giá PHẢI lấy từ ` +
+    `BẢNG GIÁ CRM ở trên. Nếu ví dụ ghi giá khác bảng giá → dùng bảng giá, KHÔNG dùng số trong ví dụ.\n` +
+    `- Nếu ví dụ nói "đang giảm/khuyến mãi/ưu đãi" nhưng BẢNG GIÁ CRM hiện KHÔNG có ưu đãi → KHÔNG được ` +
+    `nói đang giảm. Chỉ báo đúng giá thường hiện tại.\n` +
+    `- Thứ tự ưu tiên khi mâu thuẫn: LUẬT AN TOÀN > CRM/BẢNG GIÁ > TRÍ NHỚ HỘI THOẠI > KỊCH BẢN/VÍ DỤ. ` +
+    `Kịch bản/ví dụ KHÔNG override được bảng giá CRM.`
+  );
 }

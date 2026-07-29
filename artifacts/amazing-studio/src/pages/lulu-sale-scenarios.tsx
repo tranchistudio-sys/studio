@@ -40,6 +40,23 @@ async function apiSend<T>(method: string, path: string, body?: unknown): Promise
 
 type Issue = { field: string; message: string; suggest?: string; scenarioKey?: string };
 
+// Bằng chứng STATIC-vs-DYNAMIC: kịch bản = cách nói, CRM = giá thật.
+type PriceEvidence = {
+  serviceLabel: string | null;
+  crmGroupName: string | null; crmPackageName: string | null;
+  crmBasePrice: number | null; crmEffectivePrice: number | null; crmPriceText: string;
+  promoActive: boolean | null;
+  goldenCustomerText: string; goldenOldPrices: number[];
+  stitchedReply: string; stitchedVerdict: "PASS" | "BLOCK";
+  oldPriceReply: string | null; oldPriceVerdict: "PASS" | "BLOCK" | null; oldPriceBlockReason: string | null;
+};
+const fmtVnd = (n: number) => `${Math.round(n).toLocaleString("vi-VN")}đ`;
+const SERVICE_VN: Record<string, string> = {
+  wedding_album: "Album cưới", wedding_gate: "Ảnh cổng", wedding_party: "Phóng sự cưới",
+  family: "Chụp gia đình", maternity: "Chụp bầu", beauty: "Beauty / Kỷ yếu", rental_outfit: "Thuê váy/đồ",
+};
+const svcVn = (k: string | null | undefined) => (k ? (SERVICE_VN[k] ?? k) : null);
+
 type TestResult = {
   stageVn?: string;
   memoryVN?: string[];
@@ -51,6 +68,9 @@ type TestResult = {
   forbiddenQuestions: string[]; knowledge: string[];
   guidance: string | null; closingLine: string | null;
   replyText: string | null; replyError: string | null; provider: string;
+  goldenUsed?: Array<{ customerText: string; idealResponse: string }>;
+  priceEvidence?: PriceEvidence | null;
+  serviceTrail?: { current: string | null; previous: string | null; referenced: string[]; switched: boolean } | null;
   validator: { verdict: string; reason?: string; violatedRule?: string; suggestedRecovery?: string };
   verdict: string;
   stateBefore: unknown; stateAfter: unknown;
@@ -85,6 +105,54 @@ function StatusBadge({ rec }: { rec: ScenarioRecord }) {
     : s.tone === "draft" ? "bg-amber-50 text-amber-700 border-amber-200"
     : "bg-gray-100 text-gray-500 border-gray-200";
   return <span className={`text-[11px] border rounded-full px-2 py-0.5 ${cls}`}>{s.label}</span>;
+}
+
+// ─── Bằng chứng giá: KỊCH BẢN (cách nói) vs CRM (giá thật) ────────────────────
+
+function PriceEvidenceCard({ e }: { e: PriceEvidence }) {
+  return (
+    <div className="border border-emerald-200 bg-emerald-50/50 rounded-lg p-2.5 space-y-2 text-[12px]">
+      <p className="font-semibold text-emerald-800 flex items-center gap-1">💡 Bằng chứng: giữ CÁCH NÓI kịch bản, LẤY GIÁ từ CRM</p>
+
+      <div className="grid grid-cols-2 gap-2">
+        <div className="bg-white border rounded-lg p-2">
+          <p className="text-[10px] uppercase text-gray-400 mb-0.5">CRM · giá thật hiện tại</p>
+          <p className="text-gray-700">{e.serviceLabel ?? "—"}{e.crmGroupName ? ` · ${e.crmGroupName}` : ""}</p>
+          <p className="font-semibold text-emerald-700 text-[15px]">{e.crmPriceText}
+            {e.crmBasePrice != null && e.crmEffectivePrice != null && e.crmEffectivePrice < e.crmBasePrice &&
+              <span className="text-gray-400 line-through font-normal text-[11px] ml-1">{fmtVnd(e.crmBasePrice)}</span>}
+          </p>
+          <p className="text-[10px] text-gray-400">{e.promoActive ? "đang có ưu đãi CRM" : "không ưu đãi"}</p>
+        </div>
+        <div className="bg-white border rounded-lg p-2">
+          <p className="text-[10px] uppercase text-gray-400 mb-0.5">Kịch bản (golden) · cách nói</p>
+          <p className="text-gray-600 italic">“{e.goldenCustomerText}”</p>
+          {e.goldenOldPrices.length > 0
+            ? <p className="text-[10px] text-amber-600">có giá cũ: {e.goldenOldPrices.map(fmtVnd).join(", ")} → KHÔNG dùng</p>
+            : <p className="text-[10px] text-gray-400">không chứa số tiền (dùng {"{{PRICE}}"})</p>}
+        </div>
+      </div>
+
+      <div className="bg-white border rounded-lg p-2">
+        <p className="text-[10px] uppercase text-gray-400 mb-0.5">→ Câu Lulu (ghép: cách nói + giá CRM)</p>
+        <p className="text-gray-800 whitespace-pre-line">{e.stitchedReply}</p>
+        <span className={`inline-flex items-center gap-1 text-[10px] border rounded-full px-2 py-0.5 mt-1 ${e.stitchedVerdict === "PASS" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-rose-50 text-rose-700 border-rose-200"}`}>
+          {e.stitchedVerdict === "PASS" ? "✓ Validator cho qua (giá khớp CRM)" : "✗ Validator chặn"}
+        </span>
+      </div>
+
+      {e.oldPriceReply && (
+        <div className="bg-rose-50/60 border border-rose-200 rounded-lg p-2">
+          <p className="text-[10px] uppercase text-rose-400 mb-0.5">Nếu Lulu lỡ đọc y nguyên giá cũ trong kịch bản</p>
+          <p className="text-gray-500 line-through whitespace-pre-line">{e.oldPriceReply}</p>
+          <span className={`inline-flex items-center gap-1 text-[10px] border rounded-full px-2 py-0.5 mt-1 ${e.oldPriceVerdict === "BLOCK" ? "bg-rose-100 text-rose-700 border-rose-300" : "bg-gray-50 text-gray-500 border-gray-200"}`}>
+            {e.oldPriceVerdict === "BLOCK" ? "✗ Validator CHẶN — không gửi giá cũ cho khách" : "—"}
+          </span>
+          {e.oldPriceBlockReason && <p className="text-[10px] text-rose-600 mt-0.5">{e.oldPriceBlockReason}</p>}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─── Panel TEST THỬ ───────────────────────────────────────────────────────────
@@ -131,6 +199,18 @@ function TestPanel({ scenarioKey, hasDraft, onClose }: { scenarioKey: string; ha
         {r.dataSources && r.dataSources.length > 0 && (
           <p><span className="text-gray-400">Dữ liệu lấy từ:</span> {r.dataSources.join(" · ")}</p>
         )}
+        {r.serviceTrail?.current && (
+          <p><span className="text-gray-400">Dịch vụ đang bàn:</span> <b>{svcVn(r.serviceTrail.current)}</b>
+            {r.serviceTrail.switched && r.serviceTrail.previous &&
+              <span className="text-violet-600"> (vừa chuyển từ: {svcVn(r.serviceTrail.previous)})</span>}
+          </p>
+        )}
+        {r.goldenUsed && r.goldenUsed.length > 0 && (
+          <div><span className="text-gray-400">Học giọng từ mẫu bảng ({r.goldenUsed.length}):</span>
+            <ul className="ml-4 list-disc text-gray-600">{r.goldenUsed.map((g, i) => <li key={i} className="truncate">“{g.customerText}”</li>)}</ul>
+            <span className="text-[10px] text-gray-400">(chỉ tham khảo cách nói — con số giá vẫn lấy realtime từ bảng giá)</span>
+          </div>
+        )}
         <p><span className="text-gray-400">Lulu sẽ làm:</span> {actionVn(r.action)}
           {r.actionChanged && <span className="text-violet-600"> (thẻ đổi từ: {actionVn(r.baselineAction)})</span>}</p>
         {r.forbiddenQuestions.length > 0 && (
@@ -150,6 +230,7 @@ function TestPanel({ scenarioKey, hasDraft, onClose }: { scenarioKey: string; ha
           <span className="text-[11px] text-rose-600">{r.validator.reason}</span>
         )}
       </div>
+      {r.priceEvidence && <PriceEvidenceCard e={r.priceEvidence} />}
       {r.losers.length > 0 && (
         <details className="text-[11px] text-gray-500">
           <summary className="cursor-pointer">Thẻ bị loại ({r.losers.length})</summary>
@@ -560,7 +641,8 @@ function PricingNode({ serviceKey }: { serviceKey: string | null }) {
           </tbody></table>
         </div>
       ))}
-      <a href="/pricing" className="inline-block mt-1.5 text-violet-600">Xem / sửa bảng giá →</a>
+      <a href={`/pricing${groups && groups[0]?.groupName ? `?group=${encodeURIComponent(groups[0].groupName)}` : ""}`}
+        className="inline-block mt-1.5 text-violet-600">Xem / sửa bảng giá →</a>
     </div>
   );
 }
@@ -631,7 +713,10 @@ function ScriptTablePanel({ nodeKey, scenarioKey, title, serviceKey, isAdmin, on
       .then((r) => setRows(normRows(r.rows)))
       .catch((e) => showErr(String((e as Error).message)))
       .finally(() => setLoading(false));
-  }, [nodeKey, showErr]);
+    // CHỈ nạp lại khi ĐỔI node — KHÔNG phụ thuộc showErr (nó tạo mới mỗi render,
+    // sẽ khiến effect chạy lại lúc hiện toast và xoá mất dòng vừa dán/sửa).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeKey]);
 
   const setRow = (i: number, patch: Partial<ScriptRowFE>) => setRows((rs) => rs.map((r, j) => j === i ? { ...r, ...patch } : r));
   const addRow = () => setRows((rs) => [...rs, EMPTY_ROW()]);
@@ -818,7 +903,7 @@ function TreeRowView({ node, depth, expanded, toggle, onEditLeaf, onOpenScript }
   );
   if (node.nodeType === "leaf") {
     return (
-      <div style={pad} className="flex items-center gap-2 py-1.5 pr-2 rounded hover:bg-violet-50 text-[13px]">
+      <div id={`tree-node-${node.nodeKey}`} style={pad} className="flex items-center gap-2 py-1.5 pr-2 rounded hover:bg-violet-50 text-[13px]">
         <button onClick={() => node.scenarioKey && onEditLeaf(node.scenarioKey)} className="flex items-center gap-2 text-left flex-1 min-w-0">
           <span className="text-gray-300">•</span>
           <span className={node.scenario?.missing ? "text-rose-500" : ""}>{node.scenario?.name || node.title}</span>
@@ -831,7 +916,7 @@ function TreeRowView({ node, depth, expanded, toggle, onEditLeaf, onOpenScript }
   }
   if (node.nodeType === "pricing") {
     return (
-      <div>
+      <div id={`tree-node-${node.nodeKey}`}>
         <button onClick={() => toggle(node.nodeKey)} style={pad}
           className="w-full text-left flex items-center gap-2 py-1.5 pr-2 rounded hover:bg-emerald-50 text-[13px]">
           <ChevronDown className={`w-3.5 h-3.5 text-emerald-500 transition-transform ${isOpen ? "" : "-rotate-90"}`} />
@@ -846,7 +931,7 @@ function TreeRowView({ node, depth, expanded, toggle, onEditLeaf, onOpenScript }
   // stage / group / subgroup = folder
   const leafCount = countLeaves(node);
   return (
-    <div>
+    <div id={`tree-node-${node.nodeKey}`}>
       <div style={pad} className={`flex items-center gap-2 py-2 pr-2 rounded hover:bg-gray-50 ${node.nodeType === "stage" ? "font-semibold text-[15px]" : "text-[13px] font-medium text-gray-700"}`}>
         <button onClick={() => toggle(node.nodeKey)} className="flex items-center gap-2 text-left flex-1 min-w-0">
           <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${isOpen ? "" : "-rotate-90"}`} />
@@ -867,16 +952,40 @@ function countLeaves(node: TreeNodeFE): number {
   return node.children.reduce((s, c) => s + countLeaves(c), 0);
 }
 
-function ScenarioTreeView({ reloadKey, onEditLeaf, onOpenScript, showErr }: {
+// Đường nodeKey từ gốc tới node ĐẦU TIÊN có serviceKey khớp (để mở + cuộn khi deep-link).
+function findServicePath(nodes: TreeNodeFE[], serviceKey: string, trail: string[] = []): string[] | null {
+  for (const n of nodes) {
+    const here = [...trail, n.nodeKey];
+    if (n.serviceKey === serviceKey) return here;
+    const sub = findServicePath(n.children, serviceKey, here);
+    if (sub) return sub;
+  }
+  return null;
+}
+
+function ScenarioTreeView({ reloadKey, onEditLeaf, onOpenScript, showErr, autoOpenServiceKey }: {
   reloadKey: number; onEditLeaf: (scenarioKey: string) => void;
   onOpenScript: (nodeKey: string, scenarioKey: string | null, title: string, serviceKey: string | null) => void;
   showErr: (m: string) => void;
+  autoOpenServiceKey?: string | null;
 }) {
   const [tree, setTree] = useState<TreeNodeFE[] | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   useEffect(() => {
     apiGet<{ tree: TreeNodeFE[] }>("/lulu-scenarios/tree").then((r) => setTree(r.tree)).catch((e) => showErr(String((e as Error).message)));
   }, [reloadKey, showErr]);
+  // Deep-link từ Bảng giá: mở đúng nhánh dịch vụ + cuộn tới.
+  useEffect(() => {
+    if (!tree || !autoOpenServiceKey) return;
+    const path = findServicePath(tree, autoOpenServiceKey);
+    if (!path) return;
+    setExpanded((prev) => new Set([...prev, ...path]));
+    const target = path[path.length - 1];
+    const timer = setTimeout(() => {
+      document.getElementById(`tree-node-${target}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [tree, autoOpenServiceKey]);
   const toggle = (k: string) => setExpanded((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
   const expandAll = () => { const all = new Set<string>(); const walk = (ns: TreeNodeFE[]) => ns.forEach((n) => { if (n.children.length || n.nodeType === "pricing") { all.add(n.nodeKey); walk(n.children); } }); if (tree) walk(tree); setExpanded(all); };
   if (!tree) return <p className="text-gray-400 text-sm py-6">Đang tải cây kịch bản…</p>;
@@ -914,6 +1023,28 @@ export default function LuluSaleScenariosPage() {
   const [view, setView] = useState<"tree" | "list">("tree");
   const [treeReloadKey, setTreeReloadKey] = useState(0);
   const [scriptNode, setScriptNode] = useState<{ nodeKey: string; scenarioKey: string | null; title: string; serviceKey: string | null } | null>(null);
+  const [autoOpenServiceKey, setAutoOpenServiceKey] = useState<string | null>(null);
+
+  // Deep-link từ trang Bảng giá: /lulu-sale-scenarios?service=<tên nhóm hoặc service_key>.
+  // Resolve qua bản đồ dịch vụ (admin KHÔNG cần biết khoá), rồi mở đúng nhánh + xoá param khỏi URL.
+  useEffect(() => {
+    const param = new URLSearchParams(window.location.search).get("service");
+    if (!param) return;
+    apiGet<{ services: Array<{ serviceKey: string; displayName: string; groupName: string | null }> }>("/lulu-scenarios/service-map")
+      .then((r) => {
+        const p = param.trim().toLowerCase();
+        const hit = r.services.find((s) => s.serviceKey.toLowerCase() === p)
+          || r.services.find((s) => (s.groupName ?? "").toLowerCase() === p)
+          || r.services.find((s) => (s.displayName ?? "").toLowerCase() === p);
+        if (hit) { setAutoOpenServiceKey(hit.serviceKey); setView("tree"); }
+      })
+      .catch(() => { /* không resolve được thì thôi, không chặn trang */ })
+      .finally(() => {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("service");
+        window.history.replaceState({}, "", url.toString());
+      });
+  }, []);
 
   const showOk = (msg: string) => { setToast({ ok: true, msg }); setTimeout(() => setToast(null), 3500); };
   const showErr = (msg: string) => { setToast({ ok: false, msg }); setTimeout(() => setToast(null), 5000); };
@@ -1112,7 +1243,7 @@ export default function LuluSaleScenariosPage() {
             else showErr("Không tìm thấy thẻ — thử tải lại trang.");
           }}
           onOpenScript={(nodeKey, scenarioKey, title, serviceKey) => { setScriptNode({ nodeKey, scenarioKey, title, serviceKey }); setEditing(null!); window.scrollTo({ top: 0, behavior: "smooth" }); }}
-          showErr={showErr} />
+          showErr={showErr} autoOpenServiceKey={autoOpenServiceKey} />
       )}
 
       {view === "list" && (<>

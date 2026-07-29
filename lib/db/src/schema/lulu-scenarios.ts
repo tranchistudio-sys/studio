@@ -50,6 +50,7 @@ export const luluSaleScriptExamples = pgTable("lulu_sale_script_examples", {
   id: serial("id").primaryKey(),
   nodeKey: text("node_key").notNull(),
   scenarioKey: text("scenario_key"),
+  serviceKey: text("service_key"),
   groupLabel: text("group_label").notNull().default(""),
   situationLabel: text("situation_label").notNull().default(""),
   customerText: text("customer_text").notNull().default(""),
@@ -62,6 +63,46 @@ export const luluSaleScriptExamples = pgTable("lulu_sale_script_examples", {
 }, (t) => ({
   nodeIdx: index("idx_lulu_script_node").on(t.nodeKey, t.sortOrder),
   scenarioIdx: index("idx_lulu_script_scenario").on(t.scenarioKey),
+}));
+
+// (Service-rooted 29/07) GỐC: map service_key BỀN ↔ nhóm giá CRM + từ khoá nhận diện.
+export const luluServiceMap = pgTable("lulu_service_map", {
+  id: serial("id").primaryKey(),
+  serviceKey: text("service_key").notNull(),
+  displayName: text("display_name").notNull().default(""),
+  groupName: text("group_name"),
+  keywords: text("keywords").notNull().default(""),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(100),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (t) => ({
+  keyUnique: uniqueIndex("idx_lulu_service_map_key").on(t.serviceKey),
+}));
+
+// (Service-rooted 29/07) Hàng đợi "Câu hỏi chưa có kịch bản" — capture→dedup→admin duyệt→golden.
+export const luluUnknownQuestions = pgTable("lulu_unknown_questions", {
+  id: serial("id").primaryKey(),
+  customerText: text("customer_text").notNull().default(""),
+  normalizedIntent: text("normalized_intent").notNull().default(""),
+  occurrenceCount: integer("occurrence_count").notNull().default(1),
+  firstSeenAt: timestamp("first_seen_at").defaultNow().notNull(),
+  lastSeenAt: timestamp("last_seen_at").defaultNow().notNull(),
+  sampleVariants: jsonb("sample_variants").notNull().default([]),
+  serviceKey: text("service_key"),
+  scenarioKey: text("scenario_key"),
+  nodeKey: text("node_key"),
+  status: text("status").notNull().default("pending"),
+  suggestedAnswer: text("suggested_answer"),
+  suggestedAt: timestamp("suggested_at"),
+  reviewedBy: integer("reviewed_by"),
+  reviewedByName: text("reviewed_by_name"),
+  reviewedAt: timestamp("reviewed_at"),
+  promotedScriptId: integer("promoted_script_id"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (t) => ({
+  statusIdx: index("idx_lulu_unknown_status").on(t.status, t.lastSeenAt),
 }));
 
 export const luluScenarioTree = pgTable("lulu_scenario_tree", {

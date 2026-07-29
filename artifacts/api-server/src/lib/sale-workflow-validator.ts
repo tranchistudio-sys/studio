@@ -29,6 +29,18 @@ export type ValidatorInput = {
   reply: string;
   /** Catalog để đối chiếu giá — không truyền thì BỎ QUA check giá (không chặn oan). */
   catalog?: CatalogItem[];
+  /**
+   * CRM/DB là NGUỒN SỰ THẬT bắt buộc cho câu này (STATIC-vs-DYNAMIC, luật chủ mục J):
+   * true → mọi số tiền PHẢI verify được với `catalog`. Nếu reply có tiền mà catalog rỗng/thiếu
+   * ⇒ BLOCK (KHÔNG fail-open). Mặc định undefined = hành vi cũ (fail-open, không chặn oan).
+   */
+  catalogAuthoritative?: boolean;
+  /**
+   * Trạng thái KHUYẾN MÃI thật từ CRM tại thời điểm trả lời (mục D):
+   * false → CRM KHÔNG có ưu đãi active ⇒ reply tuyên bố "đang giảm/khuyến mãi/ưu đãi" bị BLOCK.
+   * true/undefined → không chặn theo promo (đúng/không rõ đều để qua, giá vẫn bị rule giá soi).
+   */
+  promoActive?: boolean;
 };
 
 export type ValidatorResult =
@@ -110,6 +122,12 @@ export function extractMoneyVnd(reply: string): number[] {
 const SELF_DISCOUNT_NORM_RE =
   /((em|ben em|ben minh|shop)\s*(chac\s*|se\s*)?(giam|bot|tang them|khuyen mai rieng)|bot cho (anh|chi|minh)|em bot\b|giam them cho|tang rieng|uu dai rieng cho|gia dac biet cho)/;
 const GIAM_CON_RE = /giam con\b/;
+// (Mục D) Tuyên bố ĐANG có ưu đãi/khuyến mãi — chỉ chặn khi CRM nói promoActive===false.
+// Bắt các cách nói khẳng định có chương trình giảm; loại trừ câu PHỦ ĐỊNH ("không/chưa/hết có ưu đãi").
+const PROMO_CLAIM_RE =
+  /(dang (co |ap dung )?(chuong trinh )?(khuyen mai|uu dai|giam gia|sale)|khuyen mai|uu dai|sale off|flash sale|dang giam|dang sale|giu (lai )?uu dai|co (chuong trinh )?(khuyen mai|uu dai))/;
+const PROMO_NEGATED_RE =
+  /(khong|khong con|chua|hien chua|het|hong|chang)\s*(con\s*)?(co\s*)?(chuong trinh\s*)?(khuyen mai|uu dai|giam|sale)/;
 // Lộ nội bộ: marker hệ thống / khối prompt — TUYỆT ĐỐI không được ra khách.
 const LEAK_INTERNAL_RE = /(<<|>>|TRẠNG THÁI KHÁCH|system prompt|instruction nội bộ|RÀNG BUỘC \(BẮT BUỘC)/i;
 // (V2) Chê đối thủ — check trên text đã bỏ dấu.
@@ -171,7 +189,9 @@ export function validateSaleReply(input: ValidatorInput): ValidatorResult {
     );
   }
 
-  // 4. Báo giá không khớp catalog (chỉ khi có catalog — fail-open, không chặn oan).
+  // 4. Báo giá không khớp CRM. STATIC-vs-DYNAMIC (luật chủ): con số giá là DYNAMIC FACT,
+  //    chỉ CRM mới quyết. Kịch bản/golden KHÔNG override được.
+  const moneyInReply = extractMoneyVnd(reply);
   if (input.catalog && input.catalog.length > 0) {
     const validPrices = new Set<number>();
     for (const c of input.catalog) {
@@ -183,16 +203,35 @@ export function validateSaleReply(input: ValidatorInput): ValidatorResult {
         if (Number.isFinite(c.price) && c.price > c.finalPrice) validPrices.add(c.price - c.finalPrice);
       }
     }
-    for (const amount of extractMoneyVnd(reply)) {
+    for (const amount of moneyInReply) {
       if (!validPrices.has(amount)) {
         return block(
           "price_mismatch",
-          `Reply nêu số tiền ${amount.toLocaleString("vi-VN")}đ không có trong catalog`,
-          "Tái sinh với bảng giá chèn lại; vẫn sai → escalate người thật, KHÔNG gửi giá sai",
+          `Reply nêu số tiền ${amount.toLocaleString("vi-VN")}đ không khớp bảng giá CRM hiện tại`,
+          "Tái sinh với bảng giá CRM chèn lại; vẫn sai → escalate người thật, KHÔNG gửi giá sai",
           "critical",
         );
       }
     }
+  } else if (input.catalogAuthoritative && moneyInReply.length > 0) {
+    // (Mục J) CRM là nguồn bắt buộc nhưng KHÔNG load được bảng giá để đối chiếu → KHÔNG fail-open.
+    return block(
+      "price_unverifiable",
+      `Reply có số tiền (${moneyInReply.map((a) => a.toLocaleString("vi-VN")).join(", ")}đ) nhưng không đối chiếu được với CRM`,
+      "Không gửi giá khi chưa đọc được bảng giá; escalate người thật hoặc tái sinh sau khi load được CRM",
+      "critical",
+    );
+  }
+
+  // 4b. (Mục D) Tuyên bố đang có KHUYẾN MÃI khi CRM KHÔNG có promo active → BLOCK.
+  //     Kịch bản cũ còn ghi "đang giảm" KHÔNG được lặp lại nếu CRM đã tắt ưu đãi.
+  if (input.promoActive === false && PROMO_CLAIM_RE.test(t) && !PROMO_NEGATED_RE.test(t)) {
+    return block(
+      "promo_not_active",
+      "Reply nói đang có ưu đãi/khuyến mãi nhưng CRM hiện KHÔNG có promo active",
+      "Bỏ mọi câu nói đang giảm/ưu đãi; báo đúng giá thường hiện tại từ CRM",
+      "critical",
+    );
   }
 
   // 5. Tự giảm giá / tự hứa ưu đãi. "giảm còn <số>" hợp lệ khi có catalog đối chiếu

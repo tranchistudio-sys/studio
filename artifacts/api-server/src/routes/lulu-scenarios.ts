@@ -21,9 +21,12 @@ import { getActivePlaybook } from "../lib/sale-playbook";
 import { getActiveBrainRules } from "../lib/sale-brain-lab";
 import { getClaudeSaleSettings } from "../lib/sale-settings";
 import { simulateThreadStateFromHistory, buildThreadStateBlock } from "../lib/sale-thread-state";
-import { validateSaleReply, type CatalogItem } from "../lib/sale-workflow-validator";
+import { validateSaleReply, extractMoneyVnd, type CatalogItem } from "../lib/sale-workflow-validator";
 import { buildScenarioTree, addLeafToNode } from "../lib/sale-scenario-tree";
 import { getServicePricePreview } from "../lib/sale-pricing";
+import { stitchReplyFromGolden, formatVnd } from "../lib/sale-reply-stitch";
+import { computeServiceTrail } from "../lib/sale-service-context";
+import { listServiceMap } from "../lib/sale-service-map";
 import { listScripts, saveScripts, searchScripts, getGoldenExamples, buildGoldenExamplesBlock } from "../lib/sale-script-library";
 
 /**
@@ -208,6 +211,19 @@ router.get("/lulu-scenarios/price-preview", async (req, res) => {
   } catch (err) {
     console.error("[SalePricing] price-preview lỗi:", String(err).slice(0, 200));
     res.status(500).json({ error: "Không đọc được bảng giá" });
+  }
+});
+
+/** Bản đồ Dịch vụ ↔ Nhóm giá (cho deep-link 2 chiều Bảng giá ↔ Kịch bản). */
+router.get("/lulu-scenarios/service-map", async (req, res) => {
+  if (!(await requireStaff(req, res))) return;
+  if (!requireFeature(res)) return;
+  try {
+    const rows = await listServiceMap();
+    res.json({ services: rows.map((r) => ({ serviceKey: r.serviceKey, displayName: r.displayName, groupName: r.groupName })) });
+  } catch (err) {
+    console.error("[ServiceMap] service-map lỗi:", String(err).slice(0, 200));
+    res.status(500).json({ error: "Không tải được bản đồ dịch vụ" });
   }
 });
 
@@ -417,6 +433,27 @@ router.post("/lulu-scenarios/resolve-preview", async (req, res) => {
 
 // ─── Test thử (1 câu hoặc nhiều lượt) — mô phỏng + gọi LLM + validator ────────
 
+/**
+ * BẰNG CHỨNG GIÁ (STATIC-vs-DYNAMIC) — chứng minh cho chủ studio: Lulu GIỮ cách nói của
+ * kịch bản nhưng LẤY GIÁ từ CRM. Tính deterministic, xem được khi chưa có AI key.
+ */
+type PriceEvidence = {
+  serviceLabel: string | null;
+  crmGroupName: string | null;
+  crmPackageName: string | null;
+  crmBasePrice: number | null;
+  crmEffectivePrice: number | null;
+  crmPriceText: string;
+  promoActive: boolean | null;
+  goldenCustomerText: string;
+  goldenOldPrices: number[];
+  stitchedReply: string;
+  stitchedVerdict: "PASS" | "BLOCK";
+  oldPriceReply: string | null;
+  oldPriceVerdict: "PASS" | "BLOCK" | null;
+  oldPriceBlockReason: string | null;
+};
+
 async function runScenarioTest(opts: {
   message: string;
   history: Array<{ direction: "incoming" | "outgoing"; message: string }>;
@@ -487,24 +524,84 @@ async function runScenarioTest(opts: {
     replyError = "Chưa cấu hình AI key — chỉ hiển thị phần phân tích, không có câu trả lời thử.";
   }
 
-  // Validator trên câu trả lời thật (nếu có) — catalog giá thật, fail-open.
+  // ── CRM = NGUỒN SỰ THẬT (STATIC-vs-DYNAMIC, luật chủ) ─────────────────────────
+  // Nạp bảng giá thật MỘT LẦN, dùng cho: (a) validator đối chiếu giá (fail-CLOSED),
+  // (b) trạng thái promo, (c) BẰNG CHỨNG giá (giữ cách nói, thay số = giá CRM).
+  let catalog: CatalogItem[] | undefined;
+  try {
+    const { kept } = await auditPackages();
+    catalog = kept.map((r) => {
+      const d = resolveDiscount({ basePrice: r.price, pkg: pkgDiscountCfg(r), group: groupDiscountCfg(r) });
+      return {
+        code: (r.code ?? "").trim().toUpperCase(), name: r.pkg_name,
+        price: Math.round(Number(r.price)),
+        finalPrice: d.discountApplied ? Math.round(Number(d.finalPrice)) : null,
+      };
+    });
+  } catch { catalog = undefined; }
+
+  // Giá thật + promo của ĐÚNG nhóm dịch vụ khách đang quan tâm (fail-soft → null/undefined).
+  const serviceKey = state.serviceIntent ?? null;
+  let crmGroupName: string | null = null;
+  let crmPackageName: string | null = null;
+  let crmBasePrice: number | null = null;
+  let crmEffectivePrice: number | null = null;
+  let promoActive: boolean | undefined = undefined;
+  if (serviceKey) {
+    try {
+      const groups = await getServicePricePreview(serviceKey);
+      const pkgs = groups.flatMap((g) => g.packages);
+      if (pkgs.length > 0) {
+        const rep = pkgs[0];
+        crmGroupName = rep.groupName || null;
+        crmPackageName = rep.name || null;
+        crmBasePrice = rep.basePrice;
+        crmEffectivePrice = rep.effectivePrice;
+        promoActive = pkgs.some((p) => p.promoActive);
+      }
+    } catch { /* fail-soft */ }
+  }
+
+  const validateWith = (reply: string) => validateSaleReply({
+    threadState: state, decision: resolve.decision, reply, catalog,
+    catalogAuthoritative: true, promoActive,
+  });
+
+  // Validator trên câu trả lời THẬT (nếu LLM có sinh) — CRM authoritative, KHÔNG fail-open.
   let validator: ReturnType<typeof validateSaleReply> = { verdict: "PASS" };
   if (replyText) {
-    try {
-      let catalog: CatalogItem[] | undefined;
+    try { validator = validateWith(replyText); } catch { validator = { verdict: "PASS" }; }
+  }
+
+  // ── BẰNG CHỨNG GIÁ (mục F/K): giữ cách nói kịch bản, thay số = giá CRM ──────────
+  const topGolden = golden[0] ?? null;
+  let priceEvidence: PriceEvidence | null = null;
+  if (topGolden && crmEffectivePrice != null) {
+    const oldPrices = extractMoneyVnd(topGolden.idealResponse).filter((v) => v !== crmEffectivePrice);
+    const stitched = stitchReplyFromGolden({
+      idealResponse: topGolden.idealResponse, crmPriceVnd: crmEffectivePrice, promoActive: !!promoActive,
+    });
+    let stitchedVerdict: "PASS" | "BLOCK" = "PASS";
+    try { stitchedVerdict = validateWith(stitched).verdict === "BLOCK" ? "BLOCK" : "PASS"; } catch { /* keep PASS */ }
+    let oldPriceReply: string | null = null;
+    let oldPriceVerdict: "PASS" | "BLOCK" | null = null;
+    let oldPriceBlockReason: string | null = null;
+    if (oldPrices.length > 0) {
+      oldPriceReply = topGolden.idealResponse; // câu NẾU Lulu lỡ đọc y nguyên giá cũ
       try {
-        const { kept } = await auditPackages();
-        catalog = kept.map((r) => {
-          const d = resolveDiscount({ basePrice: r.price, pkg: pkgDiscountCfg(r), group: groupDiscountCfg(r) });
-          return {
-            code: (r.code ?? "").trim().toUpperCase(), name: r.pkg_name,
-            price: Math.round(Number(r.price)),
-            finalPrice: d.discountApplied ? Math.round(Number(d.finalPrice)) : null,
-          };
-        });
-      } catch { catalog = undefined; }
-      validator = validateSaleReply({ threadState: state, decision: resolve.decision, reply: replyText, catalog });
-    } catch { validator = { verdict: "PASS" }; }
+        const v = validateWith(oldPriceReply);
+        oldPriceVerdict = v.verdict === "BLOCK" ? "BLOCK" : "PASS";
+        oldPriceBlockReason = v.verdict === "BLOCK" ? v.reason : null;
+      } catch { /* leave null */ }
+    }
+    priceEvidence = {
+      serviceLabel: serviceKey ? (INTENT_VN[serviceKey] ?? serviceKey) : null,
+      crmGroupName, crmPackageName, crmBasePrice, crmEffectivePrice,
+      crmPriceText: formatVnd(crmEffectivePrice), promoActive: promoActive ?? null,
+      goldenCustomerText: topGolden.customerText, goldenOldPrices: oldPrices,
+      stitchedReply: stitched, stitchedVerdict,
+      oldPriceReply, oldPriceVerdict, oldPriceBlockReason,
+    };
   }
 
   const stateAfter = simulateThreadStateFromHistory([
@@ -534,6 +631,8 @@ async function runScenarioTest(opts: {
     memoryVN: describeMemoryVN(state),
     dataSources: describeDataSources(resolve.decision.knowledgeNeeded),
     goldenUsed: golden.map((g) => ({ customerText: g.customerText, idealResponse: g.idealResponse })),
+    priceEvidence,
+    serviceTrail: computeServiceTrail([...opts.history, { direction: "incoming" as const, message: opts.message }]),
     winner: resolve.winner ? { key: resolve.winner.key, name: resolve.winner.name } : null,
     losers: resolve.losers,
     explain: resolve.explain,

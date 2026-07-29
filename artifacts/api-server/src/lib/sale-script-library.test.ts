@@ -134,11 +134,13 @@ describe("buildGoldenExamplesBlock", () => {
   it("rỗng → chuỗi rỗng", () => {
     expect(buildGoldenExamplesBlock([])).toBe("");
   });
-  it("có ví dụ → block nhắc 'học giọng, không đọc y nguyên, giá từ bảng giá'", () => {
+  it("có ví dụ → block nhắc 'học giọng, không đọc y nguyên, giá historical lấy từ CRM'", () => {
     const b = buildGoldenExamplesBlock([{ customerText: "sao mắc", idealResponse: "dạ em hiểu", notes: "", score: 2 }]);
     expect(b).toContain("GOLDEN EXAMPLES");
     expect(b).toContain("KHÔNG đọc y nguyên");
-    expect(b).toContain("LẤY TỪ DỮ LIỆU BẢNG GIÁ");
+    expect(b).toContain("BẢNG GIÁ CRM");
+    expect(b).toContain("historical");
+    expect(b).toContain("LUẬT AN TOÀN > CRM"); // thứ tự ưu tiên (mục G)
     expect(b).toContain("sao mắc");
   });
 });

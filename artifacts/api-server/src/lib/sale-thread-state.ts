@@ -160,6 +160,12 @@ export async function ensureThreadStateTable(): Promise<void> {
       updated_at            TIMESTAMP NOT NULL DEFAULT NOW()
     )
   `);
+  // (Service-rooted 29/07) Additive: con trỏ dịch vụ đang bàn + trước đó + trí nhớ RIÊNG
+  // từng dịch vụ (services_json). NỀN cho GĐ4 (nối enforce); đường ghi hiện tại CHƯA dùng nên
+  // KHÔNG đổi hành vi. ADD COLUMN IF NOT EXISTS — additive, không destructive.
+  await pool.query(`ALTER TABLE lulu_thread_state ADD COLUMN IF NOT EXISTS current_service TEXT`);
+  await pool.query(`ALTER TABLE lulu_thread_state ADD COLUMN IF NOT EXISTS previous_service TEXT`);
+  await pool.query(`ALTER TABLE lulu_thread_state ADD COLUMN IF NOT EXISTS services_json JSONB NOT NULL DEFAULT '{}'::jsonb`);
   // KHÔNG nuốt lỗi CREATE INDEX: unique index là điều kiện sống của mọi câu
   // ON CONFLICT (facebook_user_id) bên dưới. Index fail → throw ra caller (mọi caller
   // đều fail-open) và createdTable KHÔNG được set → lần gọi sau tự thử lại.

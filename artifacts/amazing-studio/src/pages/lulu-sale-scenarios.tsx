@@ -253,6 +253,9 @@ function CardEditor({ rec, labels, allRecords, isAdmin, seedCard, seedIssues, on
   const [saving, setSaving] = useState(false);
   const [advOpen, setAdvOpen] = useState(false);
   const [testOpen, setTestOpen] = useState(false);
+  // Mặc định GIẤU phần kỹ thuật (chip điều kiện, điều cấm, dữ liệu, chuyển tiếp) — chủ studio
+  // chỉ thấy 3 ô đơn giản; thẻ mới thì mở sẵn để đặt "khi nào dùng".
+  const [showDetail, setShowDetail] = useState(rec == null);
   const isNew = rec == null;
   const set = (patch: Partial<ScenarioCard>) => setCard((c) => ({ ...c, ...patch }));
 
@@ -306,8 +309,40 @@ function CardEditor({ rec, labels, allRecords, isAdmin, seedCard, seedIssues, on
           placeholder="Vd: Khách hỏi giá nhưng chưa biết ngày" className="w-full border rounded-lg px-3 py-2 text-sm mt-1" />
       </div>
 
+      {/* Dòng tóm tắt "khi nào dùng" — luôn hiện, tiếng Việt, không chip rối. */}
+      <div className="bg-gray-50 border rounded-lg px-3 py-2 text-[12px] text-gray-600">
+        <span className="text-gray-400">Thẻ này dùng khi khách: </span>
+        <b>{summarizeWhen(card, labels)}</b>
+      </div>
+
+      {/* C — Ô CHÍNH chủ studio sửa hằng ngày. */}
       <div>
-        <label className="text-[11px] font-semibold text-gray-500">B. KHI KHÁCH… (chọn các tình huống áp dụng)</label>
+        <label className="text-sm font-semibold text-gray-700">Lulu nên nói / làm gì trong tình huống này?</label>
+        <p className="text-[11px] text-gray-400 mb-1">Viết lời dặn tự nhiên như dặn nhân viên. Lulu tự diễn đạt lại, không đọc y nguyên.</p>
+        <textarea value={card.guidance} onChange={(e) => set({ guidance: e.target.value })} rows={4}
+          placeholder="Vd: Báo giá tham khảo đúng nhóm, nói ngắn gọn, gợi ý xem ảnh mẫu nếu hợp…"
+          className="w-full border rounded-lg px-3 py-2 text-sm" />
+      </div>
+
+      {/* F — câu kết. */}
+      <div>
+        <label className="text-sm font-semibold text-gray-700">Câu kết gợi ý</label>
+        <p className="text-[11px] text-gray-400 mb-1">Câu chốt cuối lượt (Lulu diễn đạt lại tự nhiên, không đọc y nguyên).</p>
+        <input value={card.closingLine} onChange={(e) => set({ closingLine: e.target.value })}
+          placeholder="Vd: Khi nào mình có ngày cụ thể, em kiểm tra lịch và xác nhận lại cho mình nha."
+          className="w-full border rounded-lg px-3 py-2 text-sm" />
+      </div>
+
+      {/* Nút mở phần kỹ thuật — mặc định ẩn để chủ studio đỡ rối. */}
+      <button onClick={() => setShowDetail(!showDetail)}
+        className="w-full text-[12px] text-gray-500 flex items-center justify-center gap-1.5 border rounded-lg py-2 hover:bg-gray-50">
+        {showDetail ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+        Cài đặt chi tiết (khi nào dùng · điều cấm · dữ liệu · chuyển tiếp)
+      </button>
+
+      {showDetail && (<>
+      <div>
+        <label className="text-[11px] font-semibold text-gray-500">KHI KHÁCH… (chọn các tình huống áp dụng)</label>
         <div className="flex flex-wrap gap-1.5 mt-1">
           {Object.entries(labels.triggers).map(([k, l]) => (
             <button key={k} onClick={() => set({ triggers: toggleIn(card.triggers, k) })}
@@ -333,22 +368,16 @@ function CardEditor({ rec, labels, allRecords, isAdmin, seedCard, seedIssues, on
         </div>
       </div>
 
-      <div>
-        <label className="text-[11px] font-semibold text-gray-500">C. LULU NÊN… (hướng dẫn cách xử lý — lời dặn tự nhiên)</label>
-        <textarea value={card.guidance} onChange={(e) => set({ guidance: e.target.value })} rows={3}
-          placeholder="Vd: Báo giá tham khảo đúng nhóm, nói ngắn gọn, gợi ý xem ảnh mẫu nếu hợp…"
-          className="w-full border rounded-lg px-3 py-2 text-sm mt-1" />
-        <div className="mt-1.5 flex items-center gap-2">
-          <span className="text-[11px] text-gray-400">Hành động chính:</span>
-          <select value={card.primaryAction} onChange={(e) => set({ primaryAction: e.target.value })}
-            className="border rounded-lg px-2 py-1 text-[12px]">
-            {Object.entries(labels.actions).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-          </select>
-        </div>
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] text-gray-400">Hành động chính:</span>
+        <select value={card.primaryAction} onChange={(e) => set({ primaryAction: e.target.value })}
+          className="border rounded-lg px-2 py-1 text-[12px]">
+          {Object.entries(labels.actions).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+        </select>
       </div>
 
       <div>
-        <label className="text-[11px] font-semibold text-gray-500">D. ĐỪNG BAO GIỜ…</label>
+        <label className="text-[11px] font-semibold text-gray-500">ĐỪNG BAO GIỜ…</label>
         <div className="flex flex-wrap gap-1.5 mt-1">
           {labels.coreForbidden.map((k) => (
             <span key={k} title="Luật an toàn khoá sẵn trong hệ thống — không tắt được"
@@ -367,7 +396,7 @@ function CardEditor({ rec, labels, allRecords, isAdmin, seedCard, seedIssues, on
       </div>
 
       <div>
-        <label className="text-[11px] font-semibold text-gray-500">E. CẦN BIẾT… (dữ liệu Lulu được dùng cho tình huống này)</label>
+        <label className="text-[11px] font-semibold text-gray-500">CẦN BIẾT… (dữ liệu Lulu được dùng cho tình huống này)</label>
         <div className="flex flex-wrap gap-3 mt-1">
           {Object.entries(labels.knowledge).map(([k, l]) => (
             <label key={k} className="text-[12px] flex items-center gap-1.5">
@@ -380,14 +409,7 @@ function CardEditor({ rec, labels, allRecords, isAdmin, seedCard, seedIssues, on
       </div>
 
       <div>
-        <label className="text-[11px] font-semibold text-gray-500">F. CÂU KẾT GỢI Ý (Lulu diễn đạt lại tự nhiên, không đọc y nguyên)</label>
-        <input value={card.closingLine} onChange={(e) => set({ closingLine: e.target.value })}
-          placeholder="Vd: Khi nào mình có ngày cụ thể, em kiểm tra lịch và xác nhận lại cho mình nha."
-          className="w-full border rounded-lg px-3 py-2 text-sm mt-1" />
-      </div>
-
-      <div>
-        <label className="text-[11px] font-semibold text-gray-500">G. ĐIỀU KIỆN THOÁT (mỗi dòng 1 ý — để người vận hành hiểu thẻ kết thúc khi nào)</label>
+        <label className="text-[11px] font-semibold text-gray-500">ĐIỀU KIỆN THOÁT (mỗi dòng 1 ý — để người vận hành hiểu thẻ kết thúc khi nào)</label>
         <textarea value={card.exitConditions.join("\n")}
           onChange={(e) => set({ exitConditions: e.target.value.split("\n") })}
           onBlur={(e) => set({ exitConditions: e.target.value.split("\n").map((s) => s.trim()).filter(Boolean) })}
@@ -396,7 +418,7 @@ function CardEditor({ rec, labels, allRecords, isAdmin, seedCard, seedIssues, on
       </div>
 
       <div>
-        <label className="text-[11px] font-semibold text-gray-500">H. CHUYỂN SANG KỊCH BẢN… KHI…</label>
+        <label className="text-[11px] font-semibold text-gray-500">CHUYỂN SANG KỊCH BẢN… KHI…</label>
         <div className="space-y-1.5 mt-1">
           {card.nextScenarios.map((n, i) => (
             <div key={i} className="flex items-center gap-2">
@@ -418,6 +440,7 @@ function CardEditor({ rec, labels, allRecords, isAdmin, seedCard, seedIssues, on
             className="text-[12px] text-violet-600 flex items-center gap-1"><Plus className="w-3 h-3" /> thêm chuyển tiếp</button>
         </div>
       </div>
+      </>)}
 
       <div className="border-t pt-2">
         <button onClick={() => setAdvOpen(!advOpen)} className="text-[11px] text-gray-500 flex items-center gap-1">

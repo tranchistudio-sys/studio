@@ -141,6 +141,72 @@ export async function saveScripts(
   return { rows: await listScripts(nodeKey), priceWarnings };
 }
 
+/** Đổi đoạn service trong node_key: svc::<from>::rest → svc::<to>::rest. null nếu không khớp. */
+export function retargetNodeKey(nodeKey: string, fromSlug: string, toSlug: string): string | null {
+  const prefix = `svc::${fromSlug}::`;
+  return nodeKey.startsWith(prefix) ? `svc::${toSlug}::${nodeKey.slice(prefix.length)}` : null;
+}
+
+/**
+ * CHÉP toàn bộ golden từ 1 dịch vụ (slug) sang dịch vụ khác — tiết kiệm công soạn 11×35.
+ * BỎ QUA tình huống mà đích ĐÃ có kịch bản (không đè). service_key/node_key/group_label
+ * đổi sang đích; giá vẫn {{PRICE}} realtime (chỉ chép CÁCH NÓI). scenario_key = null.
+ * Trả về {copiedRows, copiedSituations, skippedSituations}.
+ */
+export async function copyServiceGolden(
+  fromSlug: string, toSlug: string, toGroupName: string,
+): Promise<{ copiedRows: number; copiedSituations: number; skippedSituations: number }> {
+  await ensureScriptTable();
+  if (!fromSlug || !toSlug || fromSlug === toSlug) return { copiedRows: 0, copiedSituations: 0, skippedSituations: 0 };
+  const src = await pool.query(
+    `SELECT node_key, situation_label, customer_text, ideal_response, notes, is_active, sort_order
+     FROM lulu_sale_script_examples WHERE service_key = $1 AND ideal_response <> '' ORDER BY node_key, sort_order, id`,
+    [fromSlug],
+  );
+  if (src.rows.length === 0) return { copiedRows: 0, copiedSituations: 0, skippedSituations: 0 };
+  // Tình huống đích đã có kịch bản → bỏ qua (không đè).
+  const existing = await pool.query(
+    `SELECT DISTINCT node_key FROM lulu_sale_script_examples WHERE service_key = $1 AND ideal_response <> ''`, [toSlug],
+  );
+  const filledTarget = new Set((existing.rows as Array<{ node_key: string }>).map((r) => r.node_key));
+
+  const bySrcNode = new Map<string, Array<Record<string, unknown>>>();
+  for (const r of src.rows as Array<Record<string, unknown>>) {
+    const k = String(r.node_key);
+    if (!bySrcNode.has(k)) bySrcNode.set(k, []);
+    bySrcNode.get(k)!.push(r);
+  }
+
+  let copiedRows = 0, copiedSituations = 0, skippedSituations = 0;
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    for (const [srcNode, rows] of bySrcNode) {
+      const target = retargetNodeKey(srcNode, fromSlug, toSlug);
+      if (!target) continue;
+      if (filledTarget.has(target)) { skippedSituations++; continue; } // đích đã có → giữ nguyên
+      let order = 10;
+      for (const r of rows) {
+        await client.query(
+          `INSERT INTO lulu_sale_script_examples
+             (node_key, scenario_key, service_key, group_label, situation_label, customer_text, ideal_response, notes, is_active, sort_order)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [target, null, toSlug, toGroupName, r.situation_label ?? "", r.customer_text ?? "", r.ideal_response ?? "", r.notes ?? "", r.is_active !== false, order],
+        );
+        order += 10; copiedRows++;
+      }
+      copiedSituations++;
+    }
+    await client.query("COMMIT");
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+  return { copiedRows, copiedSituations, skippedSituations };
+}
+
 // ─── Parse DÁN từ Excel/Google Sheets (TSV/CSV) — THUẦN, test được ───────────
 
 /**

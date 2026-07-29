@@ -27,7 +27,7 @@ import { getServicePricePreview } from "../lib/sale-pricing";
 import { stitchReplyFromGolden, formatVnd } from "../lib/sale-reply-stitch";
 import { computeServiceTrail } from "../lib/sale-service-context";
 import { listServiceMap } from "../lib/sale-service-map";
-import { listScripts, saveScripts, searchScripts, getGoldenExamples, buildGoldenExamplesBlock } from "../lib/sale-script-library";
+import { listScripts, saveScripts, searchScripts, getGoldenExamples, buildGoldenExamplesBlock, copyServiceGolden } from "../lib/sale-script-library";
 
 /**
  * API "Kịch bản tư vấn Lulu" (Scenario Manager).
@@ -259,6 +259,24 @@ router.put("/lulu-scenarios/scripts/:nodeKey", async (req, res) => {
   } catch (err) {
     console.error("[ScriptLib] save lỗi:", String(err).slice(0, 160));
     res.status(500).json({ error: "Lưu bảng kịch bản lỗi" });
+  }
+});
+
+// Chép toàn bộ golden từ 1 dịch vụ (slug) sang dịch vụ khác — bỏ qua tình huống đích đã có.
+router.post("/lulu-scenarios/copy-golden", async (req, res) => {
+  const caller = await requireStaff(req, res);
+  if (!caller) return;
+  if (!requireFeature(res) || !requireAdmin(caller, res)) return;
+  const b = req.body as { fromServiceKey?: string; toServiceKey?: string; toGroupName?: string };
+  const from = String(b?.fromServiceKey ?? "").trim();
+  const to = String(b?.toServiceKey ?? "").trim();
+  if (!from || !to || from === to) { res.status(400).json({ error: "Chọn dịch vụ nguồn khác dịch vụ đích" }); return; }
+  try {
+    const out = await copyServiceGolden(from, to, String(b?.toGroupName ?? ""));
+    res.json(out);
+  } catch (err) {
+    console.error("[ScriptLib] copy-golden lỗi:", String(err).slice(0, 160));
+    res.status(500).json({ error: "Chép kịch bản lỗi" });
   }
 });
 

@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 vi.mock("@workspace/db", () => ({ pool: { query: vi.fn(async () => ({ rows: [] })) } }));
 
 import { pool } from "@workspace/db";
-import { parsePastedRows, parsePasteMatrix, looksLikeHeader, matrixToRows, scriptHasHardcodedPrice, buildGoldenExamplesBlock, getGoldenExamples } from "./sale-script-library";
+import { parsePastedRows, parsePasteMatrix, looksLikeHeader, matrixToRows, scriptHasHardcodedPrice, buildGoldenExamplesBlock, getGoldenExamples, retargetNodeKey } from "./sale-script-library";
 
 const mockQuery = pool.query as unknown as ReturnType<typeof vi.fn>;
 
@@ -68,6 +68,17 @@ describe("matrixToRows — ép thứ tự cột theo mapping (preview)", () => {
   it("có mapping thì KHÔNG tự bỏ header (do người dùng chủ động chọn)", () => {
     const rows = matrixToRows([["Khách", "Sale"], ["Sao mắc", "Dạ em"]], ["customerText", "idealResponse"]);
     expect(rows).toHaveLength(2);
+  });
+});
+
+describe("retargetNodeKey — chép golden sang dịch vụ khác", () => {
+  it("đổi đúng đoạn service, giữ step::situation", () => {
+    expect(retargetNodeKey("svc::album-tai-studio::xu-ly-phan-van::gia-cao", "album-tai-studio", "beauty-thoi-trang"))
+      .toBe("svc::beauty-thoi-trang::xu-ly-phan-van::gia-cao");
+  });
+  it("không khớp prefix → null (không chép nhầm greeting/khác)", () => {
+    expect(retargetNodeKey("global-chao-hoi::chao-hoi", "album-tai-studio", "beauty")).toBeNull();
+    expect(retargetNodeKey("svc::x::a", "album-tai-studio", "beauty")).toBeNull();
   });
 });
 

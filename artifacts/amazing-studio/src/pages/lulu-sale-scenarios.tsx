@@ -938,10 +938,40 @@ function ScriptTablePanel({ nodeKey, scenarioKey, title, serviceKey, groupName, 
   );
 }
 
-function TreeRowView({ node, depth, expanded, toggle, onOpenScript, ctx }: {
+type ServiceOpt = { key: string; title: string };
+
+// Thanh "Chép kịch bản từ dịch vụ khác" — tiết kiệm công soạn (bỏ qua tình huống đã có).
+function CopyGoldenBar({ toServiceKey, toGroupName, options, onCopy }: {
+  toServiceKey: string; toGroupName: string; options: ServiceOpt[];
+  onCopy: (from: string, to: string, toGroupName: string) => Promise<void>;
+}) {
+  const [from, setFrom] = useState("");
+  const [busy, setBusy] = useState(false);
+  const others = options.filter((o) => o.key !== toServiceKey);
+  if (others.length === 0) return null;
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 text-[12px] text-gray-500 flex-wrap">
+      <span className="text-gray-400">Chưa muốn gõ? Chép kịch bản từ:</span>
+      <select value={from} onChange={(e) => setFrom(e.target.value)} className="border rounded-lg px-2 py-1 text-[12px] bg-white max-w-[180px]">
+        <option value="">— chọn dịch vụ —</option>
+        {others.map((o) => <option key={o.key} value={o.key}>{o.title}</option>)}
+      </select>
+      <button disabled={!from || busy}
+        onClick={async () => { setBusy(true); try { await onCopy(from, toServiceKey, toGroupName); setFrom(""); } finally { setBusy(false); } }}
+        className="border border-violet-300 text-violet-700 rounded-lg px-2.5 py-1 hover:bg-violet-50 disabled:opacity-40 flex items-center gap-1">
+        {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Copy className="w-3 h-3" />} Chép sang đây
+      </button>
+      <span className="text-gray-300">(giữ nguyên tình huống đã có; giá vẫn realtime)</span>
+    </div>
+  );
+}
+
+function TreeRowView({ node, depth, expanded, toggle, onOpenScript, ctx, serviceOptions, onCopyGolden }: {
   node: TreeNodeFE; depth: number; expanded: Set<string>; toggle: (k: string) => void;
   onOpenScript: (t: ScriptTarget) => void;
   ctx?: TreeCtx;
+  serviceOptions?: ServiceOpt[];
+  onCopyGolden?: (from: string, to: string, toGroupName: string) => Promise<void>;
 }) {
   const isOpen = expanded.has(node.nodeKey);
   const pad = { paddingLeft: `${depth * 16 + 4}px` };
@@ -1004,6 +1034,9 @@ function TreeRowView({ node, depth, expanded, toggle, onOpenScript, ctx }: {
         </button>
         {isOpen && (
           <div className="border-t border-gray-100 py-1 bg-gray-50/40">
+            {onCopyGolden && serviceOptions && node.serviceKey && filled < total && (
+              <CopyGoldenBar toServiceKey={node.serviceKey} toGroupName={m.groupName ?? node.title} options={serviceOptions} onCopy={onCopyGolden} />
+            )}
             {node.children.map((c) => (
               <TreeRowView key={c.nodeKey} node={c} depth={1} expanded={expanded} toggle={toggle} onOpenScript={onOpenScript} ctx={childCtx} />
             ))}
@@ -1073,11 +1106,12 @@ function findServicePath(nodes: TreeNodeFE[], key: string, trail: string[] = [])
   return null;
 }
 
-function ScenarioTreeView({ reloadKey, onOpenScript, showErr, autoOpenServiceKey }: {
+function ScenarioTreeView({ reloadKey, onOpenScript, showErr, autoOpenServiceKey, onCopyGolden }: {
   reloadKey: number;
   onOpenScript: (t: ScriptTarget) => void;
   showErr: (m: string) => void;
   autoOpenServiceKey?: string | null;
+  onCopyGolden?: (from: string, to: string, toGroupName: string) => Promise<void>;
 }) {
   const [tree, setTree] = useState<TreeNodeFE[] | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -1100,9 +1134,25 @@ function ScenarioTreeView({ reloadKey, onOpenScript, showErr, autoOpenServiceKey
   const expandAll = () => { const all = new Set<string>(); const walk = (ns: TreeNodeFE[]) => ns.forEach((n) => { if (n.children.length || n.nodeType === "pricing") { all.add(n.nodeKey); walk(n.children); } }); if (tree) walk(tree); setExpanded(all); };
   if (!tree) return <p className="text-gray-400 text-sm py-6">Đang tải cây kịch bản…</p>;
   const firstServiceKey = tree.find((n) => n.nodeType === "service")?.nodeKey;
-  const svcCount = tree.filter((n) => n.nodeType === "service").length;
+  const serviceNodes = tree.filter((n) => n.nodeType === "service");
+  const svcCount = serviceNodes.length;
+  const serviceOptions: ServiceOpt[] = serviceNodes.map((n) => ({ key: n.serviceKey ?? "", title: n.title })).filter((o) => o.key);
+  const totalSit = tree.reduce((s, n) => s + (n.meta?.situationCount ?? 0), 0);
+  const totalFilled = tree.reduce((s, n) => s + (n.meta?.filledCount ?? 0), 0);
+  const totalPct = totalSit > 0 ? Math.round((totalFilled / totalSit) * 100) : 0;
   return (
     <div className="space-y-1">
+      <div className="bg-white border border-gray-200 rounded-xl p-3 flex items-center gap-3 flex-wrap">
+        <div className="flex-1 min-w-[200px]">
+          <div className="flex items-center justify-between text-[12px] mb-1">
+            <span className="font-medium text-gray-700">Tiến độ toàn studio</span>
+            <span className="text-gray-500"><b className="text-violet-600">{totalFilled}</b>/{totalSit} tình huống đã có kịch bản ({totalPct}%)</span>
+          </div>
+          <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
+            <div className="h-full rounded-full bg-gradient-to-r from-violet-400 to-emerald-400" style={{ width: `${totalPct}%` }} />
+          </div>
+        </div>
+      </div>
       <div className="flex items-center gap-2 px-1 py-1">
         <span className="text-[12px] text-gray-400 mr-auto">{svcCount} dịch vụ</span>
         <button onClick={expandAll} className="text-[12px] text-gray-500 border border-gray-200 rounded-full px-2.5 py-1 hover:bg-gray-50">Mở tất cả</button>
@@ -1113,7 +1163,7 @@ function ScenarioTreeView({ reloadKey, onOpenScript, showErr, autoOpenServiceKey
           {n.nodeKey === firstServiceKey && (
             <p className="text-[11px] uppercase tracking-wide text-gray-400 font-semibold mt-3 mb-1 px-1">Dịch vụ</p>
           )}
-          <TreeRowView node={n} depth={0} expanded={expanded} toggle={toggle} onOpenScript={onOpenScript} />
+          <TreeRowView node={n} depth={0} expanded={expanded} toggle={toggle} onOpenScript={onOpenScript} serviceOptions={serviceOptions} onCopyGolden={onCopyGolden} />
         </div>
       ))}
     </div>
@@ -1346,7 +1396,17 @@ export default function LuluSaleScenariosPage() {
       {view === "tree" && (
         <ScenarioTreeView reloadKey={treeReloadKey}
           onOpenScript={(t) => { setScriptNode(t); setEditing(null!); window.scrollTo({ top: 0, behavior: "smooth" }); }}
-          showErr={showErr} autoOpenServiceKey={autoOpenServiceKey} />
+          showErr={showErr} autoOpenServiceKey={autoOpenServiceKey}
+          onCopyGolden={effectiveIsAdmin ? async (from, to, toGroupName) => {
+            try {
+              const r = await apiSend<{ copiedRows: number; copiedSituations: number; skippedSituations: number }>(
+                "POST", "/lulu-scenarios/copy-golden", { fromServiceKey: from, toServiceKey: to, toGroupName });
+              showOk(r.copiedSituations > 0
+                ? `Đã chép ${r.copiedSituations} tình huống (${r.copiedRows} câu)${r.skippedSituations ? `, giữ nguyên ${r.skippedSituations} tình huống đã có` : ""}`
+                : "Nguồn chưa có kịch bản để chép");
+              setTreeReloadKey((k) => k + 1);
+            } catch (e) { showErr(String((e as Error).message)); }
+          } : undefined} />
       )}
 
       {view === "list" && (<>

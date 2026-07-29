@@ -41,6 +41,9 @@ async function apiSend<T>(method: string, path: string, body?: unknown): Promise
 type Issue = { field: string; message: string; suggest?: string; scenarioKey?: string };
 
 type TestResult = {
+  stageVn?: string;
+  memoryVN?: string[];
+  dataSources?: string[];
   winner: { key: string; name: string } | null;
   losers: Array<{ key: string; name: string; reason: string; detail?: string }>;
   explain: string;
@@ -117,15 +120,23 @@ function TestPanel({ scenarioKey, hasDraft, onClose }: { scenarioKey: string; ha
     <div className="flex-1 min-w-0 space-y-2 border rounded-lg p-3 bg-white">
       <p className="text-xs font-semibold text-gray-600">{title}</p>
       <div className="text-[12px] space-y-1.5">
-        <p><span className="text-gray-400">Kịch bản:</span> <b>{r.winner ? r.winner.name : "— (theo hệ thống)"}</b></p>
-        <p><span className="text-gray-400">Vì sao:</span> {r.explain}</p>
-        <p><span className="text-gray-400">Lulu dự định:</span> {actionVn(r.action)}
+        <p><span className="text-gray-400">Lulu hiểu:</span> {r.explain}</p>
+        {r.stageVn && <p><span className="text-gray-400">Khách đang ở giai đoạn:</span> <b>{r.stageVn}</b></p>}
+        <p><span className="text-gray-400">Kịch bản đang dùng:</span> <b>{r.winner ? r.winner.name : "— (theo hệ thống)"}</b></p>
+        {r.memoryVN && r.memoryVN.length > 0 && (
+          <div><span className="text-gray-400">Lulu đang nhớ:</span>
+            <ul className="ml-4 list-disc text-gray-600">{r.memoryVN.map((m, i) => <li key={i}>{m}</li>)}</ul>
+          </div>
+        )}
+        {r.dataSources && r.dataSources.length > 0 && (
+          <p><span className="text-gray-400">Dữ liệu lấy từ:</span> {r.dataSources.join(" · ")}</p>
+        )}
+        <p><span className="text-gray-400">Lulu sẽ làm:</span> {actionVn(r.action)}
           {r.actionChanged && <span className="text-violet-600"> (thẻ đổi từ: {actionVn(r.baselineAction)})</span>}</p>
         {r.forbiddenQuestions.length > 0 && (
           <p><span className="text-gray-400">Bị cấm:</span> {r.forbiddenQuestions.map((q) =>
             q === "ask_date" ? "hỏi lại ngày" : q === "ask_phone" ? "xin SĐT" : q === "self_discount" ? "tự giảm giá" : q).join(", ")}</p>
         )}
-        {r.knowledge.length > 0 && <p><span className="text-gray-400">Kiến thức nạp:</span> {r.knowledge.join(", ")}</p>}
       </div>
       <div className="border-t pt-2">
         <p className="text-[11px] text-gray-400 mb-1">Câu trả lời thử ({r.provider}):</p>

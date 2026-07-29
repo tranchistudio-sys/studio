@@ -88,6 +88,62 @@ function sanitizeHistory(raw: unknown): Array<{ direction: "incoming" | "outgoin
 }
 const MAX_TEST_MESSAGE = 4000;
 
+// ─── Diễn giải tiếng Việt cho sandbox (mục 15 Sales Brain — chủ không đọc JSON) ──
+
+const STAGE_VN: Record<string, string> = {
+  NEW_LEAD: "Khách mới — chào hỏi", DISCOVERY: "Đang xác định nhu cầu",
+  CONSULTING: "Đang tư vấn", QUOTE_REFERENCE: "Báo giá tham khảo (chưa chốt ngày)",
+  QUOTED: "Đã báo giá", CONSIDERING: "Khách đang cân nhắc", BOOKING_INTENT: "Sẵn sàng chốt",
+  WAITING: "Chờ khách", HUMAN_REVIEW: "Người thật xử lý", BOOKED: "Đã thành khách",
+  LOST: "Khách đã từ chối",
+};
+
+const INTENT_VN: Record<string, string> = {
+  beauty: "chụp beauty", wedding_album: "album cưới", wedding_gate: "chụp cổng",
+  wedding_party: "chụp tiệc cưới", rental_outfit: "thuê váy/đồ", maternity: "chụp bầu",
+  family: "chụp gia đình", new_concept_idea: "concept mới lạ",
+};
+
+/** "Lulu đang nhớ" — từ trí nhớ thật, tiếng Việt đời thường. */
+function describeMemoryVN(state: import("../lib/sale-thread-state").ThreadState): string[] {
+  const out: string[] = [];
+  const s = state.slots;
+  if (state.serviceIntent) out.push(`Dịch vụ quan tâm: ${INTENT_VN[state.serviceIntent] ?? state.serviceIntent}`);
+  if (s.date_status === "known") out.push(`Ngày chụp: ${s.date_text || s.event_date}`);
+  else if (s.date_status === "not_decided") out.push("Ngày chụp: khách ĐÃ NÓI chưa chốt (không hỏi lại)");
+  if (s.style && s.style !== "UNKNOWN_VALID") out.push(`Gu: ${s.style}`);
+  else if (s.style === "UNKNOWN_VALID") out.push("Gu: khách chưa biết (gợi hướng, không hỏi trần)");
+  if (s.location_type && s.location_type !== "UNKNOWN_VALID") {
+    out.push(`Địa điểm: ${s.location_type === "studio" ? "studio" : s.location_type === "outdoor" ? "ngoại cảnh" : "studio + ngoại cảnh"}`);
+  }
+  if (typeof s.headcount === "number") out.push(`Số người: ${s.headcount}`);
+  if (s.budget_text && s.budget_text !== "UNKNOWN_VALID") out.push(`Ngân sách khách nhắc: ${s.budget_text}`);
+  if (s.decision_maker === "partner") out.push("Người quyết: cần bàn với chồng/gia đình");
+  if (state.quotedPackages.length) out.push(`Đã báo giá gói: ${state.quotedPackages.map((p) => p.code).join(", ")}`);
+  const asked = state.askedQuestions.find((q) => q.key === "ask_date");
+  if (asked) out.push(`Đã hỏi ngày ${asked.count} lần (không lặp lại)`);
+  const objs = s.objections ?? [];
+  if (objs.length) out.push(`Khách từng phân vân: ${objs.map((o) => `"${o.quote.slice(0, 40)}"`).join(" · ")}`);
+  if (s.lost_reason) out.push(`Từng từ chối: "${s.lost_reason}"`);
+  return out.length ? out : ["(chưa có gì đáng nhớ)"];
+}
+
+/** "Dữ liệu lấy từ" — map knowledgeNeeded → nguồn tiếng Việt. */
+function describeDataSources(knowledge: string[]): string[] {
+  const out = new Set<string>();
+  for (const k of knowledge ?? []) {
+    if (k.startsWith("pricing:")) out.add(`Bảng giá nhóm "${INTENT_VN[k.split(":")[1]] ?? k.split(":")[1]}" (Dịch vụ & Bảng giá)`);
+    else if (k.startsWith("gallery:")) out.add("Ảnh mẫu đã duyệt cho khách (thư viện ảnh)");
+    else if (k === "price_images") out.add("Ảnh bảng giá theo nhóm");
+    else if (k.startsWith("services:")) out.add("Danh mục dịch vụ studio");
+    else if (k === "booking") out.add("Quy trình giữ lịch (nhân viên xác nhận)");
+    else if (k === "value_points") out.add("Điểm mạnh / quyền lợi studio");
+    else if (k.startsWith("faq:")) out.add("Thông tin studio (địa chỉ / giờ / chính sách)");
+    else out.add(k);
+  }
+  return [...out];
+}
+
 // ─── Trạng thái + danh mục nhãn (FE render tiếng Việt từ đây — 1 nguồn) ───────
 
 router.get("/lulu-scenarios/status", async (req, res) => {
@@ -363,6 +419,10 @@ async function runScenarioTest(opts: {
 
   return {
     stateBefore,
+    // Sandbox tiếng Việt (mục 15): giai đoạn / đang nhớ / dữ liệu lấy từ.
+    stageVn: STAGE_VN[resolve.decision.stage] ?? resolve.decision.stage,
+    memoryVN: describeMemoryVN(state),
+    dataSources: describeDataSources(resolve.decision.knowledgeNeeded),
     winner: resolve.winner ? { key: resolve.winner.key, name: resolve.winner.name } : null,
     losers: resolve.losers,
     explain: resolve.explain,

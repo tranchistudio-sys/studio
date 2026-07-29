@@ -26,6 +26,16 @@ export type TriggerKey =
   | "muon_giu_lich"    // muốn giữ lịch / kiểm tra lịch
   | "chot_goi"         // chốt mua gói
   | "che_gia_xin_giam" // chê giá / xin giảm (escalation giá)
+  // ── V2 (Sales Brain — 12 loại khách chưa chốt) ──
+  | "hoi_chong_gia_dinh" // "để chị hỏi chồng/gia đình" (ASK_PARTNER)
+  | "xin_suy_nghi"       // "để chị suy nghĩ thêm" (NEED_TIME)
+  | "dang_ban"           // "đang bận, tí nói" (BUSY)
+  | "tham_khao_them"     // "để tham khảo thêm vài chỗ" (JUST_BROWSING)
+  | "khong_tin_anh_that" // "ảnh thật hay ảnh mẫu đó" (NOT_TRUST_YET)
+  | "chua_biet_gu"       // "chưa biết chụp kiểu gì" (STYLE_UNCERTAIN)
+  | "xin_giam_them"      // "bớt được không em" (DISCOUNT_REQUEST)
+  | "hoi_ngan_sach"      // "tầm bao nhiêu thì đủ" (BUDGET_CONCERN)
+  | "so_sanh_ben_khac"   // "bên kia rẻ hơn" (COMPARE_COMPETITOR)
   | "bat_ky";          // tin bất kỳ (thẻ nền)
 
 export const TRIGGER_LABELS: Record<TriggerKey, string> = {
@@ -42,6 +52,15 @@ export const TRIGGER_LABELS: Record<TriggerKey, string> = {
   muon_giu_lich: "muốn giữ lịch / kiểm tra lịch",
   chot_goi: "chốt chọn gói",
   che_gia_xin_giam: "chê giá cao / xin giảm giá",
+  hoi_chong_gia_dinh: "cần hỏi chồng / gia đình",
+  xin_suy_nghi: "xin thời gian suy nghĩ",
+  dang_ban: "đang bận, hẹn nói sau",
+  tham_khao_them: "chỉ tham khảo thêm",
+  khong_tin_anh_that: "lo ảnh không như hình",
+  chua_biet_gu: "chưa biết gu / kiểu chụp",
+  xin_giam_them: "hỏi bớt / giảm được không",
+  hoi_ngan_sach: "lo ngân sách / hỏi gói rẻ",
+  so_sanh_ben_khac: "so sánh bên khác rẻ hơn",
   bat_ky: "bất kỳ tin nào (thẻ nền)",
 };
 

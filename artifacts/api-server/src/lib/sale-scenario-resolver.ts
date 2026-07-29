@@ -7,6 +7,11 @@ import {
   type ScenarioDef, type TriggerKey, type KnowledgeKey,
   FORBIDDEN_EFFECTS, knowledgeKeysToNeeded,
 } from "./sale-scenario-types";
+// Trigger V2 (12 loại khách chưa chốt) — detector thuần từ sale-slots-extra.
+import {
+  detectPostpone, detectBrowsing, detectTrustConcern, detectDiscountRequest,
+  detectBudgetConcern, detectObjection, detectStyle, UNKNOWN_VALID,
+} from "./sale-slots-extra";
 
 /**
  * SCENARIO RESOLVER — chọn ĐÚNG 1 thẻ kịch bản cho tin khách, đặt TRÊN Workflow V1.
@@ -68,7 +73,7 @@ export type ScenarioResolveResult = {
 
 // ─── Trigger match ────────────────────────────────────────────────────────────
 
-function triggerMatches(trigger: TriggerKey, s: MessageSignals): boolean {
+function triggerMatches(trigger: TriggerKey, s: MessageSignals, msg: string): boolean {
   switch (trigger) {
     // Tôn trọng THỨ TỰ ƯU TIÊN của engine (routeSaleAction): câu FAQ ("khi nào cho hình",
     // "gồm gì") được xử lý TRƯỚC giá/mẫu — nên trigger giá/mẫu KHÔNG nổ khi tin là câu FAQ.
@@ -85,6 +90,16 @@ function triggerMatches(trigger: TriggerKey, s: MessageSignals): boolean {
     case "muon_giu_lich": return s.bookingIntent || /chuyển khoản|đặt cọc/.test(s.escalation ?? "");
     case "chot_goi": return s.closeDeal;
     case "che_gia_xin_giam": return /giảm giá|so sánh|than mắc/.test(s.escalation ?? "");
+    // ── V2: 12 loại khách chưa chốt (detector thuần sale-slots-extra, nhận raw message) ──
+    case "hoi_chong_gia_dinh": return detectPostpone(msg)?.kind === "partner";
+    case "xin_suy_nghi": return detectPostpone(msg)?.kind === "time";
+    case "dang_ban": return detectPostpone(msg)?.kind === "busy";
+    case "tham_khao_them": return detectBrowsing(msg);
+    case "khong_tin_anh_that": return detectTrustConcern(msg);
+    case "chua_biet_gu": return detectStyle(msg) === UNKNOWN_VALID;
+    case "xin_giam_them": return detectDiscountRequest(msg);
+    case "hoi_ngan_sach": return detectBudgetConcern(msg);
+    case "so_sanh_ben_khac": return detectObjection(msg)?.type === "COMPARE_COMPETITOR";
     case "bat_ky": return true;
     default: return false;
   }
@@ -93,12 +108,12 @@ function triggerMatches(trigger: TriggerKey, s: MessageSignals): boolean {
 // ─── Match 1 thẻ với tin + state → {matched, specificity, reason} ─────────────
 
 function matchScenario(
-  def: ScenarioDef, signals: MessageSignals, state: ThreadState, isFirstContact: boolean,
+  def: ScenarioDef, signals: MessageSignals, state: ThreadState, isFirstContact: boolean, msg: string,
 ): { matched: boolean; specificity: number; reason?: LoserReason; detail?: string } {
   if (!def.enabled) return { matched: false, specificity: 0, reason: "dang_tat" };
 
   // Trigger: ít nhất 1 khớp. "bat_ky" khớp mọi tin nhưng KHÔNG cộng điểm cụ thể.
-  const hit = def.triggers.filter((t) => triggerMatches(t, signals));
+  const hit = def.triggers.filter((t) => triggerMatches(t, signals, msg));
   if (hit.length === 0) return { matched: false, specificity: 0, reason: "trigger_khong_khop" };
   let specificity = hit.filter((t) => t !== "bat_ky").length;
 
@@ -239,7 +254,7 @@ function resolveWithBaseline(input: ScenarioResolveInput, baseline: RouterDecisi
 
   // filter(Boolean): phần tử null/undefined trong danh sách (dữ liệu bẩn) bị bỏ qua an toàn.
   for (const def of (input.scenarios ?? []).filter((d): d is ScenarioDef => !!d)) {
-    const m = matchScenario(def, signals, input.threadState, input.isFirstContact);
+    const m = matchScenario(def, signals, input.threadState, input.isFirstContact, input.customerMessage);
     if (m.matched) matched.push({ def, specificity: m.specificity });
     else losers.push({ key: def.key, name: def.name, reason: m.reason ?? "trigger_khong_khop", detail: m.detail });
   }

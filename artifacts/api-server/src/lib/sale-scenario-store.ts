@@ -98,28 +98,29 @@ export async function ensureScenarioTables(): Promise<void> {
   ensured = true;
 }
 
-/** Seed 12+ thẻ mẫu — CHỈ khi bảng đang rỗng (không đè dữ liệu chủ đã sửa).
- *  Chạy trong 1 TRANSACTION: hoặc đủ bộ, hoặc không có gì (chết giữa chừng → rollback). */
+/** Seed thẻ mẫu — UPSERT-MISSING: chỉ chèn thẻ CHƯA CÓ theo scenario_key (ON CONFLICT DO
+ *  NOTHING). Thẻ chủ đã sửa/tắt/lưu trữ giữ nguyên tuyệt đối; bản cập nhật hệ thống thêm
+ *  thẻ mới sẽ tự xuất hiện. Transaction: đủ bộ hoặc không gì. */
 async function seedDefaultScenarios(): Promise<void> {
-  const r = await pool.query(`SELECT COUNT(*)::int AS n FROM lulu_sale_scenarios`);
-  if (Number(r.rows[0]?.n ?? 0) > 0) return;
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
     let order = 10;
+    let inserted = 0;
     for (const s of SEED_SCENARIOS) {
       const compiled = compileCard(s.card);
-      await client.query(
+      const r = await client.query(
         `INSERT INTO lulu_sale_scenarios
            (scenario_key, sort_order, status, enabled, is_core, version, card_json, created_by_name)
          VALUES ($1, $2, 'active', true, $3, 1, $4::jsonb, 'Hệ thống')
          ON CONFLICT (scenario_key) DO NOTHING`,
         [s.key, order, s.isCore, JSON.stringify(compiled.card)],
       );
+      inserted += r.rowCount ?? 0;
       order += 10;
     }
     await client.query("COMMIT");
-    console.log(`[ScenarioMgr] seed ${SEED_SCENARIOS.length} thẻ kịch bản mẫu (bảng trống)`);
+    if (inserted > 0) console.log(`[ScenarioMgr] seed thêm ${inserted}/${SEED_SCENARIOS.length} thẻ kịch bản mẫu mới`);
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     throw err;

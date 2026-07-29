@@ -112,6 +112,15 @@ const SELF_DISCOUNT_NORM_RE =
 const GIAM_CON_RE = /giam con\b/;
 // Lộ nội bộ: marker hệ thống / khối prompt — TUYỆT ĐỐI không được ra khách.
 const LEAK_INTERNAL_RE = /(<<|>>|TRẠNG THÁI KHÁCH|system prompt|instruction nội bộ|RÀNG BUỘC \(BẮT BUỘC)/i;
+// (V2) Chê đối thủ — check trên text đã bỏ dấu.
+const COMPETITOR_BASH_RE =
+  /(ben (kia|do|khac|x)\s*(thi\s*)?(te|xau|dom|kem|re tien|chup xau|khong dep|lua)|(cho|studio) (do|kia|khac) (te|xau|dom|kem|lua)|dung (chup|lam|dat) (o )?(ben|cho) (kia|do|khac))/;
+// (V2) Bot tự xác nhận cọc / thanh toán / đưa STK.
+const DEPOSIT_CONFIRM_RE =
+  /((em|ben em)?\s*(da |xin )?xac nhan (da )?(coc|dat coc|thanh toan|chuyen khoan)|(da )?nhan (duoc )?(tien )?coc|coc thanh cong|so tai khoan|\bstk\b)/;
+// (V2) Hứa chắc còn lịch — bot chỉ đọc lịch, không cam kết.
+const SCHEDULE_PROMISE_RE =
+  /((chac chan|dam bao|bao dam|100%|cam ket).{0,15}(con lich|con trong|giu duoc (lich|ngay)|trong lich)|ngay (do|nay) chac chan (con|trong))/;
 
 // Map ServiceIntent (thread state) → KnownIntent (detectServiceDrift).
 const INTENT_TO_KNOWN: Record<string, KnownIntent> = {
@@ -207,6 +216,36 @@ export function validateSaleReply(input: ValidatorInput): ValidatorResult {
       "Reply chứa marker/khối prompt nội bộ (<<...>>, TRẠNG THÁI KHÁCH...)",
       "Cắt phần nội bộ khỏi reply; tái sinh nếu phần còn lại rỗng",
       "critical",
+    );
+  }
+
+  // 5c. (V2 Sales Brain) Chê/nói xấu đối thủ — mất uy tín studio, cấm tuyệt đối.
+  if (COMPETITOR_BASH_RE.test(t)) {
+    return block(
+      "competitor_bashing",
+      "Reply chê bai/nói xấu bên khác — chỉ được nêu điểm mạnh của mình",
+      "Tái sinh: bỏ mọi nhận xét về đối thủ, thay bằng khác biệt cụ thể của studio",
+      "major",
+    );
+  }
+
+  // 5d. (V2) Bot tự xác nhận cọc / đưa số tài khoản — việc tiền bạc là của người thật.
+  if (DEPOSIT_CONFIRM_RE.test(t)) {
+    return block(
+      "deposit_confirmed_by_bot",
+      "Reply tự xác nhận cọc/thanh toán hoặc đưa số tài khoản — bot không được đụng tiền",
+      "Thay bằng: xin ngày + SĐT rồi hẹn nhân viên xác nhận giữ chỗ; escalate",
+      "critical",
+    );
+  }
+
+  // 5e. (V2) Hứa CHẮC CHẮN còn lịch — bot chỉ đọc lịch, không có quyền cam kết.
+  if (SCHEDULE_PROMISE_RE.test(t)) {
+    return block(
+      "schedule_promised",
+      "Reply cam kết chắc chắn còn lịch/giữ được ngày — bot chỉ được nói 'em kiểm tra lịch giúp mình'",
+      "Tái sinh: đổi thành sẽ kiểm tra lịch và nhờ nhân viên xác nhận",
+      "major",
     );
   }
 

@@ -46,6 +46,24 @@ export const luluScenarioVersions = pgTable("lulu_scenario_versions", {
   atIdx: index("idx_lulu_scenario_versions_at").on(t.createdAt),
 }));
 
+export const luluSaleScriptExamples = pgTable("lulu_sale_script_examples", {
+  id: serial("id").primaryKey(),
+  nodeKey: text("node_key").notNull(),
+  scenarioKey: text("scenario_key"),
+  groupLabel: text("group_label").notNull().default(""),
+  situationLabel: text("situation_label").notNull().default(""),
+  customerText: text("customer_text").notNull().default(""),
+  idealResponse: text("ideal_response").notNull().default(""),
+  notes: text("notes").notNull().default(""),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+}, (t) => ({
+  nodeIdx: index("idx_lulu_script_node").on(t.nodeKey, t.sortOrder),
+  scenarioIdx: index("idx_lulu_script_scenario").on(t.scenarioKey),
+}));
+
 export const luluScenarioTree = pgTable("lulu_scenario_tree", {
   id: serial("id").primaryKey(),
   nodeKey: text("node_key").notNull(),

@@ -565,22 +565,268 @@ function PricingNode({ serviceKey }: { serviceKey: string | null }) {
   );
 }
 
-function TreeRowView({ node, depth, expanded, toggle, onEditLeaf }: {
+type ScriptField = "groupLabel" | "situationLabel" | "customerText" | "idealResponse" | "notes";
+type ScriptRowFE = { groupLabel: string; situationLabel: string; customerText: string; idealResponse: string; notes: string; isActive: boolean };
+const EMPTY_ROW = (): ScriptRowFE => ({ groupLabel: "", situationLabel: "", customerText: "", idealResponse: "", notes: "", isActive: true });
+
+const FIELD_LABELS: Record<ScriptField, string> = {
+  groupLabel: "Nhóm", situationLabel: "Tình huống", customerText: "Khách hỏi / nói", idealResponse: "Lulu nên trả lời", notes: "Ghi chú",
+};
+
+const hasHardcodedPriceFE = (t: string) => /(\d{1,3}([.,]\d{3}){1,3}\s*(đ|d|vnd|k|tr|triệu)|\d+\s*(triệu|tr\b)|\d{2,4}\s*k\b)/i.test(t ?? "");
+
+function parseMatrixFE(text: string): string[][] {
+  return (text ?? "").replace(/\r\n/g, "\n").split("\n").filter((l) => l.trim())
+    .map((line) => (line.includes("\t") ? line.split("\t") : line.split(/\s*\|\s*|\s{2,}/)).map((c) => c.trim()));
+}
+function looksLikeHeaderFE(cols: string[]): boolean {
+  const j = cols.join(" ").toLowerCase();
+  return ["nhóm", "nhom", "tình huống", "tinh huong", "khách", "khach", "trả lời", "tra loi", "ghi chú", "sale"].filter((k) => j.includes(k)).length >= 2;
+}
+// Suy mapping mặc định theo số cột (thứ tự chuẩn: Nhóm|Tình huống|Khách|Trả lời|Ghi chú).
+function defaultMapping(colCount: number): ScriptField[] {
+  if (colCount >= 5) return ["groupLabel", "situationLabel", "customerText", "idealResponse", "notes"];
+  if (colCount === 4) return ["groupLabel", "situationLabel", "customerText", "idealResponse"];
+  if (colCount === 3) return ["customerText", "idealResponse", "notes"];
+  return ["customerText", "idealResponse"];
+}
+function matrixToRowsFE(matrix: string[][], mapping: (ScriptField | "skip")[], dropHeader: boolean): ScriptRowFE[] {
+  const body = dropHeader ? matrix.slice(1) : matrix;
+  const out: ScriptRowFE[] = [];
+  for (const cols of body) {
+    const r = EMPTY_ROW();
+    mapping.forEach((f, idx) => { if (f !== "skip" && cols[idx] != null) (r as Record<string, unknown>)[f] = cols[idx]; });
+    if (!r.customerText && !r.idealResponse) continue;
+    out.push(r);
+  }
+  return out;
+}
+
+// Thay các cụm SỐ TIỀN trong câu bằng {{PRICE}} (giữ chữ xung quanh).
+const MONEY_RE_G = /(\d{1,3}(?:[.,]\d{3}){1,3}\s*(?:đ|d|vnd)?|\d+\s*(?:triệu|tr)\b|\d{2,4}\s*k\b)/gi;
+const suggestPriceReplace = (t: string) => (t ?? "").replace(MONEY_RE_G, "{{PRICE}}");
+
+type PasteState = { text: string; matrix: string[][]; mapping: (ScriptField | "skip")[]; dropHeader: boolean };
+const MAP_CHOICES: (ScriptField | "skip")[] = ["groupLabel", "situationLabel", "customerText", "idealResponse", "notes", "skip"];
+
+function ScriptTablePanel({ nodeKey, scenarioKey, title, serviceKey, isAdmin, onClose, showOk, showErr }: {
+  nodeKey: string; scenarioKey: string | null; title: string; serviceKey: string | null;
+  isAdmin: boolean; onClose: () => void; showOk: (m: string) => void; showErr: (m: string) => void;
+}) {
+  const [rows, setRows] = useState<ScriptRowFE[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [q, setQ] = useState("");
+  const [sitFilter, setSitFilter] = useState("");
+  const [paste, setPaste] = useState<PasteState | null>(null);
+
+  const normRows = (raw: ScriptRowFE[]) => raw.map((x) => ({
+    groupLabel: x.groupLabel ?? "", situationLabel: x.situationLabel ?? "",
+    customerText: x.customerText, idealResponse: x.idealResponse, notes: x.notes, isActive: x.isActive !== false,
+  }));
+
+  useEffect(() => {
+    setLoading(true);
+    apiGet<{ rows: ScriptRowFE[] }>(`/lulu-scenarios/scripts/${encodeURIComponent(nodeKey)}`)
+      .then((r) => setRows(normRows(r.rows)))
+      .catch((e) => showErr(String((e as Error).message)))
+      .finally(() => setLoading(false));
+  }, [nodeKey, showErr]);
+
+  const setRow = (i: number, patch: Partial<ScriptRowFE>) => setRows((rs) => rs.map((r, j) => j === i ? { ...r, ...patch } : r));
+  const addRow = () => setRows((rs) => [...rs, EMPTY_ROW()]);
+  const dupRow = (i: number) => setRows((rs) => [...rs.slice(0, i + 1), { ...rs[i] }, ...rs.slice(i + 1)]);
+  const delRow = (i: number) => setRows((rs) => rs.filter((_, j) => j !== i));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const r = await apiSend<{ rows: ScriptRowFE[]; priceWarnings: number[] }>("PUT", `/lulu-scenarios/scripts/${encodeURIComponent(nodeKey)}`, { scenarioKey, rows });
+      setRows(normRows(r.rows));
+      showOk(`Đã lưu ${r.rows.length} dòng${r.priceWarnings.length ? ` (⚠ ${r.priceWarnings.length} dòng có số tiền — nên dùng {{PRICE}} vì giá lấy từ bảng giá)` : ""}`);
+    } catch (e) { showErr(String((e as Error).message)); }
+    finally { setSaving(false); }
+  };
+
+  // ── Paste + preview ──────────────────────────────────────────────
+  const openPaste = () => setPaste({ text: "", matrix: [], mapping: defaultMapping(2), dropHeader: false });
+  const onPasteText = (text: string) => {
+    const matrix = parseMatrixFE(text);
+    const maxCols = matrix.reduce((m, r) => Math.max(m, r.length), 0);
+    const dropHeader = matrix.length > 0 && looksLikeHeaderFE(matrix[0]);
+    setPaste({ text, matrix, mapping: defaultMapping(maxCols), dropHeader });
+  };
+  const previewRows = paste ? matrixToRowsFE(paste.matrix, paste.mapping, paste.dropHeader) : [];
+  const previewMissingResp = previewRows.filter((r) => r.customerText && !r.idealResponse).length;
+  const previewPriced = previewRows.filter((r) => hasHardcodedPriceFE(r.idealResponse)).length;
+  const commitPaste = () => {
+    setRows((rs) => [...rs, ...previewRows]);
+    setPaste(null);
+    showOk(`Đã thêm ${previewRows.length} dòng${previewPriced ? ` — ${previewPriced} dòng có số tiền, cân nhắc {{PRICE}}` : ""} — nhớ bấm Lưu bảng`);
+  };
+
+  const situations = Array.from(new Set(rows.map((r) => r.situationLabel).filter(Boolean)));
+  const qn = q.trim().toLowerCase();
+  const visible = rows.map((r, i) => ({ r, i }))
+    .filter(({ r }) => !sitFilter || r.situationLabel === sitFilter)
+    .filter(({ r }) => !qn || `${r.groupLabel} ${r.situationLabel} ${r.customerText} ${r.idealResponse} ${r.notes}`.toLowerCase().includes(qn));
+
+  const cell = (v: string, on: (x: string) => void, ph: string, cls = "", rows2 = 2) => (
+    <textarea value={v} onChange={(e) => on(e.target.value)} rows={rows2} readOnly={!isAdmin}
+      className={`w-full border rounded px-1.5 py-1 text-[13px] ${cls}`} placeholder={ph} />
+  );
+
+  return (
+    <div className="bg-white border rounded-xl p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="font-medium flex items-center gap-2"><NotebookPen className="w-4 h-4 text-violet-600" /> Bảng Kịch bản Sale: {title}</p>
+        <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
+      </div>
+      <p className="text-[12px] text-gray-500">Chủ tự viết câu khách hay hỏi ↔ câu Lulu nên trả lời. Lulu học GIỌNG/cách dẫn — không đọc y nguyên, giá luôn lấy từ bảng giá (dùng <code>{"{{PRICE}}"}</code> thay cho số tiền).</p>
+
+      {serviceKey && (
+        <details className="text-[12px]">
+          <summary className="cursor-pointer text-emerald-700">💰 Xem bảng giá sống của nhóm này</summary>
+          <PricingNode serviceKey={serviceKey} />
+        </details>
+      )}
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="relative">
+          <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-2.5" />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Tìm trong bảng…" className="border rounded-lg pl-8 pr-3 py-1.5 text-[13px] w-52" />
+        </div>
+        {situations.length > 0 && (
+          <select value={sitFilter} onChange={(e) => setSitFilter(e.target.value)} className="border rounded-lg px-2 py-1.5 text-[13px]">
+            <option value="">Mọi tình huống</option>
+            {situations.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+        )}
+        {isAdmin && <>
+          <button onClick={addRow} className="border text-[12px] px-3 py-1.5 rounded-lg hover:bg-gray-50 flex items-center gap-1"><Plus className="w-3.5 h-3.5" /> Thêm dòng</button>
+          <button onClick={openPaste} className="border border-violet-300 text-violet-700 text-[12px] px-3 py-1.5 rounded-lg hover:bg-violet-50">📋 Dán nhiều dòng (Excel / Sheets / ChatGPT)</button>
+          <button disabled={saving} onClick={save} className="bg-emerald-600 text-white text-[12px] px-4 py-1.5 rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1 ml-auto">
+            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />} Lưu bảng ({rows.length} dòng)
+          </button>
+        </>}
+      </div>
+
+      {paste !== null && (
+        <div className="border border-violet-200 bg-violet-50/40 rounded-lg p-3 space-y-2">
+          <p className="text-[12px] text-gray-700 font-medium">Dán bảng từ Excel / Google Sheets / ChatGPT rồi xem trước — chỉnh cột nếu sai, xong bấm “Thêm {previewRows.length} dòng”.</p>
+          <p className="text-[11px] text-gray-500">Thứ tự cột chuẩn: <b>Nhóm · Tình huống · Khách hỏi/nói · Lulu nên trả lời · Ghi chú</b>. Thiếu cột cũng được — bảng tự suy.</p>
+          <textarea value={paste.text} onChange={(e) => onPasteText(e.target.value)} rows={5}
+            placeholder={"Album cưới\tChê giá cao\tSao mắc vậy em?\tDạ em hiểu ạ, giá gồm…\tghi chú\nAlbum cưới\tXin nghĩ thêm\tĐể chị suy nghĩ\tDạ chị cứ thong thả ạ…\t"}
+            className="w-full border rounded-lg px-2 py-1.5 text-[12px] font-mono" />
+
+          {paste.matrix.length > 0 && (
+            <>
+              <div className="flex items-center gap-3 flex-wrap text-[12px]">
+                <span className="text-gray-600">Đọc được <b>{paste.matrix.length}</b> dòng · <b>{paste.matrix.reduce((m, r) => Math.max(m, r.length), 0)}</b> cột.</span>
+                <label className="flex items-center gap-1 text-gray-600"><input type="checkbox" checked={paste.dropHeader} onChange={(e) => setPaste({ ...paste, dropHeader: e.target.checked })} /> Bỏ dòng đầu (tiêu đề)</label>
+                {previewMissingResp > 0 && <span className="text-rose-600">⚠ {previewMissingResp} dòng THIẾU câu trả lời</span>}
+                {previewPriced > 0 && <span className="text-amber-600">⚠ {previewPriced} dòng có số tiền — nên dùng {"{{PRICE}}"}</span>}
+              </div>
+              <div className="border rounded-lg overflow-auto max-h-64 bg-white">
+                <table className="w-full text-[12px]">
+                  <thead className="bg-gray-50 sticky top-0"><tr>
+                    {paste.mapping.map((f, ci) => (
+                      <th key={ci} className="px-1.5 py-1 text-left">
+                        <select value={f} onChange={(e) => { const m = [...paste.mapping]; m[ci] = e.target.value as ScriptField | "skip"; setPaste({ ...paste, mapping: m }); }}
+                          className="border rounded px-1 py-0.5 text-[11px] bg-white">
+                          {MAP_CHOICES.map((c) => <option key={c} value={c}>{c === "skip" ? "— bỏ qua —" : FIELD_LABELS[c]}</option>)}
+                        </select>
+                      </th>
+                    ))}
+                  </tr></thead>
+                  <tbody>
+                    {(paste.dropHeader ? paste.matrix.slice(1) : paste.matrix).slice(0, 8).map((r, ri) => (
+                      <tr key={ri} className="border-t">
+                        {paste.mapping.map((_, ci) => <td key={ci} className="px-1.5 py-1 text-gray-700 whitespace-pre-wrap max-w-[16rem] truncate">{r[ci] ?? ""}</td>)}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {previewRows.length > 8 && <p className="text-[11px] text-gray-400 px-2 py-1">… và {previewRows.length - 8} dòng nữa</p>}
+              </div>
+            </>
+          )}
+          <div className="flex gap-2">
+            <button disabled={previewRows.length === 0} onClick={commitPaste} className="bg-violet-600 text-white text-[12px] px-3 py-1.5 rounded-lg disabled:opacity-40">Thêm {previewRows.length} dòng vào bảng</button>
+            <button onClick={() => setPaste(null)} className="border text-[12px] px-3 py-1.5 rounded-lg">Hủy</button>
+          </div>
+        </div>
+      )}
+
+      {loading ? <p className="text-gray-400 text-sm py-4">Đang tải…</p> : (
+        <div className="border rounded-lg overflow-auto max-h-[60vh]">
+          <table className="w-full text-[13px]">
+            <thead className="bg-gray-50 sticky top-0"><tr className="text-left text-[11px] text-gray-500">
+              <th className="px-2 py-1.5 w-8">#</th>
+              <th className="px-2 py-1.5 w-[12%]">NHÓM</th>
+              <th className="px-2 py-1.5 w-[14%]">TÌNH HUỐNG</th>
+              <th className="px-2 py-1.5 w-[28%]">KHÁCH HỎI / NÓI</th>
+              <th className="px-2 py-1.5">LULU NÊN TRẢ LỜI</th>
+              <th className="px-2 py-1.5 w-[14%]">GHI CHÚ</th>
+              <th className="w-12"></th>
+            </tr></thead>
+            <tbody>
+              {visible.map(({ r, i }) => (
+                <tr key={i} className="border-t align-top">
+                  <td className="px-2 py-1 text-gray-400">{i + 1}</td>
+                  <td className="px-1 py-1">{cell(r.groupLabel, (v) => setRow(i, { groupLabel: v }), "Nhóm…", "text-[12px]")}</td>
+                  <td className="px-1 py-1">{cell(r.situationLabel, (v) => setRow(i, { situationLabel: v }), "Tình huống…", "text-[12px]")}</td>
+                  <td className="px-1 py-1">{cell(r.customerText, (v) => setRow(i, { customerText: v }), "Câu khách…")}</td>
+                  <td className="px-1 py-1">
+                    {cell(r.idealResponse, (v) => setRow(i, { idealResponse: v }), "Câu Lulu trả lời… (dùng {{PRICE}} thay số tiền)", hasHardcodedPriceFE(r.idealResponse) ? "border-amber-400 bg-amber-50" : "")}
+                    {hasHardcodedPriceFE(r.idealResponse) && isAdmin && (
+                      <button onClick={() => setRow(i, { idealResponse: suggestPriceReplace(r.idealResponse) })}
+                        className="text-[10px] text-amber-700 underline mt-0.5">⚠ Có số tiền — bấm thay bằng {"{{PRICE}}"} (lấy giá thật)</button>
+                    )}
+                  </td>
+                  <td className="px-1 py-1">{cell(r.notes, (v) => setRow(i, { notes: v }), "Ghi chú", "text-[12px]")}</td>
+                  <td className="px-1 py-1">
+                    {isAdmin && <div className="flex flex-col gap-1">
+                      <button onClick={() => dupRow(i)} title="Nhân bản" className="text-gray-400 hover:text-gray-700"><Copy className="w-3.5 h-3.5" /></button>
+                      <button onClick={() => delRow(i)} title="Xóa" className="text-gray-400 hover:text-rose-500"><Trash2 className="w-3.5 h-3.5" /></button>
+                    </div>}
+                  </td>
+                </tr>
+              ))}
+              {visible.length === 0 && <tr><td colSpan={7} className="text-center text-gray-400 py-6 text-[13px]">{rows.length ? "Không có dòng khớp tìm kiếm/lọc." : "Chưa có dòng nào — bấm 'Thêm dòng' hoặc 'Dán nhiều dòng'."}</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TreeRowView({ node, depth, expanded, toggle, onEditLeaf, onOpenScript }: {
   node: TreeNodeFE; depth: number; expanded: Set<string>; toggle: (k: string) => void;
   onEditLeaf: (scenarioKey: string) => void;
+  onOpenScript: (nodeKey: string, scenarioKey: string | null, title: string, serviceKey: string | null) => void;
 }) {
   const isOpen = expanded.has(node.nodeKey);
   const pad = { paddingLeft: `${depth * 18 + 4}px` };
+  const scriptBtn = (
+    <button onClick={(e) => { e.stopPropagation(); onOpenScript(node.nodeKey, node.scenarioKey, node.scenario?.name || node.title, node.serviceKey); }}
+      title="Bảng Kịch bản Sale (Hỏi & Trả lời)"
+      className="text-[11px] text-violet-600 border border-violet-200 rounded px-1.5 py-0.5 hover:bg-violet-50 shrink-0 flex items-center gap-1">
+      <NotebookPen className="w-3 h-3" /> Hỏi & Trả lời
+    </button>
+  );
   if (node.nodeType === "leaf") {
     return (
-      <button onClick={() => node.scenarioKey && onEditLeaf(node.scenarioKey)} style={pad}
-        className="w-full text-left flex items-center gap-2 py-1.5 pr-2 rounded hover:bg-violet-50 text-[13px]">
-        <span className="text-gray-300">•</span>
-        <span className={node.scenario?.missing ? "text-rose-500" : ""}>{node.scenario?.name || node.title}</span>
-        {node.scenario && !node.scenario.enabled && <span className="text-[10px] text-gray-400">(đang tắt)</span>}
-        {node.scenario?.whenText && <span className="text-[11px] text-gray-400 truncate">— {node.scenario.whenText}</span>}
-        <Pencil className="w-3 h-3 text-gray-300 ml-auto shrink-0" />
-      </button>
+      <div style={pad} className="flex items-center gap-2 py-1.5 pr-2 rounded hover:bg-violet-50 text-[13px]">
+        <button onClick={() => node.scenarioKey && onEditLeaf(node.scenarioKey)} className="flex items-center gap-2 text-left flex-1 min-w-0">
+          <span className="text-gray-300">•</span>
+          <span className={node.scenario?.missing ? "text-rose-500" : ""}>{node.scenario?.name || node.title}</span>
+          {node.scenario && !node.scenario.enabled && <span className="text-[10px] text-gray-400">(đang tắt)</span>}
+          <Pencil className="w-3 h-3 text-gray-300 shrink-0" />
+        </button>
+        {scriptBtn}
+      </div>
     );
   }
   if (node.nodeType === "pricing") {
@@ -591,6 +837,7 @@ function TreeRowView({ node, depth, expanded, toggle, onEditLeaf }: {
           <ChevronDown className={`w-3.5 h-3.5 text-emerald-500 transition-transform ${isOpen ? "" : "-rotate-90"}`} />
           <span className="font-medium text-emerald-700">💰 {node.title}</span>
           <span className="text-[11px] text-gray-400">(giá sống từ Bảng giá)</span>
+          {scriptBtn}
         </button>
         {isOpen && <PricingNode serviceKey={node.serviceKey} />}
       </div>
@@ -600,14 +847,16 @@ function TreeRowView({ node, depth, expanded, toggle, onEditLeaf }: {
   const leafCount = countLeaves(node);
   return (
     <div>
-      <button onClick={() => toggle(node.nodeKey)} style={pad}
-        className={`w-full text-left flex items-center gap-2 py-2 pr-2 rounded hover:bg-gray-50 ${node.nodeType === "stage" ? "font-semibold text-[15px]" : "text-[13px] font-medium text-gray-700"}`}>
-        <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${isOpen ? "" : "-rotate-90"}`} />
-        <span>{node.title}</span>
-        {leafCount > 0 && <span className="text-[11px] text-gray-400 font-normal">({leafCount})</span>}
-      </button>
+      <div style={pad} className={`flex items-center gap-2 py-2 pr-2 rounded hover:bg-gray-50 ${node.nodeType === "stage" ? "font-semibold text-[15px]" : "text-[13px] font-medium text-gray-700"}`}>
+        <button onClick={() => toggle(node.nodeKey)} className="flex items-center gap-2 text-left flex-1 min-w-0">
+          <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${isOpen ? "" : "-rotate-90"}`} />
+          <span>{node.title}</span>
+          {leafCount > 0 && <span className="text-[11px] text-gray-400 font-normal">({leafCount})</span>}
+        </button>
+        {node.nodeType !== "stage" && scriptBtn}
+      </div>
       {isOpen && node.children.map((c) => (
-        <TreeRowView key={c.nodeKey} node={c} depth={depth + 1} expanded={expanded} toggle={toggle} onEditLeaf={onEditLeaf} />
+        <TreeRowView key={c.nodeKey} node={c} depth={depth + 1} expanded={expanded} toggle={toggle} onEditLeaf={onEditLeaf} onOpenScript={onOpenScript} />
       ))}
     </div>
   );
@@ -618,8 +867,10 @@ function countLeaves(node: TreeNodeFE): number {
   return node.children.reduce((s, c) => s + countLeaves(c), 0);
 }
 
-function ScenarioTreeView({ reloadKey, onEditLeaf, showErr }: {
-  reloadKey: number; onEditLeaf: (scenarioKey: string) => void; showErr: (m: string) => void;
+function ScenarioTreeView({ reloadKey, onEditLeaf, onOpenScript, showErr }: {
+  reloadKey: number; onEditLeaf: (scenarioKey: string) => void;
+  onOpenScript: (nodeKey: string, scenarioKey: string | null, title: string, serviceKey: string | null) => void;
+  showErr: (m: string) => void;
 }) {
   const [tree, setTree] = useState<TreeNodeFE[] | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -636,7 +887,7 @@ function ScenarioTreeView({ reloadKey, onEditLeaf, showErr }: {
         <button onClick={() => setExpanded(new Set())} className="hover:text-gray-600">Thu gọn tất cả</button>
       </div>
       {tree.map((n) => (
-        <TreeRowView key={n.nodeKey} node={n} depth={0} expanded={expanded} toggle={toggle} onEditLeaf={onEditLeaf} />
+        <TreeRowView key={n.nodeKey} node={n} depth={0} expanded={expanded} toggle={toggle} onEditLeaf={onEditLeaf} onOpenScript={onOpenScript} />
       ))}
     </div>
   );
@@ -662,6 +913,7 @@ export default function LuluSaleScenariosPage() {
   const [busy, setBusy] = useState(false);
   const [view, setView] = useState<"tree" | "list">("tree");
   const [treeReloadKey, setTreeReloadKey] = useState(0);
+  const [scriptNode, setScriptNode] = useState<{ nodeKey: string; scenarioKey: string | null; title: string; serviceKey: string | null } | null>(null);
 
   const showOk = (msg: string) => { setToast({ ok: true, msg }); setTimeout(() => setToast(null), 3500); };
   const showErr = (msg: string) => { setToast({ ok: false, msg }); setTimeout(() => setToast(null), 5000); };
@@ -846,6 +1098,12 @@ export default function LuluSaleScenariosPage() {
         </button>
       </div>
 
+      {scriptNode && (
+        <ScriptTablePanel key={scriptNode.nodeKey} nodeKey={scriptNode.nodeKey} scenarioKey={scriptNode.scenarioKey}
+          title={scriptNode.title} serviceKey={scriptNode.serviceKey} isAdmin={effectiveIsAdmin}
+          onClose={() => setScriptNode(null)} showOk={showOk} showErr={showErr} />
+      )}
+
       {view === "tree" && (
         <ScenarioTreeView reloadKey={treeReloadKey}
           onEditLeaf={(scenarioKey) => {
@@ -853,6 +1111,7 @@ export default function LuluSaleScenariosPage() {
             if (rec) { setEditing(rec); setEditingSeed(null); setAiOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); }
             else showErr("Không tìm thấy thẻ — thử tải lại trang.");
           }}
+          onOpenScript={(nodeKey, scenarioKey, title, serviceKey) => { setScriptNode({ nodeKey, scenarioKey, title, serviceKey }); setEditing(null!); window.scrollTo({ top: 0, behavior: "smooth" }); }}
           showErr={showErr} />
       )}
 

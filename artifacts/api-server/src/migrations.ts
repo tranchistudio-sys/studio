@@ -6,6 +6,7 @@ import { ensureSalePlaybookTable } from "./lib/sale-playbook";
 import { ensureThreadStateTable } from "./lib/sale-thread-state";
 import { ensureScenarioTables } from "./lib/sale-scenario-store";
 import { ensureScenarioTreeTable } from "./lib/sale-scenario-tree";
+import { ensureScriptTable } from "./lib/sale-script-library";
 
 async function runMigrationsUnlocked() {
   const client = await pool.connect();
@@ -1223,6 +1224,8 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
     await ensureScenarioTables();
     // lulu_scenario_tree: lớp tổ chức cây kịch bản (additive, seed skeleton chỉ khi rỗng).
     await ensureScenarioTreeTable();
+    // lulu_sale_script_examples: thư viện golden examples (Hỏi & Trả lời) — additive.
+    await ensureScriptTable();
     console.log("[migrations] lulu_* runtime-managed tables OK");
   } catch (err) {
     console.error("[migrations] lulu_* runtime-managed tables:", err);

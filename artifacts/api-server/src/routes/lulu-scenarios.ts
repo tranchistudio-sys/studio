@@ -24,6 +24,7 @@ import { simulateThreadStateFromHistory, buildThreadStateBlock } from "../lib/sa
 import { validateSaleReply, type CatalogItem } from "../lib/sale-workflow-validator";
 import { buildScenarioTree, addLeafToNode } from "../lib/sale-scenario-tree";
 import { getServicePricePreview } from "../lib/sale-pricing";
+import { listScripts, saveScripts, searchScripts, getGoldenExamples, buildGoldenExamplesBlock } from "../lib/sale-script-library";
 
 /**
  * API "Kịch bản tư vấn Lulu" (Scenario Manager).
@@ -207,6 +208,41 @@ router.get("/lulu-scenarios/price-preview", async (req, res) => {
   } catch (err) {
     console.error("[SalePricing] price-preview lỗi:", String(err).slice(0, 200));
     res.status(500).json({ error: "Không đọc được bảng giá" });
+  }
+});
+
+// ─── BẢNG KỊCH BẢN SALE (Hỏi & Trả lời) theo node ───────────────────────────
+
+router.get("/lulu-scenarios/scripts/:nodeKey", async (req, res) => {
+  if (!(await requireStaff(req, res))) return;
+  if (!requireFeature(res)) return;
+  const nodeKey = String(req.params.nodeKey);
+  const q = typeof req.query.q === "string" ? req.query.q : "";
+  try {
+    const rows = q ? await searchScripts(nodeKey, q) : await listScripts(nodeKey);
+    res.json({ rows });
+  } catch (err) {
+    console.error("[ScriptLib] list lỗi:", String(err).slice(0, 160));
+    res.status(500).json({ error: "Không tải được bảng kịch bản" });
+  }
+});
+
+router.put("/lulu-scenarios/scripts/:nodeKey", async (req, res) => {
+  const caller = await requireStaff(req, res);
+  if (!caller) return;
+  if (!requireFeature(res) || !requireAdmin(caller, res)) return;
+  const b = req.body as { scenarioKey?: string | null; rows?: Array<{ groupLabel?: string; situationLabel?: string; customerText?: string; idealResponse?: string; notes?: string; isActive?: boolean }> };
+  const rows = (Array.isArray(b?.rows) ? b.rows : []).map((r) => ({
+    groupLabel: String(r.groupLabel ?? ""), situationLabel: String(r.situationLabel ?? ""),
+    customerText: String(r.customerText ?? ""), idealResponse: String(r.idealResponse ?? ""),
+    notes: String(r.notes ?? ""), isActive: r.isActive !== false,
+  }));
+  try {
+    const out = await saveScripts(String(req.params.nodeKey), b?.scenarioKey ?? null, rows);
+    res.json(out);
+  } catch (err) {
+    console.error("[ScriptLib] save lỗi:", String(err).slice(0, 160));
+    res.status(500).json({ error: "Lưu bảng kịch bản lỗi" });
   }
 });
 
@@ -404,6 +440,10 @@ async function runScenarioTest(opts: {
     isFirstContact: opts.history.length === 0, scenarios: defs,
   });
 
+  // GOLDEN EXAMPLES: lấy top-N cách sale THẬT trả lời cho scenario thắng (thư viện chủ tự viết).
+  // Chỉ THAM KHẢO giọng — giá vẫn từ bảng giá realtime trong context.
+  const golden = await getGoldenExamples(resolve.winner?.key ?? null, opts.message, 4);
+
   // Gọi LLM viết lời (giống Claude Sale Test — KHÔNG gửi Messenger). Không có key → trace-only.
   let replyText: string | null = null;
   let replyError: string | null = null;
@@ -425,6 +465,8 @@ async function runScenarioTest(opts: {
       if (stateBlock) context += `\n\n${stateBlock}`;
       const guidanceBlock = buildScenarioGuidanceBlock(resolve);
       if (guidanceBlock) context += `\n\n${guidanceBlock}`;
+      const goldenBlock = buildGoldenExamplesBlock(golden);
+      if (goldenBlock) context += `\n\n${goldenBlock}`;
       const [styleGuide, brainRules, settings] = await Promise.all([
         getActivePlaybook(), getActiveBrainRules(), getClaudeSaleSettings(),
       ]);
@@ -491,6 +533,7 @@ async function runScenarioTest(opts: {
     stageVn: STAGE_VN[resolve.decision.stage] ?? resolve.decision.stage,
     memoryVN: describeMemoryVN(state),
     dataSources: describeDataSources(resolve.decision.knowledgeNeeded),
+    goldenUsed: golden.map((g) => ({ customerText: g.customerText, idealResponse: g.idealResponse })),
     winner: resolve.winner ? { key: resolve.winner.key, name: resolve.winner.name } : null,
     losers: resolve.losers,
     explain: resolve.explain,

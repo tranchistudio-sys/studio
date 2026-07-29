@@ -513,6 +513,135 @@ function AiDraftBox({ onDraft, onClose, showErr }: {
 
 // ─── Trang chính ──────────────────────────────────────────────────────────────
 
+// ─── CÂY KỊCH BẢN (folder thu gọn +/−) ──────────────────────────────────────
+
+type TreeNodeFE = {
+  nodeKey: string; parentKey: string | null;
+  nodeType: "stage" | "group" | "subgroup" | "leaf" | "pricing";
+  title: string; serviceKey: string | null; scenarioKey: string | null;
+  children: TreeNodeFE[];
+  scenario?: { name: string; enabled: boolean; status: string; whenText: string; missing?: boolean } | null;
+};
+type EffPkg = { code: string; name: string; groupName: string; basePrice: number; effectivePrice: number; promoActive: boolean; promoName: string | null; promoEnd: string | null };
+
+const vnd = (n: number) => (Number.isFinite(n) && n > 0 ? n.toLocaleString("vi-VN") + "đ" : "liên hệ");
+
+function PricingNode({ serviceKey }: { serviceKey: string | null }) {
+  const [groups, setGroups] = useState<Array<{ groupName: string; packages: EffPkg[] }> | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    apiGet<{ groups: Array<{ groupName: string; packages: EffPkg[] }> }>(`/lulu-scenarios/price-preview?service=${encodeURIComponent(serviceKey ?? "")}`)
+      .then((r) => { if (alive) setGroups(r.groups); })
+      .catch((e) => { if (alive) setErr(String((e as Error).message)); });
+    return () => { alive = false; };
+  }, [serviceKey]);
+  return (
+    <div className="ml-6 my-1 border-l-2 border-emerald-200 pl-3 py-1 text-[12px]">
+      <p className="text-emerald-700 font-medium">Nguồn giá: Dịch vụ &amp; Bảng giá {serviceKey ? `→ ${serviceKey}` : ""} · <span className="text-gray-400">đọc realtime, không nhập tay</span></p>
+      {err && <p className="text-rose-600 mt-1">Không đọc được giá: {err}</p>}
+      {!groups && !err && <p className="text-gray-400 mt-1">Đang đọc bảng giá…</p>}
+      {groups && groups.length === 0 && <p className="text-amber-600 mt-1">Chưa có gói nào khớp — mở "Dịch vụ &amp; Bảng giá" thêm gói cho nhóm này.</p>}
+      {groups?.map((g) => (
+        <div key={g.groupName} className="mt-1.5">
+          <p className="font-medium text-gray-700">{g.groupName}</p>
+          <table className="text-[12px] mt-0.5"><tbody>
+            {g.packages.slice(0, 8).map((p) => (
+              <tr key={p.code}>
+                <td className="pr-3 text-gray-600">{p.name || p.code}</td>
+                <td className="pr-3">
+                  {p.promoActive
+                    ? <span><span className="line-through text-gray-400">{vnd(p.basePrice)}</span> <b className="text-rose-600">{vnd(p.effectivePrice)}</b></span>
+                    : <b>{vnd(p.effectivePrice)}</b>}
+                </td>
+                <td className="text-emerald-600">{p.promoActive ? `KM${p.promoName ? " " + p.promoName : ""}${p.promoEnd ? ` (đến ${new Date(p.promoEnd).toLocaleDateString("vi-VN")})` : ""}` : ""}</td>
+              </tr>
+            ))}
+          </tbody></table>
+        </div>
+      ))}
+      <a href="/pricing" className="inline-block mt-1.5 text-violet-600">Xem / sửa bảng giá →</a>
+    </div>
+  );
+}
+
+function TreeRowView({ node, depth, expanded, toggle, onEditLeaf }: {
+  node: TreeNodeFE; depth: number; expanded: Set<string>; toggle: (k: string) => void;
+  onEditLeaf: (scenarioKey: string) => void;
+}) {
+  const isOpen = expanded.has(node.nodeKey);
+  const pad = { paddingLeft: `${depth * 18 + 4}px` };
+  if (node.nodeType === "leaf") {
+    return (
+      <button onClick={() => node.scenarioKey && onEditLeaf(node.scenarioKey)} style={pad}
+        className="w-full text-left flex items-center gap-2 py-1.5 pr-2 rounded hover:bg-violet-50 text-[13px]">
+        <span className="text-gray-300">•</span>
+        <span className={node.scenario?.missing ? "text-rose-500" : ""}>{node.scenario?.name || node.title}</span>
+        {node.scenario && !node.scenario.enabled && <span className="text-[10px] text-gray-400">(đang tắt)</span>}
+        {node.scenario?.whenText && <span className="text-[11px] text-gray-400 truncate">— {node.scenario.whenText}</span>}
+        <Pencil className="w-3 h-3 text-gray-300 ml-auto shrink-0" />
+      </button>
+    );
+  }
+  if (node.nodeType === "pricing") {
+    return (
+      <div>
+        <button onClick={() => toggle(node.nodeKey)} style={pad}
+          className="w-full text-left flex items-center gap-2 py-1.5 pr-2 rounded hover:bg-emerald-50 text-[13px]">
+          <ChevronDown className={`w-3.5 h-3.5 text-emerald-500 transition-transform ${isOpen ? "" : "-rotate-90"}`} />
+          <span className="font-medium text-emerald-700">💰 {node.title}</span>
+          <span className="text-[11px] text-gray-400">(giá sống từ Bảng giá)</span>
+        </button>
+        {isOpen && <PricingNode serviceKey={node.serviceKey} />}
+      </div>
+    );
+  }
+  // stage / group / subgroup = folder
+  const leafCount = countLeaves(node);
+  return (
+    <div>
+      <button onClick={() => toggle(node.nodeKey)} style={pad}
+        className={`w-full text-left flex items-center gap-2 py-2 pr-2 rounded hover:bg-gray-50 ${node.nodeType === "stage" ? "font-semibold text-[15px]" : "text-[13px] font-medium text-gray-700"}`}>
+        <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${isOpen ? "" : "-rotate-90"}`} />
+        <span>{node.title}</span>
+        {leafCount > 0 && <span className="text-[11px] text-gray-400 font-normal">({leafCount})</span>}
+      </button>
+      {isOpen && node.children.map((c) => (
+        <TreeRowView key={c.nodeKey} node={c} depth={depth + 1} expanded={expanded} toggle={toggle} onEditLeaf={onEditLeaf} />
+      ))}
+    </div>
+  );
+}
+
+function countLeaves(node: TreeNodeFE): number {
+  if (node.nodeType === "leaf") return 1;
+  return node.children.reduce((s, c) => s + countLeaves(c), 0);
+}
+
+function ScenarioTreeView({ reloadKey, onEditLeaf, showErr }: {
+  reloadKey: number; onEditLeaf: (scenarioKey: string) => void; showErr: (m: string) => void;
+}) {
+  const [tree, setTree] = useState<TreeNodeFE[] | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    apiGet<{ tree: TreeNodeFE[] }>("/lulu-scenarios/tree").then((r) => setTree(r.tree)).catch((e) => showErr(String((e as Error).message)));
+  }, [reloadKey, showErr]);
+  const toggle = (k: string) => setExpanded((prev) => { const n = new Set(prev); n.has(k) ? n.delete(k) : n.add(k); return n; });
+  const expandAll = () => { const all = new Set<string>(); const walk = (ns: TreeNodeFE[]) => ns.forEach((n) => { if (n.children.length || n.nodeType === "pricing") { all.add(n.nodeKey); walk(n.children); } }); if (tree) walk(tree); setExpanded(all); };
+  if (!tree) return <p className="text-gray-400 text-sm py-6">Đang tải cây kịch bản…</p>;
+  return (
+    <div className="bg-white border rounded-xl p-2">
+      <div className="flex gap-3 px-2 py-1 text-[11px] text-gray-400">
+        <button onClick={expandAll} className="hover:text-gray-600">Mở tất cả</button>
+        <button onClick={() => setExpanded(new Set())} className="hover:text-gray-600">Thu gọn tất cả</button>
+      </div>
+      {tree.map((n) => (
+        <TreeRowView key={n.nodeKey} node={n} depth={0} expanded={expanded} toggle={toggle} onEditLeaf={onEditLeaf} />
+      ))}
+    </div>
+  );
+}
+
 export default function LuluSaleScenariosPage() {
   const { effectiveIsAdmin } = useStaffAuth();
   const [labels, setLabels] = useState<ScenarioLabels | null>(null);
@@ -531,6 +660,8 @@ export default function LuluSaleScenariosPage() {
   const [applyIssues, setApplyIssues] = useState<Issue[]>([]);
   const [dragKey, setDragKey] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [view, setView] = useState<"tree" | "list">("tree");
+  const [treeReloadKey, setTreeReloadKey] = useState(0);
 
   const showOk = (msg: string) => { setToast({ ok: true, msg }); setTimeout(() => setToast(null), 3500); };
   const showErr = (msg: string) => { setToast({ ok: false, msg }); setTimeout(() => setToast(null), 5000); };
@@ -546,6 +677,7 @@ export default function LuluSaleScenariosPage() {
       setLabels(st.labels);
       const r = await apiGet<{ scenarios: ScenarioRecord[] }>("/lulu-scenarios");
       setRecords(r.scenarios);
+      setTreeReloadKey((k) => k + 1);
       setFeatureOff(false);
     } catch (e) {
       if ((e as { featureOff?: boolean }).featureOff) setFeatureOff(true);
@@ -701,6 +833,30 @@ export default function LuluSaleScenariosPage() {
           onClose={() => { setEditing(null!); setEditingSeed(null); }} showOk={showOk} showErr={showErr} />
       )}
 
+      {/* Chọn cách xem: CÂY (mặc định, thu gọn theo 7 chặng) hoặc DANH SÁCH phẳng (tìm/lọc). */}
+      <div className="flex items-center gap-1.5">
+        <span className="text-[12px] text-gray-400 mr-1">Xem:</span>
+        <button onClick={() => setView("tree")}
+          className={`text-[12px] border rounded-lg px-3 py-1.5 ${view === "tree" ? "bg-violet-600 text-white border-violet-600" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
+          🌳 Cây kịch bản
+        </button>
+        <button onClick={() => setView("list")}
+          className={`text-[12px] border rounded-lg px-3 py-1.5 ${view === "list" ? "bg-violet-600 text-white border-violet-600" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
+          ☰ Danh sách
+        </button>
+      </div>
+
+      {view === "tree" && (
+        <ScenarioTreeView reloadKey={treeReloadKey}
+          onEditLeaf={(scenarioKey) => {
+            const rec = records.find((r) => r.scenarioKey === scenarioKey);
+            if (rec) { setEditing(rec); setEditingSeed(null); setAiOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); }
+            else showErr("Không tìm thấy thẻ — thử tải lại trang.");
+          }}
+          showErr={showErr} />
+      )}
+
+      {view === "list" && (<>
       <div className="flex items-center gap-2 flex-wrap">
         <div className="relative">
           <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-2.5" />
@@ -771,6 +927,7 @@ export default function LuluSaleScenariosPage() {
         })}
         {visible.length === 0 && <p className="text-sm text-gray-400 text-center py-8">Không có kịch bản nào khớp bộ lọc.</p>}
       </div>
+      </>)}
     </div>
   );
 }

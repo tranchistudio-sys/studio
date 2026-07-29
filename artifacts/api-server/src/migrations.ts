@@ -5,6 +5,7 @@ import { ensureHumanReviewTable } from "./lib/sale-human-review";
 import { ensureSalePlaybookTable } from "./lib/sale-playbook";
 import { ensureThreadStateTable } from "./lib/sale-thread-state";
 import { ensureScenarioTables } from "./lib/sale-scenario-store";
+import { ensureScenarioTreeTable } from "./lib/sale-scenario-tree";
 
 async function runMigrationsUnlocked() {
   const client = await pool.connect();
@@ -1220,6 +1221,8 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
     // — ensure từ ngày đầu, additive, seed 12 thẻ chỉ-khi-bảng-rỗng. Feature flag OFF:
     // bảng tồn tại nhưng KHÔNG đụng luồng trả lời cho tới khi bật cờ.
     await ensureScenarioTables();
+    // lulu_scenario_tree: lớp tổ chức cây kịch bản (additive, seed skeleton chỉ khi rỗng).
+    await ensureScenarioTreeTable();
     console.log("[migrations] lulu_* runtime-managed tables OK");
   } catch (err) {
     console.error("[migrations] lulu_* runtime-managed tables:", err);

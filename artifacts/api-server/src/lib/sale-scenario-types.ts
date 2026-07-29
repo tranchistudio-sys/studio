@@ -282,6 +282,19 @@ export type ScenarioDef = {
   nextScenarios: Array<{ whenVn: string; scenarioKey: string }>;
 };
 
+/** Tóm tắt "KHI KHÁCH..." bằng tiếng Việt (server-side — dùng cho cây kịch bản). */
+export function summarizeWhenServer(card: ScenarioCard): string {
+  const parts: string[] = [];
+  for (const t of card.triggers ?? []) if (t !== "bat_ky" && TRIGGER_LABELS[t as TriggerKey]) parts.push(TRIGGER_LABELS[t as TriggerKey]);
+  const c = card.conditions;
+  if (c?.serviceIntent && c.serviceIntent !== "any") parts.push(CONDITION_LABELS.serviceIntent[c.serviceIntent]);
+  if (c?.dateStatus && c.dateStatus !== "any") parts.push(CONDITION_LABELS.dateStatus[c.dateStatus]);
+  if (c?.quoted && c.quoted !== "any") parts.push(CONDITION_LABELS.quoted[c.quoted]);
+  const clean = parts.filter(Boolean);
+  if (clean.length === 0) return (card.triggers ?? []).includes("bat_ky") ? "bất kỳ tin nào" : "(chưa đặt điều kiện)";
+  return clean.join(" · ");
+}
+
 export function cardToDef(key: string, card: ScenarioCard, priority: number, enabled: boolean): ScenarioDef {
   // Card từ DB (JSONB) có thể bẩn/thiếu field (sửa tay SQL, drift) — default MỌI field
   // để resolver không bao giờ crash vì dữ liệu (fail-open là hợp đồng số 1).

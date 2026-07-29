@@ -22,6 +22,8 @@ import { getActiveBrainRules } from "../lib/sale-brain-lab";
 import { getClaudeSaleSettings } from "../lib/sale-settings";
 import { simulateThreadStateFromHistory, buildThreadStateBlock } from "../lib/sale-thread-state";
 import { validateSaleReply, type CatalogItem } from "../lib/sale-workflow-validator";
+import { buildScenarioTree, addLeafToNode } from "../lib/sale-scenario-tree";
+import { getServicePricePreview } from "../lib/sale-pricing";
 
 /**
  * API "Kịch bản tư vấn Lulu" (Scenario Manager).
@@ -179,6 +181,44 @@ router.get("/lulu-scenarios/status", async (req, res) => {
       coreForbidden: CORE_FORBIDDEN_KEYS,
     },
   });
+});
+
+// ─── CÂY KỊCH BẢN (tổ chức thu gọn) + nguồn giá sống ─────────────────────────
+
+router.get("/lulu-scenarios/tree", async (req, res) => {
+  if (!(await requireStaff(req, res))) return;
+  if (!requireFeature(res)) return;
+  try {
+    res.json({ tree: await buildScenarioTree() });
+  } catch (err) {
+    console.error("[ScenarioTree] tree lỗi:", String(err).slice(0, 200));
+    res.status(500).json({ error: "Không tải được cây kịch bản" });
+  }
+});
+
+/** Giá SỐNG theo service_key — đọc realtime từ "Dịch vụ & Bảng giá", KHÔNG hard-code. */
+router.get("/lulu-scenarios/price-preview", async (req, res) => {
+  if (!(await requireStaff(req, res))) return;
+  if (!requireFeature(res)) return;
+  const service = typeof req.query.service === "string" ? req.query.service : null;
+  const pinned = typeof req.query.group === "string" ? req.query.group : null;
+  try {
+    res.json({ service, groups: await getServicePricePreview(service, { pinnedGroup: pinned }) });
+  } catch (err) {
+    console.error("[SalePricing] price-preview lỗi:", String(err).slice(0, 200));
+    res.status(500).json({ error: "Không đọc được bảng giá" });
+  }
+});
+
+router.post("/lulu-scenarios/tree/:parentKey/add-leaf", async (req, res) => {
+  const caller = await requireStaff(req, res);
+  if (!caller) return;
+  if (!requireFeature(res) || !requireAdmin(caller, res)) return;
+  const scenarioKey = String((req.body as { scenarioKey?: string })?.scenarioKey ?? "");
+  if (!scenarioKey) { res.status(400).json({ error: "Thiếu scenarioKey" }); return; }
+  const ok = await addLeafToNode(String(req.params.parentKey), scenarioKey);
+  if (!ok) { res.status(404).json({ error: "Không tìm thấy nhánh cha" }); return; }
+  res.json({ ok: true });
 });
 
 // ─── Danh sách / chi tiết ─────────────────────────────────────────────────────

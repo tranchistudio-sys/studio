@@ -24,6 +24,7 @@ export type ScriptRow = {
   notes: string;
   isActive: boolean;
   sortOrder: number;
+  source: "auto" | "manual";   // 'auto' = hệ thống sinh; 'manual' = admin nhập/chỉnh
 };
 
 let ensured = false;
@@ -51,6 +52,9 @@ export async function ensureScriptTable(): Promise<void> {
   // (Service-rooted) service_key = khoá BỀN của dịch vụ sở hữu golden này → retrieval theo DỊCH VỤ
   // trực tiếp (không chỉ theo scenario_key). Additive, nullable.
   await pool.query(`ALTER TABLE lulu_sale_script_examples ADD COLUMN IF NOT EXISTS service_key TEXT`);
+  // Nguồn dòng: 'auto' = hệ thống tự sinh từ Bảng giá (sync); 'manual' = admin nhập/chỉnh tay.
+  // Rows CŨ (trước cột này) mặc định 'manual' — coi như admin sở hữu, sync KHÔNG đè.
+  await pool.query(`ALTER TABLE lulu_sale_script_examples ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual'`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_lulu_script_node ON lulu_sale_script_examples (node_key, sort_order)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_lulu_script_scenario ON lulu_sale_script_examples (scenario_key) WHERE scenario_key IS NOT NULL`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_lulu_script_service ON lulu_sale_script_examples (service_key) WHERE service_key IS NOT NULL`);
@@ -70,16 +74,15 @@ function mapRow(r: Record<string, unknown>): ScriptRow {
     notes: (r.notes as string) ?? "",
     isActive: !!r.is_active,
     sortOrder: Number(r.sort_order ?? 0),
+    source: (r.source as string) === "auto" ? "auto" : "manual",
   };
 }
 
 // ─── Chống hard-code GIÁ trong câu mẫu (cảnh báo, không chặn cứng) ────────────
 // Câu mẫu NÊN dùng {{PRICE}} / "gói hiện tại" thay số cụ thể — vì giá lấy realtime.
-const MONEY_IN_TEXT_RE = /(\d{1,3}([.,]\d{3}){1,3}\s*(đ|d|vnd|k|tr|triệu)|\d+\s*(triệu|tr\b)|\d{2,4}\s*k\b)/i;
-
-export function scriptHasHardcodedPrice(text: string): boolean {
-  return MONEY_IN_TEXT_RE.test(text ?? "");
-}
+// Regex thật ở sale-scenario-steps.ts (module thuần) — re-export giữ import cũ.
+export { scriptHasHardcodedPrice } from "./sale-scenario-steps";
+import { scriptHasHardcodedPrice } from "./sale-scenario-steps";
 
 // ─── Đọc / Ghi ────────────────────────────────────────────────────────────────
 
@@ -101,6 +104,7 @@ export type ScriptInput = { groupLabel?: string; situationLabel?: string; custom
  */
 export async function saveScripts(
   nodeKey: string, scenarioKey: string | null, rows: ScriptInput[], serviceKey: string | null = null,
+  source: "auto" | "manual" = "manual",
 ): Promise<{ rows: ScriptRow[]; priceWarnings: number[] }> {
   await ensureScriptTable();
   const clean = (rows ?? [])
@@ -125,9 +129,9 @@ export async function saveScripts(
     for (const r of clean) {
       await client.query(
         `INSERT INTO lulu_sale_script_examples
-           (node_key, scenario_key, service_key, group_label, situation_label, customer_text, ideal_response, notes, is_active, sort_order)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-        [nodeKey, scenarioKey, serviceKey, r.groupLabel, r.situationLabel, r.customerText, r.idealResponse, r.notes, r.isActive, order],
+           (node_key, scenario_key, service_key, group_label, situation_label, customer_text, ideal_response, notes, is_active, sort_order, source)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [nodeKey, scenarioKey, serviceKey, r.groupLabel, r.situationLabel, r.customerText, r.idealResponse, r.notes, r.isActive, order, source],
       );
       order += 10;
     }
@@ -287,19 +291,36 @@ export type GoldenExample = { customerText: string; idealResponse: string; notes
 /**
  * Lấy top-N ví dụ GẦN NHẤT với tin khách cho 1 scenario. Điểm = số từ khoá trùng giữa
  * tin khách và câu-khách-mẫu (Jaccard-ish, thiên về overlap). fail-soft → [].
+ *
+ * serviceSlug (tuỳ chọn): FALLBACK khi scenario không có ví dụ — lấy theo DỊCH VỤ
+ * (service_key = slug nhóm giá). Nhờ đó kịch bản soạn/tự sinh từ CÂY (scenario_key null)
+ * vẫn được Lulu học giọng. Giá trong ví dụ vẫn là historical — CRM luôn thắng.
  */
 export async function getGoldenExamples(
-  scenarioKey: string | null, customerMessage: string, topN = 4,
+  scenarioKey: string | null, customerMessage: string, topN = 4, serviceSlug: string | null = null,
 ): Promise<GoldenExample[]> {
-  if (!scenarioKey) return [];
+  if (!scenarioKey && !serviceSlug) return [];
   try {
     await ensureScriptTable();
-    const r = await pool.query(
-      `SELECT customer_text, ideal_response, notes FROM lulu_sale_script_examples
-       WHERE scenario_key = $1 AND is_active = true AND ideal_response <> ''`,
-      [scenarioKey],
-    );
-    const rows = r.rows as Array<{ customer_text: string; ideal_response: string; notes: string }>;
+    let rows: Array<{ customer_text: string; ideal_response: string; notes: string }> = [];
+    if (scenarioKey) {
+      const r = await pool.query(
+        `SELECT customer_text, ideal_response, notes FROM lulu_sale_script_examples
+         WHERE scenario_key = $1 AND is_active = true AND ideal_response <> ''`,
+        [scenarioKey],
+      );
+      rows = r.rows as typeof rows;
+    }
+    // Fallback theo dịch vụ: script từ cây service-first (auto/manual) có scenario_key null.
+    if (rows.length === 0 && serviceSlug) {
+      const r2 = await pool.query(
+        `SELECT customer_text, ideal_response, notes FROM lulu_sale_script_examples
+         WHERE service_key = $1 AND is_active = true AND ideal_response <> ''
+         ORDER BY node_key, sort_order LIMIT 200`,
+        [serviceSlug],
+      );
+      rows = r2.rows as typeof rows;
+    }
     if (rows.length === 0) return [];
     const msgTokens = new Set(tokens(customerMessage));
     const scored = rows.map((row) => {

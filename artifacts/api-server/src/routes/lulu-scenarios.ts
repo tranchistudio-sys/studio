@@ -26,8 +26,10 @@ import { buildScenarioTree, addLeafToNode } from "../lib/sale-scenario-tree";
 import { getServicePricePreview } from "../lib/sale-pricing";
 import { stitchReplyFromGolden, formatVnd } from "../lib/sale-reply-stitch";
 import { computeServiceTrail } from "../lib/sale-service-context";
-import { listServiceMap } from "../lib/sale-service-map";
+import { listServiceMap, resolveGroupNameForService } from "../lib/sale-service-map";
+import { slugifyGroup } from "../lib/sale-scenario-steps";
 import { listScripts, saveScripts, searchScripts, getGoldenExamples, buildGoldenExamplesBlock, copyServiceGolden } from "../lib/sale-script-library";
+import { syncPricingToSaleScenarios, syncReportVN } from "../lib/sale-scenario-sync";
 
 /**
  * API "Kịch bản tư vấn Lulu" (Scenario Manager).
@@ -280,6 +282,21 @@ router.post("/lulu-scenarios/copy-golden", async (req, res) => {
   }
 });
 
+// ĐỒNG BỘ Bảng giá → Kịch bản Sale (tạo kịch bản còn thiếu, KHÔNG đè). Idempotent, admin-only.
+router.post("/lulu-scenarios/sync-pricing", async (req, res) => {
+  const caller = await requireStaff(req, res);
+  if (!caller) return;
+  if (!requireFeature(res) || !requireAdmin(caller, res)) return;
+  const groupName = (req.body as { groupName?: string })?.groupName?.trim() || null;
+  try {
+    const report = await syncPricingToSaleScenarios({ groupName });
+    res.json({ report, message: syncReportVN(report) });
+  } catch (err) {
+    console.error("[ScenarioSync] sync-pricing lỗi:", String(err).slice(0, 160));
+    res.status(500).json({ error: "Đồng bộ kịch bản từ Bảng giá lỗi" });
+  }
+});
+
 router.post("/lulu-scenarios/tree/:parentKey/add-leaf", async (req, res) => {
   const caller = await requireStaff(req, res);
   if (!caller) return;
@@ -497,7 +514,16 @@ async function runScenarioTest(opts: {
 
   // GOLDEN EXAMPLES: lấy top-N cách sale THẬT trả lời cho scenario thắng (thư viện chủ tự viết).
   // Chỉ THAM KHẢO giọng — giá vẫn từ bảng giá realtime trong context.
-  const golden = await getGoldenExamples(resolve.winner?.key ?? null, opts.message, 4);
+  // Fallback theo DỊCH VỤ: script soạn/tự sinh từ CÂY (scenario_key null) vẫn được học giọng —
+  // serviceIntent → tên nhóm giá (service-map) → slug = service_key của script. Fail-soft.
+  let goldenServiceSlug: string | null = null;
+  if (state.serviceIntent) {
+    try {
+      const gn = await resolveGroupNameForService(state.serviceIntent);
+      if (gn) goldenServiceSlug = slugifyGroup(gn);
+    } catch { /* fail-soft — bỏ fallback */ }
+  }
+  const golden = await getGoldenExamples(resolve.winner?.key ?? null, opts.message, 4, goldenServiceSlug);
 
   // Gọi LLM viết lời (giống Claude Sale Test — KHÔNG gửi Messenger). Không có key → trace-only.
   let replyText: string | null = null;

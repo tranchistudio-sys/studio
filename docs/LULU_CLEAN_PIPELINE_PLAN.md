@@ -1,280 +1,294 @@
-# LULU CLEAN PIPELINE — KẾ HOẠCH (CHỜ CHỦ DUYỆT, CHƯA CODE)
+# LULU CLEAN PIPELINE — KẾ HOẠCH **V2** (CHỜ CHỦ DUYỆT LẦN 2, CHƯA CODE)
 
-> Ngày lập: 30/07/2026 · Nhánh: `feat/lulu-scenario-manager` · Trạng thái: **PLAN ONLY**
-> Nguồn: audit toàn hệ Facebook & Sale 30/07 (8 agent + 2 verifier) + inventory 6 mảng (chữ ký hàm, file:line đã xác minh trên HEAD `efec9e3`).
-> Nguyên tắc: KHÔNG rebuild. GIỮ phần tốt. LOẠI quyền quyết định trùng lặp. Mọi thay đổi nằm sau cờ `LULU_CLEAN_PIPELINE_*`, legacy giữ nguyên làm rollback.
+> V2 ngày 30/07/2026 (V1 cùng ngày, commit `4f9b6d6`) · Nhánh: `feat/lulu-scenario-manager` · Trạng thái: **PLAN ONLY — KHÔNG code, KHÔNG migration, KHÔNG merge/deploy/Republish, KHÔNG bật production, KHÔNG tự chọn PSID khách thật.**
+>
+> **V2 khác V1 ở đâu:** chủ đã DUYỆT HƯỚNG kiến trúc + trả lời 5 câu (có điều kiện). V2 khoá cứng nguyên tắc (mục I), định nghĩa object `SaleDecision` (I.2), bảng ánh xạ bộ não 8,2K từng-nhóm-luật (II.1), tách fact fail-closed vs hội thoại graceful (II.2), luật ảnh 6 điều kiện (II.3), quy trình chọn PSID pilot từ tài khoản test (II.4), điều kiện bảng trace + chứng minh không tái dùng được bảng cũ (II.5), 7 PRODUCTION BLOCKER (mục III), mô hình trạng thái dữ liệu 6 mức (mục IV), định nghĩa shadow chính xác + tiêu chuẩn PASS định lượng (mục V), ma trận test 21 nhóm + cổng nghiệm thu (mục VI). Mục A–L của V1 giữ nguyên giá trị trừ chỗ V2 ghi đè — nơi nào mâu thuẫn thì **V2 thắng**.
 
 ---
 
-## A. PRODUCTION PATH HIỆN TẠI (đã audit, tóm tắt để đối chiếu)
+# PHẦN I — NGUYÊN TẮC KIẾN TRÚC (KHOÁ CỨNG)
+
+## I.1. Một đường quyết định duy nhất
 
 ```
-Meta POST /api/webhook/facebook          webhook-facebook.ts:96   (không verify chữ ký)
-  → processIncomingFacebookMessage       fb-inbox.ts:415          (dedupe mid)
-  → applyIncomingMessage (state, flag)   fb-inbox.ts:539          (LULU_STATE_* OFF)
-  → GATE: getMasterEnabled() + ai_mode   fb-inbox.ts:547-549
-  → handleClaudeSaleReply                fb-inbox.ts:776
-      context = getSaleContext()  ~19,5K fb-inbox.ts:820          (nạp mù toàn bộ)
-      + ideas/vision/state/scenario      fb-inbox.ts:822-884      (2 khối cuối flag OFF)
-      → askClaudeForReply                claude-sale.ts:303
-          buildSystemPrompt ~38K         claude-sale.ts:168       (mega-prompt, 1 cú gọi LLM)
-          → callChat (claude→openai)     ai-orchestrator.ts:149
-          → parse 4 marker + tách bubble claude-sale.ts:356-393
-      → escalation gate (3 nguồn)        fb-inbox.ts:914-955      (hậu kiểm DUY NHẤT)
-      → gửi ảnh mẫu → ảnh giá → text     fb-inbox.ts:964-1096     (Graph v22.0)
-      → recordBotReply (flag OFF)        fb-inbox.ts:1073
+CUSTOMER MESSAGE
+  → INTENT              detectMessageSignals (sale-workflow.ts:297) + extractSlotsV2Patch + detectServiceIntentFromText
+  → ACTIVE SERVICE      computeServiceTrail (sale-service-context.ts:23) + resolveGroupNameForService (sale-service-map.ts:101)
+  → CONVERSATION STATE  getThreadState / simulateThreadStateFromHistory (sale-thread-state.ts:191/:406)
+  → SCENARIO            resolveScenario (baseline = routeSaleAction + SALE_PLAYBOOK_V1, sale-scenario-resolver.ts:229)
+  → REALTIME FACTS      loadKnowledge (MỚI, lib/sale-knowledge.ts) → getServicePricePreview/getEffectivePrice/…
+  → RESPONSE PLAN       object SaleDecision (I.2) — do HỆ THỐNG lắp, không phải AI
+  → AI NATURALIZER      callLlm (askClaudeForReply với prompt structured) — CHỈ diễn đạt SaleDecision
+  → BUSINESS VALIDATOR  validateSaleReply (+ voiceCheck) qua finalizeSaleReply (sale-pipeline.ts:158)
+  → FINAL RESPONSE      fb-inbox gửi (giữ nguyên hạ tầng ảnh/typing/bubble) → recordBotReply → TRACE
 ```
 
-**Sự thật quyết định thiết kế:** `fb-inbox.ts` KHÔNG import `sale-pipeline` / `sale-workflow-validator` / `sale-script-library` (grep = 0). Toàn bộ Understand → Route → Retrieve → Validate → Fallback đã tồn tại nhưng chỉ chạy trong `sale-brain-runner.ts` (Brain Lab, cờ `LULU_BRAIN_STRUCTURED_ENABLED`).
+Bất biến (không PR nào được vi phạm):
+- **BẢNG GIÁ REALTIME = sự thật** (service_groups/service_packages qua sale-pricing).
+- **KỊCH BẢN LULU = bộ não sale duy nhất** (không tồn tại bộ luật sale thứ hai trong prompt hay Brain Lab).
+- **CONTEXT/STATE = trí nhớ** (một nguồn: ThreadState; không suy song song bằng inferKnownIntent trong clean path).
+- **AI = chỉ cách nói tự nhiên.** AI KHÔNG được: tự chọn lại dịch vụ, tự đổi action, tự thêm giá/gói/ưu đãi/business fact ngoài `allowedBusinessFacts`.
+- **VALIDATOR = kiểm sự thật trước khi gửi** (fail-closed với business fact).
+- **Brain Lab = dạy phong cách + quản lý câu override ĐÃ DUYỆT + sân test/X-quang pipeline** (không phải "chỉ style" theo nghĩa hẹp — xem II.1.b).
+- **Messenger và Brain Lab gọi CHUNG một orchestrator** `runCleanSalePipeline()` (lib/sale-clean-pipeline.ts — PR-2 extract từ sale-brain-runner.ts:199-355). Không có đường thứ hai tự quyết hành vi.
 
-**2 xung đột phải xử trước khi nói chuyện "khôn":**
-1. `claude_sale_settings.config→saleSteps[3]` (B4 "KHÔNG hỏi ngược, gửi ngay các gói" — seed `DEFAULT_SALE_STEPS` sale-settings.ts:97) ⟂ `PRICE_GATING_RULE` (claude-sale.ts:128 "ghi đè mọi bước Báo giá… TUYỆT ĐỐI KHÔNG bung bảng giá") ⟂ `antiDriftBlock` (sale-conversation-discipline.ts:115 tự nhận "không được phá kể cả khi luật ở trên nói khác"). Ba khối cùng vào 1 prompt, trọng tài là văn xuôi.
-2. Hai bộ suy dịch vụ song song: `inferKnownIntent` (discipline.ts:72, prompt prod) vs `ThreadState.serviceIntent`/`resolveScenario` (hệ mới). Có thể khoá 2 nhóm khác nhau trong cùng 1 lượt.
+## I.2. Object trung gian `SaleDecision` (hợp đồng dữ liệu trung tâm)
 
----
-
-## B. MODULE GIỮ (reuse — đây là 70% pipeline sạch, ĐÃ CÓ SẴN)
-
-| Module | File:line | Vai trò trong pipeline mới | Ghi chú |
-|---|---|---|---|
-| `finalizeSaleReply` | sale-pipeline.ts:158 | Generate→Validate→Regenerate(1)→Fallback ladder | Giữ nguyên thang: LLM → gate kép (validator+voiceCheck) → tái sinh 1 lần → intent-first → blind-golden → stitched → intent → SAFE+needsHuman |
-| `intentFallbackLine` / `SAFE_REPLY_LINE` / `tryStitch` | sale-pipeline.ts:67/:124/:138 | Fallback Level 1–2 deterministic | `tryStitch` cần export để test trực tiếp |
-| `routeSaleAction` + `SALE_PLAYBOOK_V1` + `enforcePlaybook` + `computeForbiddenQuestions` | sale-workflow.ts:389/:90/:378/:364 | Rule engine "bước tiếp theo" (11 stage / 14 action) | Deterministic, không DB/AI |
-| `detectMessageSignals` | sale-workflow.ts:297 | Understand (1 nguồn tín hiệu) | Điểm mở rộng intent mới |
-| `resolveScenario` + `buildScenarioGuidanceBlock` | sale-scenario-resolver.ts:229/:310 | Sale Scenario = sale brain duy nhất (overlay trên Router, fail-open) | `baseline` vs `decision` sẵn khung so sánh |
-| `getGoldenExamples` + `buildGoldenExamplesBlock` | sale-script-library.ts:307/:381 | Kịch bản service-first (tier 100/50/kw) | 3.609 golden cuối cùng được dùng thật |
-| `validateSaleReply` + `extractMoneyVnd` | sale-workflow-validator.ts:159/:103 | Fact Validator | Sửa theo mục I |
-| `checkDatabaseVoice` + `naturalizePackageContent` | sale-content-naturalizer.ts:74/:60 | Voice gate + fact tự nhiên | Đã tách đúng khỏi validator |
-| `getServicePricePreview` / `getEffectivePrice` / `validPricesFor` / `matchedGroupNamesForService` / `auditPackages` | sale-pricing.ts:92/:145/:160/:134, sale-context.ts:129 | Retrieve FACT giá theo dịch vụ | `validPricesFor` hiện 0 caller runtime — sẽ thành nguồn catalog validator |
-| `resolveGroupNameForService` / `listServiceMap` | sale-service-map.ts:101/:85 | Resolve Service → nhóm giá CRM | null = dịch vụ chưa có nhóm (không đoán) |
-| `computeServiceTrail` | sale-service-context.ts:23 | Phát hiện đổi/quay lại dịch vụ | Sẽ nối vào State (hiện chỉ trace) |
-| ThreadState + `applyIncomingMessage`/`recordBotReply`/`getThreadState`/`simulateThreadStateFromHistory` | sale-thread-state.ts:77/:232/:344/:191/:406 | Conversation State | DDL đã có sẵn 3 cột `current_service/previous_service/services_json` (:166-168) chưa ai đọc/ghi |
-| `selectSampleImages` + họ resolve* | sale-samples.ts:701 | Retrieve ảnh mẫu | Entry dùng chung Test+Messenger |
-| `getScheduleContext` | sale-calendar.ts:40 | Retrieve lịch | Read-only, cache 3' |
-| Marker protocol 4 marker + parse/strip | sale-settings.ts:425-443, claude-sale.ts:356-393 | Giao thức gửi ảnh/tên/escalation | **Bất di bất dịch** — fb-inbox phụ thuộc (mục F) |
-| `askClaudeForReply` phần parse + `toApiMessages` + nhánh ALL_FAILED | claude-sale.ts:356-393/:281/:328-349 | LLM wording + an toàn provider | Tái dùng nguyên |
-| `constraints` (core safety) + `SPECIAL_CONCEPT_ESCALATION_RULE` + `PRICE_IMAGE_INSTRUCTION` + phần lõi `SAMPLE_IMAGE_INSTRUCTION` + `whoLine` | claude-sale.ts:194-202/:146/:87/:91-105/:208-210 | CORE SAFETY của prompt mới | whoLine là nơi DUY NHẤT dạy `<<NAME>>` |
-| Hạ tầng flags mẫu | sale-scenario-types.ts:326-342 | Khuôn cờ mới | helper `on()` + allowlist PSID fail-closed |
-| Human Review gate + hold + takeover | fb-inbox.ts:922-955, sale-human-review.ts | Level 3 handoff | Giữ nguyên hành vi |
-| Test harness | sale-workflow-golden-set.ts (58/116 case), sale-brain-conversations.test.ts (30 convo/70 lượt), runScenarioTest + POST /lulu-scenarios/test-conversation, POST /lulu-brain/test (so sánh 2 chiều) | Khung test/so sánh | Mở rộng theo mục K |
-
----
-
-## C. MODULE DEPRECATED (đánh dấu, KHÔNG xoá trong đợt này)
-
-| Deprecate | Ở đâu | Vì sao | Cách xử |
-|---|---|---|---|
-| `PRICE_GATING_RULE` | claude-sale.ts:128-142 (2.484 ký tự) | Quyết định gate giá thuộc Router (`ASK_DATE`/`QUOTE_*`) + Scenario | Loại khỏi prompt clean path. Giữ 2 mảnh: dòng "lời ngắn vì hệ thống gửi hình bảng giá" + "hỏi giá KHÔNG phải lý do NEEDS_HUMAN" → chuyển vào khối marker/core |
-| `SALE_SELECTION_AND_STYLE_RULES` | claude-sale.ts:109-124 (3.112) | Chọn nhóm ảnh đã có cổng cứng `imageToggleOn`+`intentPrimaryGroup` (sale-samples); văn phong trùng 3 nơi | Loại khỏi clean path; luật "không trộn nhóm ảnh" thành invariant code (đã có) |
-| `saleSteps` + `saleLevel` trong prompt | sale-settings.ts:61/:44, render :380-382/:414-415 | SALE SCRIPT cạnh tranh Kịch bản — nguồn xung đột B4 | Clean path KHÔNG render 2 khối này. Settings/FE giữ nguyên (đường cũ vẫn dùng) — deprecate UI ở đợt sau |
-| Khối "MỤC TIÊU" | claude-sale.ts:220 | Bước kế tiếp do Router/Scenario quyết | Loại khỏi clean path |
-| `antiDriftBlock` (văn 2,2K) | sale-conversation-discipline.ts:114-129 | Kỷ luật đã enforce bằng State + `forbiddenQuestions` + validator `service_drift`/`repeated_question` | Clean path thay bằng 3-5 dòng STATE FACTS; giữ `detectServiceDrift` (validator) + `buildAntiDriftRule` cho đường cũ |
-| Nhánh fallback không-settings | claude-sale.ts:234-278 (3.257) | CODE CHẾT — `getClaudeSaleSettings` không bao giờ null (5/5 call site truyền settings) | Đánh dấu `@deprecated`, xoá ở đợt dọn sau |
-| `cleanDesc` slice(0,240) cho gói | sale-context.ts:92-99 | Mất thành phần gói | Clean path dùng `EffectivePackage.description` raw + `naturalizePackageContent` |
-| Khối album 92 dòng trong context | sale-context.ts:213-224 (~6,9K) | Ảnh mẫu đi qua `selectSampleImages` + `SampleImage.detailUrl`; album list "nội bộ" không cần trong prompt | Clean path bỏ hẳn; đường cũ giữ |
-| `SERVICE_GROUP_KEYWORDS` hard-code | sale-pricing.ts:57-66 | Trùng nguồn với `lulu_service_map.keywords` | Đợt này: GIỮ (đường chạy chính), ghi nợ hợp nhất về DB ở đợt sau |
-| `ai_per_thread_enabled`, `connectMessenger/connectClaudeTest/connectZalo`, `calWeekendCaution`, `followUpHoldAfterMinutes` | fb-inbox.ts:486 (SELECT nhưng gate không đọc), sale-settings.ts:64-66/:78/:85 | Toggle chết | Đánh dấu deprecated trong comment + FE ghi chú; KHÔNG đổi hành vi đợt này |
-| Trace shadow riêng của Claude Sale Test | claude-sale-test.ts:335-359 | 2 định dạng trace song song | Hợp nhất về `PipelineTrace` khi PR-2 tách orchestrator |
-| (ghi nhận, KHÔNG đụng) Engine GPT legacy 3 cửa + dead branch fb-inbox:560-768 + BE claude-sale-test | ai-engine.ts, fb-inbox.ts:1511/:1617 | Ngoài scope cleanup pipeline | Đợt dọn legacy riêng, sau khi clean pipeline ổn |
-
----
-
-## D. CÁC LUẬT XUNG ĐỘT SẼ BỎ (trong clean path)
-
-1. **B4 "gửi giá ngay" vs PRICE_GATING "cấm bung giá"** → CẢ HAI biến mất khỏi prompt. Chủ sở hữu mới của quyết định báo-giá-hay-hỏi-lại: `routeSaleAction` (`QUOTE_REFERENCE`/`QUOTE_EXACT`/`ASK_DATE`/`ASK_SERVICE`, sale-workflow.ts:551-567) + thẻ Kịch bản override trong giới hạn playbook. LLM không còn được "tự trọng tài".
-2. **antiDrift tự nhận supremacy vs PRICE_GATING tự nhận ghi đè** → hết tồn tại vì cả 2 khối rời prompt. Ưu tiên chính thức nằm ở mục 9 (mandate) và được enforce bằng THỨ TỰ CODE, không bằng câu văn.
-3. **inferKnownIntent vs ThreadState.serviceIntent** → clean path chỉ dùng MỘT nguồn: ThreadState (+ `computeServiceTrail` khi state chưa có). `inferKnownIntent` chỉ còn phục vụ đường cũ.
-4. **Văn phong lặp 3 lần** (persona styleLines / constraints / SALE_SELECTION) → còn MỘT khối style duy nhất (mục F, BRAIN STYLE).
-5. **Luật cọc/chuyển khoản lặp 2 lần** (constraints vs calendarBlock) → giữ 1 lần trong CORE.
-6. **2 regex `NEW_CONCEPT_RE` gần trùng** (sale-context.ts:262 vs sale-samples.ts:75) → hợp nhất về 1 export (sale-samples) khi làm PR-3.
-7. **`asksPrice` override đè stepHint bất kể action** (sale-brain-runner.ts:238-240) → thay bằng map `ACTION_STEP_HINT` tách module + luật: chỉ override khi action thuộc nhóm QUOTE_*; `HANDLE_OBJECTION` ("mắc quá") không bị ép về bao-gia.
-
----
-
-## E. PIPELINE MỚI (map 10 bước mục tiêu → hàm đã có / hàm phải viết)
-
-**Module mới trung tâm: `lib/sale-clean-pipeline.ts`** — tách nguyên khối structured từ `sale-brain-runner.ts:199-355` thành hàm dùng chung, để **Messenger và Brain Lab gọi ĐÚNG MỘT hàm**:
+Định nghĩa trong `lib/sale-clean-pipeline.ts` (PR-2). AI chỉ được **diễn đạt** object này:
 
 ```ts
-export type CleanPipelineInput = {
-  psid: string | null;                  // null = sân test
-  customerMessage: string;
-  history: Array<{ direction: "incoming"|"outgoing"; message: string }>;
-  threadState: ThreadState | null;      // thật (getThreadState) hoặc mô phỏng
-  settings: ClaudeSaleSettings;
-  callLlm: PipelineLlmCall | null;      // đã đóng gói provider/askClaudeForReply
-  imageContext?: { visionIntent: CustomerImageIntent | null };
+export type FactStatus = "never_asked" | "known" | "customer_unsure" | "declined" | "not_applicable" | "stale_needs_reconfirm"; // mục IV
+
+export type SaleDecision = {
+  // NHẬN ĐỊNH
+  intent: string;                        // từ MessageSignals + action map (ASK_PRICE/ASK_SAMPLE/…, mục G V1)
+  activeService: string | null;          // serviceKey đã khoá (vd "beauty")
+  previousService: string | null;        // từ ServiceTrail / state.previous_service
+  serviceSwitch: boolean;                // lượt này khách đổi dịch vụ?
+  conversationState: ThreadState;        // snapshot state TRƯỚC lượt (kèm factStatus mục IV)
+  scenario: { key: string | null; name: string | null; source: "scenario" | "engine_fallback" };
+  action: SaleAction;                    // từ RouterDecision (sale-workflow.ts:36-50)
+
+  // DỮ LIỆU
+  factsNeeded: string[];                 // = RouterDecision.knowledgeNeeded (nhãn 'pricing:<svc>'…)
+  resolvedFacts: PipelineFacts & { factsBlock: string };  // loadKnowledge trả về — NGUỒN DUY NHẤT AI được nói
+  missingFacts: string[];                // fact cần mà không lấy được (→ II.2 graceful)
+  selectedPackage: { code: string; name: string } | null;
+
+  // CÁCH TRẢ LỜI
+  responseMode: "llm" | "override_exact" | "override_learn" | "stitched" | "intent_line" | "safe";
+  allowedBusinessFacts: string[];        // whitelist fact được phép xuất hiện (giá/gói/ưu đãi đã resolve)
+  forbiddenBusinessFacts: string[];      // vd ["giá dịch vụ khác", "khuyến mãi (promoActive=false)", "xác nhận cọc", "hứa giữ lịch"]
+  assetRequest: { kind: "sample" | "price_image" | "none"; intents: string[]; approved: boolean; reason: string }; // II.3
+  fallbackLevel: 0 | 1 | 2 | 3;          // 0=LLM pass · 1=clarify · 2=facts+1 câu hỏi · 3=handoff
+  handoffReason: string | null;          // null nếu fallbackLevel<3; bắt buộc thuộc danh sách điều kiện handoff (mục H V1 + II.2)
 };
-export type CleanPipelineResult = {
-  finalize: FinalizeResult;             // replyText/fallbackUsed/needsHuman/blockedReason…
-  decision: RouterDecision;             // stage/action/forbidden…
-  resolve: ScenarioResolveResult;       // winner/guidance/source
-  facts: PipelineFacts;
-  serviceKey: string | null; groupName: string | null;
-  trace: PipelineTrace;
-  statePatch: BotReplyInfo;             // để caller ghi state SAU khi gửi
-  markers: { priceImageCodes: string[]; sampleRequested: boolean; sampleIntents: string[]; learnedName: string | null };
-};
-export async function runCleanSalePipeline(input: CleanPipelineInput): Promise<CleanPipelineResult>
 ```
 
-| # Bước mục tiêu | Hàm đảm nhiệm | Trạng thái |
+Ánh xạ hiện trạng: `intent/action/factsNeeded` ← `RouterDecision`; `scenario` ← `ScenarioResolveResult`; `resolvedFacts` ← `PipelineFacts` (mở rộng); `responseMode/fallbackLevel` ← `FinalizeResult.fallbackUsed` (nắn nhãn); `assetRequest` ← marker + cổng `selectSampleImages`. `allowed/forbiddenBusinessFacts` là TRƯỜNG MỚI — validator dùng làm input đối chiếu (II.2), prompt in ra thành 2 dòng lệnh ngắn.
+
+---
+
+# PHẦN II — TRẢ LỜI 5 QUYẾT ĐỊNH (THEO ĐIỀU KIỆN CHỦ CHỐT)
+
+## II.1. Bộ não 8,2K: bỏ khỏi clean prompt — CÓ ĐIỀU KIỆN, kèm bảng ánh xạ đầy đủ
+
+**Không xoá mù.** Bản active trong `lulu_brain_versions` = byte-identical `DEFAULT_BRAIN_RULES` (md5 đã đối chiếu, audit 30/07). ⚠ Trước khi thực thi PR-5 phải **export nội dung bản active trên PROD DB thật** và diff với seed — nếu chủ đã sửa não trên prod sau 14/07, phần sửa phải được ánh xạ bổ sung (việc này ghi ở "Điểm chờ quyết" G-2).
+
+### Bảng ánh xạ TỪNG NHÓM LUẬT → lớp chịu trách nhiệm mới
+
+| # | Nhóm luật trong não 8,2K (nguyên văn claude-sale.ts) | Dòng | Lớp mới chịu trách nhiệm | Cơ chế thay thế |
+|---|---|---|---|---|
+| 1 | Chọn đúng nhóm ảnh/link theo nhu cầu (beauty↛cưới, thuê đồ→trang thuê đồ, ý tưởng chỉ khi khách đòi concept lạ) | :109-114 | **Router/Scenario + Asset engine** | `intentPrimaryGroup`+`subcategoryAllows`+`imageToggleOn` (sale-samples — cổng CỨNG đã chạy prod) + `assetRequest` trong SaleDecision |
+| 2 | "TUYỆT ĐỐI KHÔNG trộn nhóm ảnh" | :115 | **Validator/Asset** | Cổng cứng sale-samples (đã có) + `service_drift` validator; không cần câu prompt |
+| 3 | Ưu tiên sản phẩm có thật, ý tưởng chỉ là gợi ý phụ | :114 | **Retrieval** | loadKnowledge chỉ nạp ideas khi intent=ASK_CONCEPT |
+| 4 | Tối đa 2-3 link, link có tên, gửi xong hỏi gu | :116 | **Style/Naturalizer** | vào `buildStyleBlock` (khối 9 prompt mới) |
+| 5 | Beauty chưa có ảnh phù hợp → không lấy album cưới thay | :117 | **Asset engine** | đã là code: `resolveGallerySamples` đúng nhóm, thiếu = không gửi (II.3) |
+| 6 | VĂN PHONG NGƯỜI THẬT (không em-dash, câu ngắn, dạ/nha, không ép chốt) | :119-123 | **Style/Naturalizer** | `buildStyleBlock` (1 nơi duy nhất — hết lặp 3 chỗ) + strip em-dash đã có trong code (claude-sale.ts:392) |
+| 7 | "Báo giá: trả lời ngắn, hỏi lại nhu cầu trước khi bung bảng giá dài" | :124 | **Router/Scenario** | action `ASK_SERVICE`/`ASK_DATE` vs `QUOTE_*` quyết định; câu chữ thuộc golden bước bao-gia |
+| 8 | PRICE GATING: hỏi gu trước khi báo giá, danh sách nhóm phải gate, "khách hối thì báo luôn" | :128-140 | **Router/Scenario (SALE LOGIC)** | `routeSaleAction` :551-567 (hỏi giá chưa rõ nhóm → ASK_SERVICE; chưa hỏi ngày → ASK_DATE; hối giá → QUOTE_*) + thẻ Kịch bản tình huống "hoi-gia-chung-chung"; **golden bước bao-gia đã phủ 8 tình huống** |
+| 9 | "Khi báo giá: hệ thống tự gửi HÌNH bảng giá trước nên lời NGẮN" | :141 | **CORE/MARKERS (giữ trong prompt)** | giữ nguyên văn trong khối `[MARKERS]` — phối hợp `<<PRICE_IMAGE>>` |
+| 10 | "Hỏi giá chung chung KHÔNG phải lý do NEEDS_HUMAN" | :142 | **CORE SAFETY (giữ)** | vào `CORE_SAFETY_BLOCK` + điều kiện handoff (II.2) chặn bằng code |
+| 11 | CONCEPT/SETUP LẠ → không hứa, `<<NEEDS_HUMAN>>` | :146-148 | **CORE SAFETY (giữ nguyên văn)** | `SPECIAL_CONCEPT_ESCALATION_RULE` giữ trong khối CORE — là 1 điều kiện handoff hợp lệ |
+| 12 | PRICE_IMAGE_INSTRUCTION (marker mã gói) | :87 | **MARKERS (giữ nguyên văn)** | hằng số code, không lấy từ DB |
+| 13 | SAMPLE: QUY TẮC VÀNG chỉ gửi khi khách hỏi/đồng ý; bước phân loại KHÔNG ảnh | :92-98 | **Asset engine (code) + MARKERS** | cổng đã là code (`selectSampleImages` 3 cổng :668-678); giữ phần dạy marker trong `[MARKERS]`; bỏ ví dụ hội thoại (~1,5K) → thành golden bước tu-van |
+| 14 | Thuật ngữ "chụp cổng" ≠ "ngày cưới" | :97 | **Kịch bản (golden/guidance)** | thuộc cách nói của dịch vụ Chụp cổng — đưa vào guidance thẻ/golden của service đó |
+| 15 | Danh sách 8 nhóm `<<SAMPLE: nhóm>>`, để trống = hệ thống tự suy | :99 | **MARKERS (giữ)** | giữ trong `[MARKERS]` |
+| 16 | Khớp lời-với-ảnh ("chỉ nói gửi ảnh ở lượt có marker"), không gửi lại ảnh cũ, mỗi lượt 1 lần | :100-102 | **MARKERS (giữ) + Asset engine** | dedupe `extractRecentSampleUrls` đã là code; câu nhắc giữ trong MARKERS |
+| 17 | Đúng giới tính (cool boy → mẫu nam, thiếu thì không gửi) | :104 | **Asset engine (code)** | đã enforce trong `resolveGallerySamples(gender)`; bỏ khỏi prompt |
+| 18 | "Không tìm được ảnh đúng nhóm → đừng bịa" | :105 | **CORE SAFETY (giữ 1 dòng)** | gộp vào CORE + II.3 (retrieval ảnh lỗi → text ngắn) |
+
+Tổng kết: **GIỮ trong prompt mới** ≈ 3,5K (nhóm 9-12-13-15-16 phần marker + 10-11-18 core safety). **Chuyển thành code/scenario/golden/style** ≈ 4,7K. Không nhóm luật nào "mất" — mỗi dòng có nơi ở mới.
+
+### II.1.b. Câu admin dạy (matchResponseOverride) — KHÔNG được mất chức năng
+
+Hiện trạng (audit): `matchResponseOverride` (sale-image-overrides.ts:244) chỉ có 1 caller = sale-brain-runner.ts:193 → **test thấy đúng, khách thật không nhận** (gap TEST↔PROD lớn nhất của cơ chế dạy).
+
+Quyết định trong plan V2: **nối chính thức vào orchestrator chung** — vì Messenger và Brain Lab cùng gọi `runCleanSalePipeline`, override tự động chạy CẢ HAI nơi:
+- Bước sau Resolve Scenario: `matchResponseOverride(message, priorContext, activeOverrides, {hasImage})`.
+- `exact_reply` → `responseMode="override_exact"`: bỏ qua LLM, reply = câu admin, **VẪN đi qua validator** (câu dạy có giá sai/khác CRM hiện tại thì BLOCK + trace `override_blocked` để admin biết câu dạy đã lỗi thời — không gửi mù).
+- `learn_from_this` → `responseMode="override_learn"`: câu admin được chèn như golden ưu tiên cao nhất (score đội lên trên), LLM diễn đạt lại.
+- Đường dài hạn (PR-8+, tuỳ chủ): nút "Chuyển câu dạy thành Kịch bản" — promote override vào `lulu_sale_script_examples` qua `saveScripts` (source='manual') để về một mối; trong lúc đó 2 cơ chế cùng sống, override thắng vì cụ thể hơn.
+
+**Brain Lab sau cleanup =** ① quản lý STYLE (xưng hô, độ dài, nhịp bubble); ② quản lý + duyệt response override (ảnh & chữ — chữ giờ chạy thật); ③ sân test & X-quang so sánh OLD vs CLEAN; ④ KHÔNG còn quyền sửa luật sale/giá/gói (các mục đó thuộc Kịch bản + Validator).
+
+## II.2. DB không lấy được bảng giá: FAIL-CLOSED fact, GRACEFUL hội thoại
+
+Hai tầng TÁCH BẠCH:
+
+**(a) FACT FAIL-CLOSED (validator + retrieval):** khi `loadKnowledge` không lấy được giá (DB lỗi / dịch vụ chưa có nhóm):
+- `resolvedFacts.crmPriceVnd = null`, `missingFacts += ["pricing:<svc>"]`, `catalogAuthoritative: true` giữ nguyên → **mọi con số tiền trong reply đều bị BLOCK** (price_unverifiable).
+- CẤM tuyệt đối (enforce bằng validator + forbiddenBusinessFacts): đoán giá; lấy giá từ lịch sử chat (history KHÔNG nằm trong factCatalog); giá legacy `ai_service_scripts.priceContent` (engine GPT — không bao giờ là nguồn của clean path, xem Blocker #3); giá dịch vụ khác (catalog theo serviceKey — `validPricesFor`); tự bung toàn bộ bảng giá (loadKnowledge chỉ nạp nhóm active service).
+
+**(b) HỘI THOẠI GRACEFUL (không sập, không auto-handoff):** "không có giá" ≠ "chuyển người". Thang xử lý khi missingFacts chứa pricing:
+1. `fallbackLevel=2` — trả lời tự nhiên bằng template deterministic mới `FACT_UNAVAILABLE_LINE` (thêm vào `intentFallbackLine`): *"Dạ phần giá chính xác của [dịch vụ] em xin phép kiểm tra lại hệ thống để báo mình đúng nhất nha. Mình định chụp khoảng thời gian nào để em tư vấn luôn ạ?"* — nói rõ chưa lấy được mức giá + hỏi TỐI ĐA 1 câu hữu ích (theo `allowedQuestions`).
+2. Chỉ lên `fallbackLevel=3` (handoff) khi rơi đúng điều kiện handoff chuẩn: khách yêu cầu người thật · nghiệp vụ cần quyền người (cọc/CK/khiếu nại/hủy dời) · dữ liệu bắt buộc không tồn tại **VÀ khách đã hối lần 2** (không trả lời được nữa mà không có số) · concept lạ (II.1 nhóm 11) · Router/Scenario ESCALATE_HUMAN.
+3. Lỗi hạ tầng (exception giữa chừng): enforce-mode trả `SAFE_REPLY_LINE` + needsHuman + trace lỗi — **không im lặng, không sập hội thoại, không quay mega-prompt** (Blocker #7).
+
+## II.3. Ảnh: FALLBACK KHÔNG GỬI ẢNH — 6 điều kiện gửi (enforce bằng code, không bằng prompt)
+
+`assetRequest.approved = true` CHỈ khi **đủ cả 6**:
+1. Khách yêu cầu ảnh (cổng explicit-request/consent — regex tại sale-samples.ts:668-677, gate check trong `selectSampleImages` khai báo :701) HOẶC scenario/action xác định cần gửi (`SEND_SAMPLE`/`SEND_PRICE`). **SIẾT so với hiện tại:** hiện gate 1 chấp nhận cả marker `<<SAMPLE>>` do AI tự đặt kể cả khi khách chưa yêu cầu; trong clean path, marker AI chỉ là "đề nghị" — không thoả điều kiện 1 thì không gửi.
+2. `activeService` đã rõ (≠ null/unknown).
+3. Asset map đúng activeService (`intentPrimaryGroup`/`subcategoryAllows` — cổng cứng hiện có).
+4. Asset tồn tại thật (resolve trả ≥1 ảnh; ảnh giá: `resolvePriceImagesByCodes` trả hit).
+5. Không service drift trong lượt (validator PASS service_drift).
+6. `fallbackLevel === 0` (LLM pass) — **mọi lượt fallback 1/2/3 KHÔNG gửi ảnh** (giữ hành vi reply=null hiện tại, nay thành luật chính thức).
+
+Retrieval ảnh lỗi → text ngắn ("Dạ em lọc thêm ảnh đúng gu cho mình nha") — **không gửi ảnh ngẫu nhiên**, không lấy nhóm khác thay (II.1 nhóm 5/17). StatePatch: lượt không gửi ảnh thì KHÔNG ghi `sent_assets`; lượt fallback KHÔNG ghi `quoted`.
+
+## II.4. PSID pilot: KHÔNG khách thật — quy trình chọn từ tài khoản test
+
+Bổ sung vào PR-7 (phần Brain Lab, read-only):
+1. Endpoint mới `GET /api/lulu-brain/pilot-candidates` (admin): liệt kê ≤20 thread gần nhất có dấu hiệu TEST — lead name chứa "test"/nhân viên tự nhắn, hoặc thread do chủ chỉ định tay; MỖI DÒNG: tên hiển thị · thời điểm nhắn cuối · PSID che bớt (`1234…89`, 4 đầu 2 cuối) · số tin.
+2. Panel trong Brain Lab "Chọn thread pilot": chủ tick đúng thread → hệ hiện hướng dẫn **chủ tự dán PSID đầy đủ vào Deployment env `LULU_CLEAN_PIPELINE_PSIDS`** (app không tự ghi env, không tự bật).
+3. Ràng buộc cứng ghi trong code + doc: KHÔNG đưa lead có `ai_mode='active'` đang được sale chăm / lead có customer_id (đã chốt) vào danh sách candidates.
+4. Thứ tự bắt buộc trước enforce bất kỳ PSID nào: sandbox sạch (mục VI) → shadow đạt PASS (mục V) → chủ chọn PSID test → enforce pilot chỉ PSID đó.
+
+## II.5. Bảng `lulu_pipeline_traces`: ĐỒNG Ý CÓ ĐIỀU KIỆN — kèm chứng minh không tái dùng được bảng cũ
+
+**Vì sao không dùng bảng/log hiện có (đối chiếu từng ứng viên):**
+| Ứng viên | Vì sao không đủ |
+|---|---|
+| `fb_inbox_messages.ai_decision` | 1 chuỗi enum ngắn/tin (`claude_replied`…) — không chứa intent/service/scenario/facts/validator |
+| `lulu_scenario_test_runs` | chỉ sandbox Kịch bản, gated LULU_SCENARIO_MANAGER_ENABLED, schema test (draft/expected) — không phải prod turn log |
+| `lulu_brain_test_results` | kết quả test case Brain Lab, không phải hội thoại thật |
+| `notifications` | kênh cảnh báo, có dedupe_key, không phải nơi ghi mỗi lượt |
+| console log | không truy vấn được, mất khi restart, không đếm được tỷ lệ PASS shadow |
+→ Không bảng nào đáp ứng → cần bảng mới.
+
+**Điều kiện thiết kế (PR-8, làm ĐÚNG khuôn chống DROP #132):**
+- Additive thuần: `CREATE TABLE IF NOT EXISTS` trong migrations.ts **+ khai drizzle** `lib/db/src/schema/lulu-brain.ts` cùng PR. Không DROP/rename bất kỳ thứ gì.
+- Cột (tối giản, ưu tiên mã — hạn chế nguyên văn khách): `id, created_at, psid_hash (sha256, KHÔNG lưu PSID trần), mode('shadow'|'enforce'|'test'), intent, active_service, previous_service, service_switch bool, scenario_key, action, stage, facts_source text[] (mã nguồn fact: 'pricing:beauty'), selected_package_code, response_mode, fallback_level smallint, validator_verdict, violated_rule, blocked_reason_code, handoff_reason_code, latency_ms, message_excerpt varchar(120) NULL` — **message_excerpt mặc định NULL, chỉ ghi khi bật cờ debug riêng**; KHÔNG token/secret/URL ảnh/URL nhạy cảm; KHÔNG lưu reply nguyên văn (đã có fb_inbox_messages).
+- Index: `(created_at DESC)`, `(psid_hash, created_at DESC)`, `(mode, validator_verdict)`.
+- Retention: sweep lúc startup + mỗi 24h `DELETE WHERE created_at < now() - interval '30 days'` (30 ngày — chủ chỉnh được, xem G-4).
+- Không chậm luồng gửi: ghi **fire-and-forget sau khi đã gửi tin** (`insert().catch(log)` — không await trên đường reply); lỗi ghi trace không được đụng tin nhắn (bọc catch riêng).
+- Rollback = tắt cờ ngừng ghi; **không bao giờ xoá bảng trên production**.
+- **Thời điểm tạo bảng: chuyển vào PR-7** (shadow CẦN bảng để ghi mode='shadow' và để tính tiêu chuẩn PASS V.2) — PR-8 chỉ còn phần Brain Lab so sánh/hợp nhất trace/AI_DRAFT_SYSTEM/promote (sửa mâu thuẫn thứ tự của bản nháp V2 đầu).
+
+---
+
+# PHẦN III — PRODUCTION BLOCKER (điều kiện CHẶN trước khi bật Messenger thật)
+
+| # | Blocker | Hiện trạng (evidence audit) | PR xử lý | Dependency | Bắt buộc trước |
+|---|---|---|---|---|---|
+| B1 | **Webhook phải verify chữ ký Meta** `X-Hub-Signature-256` | webhook-facebook.ts:96 nhận body trần; grep createHmac trong file webhook = 0 (createHmac có ở auth.ts/autopost nhưng không dùng cho webhook này) | **PR-B1 (MỚI, độc lập)**: HMAC app-secret, sai chữ ký → 403 + log; cờ tắt-mở để không chặn nhầm khi chưa cấu hình secret | FB_APP_SECRET vào env | **ENFORCE pilot** |
+| B2 | **2 tin nhanh = 2 lượt AI song song** (không lock/debounce) | fb-inbox.ts không có lock quanh handleClaudeSaleReply; PR #140 (pg advisory lock + debounce gộp tin) đang MỞ, cần rebase | **PR #140** (đã có, rebase lên main mới) — lock phải pg advisory (Replit autoscale nhiều instance, không dùng in-memory) | rebase #136-#137 chain | **ENFORCE pilot** |
+| B3 | **Engine GPT legacy (giá nhập tay) không được là fallback của clean pipeline** | Thang fallback clean kết thúc ở SAFE_REPLY (sale-pipeline.ts:265-270) — KHÔNG có nhánh nào gọi ai-engine; enforce-mode lỗi → SAFE, không rơi mega-prompt (II.2.b.3) | PR-7 (spec + test khẳng định: grep ai-engine trong sale-clean-pipeline = 0) | — | ENFORCE pilot (test tự động) |
+| B4 | **Nút "Gợi ý AI" inbox đang dùng giá text tay legacy** — nhân viên tưởng realtime | /fb-inbox/threads/:psid/suggest (fb-inbox.ts:1493-1521) → askChatGptForReply → buildStudioContext (ai-engine.ts, giá từ ai_service_scripts.priceContent); endpoint GET /fb-ai/service-context (fb-inbox.ts:1617) cũng dùng buildStudioContext | **PR-B2 (MỚI, nhỏ)**: phương án A (khuyến nghị) đổi suggest sang getSaleContext realtime; phương án B tối thiểu: badge đỏ "⚠ giá tham khảo — KIỂM TRA Bảng giá" trên FE + dòng cảnh báo trong text trả về — **chủ chọn A/B (G-5)** | — | **Trước khi đội sale dùng suggest thường xuyên** (không chặn enforce pilot vì là tính năng nhân viên, nhưng xếp cùng đợt) |
+| B5 | **"Duyệt & gửi" trang chăm lại khoá Lulu vĩnh viễn** không đường bật lại | /threads/:psid/send (route :1523) luôn set ai_mode='takeover' (fb-inbox.ts:1544, vô điều kiện); trang reengage không có nút mở bot | **PR-B3 (MỚI, nhỏ)**: thêm nút "Mở lại Lulu cho khách này" trên trang chăm lại + tham số `keepAiMode` cho route send khi gửi từ reengage (mặc định giữ hành vi cũ) | — | Trước khi bật master switch chăm khách diện rộng |
+| B6 | **Flag fail-closed; allowlist rỗng ≠ bật toàn bộ** | Khuôn scenario enforce đúng (rỗng = không ai, sale-scenario-types.ts:340); khuôn LULU_STATE NGƯỢC (rỗng = tất cả, sale-thread-state.ts:43) | PR-7: cờ clean theo khuôn scenario; **clean path đọc/ghi state theo `LULU_CLEAN_PIPELINE_PSIDS` của chính nó**, không dựa ngữ nghĩa LULU_STATE; thêm test unit khẳng định "env rỗng → isCleanPipelineEnabledFor luôn false" | — | ENFORCE pilot |
+| B7 | **Clean pipeline lỗi → hành vi an toàn, không âm thầm quay mega-prompt** | Thiết kế V1 chưa ghi rõ | PR-7 spec: **shadow-mode lỗi → nuốt + log (legacy vẫn trả lời như cũ — đúng vì legacy là đường chính)**; **enforce-mode lỗi → SAFE_REPLY_LINE + needsHuman + trace `pipeline_error`, KHÔNG rơi về askClaudeForReply** (câu chưa qua validator không được gửi) | — | ENFORCE pilot |
+
+---
+
+# PHẦN IV — STATE: MÔ HÌNH TRẠNG THÁI DỮ LIỆU + QUY TẮC KHÔNG HỎI LẠI
+
+## IV.1. 6 trạng thái cho MỖI fact (không chỉ known/unknown)
+
+```ts
+type FactStatus = "never_asked" | "known" | "customer_unsure" | "declined" | "not_applicable" | "stale_needs_reconfirm";
+```
+Lưu per-service trong `services_json` (cột ĐÃ CÓ, sale-thread-state.ts:168): `services_json[serviceKey].facts = { event_date: {status, value?, at}, style: {...}, headcount: {...}, budget: {...}, phone: {...} }`.
+
+Ánh xạ hiện trạng: `date_status='known'` → known; `'not_decided'` → **customer_unsure — TRẠNG THÁI HỢP LỆ, không phải dữ liệu trống** (khách tham khảo chưa biết ngày vẫn được báo giá tham khảo `QUOTE_REFERENCE` — router đã làm đúng, V2 chỉ đặt tên chính thức); `UNKNOWN_VALID` của headcount → customer_unsure; refusal → declined; fact > 30 ngày không nhắc lại (vd ngày cưới đã qua) → stale_needs_reconfirm.
+
+## IV.2. Quy tắc không-hỏi-lại (enforce 3 lớp, cùng ngữ cảnh dịch vụ)
+
+1. **Router**: `computeForbiddenQuestions` mở rộng từ ask_date/ask_phone → thêm ask_style, ask_budget, ask_service (mỗi câu hỏi 1 lần khi fact ∈ {known, customer_unsure, declined}).
+2. **Validator** `repeated_question`: mở rộng key tương ứng (hiện chỉ ask_date — sale-workflow-validator.ts:172 tự nhận "key khác chờ detector riêng"). Ghi chú chính xác hiện trạng: `computeForbiddenQuestions` hard-code riêng ask_date; ask_phone chỉ được phủ qua vòng generic "key nào hỏi ≥2 lần".
+3. **Prompt** `[CONVERSATION STATE]`: in factStatus dạng lệnh: "ĐÃ BIẾT: ngày 15/8, gu Hàn Quốc. KHÁCH CHƯA QUYẾT: số người. ĐÃ TỪ CHỐI CHO: SĐT — không hỏi lại các mục này."
+4. **customer_unsure với ngày**: vẫn báo giá tham khảo + câu định vị "giá em báo là tham khảo, có ngày cụ thể em xác nhận lịch + giá chính xác lại cho mình" (golden bước bao-gia).
+5. **Đổi dịch vụ**: `serviceSwitch=true` → chuyển `current_service`, đẩy cũ vào `previous_service`, facts của dịch vụ cũ Ở YÊN trong `services_json[old]` (không nhiễm sang mới, không mất khi khách quay lại); slots dùng chung (ngày/SĐT) giữ nguyên; fact riêng dịch vụ (gu/gói đã báo) tách theo service. Sửa gốc COALESCE (sale-thread-state.ts:266) trong PR-6.
+
+---
+
+# PHẦN V — SHADOW MODE: ĐỊNH NGHĨA CHÍNH XÁC
+
+## V.1. Chạy gì / không chạy gì
+
+| Thành phần | Shadow có chạy? | Ghi chú |
 |---|---|---|
-| 1. Understand | `detectMessageSignals` (workflow:297) + `extractSlotsV2Patch` (thread-state:104) + `detectServiceIntentFromText` (samples:82) | ĐÃ CÓ — gom gọi trong orchestrator |
-| 2. Conversation State | prod: `getThreadState`; test: `simulateThreadStateFromHistory` | ĐÃ CÓ. **PHẢI SỬA**: `applyIncomingMessage` COALESCE không bao giờ hạ intent cũ (thread-state:266) → nối `computeServiceTrail`: switch phát hiện được thì UPDATE `service_intent` + ghi `previous_service`/`services_json` (cột DDL đã có :166-168, thêm vào SELECT :195-199 + type + drizzle ĐÃ khai sẵn lulu-brain.ts:145-147 — không cần migration mới) |
-| 3. Resolve Service | `computeServiceTrail` + `resolveGroupNameForService` → `serviceKey`/`groupName`/`serviceSlug` | ĐÃ CÓ — tách 6 dòng inline (brain-runner:219-226) thành hàm export |
-| 4. Resolve Sale Scenario | `loadActiveScenarioDefs` + `resolveScenario` (baseline = `routeSaleAction`) | ĐÃ CÓ |
-| 5. Retrieve Required Data | **MỚI: `lib/sale-knowledge.ts` → `loadKnowledge(decision, serviceKey, opts)`** đọc `RouterDecision.knowledgeNeeded` (hiện là nhãn suông — 0 consumer) | VIẾT MỚI (mục G) |
-| 6. Generate Natural Response | `callLlm` bọc `askClaudeForReply` với **prompt mới** (mục F) | Sửa điểm nối |
-| 7. Fact Validator | `validateSaleReply` (sửa theo mục I) + `checkDatabaseVoice`, tiêm qua `finalizeSaleReply` | ĐÃ CÓ + sửa |
-| 8. State Update | caller (fb-inbox / test) gọi `recordBotReply(statePatch)` SAU khi gửi thành công; patch tính trong orchestrator (fix: fallback không có giá thì KHÔNG ghi quoted) | ĐÃ CÓ + fix thứ tự |
-| 9. Reply | fb-inbox giữ nguyên chuỗi gửi (ảnh mẫu → ảnh giá → bubble typing) — orchestrator chỉ trả text+markers đúng shape | Giữ nguyên hạ tầng |
-| 10. Monitor Trace | `PipelineTrace` (brain-runner:77-102) + **bảng mới `lulu_pipeline_traces`** (PR-8, đăng ký ĐỦ migrations.ts + drizzle schema theo bài học #132) + console log `[CleanPipeline]` từ PR-7 | ĐÃ CÓ type, thêm nơi lưu |
+| Understand + Resolve Service + State (ĐỌC) + resolveScenario + loadKnowledge + lắp SaleDecision + stitched/intent plan (deterministic) | ✅ | Toàn bộ DB-read, có cache |
+| **AI Naturalizer (callLlm)** | ❌ `callLlm: null` | **Vì thế 0 chi phí LLM** — cú gọi LLM duy nhất của lượt vẫn là mega-prompt legacy như hiện tại |
+| Validator | ✅ 2 lần | (a) chấm **legacy output** (câu mega-prompt SẮP gửi — đo "nếu validator đã bật thì hôm nay chặn bao nhiêu"); (b) chấm **clean plan** (câu stitched/intent deterministic) |
+| Gửi tin/ảnh, typing | ❌ | Legacy gửi như cũ, shadow im tuyệt đối |
+| Ghi state production | ❌ | Shadow đọc snapshot; applyIncomingMessage/recordBotReply vẫn thuộc luồng legacy như hiện tại |
+| Takeover / booking / cọc / notification | ❌ | Không side-effect nào |
+| Trace | ✅ | Ghi `lulu_pipeline_traces` mode='shadow' (fire-and-forget) + console `[CleanPipelineShadow]` |
 
-**Chỉ còn MỘT đường quyết định:** Brain Lab (`simulateReply`) refactor thành wrapper của `runCleanSalePipeline` (giữ nguyên SimulateResult shape); fb-inbox gọi cùng hàm sau cờ. Sân Kịch bản (`runScenarioTest`) chuyển sang cùng orchestrator ở PR-8 (hết cảnh 2 sân test 2 pipeline).
+So sánh legacy vs clean ghi trong trace mỗi lượt: `legacy_action_inferred?` không suy được đáng tin → so ở tầng đo được: (1) service legacy nói tới (detect từ output) vs `activeService` clean; (2) tiền trong legacy output (`extractMoneyVnd`) ∈ catalog clean?; (3) validator verdict trên legacy output; (4) clean fallbackLevel dự kiến. Lỗi shadow → nuốt + log, legacy không bị ảnh hưởng (B7).
 
----
+## V.2. Tiêu chuẩn PASS định lượng (điều kiện sang pilot enforce — không phải "chạy 1 tuần" suông)
 
-## F. PROMPT STACK MỚI (structured context — thay mega-prompt 38K)
-
-Builder mới: `buildCleanSystemPrompt(parts: CleanPromptParts): string` trong `sale-clean-pipeline.ts`. Thứ tự CỐ ĐỊNH đúng priority mục 9 mandate, mỗi phần có header máy-đọc:
-
-| # | Khối | Nguồn | Ước cỡ |
-|---|---|---|---|
-| 1 | `[CORE RULES]` — constraints (claude-sale.ts:194-202) + SPECIAL_CONCEPT (:146) + luật cọc/CK/lịch (rút từ calendarBlock, 1 lần) + "hỏi giá không phải NEEDS_HUMAN" | hằng số code, export mới `CORE_SAFETY_BLOCK` | ~2,5K |
-| 2 | `[MARKERS]` — PRICE_IMAGE_INSTRUCTION + lõi SAMPLE_IMAGE_INSTRUCTION (cắt ví dụ sale ~1,5K) + whoLine (dạy `<<NAME>>`) + dạy `<<NEEDS_HUMAN>>` | hằng số code — **KHÔNG lấy từ DB brain version** | ~2,5K |
-| 3 | `[CONVERSATION STATE]` — buildThreadStateBlock rút gọn: tên, dịch vụ hiện tại/trước, ngày, gói đã báo, đã hỏi gì | ThreadState | ~0,4K |
-| 4 | `[ACTIVE SERVICE]` — groupName + serviceKey + "CHỈ nói về dịch vụ này" | Resolve Service | ~0,15K |
-| 5 | `[SALE STAGE + ACTION]` — decision.stage/action + allowedQuestions/forbiddenQuestions render thành 2-3 dòng lệnh | RouterDecision | ~0,3K |
-| 6 | `[SCENARIO GUIDANCE]` — buildScenarioGuidanceBlock (thẻ thắng) | resolveScenario | ~0,5K |
-| 7 | `[GOLDEN EXAMPLES]` — buildGoldenExamplesBlock (4 ví dụ service-first) | script-library | ~1,4K |
-| 8 | `[FACTS]` — output `loadKnowledge` theo intent (giá 1 nhóm / gói / lịch / menu dịch vụ…) + luật ƯU ĐÃI (tách export từ sale-context.ts:240-249, chỉ chèn khi có giá) | sale-knowledge | ~0,8–2,5K |
-| 9 | `[BRAIN STYLE]` — persona rút gọn: aiName/gender/role + style toggles (KHÔNG saleSteps, KHÔNG saleLevel) + nhịp bubble | settings (buildSettingsPromptBlock thay bằng `buildStyleBlock` mới) | ~0,8K |
-| 10 | messages[] — 20 tin (toApiMessages giữ nguyên) | fb_inbox_messages | ~1,6K |
-
-**Tổng system ≈ 9–12K** (so 38K; context động 19,5K → 2–4K theo intent — chi tiết mục G). Bật **prompt caching** (`cache_control` cho khối 1-2, tĩnh tuyệt đối) ở PR-7 — hiện `grep cache_control = 0`.
-
-**Chốt quan trọng (điểm quyết định #1 cho chủ):** clean path **KHÔNG nhét `getActiveBrainRules()` (bản active lulu_brain_versions, 8.241 ký tự) vào prompt** — Brain Lab theo mandate 6 chỉ còn quyền style. Marker được dạy từ hằng số code nên không mất chức năng ảnh. Hệ quả: (a) chỉnh "não" qua Brain Lab không ảnh hưởng clean path (đúng thiết kế); (b) `AI_DRAFT_SYSTEM` (lulu-brain-lab.ts:202-215, ép "bản mới DÀI tương đương") phải sửa mô tả ở PR-8 để khỏi tái sinh mega-prompt. Đường cũ giữ nguyên brainRules.
+Trên tối thiểu **200 lượt khách thật** (hoặc 14 ngày, lấy mốc đến trước):
+1. **0 crash** ảnh hưởng luồng legacy (0 tin nhắn mất/chậm do shadow; p95 overhead shadow < 150ms).
+2. **100% lượt có trace đủ trường** (intent/service/action/facts_source/validator).
+3. **Service accuracy ≥ 95%**: chấm tay mẫu 50 lượt — activeService clean khớp dịch vụ thật khách đang hỏi.
+4. **Validator false-block < 5%** trên mẫu 50 câu legacy mà người chấm cho là ĐÚNG (đo chặn oan trước khi cho validator cầm quyền).
+5. **0 lượt clean plan chứa giá ngoài catalog** (đếm tự động từ trace).
+6. Báo cáo tổng hợp gửi chủ: phân bố intent/action/fallbackLevel + top blocked reason → **chủ đọc và duyệt bằng chữ** rồi mới chọn PSID pilot (II.4).
 
 ---
 
-## G. DATA RETRIEVAL THEO NHU CẦU
+# PHẦN VI — MA TRẬN TEST + CỔNG NGHIỆM THU
 
-Module mới **`lib/sale-knowledge.ts`**: `loadKnowledge(decision: RouterDecision, serviceKey: string | null, opts?: { now?: Date }): Promise<{ block: string; facts: PipelineFacts; catalog: CatalogItem[]; promoActive: boolean }>` — consumer ĐẦU TIÊN của `knowledgeNeeded` (nhãn hiện được sinh ở workflow:335-342/:526-529 nhưng 0 nơi đọc).
+## VI.1. Ma trận coverage (≥100 hội thoại multi-turn, mỗi ô ≥3 hội thoại trừ khi ghi khác)
 
-| Intent (map vào action/signal ĐÃ CÓ) | Gọi gì | Cỡ block | Việc phải làm |
-|---|---|---|---|
-| SERVICE_AVAILABILITY = `faqTopic 'faq:services'` (workflow:257) | `detectServiceIntentFromText` + `matchedGroupNamesForService` + `listServiceMap` | ~0,7K | **MỚI** `buildServiceMenuBlock(rows)`; **MỚI** TriggerKey `hoi_co_dich_vu` (2/6 FAQ topic chưa có trigger) |
-| ASK_PRICE = `priceQuestion` → `QUOTE_REFERENCE/QUOTE_EXACT/SEND_PRICE` | `resolveGroupNameForService` → `getServicePricePreview(serviceKey, { pinnedGroup })` + luật ƯU ĐÃI | ~2,3K | **MỚI** `buildServicePriceBlock(preview)` (format hiện inline sale-context.ts:174-208, không tách được); **FIX BUG** brain-runner:248 gọi thiếu `pinnedGroup` → dịch vụ không khớp keyword bị "trả tất cả nhóm" (biến thể bug chụp-bầu-ra-CHỤP-CỔNG) |
-| ASK_PACKAGE_CONTENT = `faq:package_detail` | `getEffectivePrice` → `description` RAW → `naturalizePackageContent` | ~0,7K | Sửa lệch step-hint: ANSWER_FAQ+package_detail → hint `bao-gia` (hiện `tu-van`) |
-| ASK_SAMPLE = `wantSample` → `SEND_SAMPLE` | `selectSampleImages` (ảnh đi Graph API, KHÔNG vào prompt) + 0,3K quy tắc link | ~0,3K | Bỏ 6,9K album khỏi prompt |
-| ASK_CONCEPT (hiện bị nuốt vào `wantSample`) | `wantsNewConcept` + `getPhotoIdeasBlock(serviceKey?, limit?)` | ~2K | **MỚI** signal `wantConcept` trong MessageSignals + thêm tham số lọc cho getPhotoIdeasBlock; hợp nhất 2 regex NEW_CONCEPT_RE |
-| ASK_AVAILABILITY (hiện bị nuốt vào `bookingIntent`) | `getScheduleContext(calWindowDays)` | ~1,5K | **MỚI** signal `askAvailability` tách khỏi REOPEN_DATE_RE (giữ nguyên `reopenDate` cho computeForbiddenQuestions — rủi ro hỏi-lặp-ngày, xem K) |
-| HANDLE_OBJECTION (đã có 1-1) | golden stepHint `xu-ly-phan-van` + facts gói đã báo (`quotedPackages`) | ~2K | Nguồn `value_points` CHƯA CÓ — v1 dùng golden; bảng điểm-mạnh là backlog |
-| GREET / mọi action khác | menu 10 nhóm từ `FALLBACK_CONTEXT` seed | ~0,4K | — |
+| # | Nhóm | Điểm phải chứng minh |
+|---|---|---|
+| 1 | Service unknown (chưa rõ dịch vụ) | clarify Level 1, không đoán, không safe-handoff |
+| 2 | Album cưới | đúng giá/gói album |
+| 3 | Chụp cổng | Basic/Premium/Luxury đúng từng gói |
+| 4 | Tiệc cưới | phân nhánh nhà/nhà hàng, 1 máy/2 máy |
+| 5 | Beauty/thời trang | 0 nhiễm cưới (regression bug cũ) |
+| 6 | Thuê trang phục | dịch vụ chưa có nhóm giá → graceful II.2, không lấy giá nhóm khác |
+| 7 | Hỏi giá CÓ ngày | QUOTE_EXACT + giá đúng |
+| 8 | Hỏi giá CHƯA có ngày / "tham khảo thôi" | QUOTE_REFERENCE — customer_unsure vẫn báo giá tham khảo, KHÔNG ép hỏi ngày lại |
+| 9 | Hỏi gói gồm gì | package content tự nhiên, không database-voice |
+| 10 | Xem ảnh | 6 điều kiện II.3; đúng nhóm, đúng giới tính |
+| 11 | Chê mắc | HANDLE_OBJECTION, không tự giảm |
+| 12 | Xin giảm | chuyển phụ trách đúng điều kiện, không hứa |
+| 13 | Chốt gói | selectedPackage đúng, mời giữ lịch |
+| 14 | Giữ lịch/cọc | không xác nhận cọc, không đưa STK, handoff hợp lệ |
+| 15 | Đổi dịch vụ giữa chừng (cả 2 chiều + quay lại) | serviceSwitch đúng, facts cũ không nhiễm, quay lại không hỏi lại |
+| 16 | Câu cực ngắn "ừ" / "vậy hả" / "bao nhiêu" / "gửi xem" | bám ngữ cảnh, không reset |
+| 17 | Khách nhắn 2 tin liên tiếp | (unit + integration với lock #140) 1 câu trả lời gộp, không trả lời chồng |
+| 18 | DB giá lỗi (mock reject) | II.2: fail-closed fact + graceful text, 0 số tiền lọt |
+| 19 | Asset lỗi (mock ảnh rỗng) | text ngắn, không ảnh ngẫu nhiên |
+| 20 | Validator chặn → regenerate → fallback 3 tầng | đủ 3 level, thứ tự đúng |
+| 21 | Handoff: hợp lệ (đủ 5 điều kiện II.2.b.2) + SAI điều kiện (hỏi giá chung chung, câu lạ vô hại) | có handoff đúng · 0 handoff sai |
 
-Cache: block theo `serviceKey` TTL 5' + mở rộng `clearSaleContextCache()` (sale-context.ts:63) xoá cache mới cùng lúc (hook routes/pricing.ts đã gọi sẵn).
+## VI.2. Trace bắt buộc mỗi lượt test
 
----
+`input → intent → service → state-before → scenario → facts(source) → response-plan(SaleDecision) → output → validator → fallbackLevel → state-after`. Hiện trạng chính xác: `runScenarioTest` (lulu-scenarios.ts:493) đã trả `stateAfter` + validator/verdict nhưng CHƯA trả `PipelineTrace` (type đó chỉ do `simulateReply` dựng); `SaleDecision` là type MỚI (PR-2). PR-8 hợp nhất: cả 2 sân test trả cùng bộ `PipelineTrace + SaleDecision + stateAfter`, xuất JSON per-turn vào báo cáo nghiệm thu.
 
-## H. FALLBACK 3 TẦNG (thay "không match → safe → chuyển người")
+## VI.3. Cổng BẮT BUỘC trước pilot (điều kiện ĐỦ, thiếu 1 = không sang pilot)
 
-Map vào thang `finalizeSaleReply` hiện có (đổi NHÃN + nắn điều kiện, không viết lại):
-
-- **LEVEL 1 — Natural clarification** = nhánh intent-first + blind-golden (sale-pipeline.ts:209-242): `intentFallbackLine` cho GREET/ASK_SERVICE/IDENTIFY_SERVICE (đã có 3 biến thể xoay vòng). Điều kiện: chưa khoá dịch vụ / câu mơ hồ.
-- **LEVEL 2 — Answer known facts + 1 câu hỏi** = stitched (`tryStitch` + facts CRM) và intent-line có facts (QUOTE_*/ANSWER_FAQ/HANDLE_OBJECTION). **Sửa nhỏ:** các câu Level 2 kết bằng đúng 1 câu hỏi hữu ích theo `allowedQuestions` (template thêm vào intentFallbackLine).
-- **LEVEL 3 — Human handoff** = SAFE_REPLY_LINE + needsHuman → đi vào Human Review gate hiện có (hold + takeover). **Siết điều kiện đúng mandate:** chỉ khi (a) `wantHuman` (khách đòi), (b) `detectEscalation` nhóm quyền-người-thật (cọc/CK/khiếu nại/hủy dời lịch), (c) validator BLOCK critical 2 lần liên tiếp VÀ không stitch/intent được (= dữ liệu bắt buộc không tồn tại), (d) `ESCALATE_HUMAN` từ Router/Scenario. **Bỏ** đường "escalate chỉ vì không match" — hiện `intentTried` guard (sale-pipeline.ts:210-213) làm intent-line chỉ thử 1 lần rồi rơi safe; nới: nhánh 2c được thử lại với action khác (`ANSWER_FAQ` generic) trước khi safe.
-
-Ghi chú hành vi phải chốt (điểm quyết định #3): khi rơi Level 2/3, hiện `reply = null` → lượt đó không gửi ảnh mẫu/ảnh giá (brain-runner:355). Đề xuất giữ (an toàn: câu fallback không nên kèm ảnh của câu bị chặn) + statePatch KHÔNG ghi `quoted` cho lượt fallback (fix gap "state ghi đã-báo-giá cho câu không có giá").
-
----
-
-## I. VALIDATOR (business fact + safety ONLY)
-
-**Giữ (8 rule):** `price_mismatch` (critical), `price_unverifiable` (fail-closed), `promo_not_active`, `self_discount`, `leak_internal`, `deposit_confirmed_by_bot`, `schedule_promised`, `service_drift`, `repeated_question`, `forbidden_ask_date` (kỷ luật hỏi — giữ vì gắn Router).
-
-**Tách khỏi validator (chuyển sang voiceCheck/style layer, KHÔNG chặn business):** `too_many_questions` (validator.ts:310), `competitor_bashing` (:261), `response_not_matching_action` (:182), vế `countQuestions>=2` của `escalate_but_selling` (:323, giữ vế tiền). → các rule này trả về qua `checkDatabaseVoice`-style warn, đi vào trace, không BLOCK.
-
-**Nâng cấp:**
-1. **Catalog theo dịch vụ**: thay catalog toàn cục bằng `validPricesFor(serviceKey, now)` (sale-pricing.ts:160 — hàm canonical, 0 caller runtime) + vẫn hợp nhất `factCatalog`. Hết cảnh "giá Beauty PASS trong hội thoại cưới".
-2. **Rule `package_mismatch` MỚI**: đối chiếu TÊN/MÃ gói trong reply với catalog (CatalogItem đã có code/name nhưng vòng validPrices bỏ qua — gap đã xác minh validator.ts:196-205).
-3. **Port bắt buộc từ brain-runner sang orchestrator chung**: `scrubFacts` + `factCatalog` (brain-runner:306-321) — thiếu 2 mảnh này khi nối prod là chặn oan hàng loạt (facts CRM verbatim bị tính là giá lạ/từ khoá lạ).
-4. ValidatorInput thêm `now?: Date` + `serviceKey?: string` (additive, không phá 3 call site cũ).
-5. Giữ fail-fast BLOCK, nhưng thêm mode `collectAll?: boolean` cho test/audit (trả mảng vi phạm).
-
-**Luồng khi FAIL (giữ nguyên finalize):** BLOCK → regenerate đúng 1 lần kèm feedback → vẫn FAIL → Level 2 (stitched/intent) → Level 3. Test set `sale-workflow-validator.test.ts` (21 test) sẽ đỏ ở các rule bị tách — cập nhật test là một phần của PR-4, không phải "sửa cho xanh" âm thầm.
+- 0 câu sai giá · 0 bịa business fact · 0 cross-service contamination · 0 hỏi lại fact ∈ {known, customer_unsure, declined} · 0 gửi ảnh sai dịch vụ · 0 handoff ngoài điều kiện — trên TOÀN BỘ ma trận VI.1.
+- Flags OFF = Messenger nguyên trạng: `routes/fb-inbox.test.ts` (22 test) + golden 116 + convo suite xanh, diff hành vi = 0.
+- `pnpm typecheck` (BE+FE baseline) · `vitest run` BE+FE · `node scripts/deploy-guard.mjs` · build api (kèm check-duplicate-functions) — tất cả sạch.
+- Shadow PASS định lượng (V.2) + chủ duyệt báo cáo shadow bằng chữ.
 
 ---
 
-## J. MIGRATION / FEATURE FLAGS
+# PHẦN CŨ V1 GIỮ NGUYÊN (đã duyệt hướng)
 
-**Cờ mới (theo đúng khuôn scenario — fail-closed):** đặt tại `sale-scenario-types.ts` cạnh `on()`:
-```ts
-export function isCleanPipelineShadowEnabled(): boolean            // LULU_CLEAN_PIPELINE_SHADOW_ENABLED
-export function isCleanPipelineEnabledFor(psid: string): boolean   // LULU_CLEAN_PIPELINE_ENABLED + LULU_CLEAN_PIPELINE_PSIDS (allowlist BẮT BUỘC, rỗng = không ai)
-```
-LƯU Ý khuôn allowlist: copy mẫu `isScenarioEnforceEnabledFor` (:337-342), **KHÔNG** copy mẫu LULU_STATE (rỗng = mở toàn bộ — ngược nhau, đã xác minh).
+Mục A (production path), B (module giữ), C (deprecate — bổ sung: mọi mục deprecate của não 8,2K nay theo bảng ánh xạ II.1), D (xung đột bỏ), E (pipeline 10 bước — nay output là `SaleDecision` I.2), F (prompt stack — khối 2 MARKERS lấy nguyên văn theo II.1 nhóm 9/12/13/15/16), G (retrieval theo intent), H (fallback — nay gắn nhãn `fallbackLevel` 1/2/3 + FACT_UNAVAILABLE_LINE II.2), I (validator — bổ sung input `allowed/forbiddenBusinessFacts`), J (8 PR + cờ), K (test — nay theo ma trận VI), L (rollback). Xem lịch sử git `4f9b6d6` cho toàn văn V1.
 
-**Điểm rẽ prod: fb-inbox.ts:885-898 (Điểm rẽ #2 — hẹp nhất).** Bọc:
-```
-if (isCleanPipelineEnabledFor(psid)) → runCleanSalePipeline(...) → map sang shape ClaudeReply
-else → askClaudeForReply(...) như cũ  (nguyên trạng 100%)
-```
-Ràng buộc shape: code sau phụ thuộc `reply.learnedName`(:907) `.escalation`(:915) `.sampleRequested/.sampleIntents`(:974-987) `.messageChunks`(:1010) `.priceImageCodes`(:1037) `.messages/.raw`(:933) — orchestrator phải trả đủ (đã thiết kế trong CleanPipelineResult.markers).
-
-**Shadow trước, enforce sau:** shadow = chạy `runCleanSalePipeline` với `callLlm: null` (0 chi phí LLM, chỉ Router/Scenario/Retrieval/stitched) song song đường cũ, log `[CleanPipelineShadow]` so sánh action/service/facts — nuốt lỗi fail-open y khuôn fb-inbox.ts:856-884.
-
-**Thứ tự PR (mỗi PR nhỏ, bật/tắt độc lập, KHÔNG PR nào đổi hành vi prod khi cờ OFF):**
-
-| PR | Nội dung | File đụng chính | Rủi ro |
-|---|---|---|---|
-| 1 | Plan này (docs) | docs/LULU_CLEAN_PIPELINE_PLAN.md | 0 |
-| 2 | Tách `sale-clean-pipeline.ts` (extract brain-runner:199-355, export ACTION_STEP_HINT/scrubFacts/tryStitch, tiêm rng cho tie-break để test deterministic); Brain Lab thành wrapper | +lib/sale-clean-pipeline.ts, sale-brain-runner.ts, sale-pipeline.ts | Thấp (refactor thuần, suite hiện có khoá) |
-| 3 | `sale-knowledge.ts` + buildServicePriceBlock/buildServiceMenuBlock/buildStyleBlock + tách CORE_SAFETY_BLOCK/POLICY_BLOCK export + fix pinnedGroup + hợp nhất NEW_CONCEPT_RE + signal mới wantConcept/askAvailability | +lib/sale-knowledge.ts, sale-context.ts, sale-pricing.ts, sale-workflow.ts, claude-sale.ts (chỉ export hằng) | Trung bình (đụng regex golden — chạy 116 golden + 30 convo) |
-| 4 | Validator: tách rule văn phong, package_mismatch, validPricesFor(serviceKey), collectAll; cập nhật test | sale-workflow-validator.ts + test | Trung bình |
-| 5 | `buildCleanSystemPrompt` + map ClaudeReply | sale-clean-pipeline.ts, claude-sale.ts (export toApiMessages/parse) | Thấp (chưa nối prod) |
-| 6 | State per-service: đọc/ghi `current_service/previous_service/services_json` (cột ĐÃ có cả DDL lẫn drizzle — chỉ sửa SELECT/UPSERT/type), nối computeServiceTrail vào applyIncomingMessage (hạ COALESCE khi switch) | sale-thread-state.ts, sale-service-context.ts + test | Trung bình (golden state phải xanh) |
-| 7 | Nối fb-inbox: shadow → enforce per-PSID + prompt caching + log | fb-inbox.ts (1 khối ~40 dòng theo khuôn :856-884), sale-scenario-types.ts (2 cờ) | Cao nhất — nhưng flag OFF = 0 ảnh hưởng |
-| 8 | Trace: bảng `lulu_pipeline_traces` (migrations.ts + lib/db/schema đầy đủ — bài học #132) + Brain Lab so sánh OLD vs CLEAN (3 trục trong POST /lulu-brain/test) + hợp nhất trace claude-sale-test + sửa AI_DRAFT_SYSTEM | migrations.ts, lib/db/src/schema/lulu-brain.ts, routes/lulu-brain-lab.ts, FE lulu-brain-lab.tsx | Trung bình |
-
-**KHÔNG đổi DB schema** ngoài: (a) 3 cột thread-state ĐÃ TỒN TẠI, (b) bảng trace mới ở PR-8 (additive, đăng ký đủ 2 nơi, Run dev 1 lần trước mọi Republish, màn migration phải "No changes" — quy trình docs/DEPLOY-CODE-ONLY.md).
+**Cập nhật danh sách PR (V2):** 8 PR cũ + **PR-B1** (webhook signature) + **PR-B2** (Gợi ý AI giá realtime/badge) + **PR-B3** (mở lại bot trang chăm lại) + **PR #140** (lock, đã mở — rebase). Phân công lại theo II.5: **PR-7 = shadow + bảng `lulu_pipeline_traces`** (shadow cần bảng để ghi và để chấm PASS V.2); **PR-8 = Brain Lab so sánh OLD vs CLEAN + hợp nhất trace claude-sale-test + sửa AI_DRAFT_SYSTEM + nút promote override→Kịch bản**. Thứ tự khuyến nghị: PR-2 → PR-3 → PR-4 → PR-5 → PR-6 → **PR-B1 + #140 (song song, blocker)** → **PR-7 (shadow + trace table)** → [shadow PASS V.2 + chủ duyệt] → PR-8 + PR-B2/B3 → [chủ chọn PSID test II.4] → enforce pilot.
 
 ---
 
-## K. TEST STRATEGY (≥100 hội thoại multi-turn)
+# ĐIỂM CÒN CHỜ CHỦ QUYẾT (G)
 
-**Tầng 1 — deterministic, không LLM (chạy trong `pnpm test`):**
-- Golden 58/116 case (`sale-workflow-golden-set.ts` — số 104 trong ghi nhớ cũ đã lệch, thực tế 58 gốc ×2 biến thể không dấu) giữ xanh qua PR-3/-4/-6.
-- Mở rộng `sale-brain-conversations.test.ts` (hiện 30 convo/70 lượt): **thêm ≥70 hội thoại mới, mỗi hội thoại 10-20 lượt**, phủ đúng danh mục mandate 14: greeting, unknown service, Beauty, Chụp cổng, Album, service switching (2 chiều + quay lại), pricing, package detail, objections, discount request, booking, no-date, typo, không dấu, tin cụt, follow-up, human handoff. Mỗi lượt assert: winner/action/stage/escalate + **MỚI: facts.serviceName đúng nhóm + validator PASS trên câu stitched**.
-- Test mới cho: sale-knowledge (ma trận intent→block), sale-clean-pipeline (fallback 3 tầng, statePatch), state per-service (switch/quay lại), validator rule mới. Lấp vùng mù: sale-brain-runner/sale-slots-extra hiện KHÔNG có test.
-- Tie-break `Math.random` → tiêm `rng` injectable (PR-2) để parity không chập chờn.
+1. **G-1** Duyệt bảng ánh xạ não 8,2K (II.1) — đặc biệt **8 nhóm GIỮ trong prompt** (9/10/11/12/13/15/16/18) đã đủ chưa, có nhóm nào chủ muốn giữ thêm nguyên văn? (Lưu ý: bảng không có nhóm nào thuộc lớp "State" vì não 8,2K không chứa luật trí nhớ — luật "đã biết không hỏi lại" nằm ở antiDriftBlock NGOÀI não, đã ánh xạ về State/Validator ở mục D V1.)
+2. **G-2** Cho phép em (hoặc chủ tự chạy) **1 câu SELECT read-only trên PROD DB** lấy `prompt_content` bản active để diff với seed trước PR-5 (nếu chủ đã từng sửa não trên prod thì phần sửa cần ánh xạ bổ sung). Nếu chưa tiện, PR-5 sẽ ship với giả định seed + guard runtime (nếu bản active ≠ seed → clean path log cảnh báo).
+3. **G-3** Câu admin dạy: đồng ý cơ chế II.1.b (override chạy thật trong clean path, exact_reply vẫn qua validator)? Và có muốn nút "promote thành Kịch bản" ở PR-8?
+4. **G-4** Retention trace 30 ngày — OK hay chủ muốn số khác?
+5. **G-5** Blocker B4 "Gợi ý AI": chọn phương án A (đổi hẳn sang giá realtime) hay B (chỉ gắn nhãn cảnh báo)?
+6. **G-6** Sau khi chủ duyệt V2: cho phép bắt đầu **PR-2** (tách orchestrator, thuần refactor, flag OFF, zero hành vi đổi)?
+7. **G-7** Xác nhận 2 blocker KHÔNG gắn cổng enforce-pilot: B4 (Gợi ý AI — tính năng nhân viên, xếp cùng đợt PR-8) và B5 (chăm lại — chỉ bắt buộc trước khi bật master switch diện rộng). Nếu chủ muốn CẢ 7 blocker đều chặn enforce thì em nâng B4/B5 lên bắt buộc.
+8. **G-8** Đề bài ghi object "tối thiểu 18 field" — danh sách chủ liệt kê và SaleDecision trong plan đều là **17 field** (đủ 17/17 tên chủ nêu; field lồng `resolvedFacts.factsBlock` có thể tính là thứ 18). Chủ xác nhận danh sách hiện tại là đủ, hay còn field thứ 18 chủ định thêm?
 
-**Tầng 2 — API-level qua preview (tái dùng QA runner đã có `scratchpad/lulu-qa-runner.mjs`, đưa vào repo `scripts/lulu-clean-qa.mjs`):** chạy qua `POST /lulu-brain/test` (so sánh OLD vs CLEAN cùng input) + `POST /lulu-scenarios/test-conversation`. Mỗi lượt lưu JSON: `input / intent / service / scenario / factsUsed / response / validator / stateAfter` (= PipelineTrace + stateAfter đã có sẵn trong response). Có LLM key (ShopAIKey qua `LULU_TEST_PROVIDER`) thì đo thêm wording; không key thì tầng deterministic vẫn đủ chấm đúng-sai business (báo trung thực như đợt nghiệm thu trước).
-
-**Tầng 3 — shadow trên prod (PR-7, cờ shadow):** so `action/service/facts` clean-vs-cũ trên tin thật, không đổi câu trả lời; gom log 1 tuần trước khi xin chủ bật enforce PSID pilot.
-
-**Gates mỗi PR:** `pnpm --filter @workspace/api-server run typecheck && run test` + FE `vitest run` + `node scripts/deploy-guard.mjs` + build api (đã kèm check-duplicate-functions). (Không có script tên "dup-check" riêng — nó nằm trong build api-server.)
-
-**Quality target (mandate 15) → cơ chế enforce tương ứng:** đúng service = Resolve Service + validator service_drift/catalog-theo-service · đúng fact = facts CRM + price/package_mismatch · không đọc raw DB = naturalize + checkDatabaseVoice · không hỏi lặp = forbiddenQuestions + repeated_question · không chuyển người vô lý = điều kiện Level 3 siết · trả lời câu hỏi trước = stepHint theo action (bỏ override mù) · ngắn/1 câu hỏi = voiceCheck warn + style block · biết bước kế = RouterDecision.action · không phụ thuộc exact golden = stitch token + LLM paraphrase khi có key.
-
----
-
-## L. ROLLBACK
-
-1. **Tắt cờ = về nguyên trạng tức thì**: `LULU_CLEAN_PIPELINE_ENABLED`/`_SHADOW_ENABLED` unset → fb-inbox đi đúng đường mega-prompt hiện tại (điểm rẽ chỉ là 1 `if`). Không cần deploy lại nếu đổi được env (Replit Deployment env).
-2. Mỗi PR độc lập, revert từng cái không kéo nhau (PR-2..-6 không đổi hành vi khi cờ OFF; PR-7 là điểm nối duy nhất).
-3. Không migration phá: không DROP, không đổi cột cũ; bảng trace mới là additive và có thể bỏ đọc.
-4. Brain Lab giữ chế độ so sánh OLD vs CLEAN → chủ tự thấy khác biệt trước khi cho khách thật.
-5. Khẩn cấp nhất: cầu dao tổng (settings `claude_sale_master_enabled`) vẫn đứng TRÊN mọi cờ — tắt là Lulu im hoàn toàn, như hiện nay.
-
----
-
-## ĐIỂM CẦN CHỦ QUYẾT TRƯỚC KHI CODE (5 câu)
-
-1. **Brain Lab trong clean path**: đồng ý "Brain Lab chỉ còn style, KHÔNG nhét bản não active 8,2K vào prompt mới" (mục F)? (Đường cũ vẫn dùng não như hiện tại.)
-2. **Fail-closed giá**: khi lỗi DB không lấy được bảng giá mà câu trả lời có số tiền → chặn + Level 2/3 (an toàn nhưng có thể "chuyển người" nhiều hơn khi DB trục trặc). OK?
-3. **Lượt fallback không gửi ảnh** (reply=null giữ nguyên) — OK?
-4. **PSID pilot**: chủ cho em 1-2 PSID test (khách giả trên Fanpage) để bật enforce đầu tiên.
-5. **Bảng trace `lulu_pipeline_traces`** (PR-8): đồng ý thêm bảng additive này (theo đủ checklist #132)?
-
-**Phạm vi cam kết:** KHÔNG merge · KHÔNG deploy · KHÔNG Republish · KHÔNG bật cờ nào trên production · mọi PR chờ chủ duyệt từng cái.
+**Cam kết phạm vi:** KHÔNG merge · KHÔNG deploy · KHÔNG Republish · KHÔNG bật Messenger · KHÔNG migration · KHÔNG tự chọn PSID khách thật · mọi PR chờ duyệt từng cái.

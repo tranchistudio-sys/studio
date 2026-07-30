@@ -43,6 +43,8 @@ export type FinalizeInput = {
   voiceCheck?: (reply: string) => { ok: boolean; reason: string | null };
   /** Action Router quyết định (dùng chọn câu fallback THEO INTENT khi stitch không có/bị chặn). */
   action?: string | null;
+  /** Hội thoại đã có lượt bot XÁC NHẬN dịch vụ này rồi → không lặp câu "bên em có X" nữa. */
+  alreadyConfirmedService?: boolean;
 };
 
 export type FinalizeResult = {
@@ -62,21 +64,40 @@ export type FinalizeResult = {
  * ĐÚNG dịch vụ đang khoá. Dùng khi golden không có/bị chặn — KHÔNG lấy câu dịch vụ khác,
  * KHÔNG dump database. null = action không có mẫu → rơi xuống câu an toàn.
  */
-export function intentFallbackLine(action: string | null | undefined, facts: PipelineFacts): string | null {
+export function intentFallbackLine(
+  action: string | null | undefined, facts: PipelineFacts,
+  opts: { alreadyConfirmedService?: boolean } = {},
+): string | null {
   const svc = (facts.serviceName ?? "").trim();
   const price = facts.crmPriceVnd != null && facts.crmPriceVnd > 0
     ? `${Math.round(facts.crmPriceVnd).toLocaleString("vi-VN").replace(/,/g, ".")}đ` : null;
   const pkg = (facts.packageName ?? "").trim();
+  // CONTROLLED VARIATION cho câu xác nhận dịch vụ — cùng nghĩa, wording xoay vòng.
+  // ĐÃ xác nhận dịch vụ trước đó → câu TIẾP NỐI (không lặp "bên em có X").
+  const confirmSvc = (name: string) => {
+    const variants = opts.alreadyConfirmedService
+      ? [
+          `Dạ em đây ạ, mình muốn xem tiếp phần nào của ${name} để em gửi liền nè?`,
+          "Mình cứ hỏi thoải mái nha, em đang hỗ trợ mình đây ạ.",
+          "Dạ em nghe mình nè, mình cần em tư vấn thêm phần nào ạ?",
+        ]
+      : [
+          `Dạ có mình nha, bên em có ${name} ạ.\nMình thích kiểu nào để em tư vấn sát hơn ạ?`,
+          `Có luôn ạ, ${name} là một trong những mảng bên em làm nhiều nhất nè.\nMình đang nghiêng về kiểu nhẹ nhàng hay cá tính hơn ạ?`,
+          `Dạ bên em nhận ${name} nha mình.\nĐể em tư vấn đúng ý, mình muốn chụp theo phong cách nào ạ?`,
+        ];
+    return variants[Math.floor(Math.random() * variants.length)];
+  };
   switch ((action ?? "").toUpperCase()) {
     case "GREET":
     case "ASK_SERVICE":
       // Khách mở lời ĐÃ nêu dịch vụ ("có chụp beauty ko") → xác nhận đúng dịch vụ + 1 câu định hướng.
       return svc
-        ? `Dạ có mình nha, bên em có ${svc} ạ.\nMình thích kiểu nào để em tư vấn sát hơn ạ?`
+        ? confirmSvc(svc)
         : "Dạ em chào mình ạ. Mình đang quan tâm dịch vụ nào bên em để em tư vấn đúng ạ?";
     case "IDENTIFY_SERVICE":
       return svc
-        ? `Dạ có mình nha, bên em có ${svc} ạ.\nMình thích kiểu nào để em tư vấn sát hơn ạ?`
+        ? confirmSvc(svc)
         : "Dạ bên em có nhiều gói chụp lắm ạ. Mình đang muốn chụp cho dịp nào để em tư vấn đúng ạ?";
     case "ASK_DATE":
       return "Dạ để em tư vấn lịch và gói chính xác, mình dự định chụp khoảng thời gian nào ạ?\nChưa chốt ngày cũng không sao, em gửi mức tham khảo trước cho mình ạ.";
@@ -183,23 +204,41 @@ export async function finalizeSaleReply(input: FinalizeInput): Promise<FinalizeR
 
   // 2a) Câu "bên em có X không?": chuẩn là XÁC NHẬN ĐÚNG DỊCH VỤ + 1 câu định hướng —
   // ưu tiên intent-line TRƯỚC golden (situation-script dễ lệch nghĩa khi điểm keyword thấp).
-  // Áp cho IDENTIFY_SERVICE, và GREET/ASK_SERVICE khi khách ĐÃ nêu dịch vụ (serviceName có).
+  // Áp cho IDENTIFY_SERVICE, và GREET/ASK_SERVICE khi khách ĐÃ nêu dịch vụ (serviceName có) —
+  // NHƯNG KHÔNG lặp lại nếu hội thoại đã xác nhận dịch vụ rồi (chống REPEATED_OPENER).
   const actionU = (input.action ?? "").toUpperCase();
-  const intentFirst = actionU === "IDENTIFY_SERVICE"
-    || ((actionU === "GREET" || actionU === "ASK_SERVICE") && !!(input.facts.serviceName ?? "").trim());
-  if (intentFirst) {
-    const line = intentFallbackLine(input.action, input.facts);
-    if (line) {
-      const gl = gate(line);
-      if (gl.pass) {
-        return {
-          ...base, fallbackUsed: "intent",
-          replyText: line, replyError: llmError, provider: "intent-fallback", validator: gl.v,
-          blockedReason: lastBlock ? (lastBlock.reason ?? "bị chặn") : null,
-        };
-      }
-      lastBlock = gl.v;
+  let intentTried = false;
+  const tryIntentLine = (): FinalizeResult | null => {
+    if (intentTried) return null;
+    intentTried = true;
+    const line = intentFallbackLine(input.action, input.facts, { alreadyConfirmedService: input.alreadyConfirmedService });
+    if (!line) return null;
+    const gl = gate(line);
+    if (gl.pass) {
+      return {
+        ...base, fallbackUsed: "intent",
+        replyText: line, replyError: llmError, provider: "intent-fallback", validator: gl.v,
+        blockedReason: lastBlock ? (lastBlock.reason ?? "bị chặn") : null,
+      };
     }
+    lastBlock = gl.v;
+    return null;
+  };
+  const intentFirst = !input.alreadyConfirmedService && (
+    actionU === "IDENTIFY_SERVICE"
+    || ((actionU === "GREET" || actionU === "ASK_SERVICE") && !!(input.facts.serviceName ?? "").trim())
+  );
+  if (intentFirst) {
+    const r = tryIntentLine();
+    if (r) return r;
+  }
+
+  // 2b-pre) GOLDEN "MÙ" (không dòng nào trùng từ khoá với câu khách) → câu situation-script
+  // chỉ là "giọng chung" dễ lệch nghĩa — ưu tiên intent-line theo action trước.
+  const goldenBlind = !input.golden.length || (input.golden[0]?.kw ?? 0) < 1;
+  if (goldenBlind) {
+    const r = tryIntentLine();
+    if (r) return r;
   }
 
   // 2) Stitched fallback — deterministic từ golden + facts CRM, vẫn phải qua CẢ 2 cổng.
@@ -216,18 +255,10 @@ export async function finalizeSaleReply(input: FinalizeInput): Promise<FinalizeR
     lastBlock = gs.v;
   }
 
-  // 2b) Fallback THEO INTENT — câu trung lập của ĐÚNG dịch vụ (action + facts), qua cả 2 cổng.
-  const intentLine = intentFallbackLine(input.action, input.facts);
-  if (intentLine) {
-    const gi = gate(intentLine);
-    if (gi.pass) {
-      return {
-        ...base, fallbackUsed: "intent",
-        replyText: intentLine, replyError: llmError, provider: "intent-fallback", validator: gi.v,
-        blockedReason: lastBlock ? (lastBlock.reason ?? "bị chặn") : null,
-      };
-    }
-    lastBlock = gi.v;
+  // 2c) Fallback THEO INTENT — câu trung lập của ĐÚNG dịch vụ (action + facts), qua cả 2 cổng.
+  {
+    const r = tryIntentLine();
+    if (r) return r;
   }
 
   // 3) Câu an toàn + chuyển người thật.

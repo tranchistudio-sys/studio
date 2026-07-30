@@ -233,7 +233,11 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
         SEND_SAMPLE: "tu-van", ANSWER_FAQ: "tu-van",
         ESCALATE_HUMAN: "sau-chot",
       };
-      const stepHint = ACTION_STEP_HINT[resolve.decision.action] ?? null;
+      // Khách ĐANG HỎI GIÁ → hint bao-gia BẤT KỂ action (ASK_DATE do price-gating vẫn phải
+      // trả lời bằng row báo-giá "giá + hỏi ngày", không phải row tìm-hiểu lệch nghĩa).
+      const asksPrice = /giá|gia sao|bao nhiêu|bao nhieu|nhiu|nhieu tien|bảng giá|bang gia|price/i
+        .test(incomingText.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, ""));
+      const stepHint = asksPrice ? "bao-gia" : (ACTION_STEP_HINT[resolve.decision.action] ?? null);
       const golden = await getGoldenExamples(resolve.winner?.key ?? null, incomingText, 4, serviceSlug, stepHint);
       const goldenBlock = buildGoldenExamplesBlock(golden);
       if (goldenBlock) context += `\n\n${goldenBlock}`;
@@ -338,9 +342,14 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
           return { text: r.raw || null, provider: providerLabel, error: !r.raw ? "AI không trả nội dung" : null };
         }
       : null;
+    // Bot đã từng xác nhận dịch vụ này trong hội thoại → không lặp câu "bên em có X" nữa.
+    const alreadyConfirmedService = !!(p.groupName && prior.some(
+      (h) => h.direction === "outgoing" && h.message.toLowerCase().includes((p.groupName as string).toLowerCase()),
+    ));
     fin = await finalizeSaleReply({
       callLlm, golden: p.golden, facts: p.facts, validate,
       voiceCheck: checkDatabaseVoice, action: p.resolve.decision.action,
+      alreadyConfirmedService,
     });
     // Fallback (stitched/safe) → text KHÔNG phải của LLM: bỏ marker/ảnh của bản reply bị chặn.
     if (fin.fallbackUsed !== "none") reply = null;

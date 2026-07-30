@@ -71,7 +71,7 @@ const WEDDING_ALBUM_RE =
 const MATERNITY_RE = /(bầu|bau|mẹ bầu|me bau|mang thai|maternity)/i;
 const FAMILY_RE = /(gia đình|gia dinh|cả nhà|ca nha|family|chụp gia đình)/i;
 const BEAUTY_RE =
-  /(beauty|beaty|cool boy|cool ?girl|cá tính|ca tinh|ngầu|ngau|nàng thơ|nang tho|chân dung|chan dung|cá nhân|ca nhan|profile|kỷ yếu|ky yeu|sinh nhật|sinh nhat|nghệ thuật|nghe thuat|tạp chí|tap chi|fashion|thời trang|thoi trang|gym|sang chảnh|sang chanh|sống ảo|song ao)/i;
+  /(beauty|beaty|beuty|biuty|cool boy|cool ?girl|cá tính|ca tinh|ngầu|ngau|nàng thơ|nang tho|chân dung|chan dung|cá nhân|ca nhan|profile|kỷ yếu|ky yeu|sinh nhật|sinh nhat|nghệ thuật|nghe thuat|tạp chí|tap chi|fashion|thời trang|thoi trang|gym|sang chảnh|sang chanh|sống ảo|song ao)/i;
 const NEW_CONCEPT_RE =
   /(ý tưởng|y tuong|concept|độc đáo|doc dao|độc lạ|doc la|mới mẻ|moi me|lạ hơn|la hon|cái mới|cai moi|gì mới|gi moi|gì lạ|gi la|khác hơn|khac hon|sáng tạo|sang tao|không thích|khong thich|chán mẫu|chan mau|chưa ưng|chua ung)/i;
 

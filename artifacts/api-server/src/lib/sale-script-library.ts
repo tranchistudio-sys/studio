@@ -290,6 +290,8 @@ export type GoldenExample = {
   customerText: string; idealResponse: string; notes: string; score: number;
   /** Nguồn script (trace SCRIPT SOURCE): 'service' = đúng dịch vụ khoá; 'scenario' = thẻ chung; 'greeting' = chào hỏi global. */
   source?: "service" | "scenario" | "greeting";
+  /** Điểm khớp TỪ KHOÁ thuần (không tính tier/step) — 0 = golden "mù" với câu khách. */
+  kw?: number;
 };
 
 /**
@@ -368,7 +370,7 @@ export async function getGoldenExamples(
     scored.sort((a, b) => b.score - a.score);
     // Không tin nào trùng từ khoá → vẫn trả vài ví dụ ĐẦU TIER CAO làm "giọng chung".
     const hits = scored.filter((s) => s.kw > 0);
-    return (hits.length ? hits : scored).slice(0, topN).map(({ kw: _kw, ...e }) => e);
+    return (hits.length ? hits : scored).slice(0, topN); // giữ kw để tầng finalize biết golden "mù"
   } catch (err) {
     console.error("[ScriptLib] getGoldenExamples lỗi (fail-soft):", String(err).slice(0, 150));
     return [];

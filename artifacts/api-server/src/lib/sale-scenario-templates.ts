@@ -246,12 +246,12 @@ export const SERVICE_TEMPLATES: Record<string, TemplateRow[]> = {
  "goi-re-nhat": [
  {
  customerText: "Gói thấp nhất bên em là gói nào vậy?",
- idealResponse: "Dạ mức đầu tư nhẹ nhất bên em hiện là gói {{PACKAGE_NAME}}, giá {{PRICE}}, gồm {{PACKAGE_CONTENT}} ạ.\nmình đang cần gọn nhẹ trong Studio hay vẫn muốn thêm ngoại cảnh, để em xem gói này đã vừa vặn với mình chưa nè?",
+ idealResponse: "Dạ nếu mình cần gọn nhẹ, gói {{PACKAGE_NAME}} bên em giá {{PRICE}}, gồm {{PACKAGE_CONTENT}} ạ.\nmình đang cần gọn nhẹ trong Studio hay vẫn muốn thêm ngoại cảnh, để em xem gói này đã vừa vặn với mình chưa nè?",
  notes: "Trả lời thẳng theo bảng giá thực tế, không vòng vo né câu hỏi giá thấp.",
  },
  {
  customerText: "Gói cao nhất bên em giá bao nhiêu vậy? Mình muốn đầu tư luôn.",
- idealResponse: "Nghe là biết mình chuẩn bị thật chỉn chu cho ngày trọng đại rồi nè!\nGói cao nhất bên em hiện là {{PACKAGE_NAME}}, giá {{PRICE}}, trọn vẹn {{PACKAGE_CONTENT}}.\nEm mời mình ghé tiệm để em soạn riêng những mẫu trang phục đẹp nhất cho mình ướm thử luôn nha?",
+ idealResponse: "Nghe là biết mình chuẩn bị thật chỉn chu rồi nè!\nGói {{PACKAGE_NAME}} bên em giá {{PRICE}}, trọn vẹn {{PACKAGE_CONTENT}}.\nEm mời mình ghé tiệm để em soạn riêng những mẫu trang phục đẹp nhất cho mình ướm thử luôn nha?",
  notes: "Khách sẵn ngân sách: mô tả sang trọng đúng token và kéo đến tiệm sớm.",
  },
  {
@@ -376,6 +376,11 @@ export const SERVICE_TEMPLATES: Record<string, TemplateRow[]> = {
  },
  ],
  "coc": [
+ {
+ customerText: "Gửi chị số tài khoản để chị chuyển khoản với",
+ idealResponse: "Dạ phần chuyển khoản và xác nhận cọc bạn phụ trách sẽ gửi thông tin chính xác cho mình liền ạ.\nEm báo bạn ấy liên hệ mình ngay nha, mình chờ em xíu nè.",
+ notes: "Không tự gửi STK/xác nhận tiền — bạn phụ trách xác minh (an toàn thanh toán).",
+ },
  {
  customerText: "Cọc bao nhiêu vậy em?",
  idealResponse: "Dạ mức cọc và cách thanh toán bạn phụ trách sẽ xác nhận chính xác với mình khi chốt lịch ạ.\nEm chuyển thông tin của mình cho bạn ấy liên hệ ngay nha mình.",
@@ -554,7 +559,7 @@ export const SERVICE_TEMPLATES: Record<string, TemplateRow[]> = {
  },
  {
  customerText: "ngay cuoi tui em chua co, chi cho tui em coi truoc thoi nha",
- idealResponse: "Không sao đâu mình ơi, nhiều dâu bên em cũng tham khảo trước rồi mới chốt ngày ạ.\nEm gửi mình gói {{PACKAGE_NAME}} gồm {{PACKAGE_CONTENT}} để mình xem trước, khi nào có ngày mình báo em kiểm tra lịch cho mình liền nha.",
+ idealResponse: "Không sao đâu mình ơi, nhiều khách bên em cũng tham khảo trước rồi mới chốt ngày ạ.\nEm gửi mình gói {{PACKAGE_NAME}} gồm {{PACKAGE_CONTENT}} để mình xem trước, khi nào có ngày mình báo em kiểm tra lịch cho mình liền nha.",
  notes: "Lý do TIMING chưa có ngày: state hợp lệ — không hỏi lại ngày, báo giá tham khảo và hứa kiểm tra lịch khi khách có ngày; cấm xác nhận giữ lịch trước.",
  },
  {
@@ -796,7 +801,7 @@ export const SERVICE_TEMPLATES: Record<string, TemplateRow[]> = {
  "chup-dip-gi": [
  {
  customerText: "Tụi em dịp đặc biệt đầu năm sau, giờ tìm hiểu chụp hình được chưa chị?",
- idealResponse: "Chúc mừng dâu rể sắp về chung một nhà nha!\nGiờ tìm hiểu là vừa đẹp luôn ạ, em gửi mình vài concept đang được các mình bên em mê nhất để tham khảo trước nha.",
+ idealResponse: "Cảm ơn mình đã chia sẻ với em nha!\nGiờ tìm hiểu là vừa đẹp luôn ạ, em gửi mình vài concept đang được các mình bên em mê nhất để tham khảo trước nha.",
  notes: "Khách dịp đặc biệt năm sau — chúc mừng thật lòng, không ép chốt ngày.",
  },
  {
@@ -818,7 +823,7 @@ export const SERVICE_TEMPLATES: Record<string, TemplateRow[]> = {
  "so-nguoi-doi-tuong": [
  {
  customerText: "Nhà mình 4 người thì chụp gói nào được em?",
- idealResponse: "Nhà mình 4 thành viên thì gói {{PACKAGE_NAME}} bên em là vừa đẹp ạ, gói gồm {{PACKAGE_CONTENT}} luôn nha chị.\nChị muốn cả nhà mặc trang phục bên em chuẩn bị sẵn hay mang theo đồ của mình ạ?",
+ idealResponse: "Nhà mình đi bao nhiêu người gói {{PACKAGE_NAME}} bên em cũng sắp xếp vừa vặn được ạ, gói gồm {{PACKAGE_CONTENT}} luôn nha chị.\nChị muốn cả nhà mặc trang phục bên em chuẩn bị sẵn hay mang theo đồ của mình ạ?",
  notes: "Đã rõ số người — gắn đúng gói bằng token, hỏi tiếp đúng 1 câu về trang phục.",
  },
  {
@@ -896,7 +901,7 @@ export const SERVICE_TEMPLATES: Record<string, TemplateRow[]> = {
  "ngan-sach": [
  {
  customerText: "Em sợ chụp bộ ảnh tốn kém lắm, bên chị có gói nào nhẹ nhẹ không?",
- idealResponse: "mình cứ yên tâm nha, bên em có gói {{PACKAGE_NAME}} mức {{PRICE}} được rất nhiều dâu rể lựa chọn ạ.\nGói đã gồm {{PACKAGE_CONTENT}} trọn gói nên mình không lo phát sinh thêm chi phí nào đâu ạ.",
+ idealResponse: "mình cứ yên tâm nha, bên em có gói {{PACKAGE_NAME}} mức {{PRICE}} được rất nhiều mình lựa chọn ạ.\nGói đã gồm {{PACKAGE_CONTENT}} trọn gói nên mình không lo phát sinh thêm chi phí nào đâu ạ.",
  notes: "Không phán xét ngân sách; nhấn trọn gói không phát sinh, giá chỉ nói bằng token.",
  },
  {
@@ -1084,7 +1089,7 @@ export const SERVICE_TEMPLATES: Record<string, TemplateRow[]> = {
  },
  {
  customerText: "Lỡ hôm chụp ngoại cảnh mưa thì sao?",
- idealResponse: "mình lo xa vậy là chuẩn dâu đảm rồi á.\nBên em luôn theo dõi thời tiết trước buổi chụp và sẽ chủ động trao đổi với mình phương án dời lịch hoặc đổi bối cảnh phù hợp, không để ảnh của mình bị ảnh hưởng đâu ạ.",
+ idealResponse: "mình lo xa vậy là chu đáo lắm rồi á.\nBên em luôn theo dõi thời tiết trước buổi chụp và sẽ chủ động trao đổi với mình phương án dời lịch hoặc đổi bối cảnh phù hợp, không để ảnh của mình bị ảnh hưởng đâu ạ.",
  notes: "Trấn an bằng cách xử lý linh hoạt, không hứa chính sách cụ thể chưa được duyệt.",
  },
  ],

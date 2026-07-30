@@ -1535,7 +1535,9 @@ function AiFixTab({ active, draft, showOk, showErr, onDraftChange, goTest, queue
 // ĐÚNG bản nháp hiện tại (tạo mới từ bản đang chạy nếu chưa có). KHÔNG gửi Messenger thật.
 type TestTurn =
   | { id: string; role: "customer"; text: string; imageUrl?: string }
-  | { id: string; role: "lulu"; result: SimResult; forText: string; fixed?: boolean; preview?: boolean };
+  | { id: string; role: "lulu"; result: SimResult; forText: string; fixed?: boolean; preview?: boolean }
+  // Lỗi hệ thống (vd chưa cấu hình AI key) — hiện BỀN trong khung chat, không chỉ toast 6s.
+  | { id: string; role: "error"; text: string };
 // "Câu Lulu đã được dạy" trong bản nháp (gọn, khớp GET /lulu-brain/draft-overrides).
 type TaughtOverride = {
   id: string; customerQuestion: string; intent: string | null; tone: string | null;
@@ -1673,7 +1675,12 @@ function FixTestTab({
       }
       if (res.reply?.length) next.push({ direction: "outgoing", text: res.reply.join("\n\n") });
       setConvo(next);
-    } catch (e) { showErr(String((e as Error).message)); } finally { setSending(false); }
+    } catch (e) {
+      const msg = String((e as Error).message);
+      showErr(msg);
+      // Hiện lỗi BỀN trong khung chat — tránh cảnh gửi tin mà im lặng không biết vì sao.
+      setTurns((p) => [...p, { id: newId(), role: "error", text: msg }]);
+    } finally { setSending(false); }
   };
 
   const clearChat = () => { setTurns([]); setConvo([]); setFixingId(null); };
@@ -1844,6 +1851,15 @@ function FixTestTab({
                 className="opacity-0 group-hover:opacity-100 transition text-gray-300 hover:text-rose-500 mt-1.5 shrink-0"><X className="w-3.5 h-3.5" /></button>
               <div className="max-w-[80%] bg-sky-600 text-white rounded-2xl rounded-br-sm px-3 py-2 text-sm">
                 {t.imageUrl && <img src={t.imageUrl} alt="ảnh khách" className="rounded-lg max-h-40 border border-white/30 mb-1" />}
+                <span className="whitespace-pre-wrap break-words">{t.text}</span>
+              </div>
+            </div>
+          ) : t.role === "error" ? (
+            <div key={t.id} className="flex gap-2 items-start group">
+              <div className="w-7 h-7 rounded-full bg-rose-100 flex items-center justify-center text-rose-600 shrink-0"><AlertTriangle className="w-4 h-4" /></div>
+              <div className="max-w-[88%] bg-rose-50 border border-rose-200 text-rose-700 rounded-2xl rounded-bl-sm px-3 py-2 text-[13px] relative">
+                <button onClick={() => deleteTurn(t.id)} title="Xóa thông báo này"
+                  className="absolute -top-1 right-1 opacity-0 group-hover:opacity-100 transition text-rose-300 hover:text-rose-500"><X className="w-3.5 h-3.5" /></button>
                 <span className="whitespace-pre-wrap break-words">{t.text}</span>
               </div>
             </div>

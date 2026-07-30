@@ -514,8 +514,12 @@ router.post("/lulu-brain/test", async (req, res) => {
     const message = (b.message ?? "").trim();
     const hasImage = !!(b.imageBase64 ?? "").trim();
     if (!message && !hasImage) return res.status(400).json({ error: "Thiếu nội dung tin nhắn hoặc ảnh" });
-    if (!(process.env.ANTHROPIC_API_KEY ?? "").trim()) {
-      return res.status(400).json({ error: "Chưa cấu hình ANTHROPIC_API_KEY trong .env" });
+    // Sân test chạy được với ANTHROPIC_API_KEY HOẶC ShopAIKey test-only (#144) — trước đây
+    // gate chỉ nhìn ANTHROPIC nên có ShopAIKey vẫn bị chặn 400.
+    if (!(process.env.ANTHROPIC_API_KEY ?? "").trim() && !resolveTestProviderOverride()) {
+      return res.status(400).json({
+        error: "Chưa cấu hình AI key cho sân test — dán ANTHROPIC_API_KEY, hoặc ShopAIKey test-only (LULU_TEST_PROVIDER=shopaikey + SHOPAIKEY_API_KEY) vào .env rồi khởi động lại server.",
+      });
     }
 
     const prior = Array.isArray(b.messages)

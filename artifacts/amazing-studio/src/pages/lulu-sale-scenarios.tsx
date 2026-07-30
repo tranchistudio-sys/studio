@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { apiUrl } from "@/lib/api-base";
 import { getImageSrc } from "@/lib/imageUtils";
+import { PackagePriceCard, type PricePkg } from "@/components/package-price-card";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import {
   type ScenarioCard, type ScenarioRecord, type ScenarioLabels,
@@ -605,7 +607,6 @@ type TreeNodeFE = {
   meta?: { groupName?: string | null; packageCount?: number; situationCount?: number; filledCount?: number; priceConnected?: boolean; showPricing?: boolean; imageUrl?: string | null; hasScript?: boolean };
   scenario?: { name: string; enabled: boolean; status: string; whenText: string; missing?: boolean } | null;
 };
-type EffPkg = { code: string; name: string; groupName: string; basePrice: number; effectivePrice: number; promoActive: boolean; promoName: string | null; promoEnd: string | null; description?: string | null; photoCount?: number | null; includesMakeup?: boolean };
 
 // Ngữ cảnh khi mở 1 bảng Hỏi & Trả lời — đủ để hiện breadcrumb + đọc đúng bảng giá + tự điền.
 type ScriptTarget = {
@@ -614,72 +615,81 @@ type ScriptTarget = {
 };
 type TreeCtx = { serviceTitle?: string; groupName?: string | null; stepTitle?: string };
 
-const vnd = (n: number) => (Number.isFinite(n) && n > 0 ? n.toLocaleString("vi-VN") + "đ" : "liên hệ");
+type PreviewResp = { groups: Array<{ groupName: string; packages: Array<{ code: string }>; imageUrl?: string | null }> };
 
-function PricingNode({ serviceKey, groupName }: { serviceKey: string | null; groupName?: string | null }) {
-  const [groups, setGroups] = useState<Array<{ groupName: string; packages: EffPkg[]; imageUrl?: string | null }> | null>(null);
-  const [err, setErr] = useState<string | null>(null);
+function PricingNode({ serviceKey, groupName, variant = "tree" }: { serviceKey: string | null; groupName?: string | null; variant?: "tree" | "card" }) {
   const [zoom, setZoom] = useState<string | null>(null);
-  useEffect(() => {
-    let alive = true;
-    // Card = nhóm giá → đọc theo TÊN NHÓM (chính xác tuyệt đối); fallback service_key nếu thiếu.
-    const qs = groupName ? `group=${encodeURIComponent(groupName)}` : `service=${encodeURIComponent(serviceKey ?? "")}`;
-    apiGet<{ groups: Array<{ groupName: string; packages: EffPkg[]; imageUrl?: string | null }> }>(`/lulu-scenarios/price-preview?${qs}`)
-      .then((r) => { if (alive) setGroups(r.groups); })
-      .catch((e) => { if (alive) setErr(String((e as Error).message)); });
-    return () => { alive = false; };
-  }, [serviceKey, groupName]);
+  const [collapsed, setCollapsed] = useState(false);
+  const [compactIds, setCompactIds] = useState<Set<number>>(new Set()); // gói đang thu gọn (chỉ tên + giá)
+  // price-preview = NGUỒN THẨM QUYỀN: đúng bộ gói ENGINE Lulu dùng (đã lọc gói hợp lệ có mã) + ảnh nhóm.
+  // /service-packages = data ĐẦY ĐỦ (mô tả/chi phí/loại DV/discount) để dựng card giống trang Bảng giá.
+  const qs = groupName ? `group=${encodeURIComponent(groupName)}` : `service=${encodeURIComponent(serviceKey ?? "")}`;
+  const { data: preview, isLoading: pvLoading, error: pvErr } = useQuery<PreviewResp>({
+    queryKey: ["lulu-price-preview", groupName ?? serviceKey ?? ""], queryFn: () => apiGet<PreviewResp>(`/lulu-scenarios/price-preview?${qs}`),
+  });
+  const { data: pkgs, isLoading: pLoading, error: pErr } = useQuery<PricePkg[]>({
+    queryKey: ["service-packages"], queryFn: () => apiGet<PricePkg[]>("/service-packages"),
+  });
+  const loading = pvLoading || pLoading;
+  const err = (pvErr || pErr) as Error | null;
+
+  // CHỈ hiện gói mà engine thật sự dùng (khớp mã) — KHÔNG hiện gói không mã / giá đối tác nội bộ.
+  const codes = new Set((preview?.groups ?? []).flatMap((g) => g.packages).map((p) => (p.code ?? "").trim().toUpperCase()).filter(Boolean));
+  const list = (pkgs ?? [])
+    .filter((p) => codes.has((p.code ?? "").trim().toUpperCase()) && p.isActive !== false)
+    .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+  const rawImg = preview?.groups?.find((g) => g.imageUrl)?.imageUrl ?? null;
+  const imageUrl = rawImg ? getImageSrc(rawImg) : null;
+  const bare = variant === "card";
+  const allCompact = list.length > 0 && list.every((p) => compactIds.has(p.id));
+  const toggleCard = (id: number) => setCompactIds((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
+  const toggleAllCompact = () => setCompactIds(allCompact ? new Set() : new Set(list.map((p) => p.id)));
+
   return (
-    <div className="ml-6 my-1 border-l-2 border-emerald-200 pl-3 py-1 text-[12px]">
-      <p className="text-emerald-700 font-medium">Nguồn giá: Dịch vụ &amp; Bảng giá {groupName ? `→ ${groupName}` : ""} · <span className="text-gray-400">đọc realtime, không nhập tay</span></p>
-      {groups?.map((g) => g.imageUrl ? (
-        <img key={"img-" + g.groupName} src={getImageSrc(g.imageUrl) ?? ""} alt={`Bảng giá ${g.groupName}`}
-          onClick={() => setZoom(getImageSrc(g.imageUrl) ?? null)}
-          className="mt-1.5 rounded-lg border border-emerald-200 max-h-56 w-auto cursor-zoom-in hover:opacity-90"
-          title="Ảnh bảng giá (đồng bộ từ Dịch vụ & Bảng giá) — bấm để phóng to" />
-      ) : null)}
+    <div className={bare
+      ? "rounded-xl border border-emerald-200 bg-emerald-50/40 p-3 text-[12px]"
+      : "ml-6 my-1 border-l-2 border-emerald-200 pl-3 py-1 text-[12px]"}>
+      <div className="flex items-center justify-between gap-2 mb-1.5 flex-wrap">
+        <p className="text-emerald-800 font-semibold flex items-center gap-1.5 text-[13px]">💰 BẢNG GIÁ REALTIME{groupName ? ` — ${groupName}` : ""}</p>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-[10px] text-emerald-600 bg-white border border-emerald-200 rounded-full px-2 py-0.5">🔄 đọc thẳng từ Bảng giá</span>
+          {!collapsed && list.length > 0 && (
+            <button onClick={toggleAllCompact}
+              className="text-[11px] text-gray-600 border border-gray-300 bg-white rounded-full px-2 py-0.5 hover:bg-gray-50 flex items-center gap-0.5">
+              {allCompact ? <><ChevronDown className="w-3 h-3" /> Mở chi tiết gói</> : <><ChevronUp className="w-3 h-3" /> Gọn gói (tên + giá)</>}
+            </button>
+          )}
+          <button onClick={() => setCollapsed((c) => !c)}
+            className="text-[11px] text-emerald-700 border border-emerald-300 bg-white rounded-full px-2 py-0.5 hover:bg-emerald-50 flex items-center gap-0.5">
+            {collapsed ? <><ChevronDown className="w-3 h-3" /> Hiện bảng giá ({list.length})</> : <><ChevronUp className="w-3 h-3" /> Ẩn bảng giá</>}
+          </button>
+        </div>
+      </div>
+
+      {!collapsed && <>
+        {loading && <p className="text-gray-400 mt-1">Đang đọc bảng giá…</p>}
+        {err && <p className="text-rose-600 mt-1">Không đọc được giá: {err.message}</p>}
+        {!loading && !err && list.length === 0 && <p className="text-amber-600 mt-1">Chưa có gói nào — mở "Dịch vụ &amp; Bảng giá" thêm gói cho nhóm này.</p>}
+
+        {imageUrl && (
+          <img src={imageUrl} alt={`Bảng giá ${groupName ?? ""}`} onClick={() => setZoom(imageUrl)}
+            className="mt-1.5 rounded-lg border border-emerald-200 max-h-56 w-auto cursor-zoom-in hover:opacity-90"
+            title="Ảnh bảng giá (đồng bộ từ Dịch vụ & Bảng giá) — bấm để phóng to" />
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2 mt-2">
+          {list.map((p) => <PackagePriceCard key={p.id} pkg={p} collapsed={compactIds.has(p.id)} onToggle={() => toggleCard(p.id)} />)}
+        </div>
+      </>}
+
       {zoom && (
-        <div onClick={() => setZoom(null)} className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center p-6 cursor-zoom-out">
+        <div onClick={() => setZoom(null)} className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center p-6 cursor-zoom-out">
           <img src={zoom} alt="Bảng giá" className="max-h-[90vh] max-w-[90vw] rounded-lg shadow-2xl" />
         </div>
       )}
-      {err && <p className="text-rose-600 mt-1">Không đọc được giá: {err}</p>}
-      {!groups && !err && <p className="text-gray-400 mt-1">Đang đọc bảng giá…</p>}
-      {groups && groups.length === 0 && <p className="text-amber-600 mt-1">Chưa có gói nào khớp — mở "Dịch vụ &amp; Bảng giá" thêm gói cho nhóm này.</p>}
-      {groups?.map((g) => (
-        <div key={g.groupName} className="mt-2">
-          <p className="font-medium text-gray-700 mb-1">{g.groupName}</p>
-          <div className="space-y-1.5">
-            {g.packages.slice(0, 12).map((p) => (
-              <div key={p.code} className="border border-gray-200 rounded-lg px-2.5 py-2 bg-white">
-                <div className="flex items-baseline justify-between gap-2 flex-wrap">
-                  <span className="font-medium text-gray-800">{p.name || p.code}</span>
-                  <span className="whitespace-nowrap">
-                    {p.promoActive
-                      ? <span><span className="line-through text-gray-400 mr-1">{vnd(p.basePrice)}</span><b className="text-rose-600 text-[13px]">{vnd(p.effectivePrice)}</b></span>
-                      : <b className="text-[13px] text-gray-800">{vnd(p.effectivePrice)}</b>}
-                  </span>
-                </div>
-                <div className="flex items-center gap-1.5 flex-wrap mt-1">
-                  {p.promoActive && (
-                    <span className="text-[10px] bg-rose-50 text-rose-600 border border-rose-200 rounded-full px-1.5 py-0.5">
-                      🔻 {p.promoName || "Đang giảm"}{p.promoEnd ? ` · đến ${new Date(p.promoEnd).toLocaleDateString("vi-VN")}` : ""}
-                    </span>
-                  )}
-                  {typeof p.photoCount === "number" && p.photoCount > 0 && (
-                    <span className="text-[10px] bg-gray-100 text-gray-600 rounded-full px-1.5 py-0.5">📷 {p.photoCount} ảnh</span>
-                  )}
-                  {p.includesMakeup && <span className="text-[10px] bg-gray-100 text-gray-600 rounded-full px-1.5 py-0.5">💄 makeup</span>}
-                  <span className="text-[10px] text-gray-300 font-mono">{p.code}</span>
-                </div>
-                {p.description && <p className="text-[11px] text-gray-500 mt-1 line-clamp-2"><span className="text-gray-400">Gồm: </span>{p.description}</p>}
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
-      <a href={`/pricing${groups && groups[0]?.groupName ? `?group=${encodeURIComponent(groups[0].groupName)}` : ""}`}
-        className="inline-block mt-1.5 text-violet-600">Xem / sửa bảng giá →</a>
+
+      <a href={`/pricing${groupName ? `?group=${encodeURIComponent(groupName)}` : ""}`}
+        className="inline-block mt-2 text-violet-600 font-medium">Mở bảng giá đầy đủ →</a>
     </div>
   );
 }
@@ -740,8 +750,12 @@ function ScriptTablePanel({ nodeKey, scenarioKey, title, serviceKey, groupName, 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [q, setQ] = useState("");
-  const [sitFilter, setSitFilter] = useState("");
   const [paste, setPaste] = useState<PasteState | null>(null);
+  // Excel gọn: mặc định CHỈ 2 cột (Khách hỏi · Lulu trả lời). Ghi chú + tìm kiếm nằm trong
+  // "Cài đặt nâng cao" (đóng sẵn). Nhóm/Tình huống vẫn lưu DB nhưng ẨN khỏi giao diện.
+  const [showNotes, setShowNotes] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [focusedCell, setFocusedCell] = useState<number | null>(null);
 
   const normRows = (raw: ScriptRowFE[]) => raw.map((x) => ({
     groupLabel: x.groupLabel ?? "", situationLabel: x.situationLabel ?? "",
@@ -758,6 +772,13 @@ function ScriptTablePanel({ nodeKey, scenarioKey, title, serviceKey, groupName, 
     // sẽ khiến effect chạy lại lúc hiện toast và xoá mất dòng vừa dán/sửa).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodeKey]);
+
+  // Đóng modal bằng phím Esc (X vẫn là nút đóng chính; không đóng khi bấm nền để tránh mất sửa).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   const setRow = (i: number, patch: Partial<ScriptRowFE>) => setRows((rs) => rs.map((r, j) => j === i ? { ...r, ...patch } : r));
   const addRow = () => setRows((rs) => [...rs, newRow()]);
@@ -798,61 +819,74 @@ function ScriptTablePanel({ nodeKey, scenarioKey, title, serviceKey, groupName, 
     showOk(`Đã thêm ${previewRows.length} dòng${previewPriced ? ` — ${previewPriced} dòng có số tiền, cân nhắc {{PRICE}}` : ""} — nhớ bấm Lưu bảng`);
   };
 
-  const situations = Array.from(new Set(rows.map((r) => r.situationLabel).filter(Boolean)));
   const qn = q.trim().toLowerCase();
   const visible = rows.map((r, i) => ({ r, i }))
-    .filter(({ r }) => !sitFilter || r.situationLabel === sitFilter)
-    .filter(({ r }) => !qn || `${r.groupLabel} ${r.situationLabel} ${r.customerText} ${r.idealResponse} ${r.notes}`.toLowerCase().includes(qn));
+    .filter(({ r }) => !qn || `${r.customerText} ${r.idealResponse} ${r.notes}`.toLowerCase().includes(qn));
 
-  const cell = (v: string, on: (x: string) => void, ph: string, cls = "", rows2 = 2) => (
-    <textarea value={v} onChange={(e) => on(e.target.value)} rows={rows2} readOnly={!isAdmin}
+  const cell = (v: string, on: (x: string) => void, ph: string, cls = "", rows2 = 2, onFocus?: () => void) => (
+    <textarea value={v} onChange={(e) => on(e.target.value)} onFocus={onFocus} rows={rows2} readOnly={!isAdmin}
       className={`w-full border rounded px-1.5 py-1 text-[13px] ${cls}`} placeholder={ph} />
   );
 
+  // Chèn token FACT vào ô "Lulu trả lời" đang focus (hoặc dòng cuối). Giá/tên gói/nội dung/ưu đãi
+  // luôn lấy realtime từ Bảng giá — chủ KHÔNG gõ số cứng.
+  const TOKENS: Array<{ t: string; label: string; desc: string }> = [
+    { t: "{{PRICE}}", label: "Giá", desc: "Giá hiện tại — lấy từ Bảng giá" },
+    { t: "{{PACKAGE_NAME}}", label: "Tên gói", desc: "Tên gói hiện tại" },
+    { t: "{{PACKAGE_CONTENT}}", label: "Nội dung gói", desc: "Nội dung/mô tả gói" },
+    { t: "{{PROMOTION}}", label: "Ưu đãi", desc: "Ưu đãi đang chạy (rỗng nếu không có)" },
+  ];
+  const insertToken = (tok: string) => setRows((rs) => {
+    if (rs.length === 0) { const r = newRow(); r.idealResponse = tok; return [r]; }
+    const i = focusedCell != null && focusedCell < rs.length ? focusedCell : rs.length - 1;
+    return rs.map((r, j) => j === i ? { ...r, idealResponse: (r.idealResponse ? r.idealResponse.replace(/\s*$/, "") + " " : "") + tok } : r);
+  });
+
   return (
-    <div className="bg-white border rounded-xl p-4 space-y-3">
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center overflow-y-auto p-3 sm:p-6">
+     <div className="bg-white border rounded-xl shadow-2xl w-full max-w-4xl my-2 sm:my-6 p-4 space-y-3">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           {breadcrumb && <p className="text-[11px] text-gray-400 truncate">{breadcrumb}</p>}
-          <p className="font-medium flex items-center gap-2"><NotebookPen className="w-4 h-4 text-violet-600 shrink-0" /> Bảng Hỏi &amp; Trả lời: {situationTitle ?? title}</p>
+          <p className="font-semibold text-[15px] flex items-center gap-2"><NotebookPen className="w-4 h-4 text-violet-600 shrink-0" /> Hỏi &amp; Trả lời: {situationTitle ?? title}</p>
         </div>
-        <button onClick={onClose} className="text-gray-400 hover:text-gray-600 shrink-0"><X className="w-4 h-4" /></button>
+        <button onClick={onClose} title="Đóng" className="text-gray-400 hover:text-gray-700 shrink-0 border rounded-lg p-1"><X className="w-4 h-4" /></button>
       </div>
-      <p className="text-[12px] text-gray-500">Chủ tự viết câu khách hay hỏi ↔ câu Lulu nên trả lời. Lulu học GIỌNG/cách dẫn — không đọc y nguyên, giá luôn lấy từ bảng giá (dùng <code>{"{{PRICE}}"}</code> thay cho số tiền).</p>
 
+      {/* BẢNG GIÁ REALTIME — luôn hiện ở trên để đối chiếu giá thật ↔ kịch bản (Req 1, 8). */}
       {(groupName || serviceKey) && (
-        <details className="text-[12px]">
-          <summary className="cursor-pointer text-emerald-700">💰 Xem bảng giá sống {groupName ? `— ${groupName}` : "của nhóm này"}</summary>
-          <PricingNode serviceKey={serviceKey} groupName={groupName} />
-        </details>
+        <PricingNode serviceKey={serviceKey} groupName={groupName} variant="card" />
       )}
 
-      <div className="flex items-center gap-2 flex-wrap">
-        <div className="relative">
-          <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-2.5" />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Tìm trong bảng…" className="border rounded-lg pl-8 pr-3 py-1.5 text-[13px] w-52" />
+      <p className="text-[12px] text-gray-500">Viết <b>câu khách hay hỏi</b> ↔ <b>câu Lulu nên trả lời</b>. Lulu học <b>giọng/cách nói</b> — không đọc y nguyên. Giá &amp; thông tin gói luôn lấy realtime từ Bảng giá qua các thẻ dưới đây.</p>
+
+      {isAdmin && (
+        <div className="flex items-center gap-1.5 flex-wrap text-[11px]">
+          <span className="text-gray-400">Chèn dữ liệu thật:</span>
+          {TOKENS.map((tk) => (
+            <button key={tk.t} onClick={() => insertToken(tk.t)} title={tk.desc}
+              className="border border-emerald-200 bg-emerald-50 text-emerald-700 rounded-full px-2 py-0.5 hover:bg-emerald-100 font-mono">{tk.t}</button>
+          ))}
+          <span className="text-gray-300">→ chèn vào ô “Lulu trả lời”; giá tự lấy từ Bảng giá.</span>
         </div>
-        {situations.length > 0 && (
-          <select value={sitFilter} onChange={(e) => setSitFilter(e.target.value)} className="border rounded-lg px-2 py-1.5 text-[13px]">
-            <option value="">Mọi tình huống</option>
-            {situations.map((s) => <option key={s} value={s}>{s}</option>)}
-          </select>
-        )}
-        {isAdmin && <>
+      )}
+
+      {isAdmin && (
+        <div className="flex items-center gap-2 flex-wrap">
           <button onClick={addRow} className="border text-[12px] px-3 py-1.5 rounded-lg hover:bg-gray-50 flex items-center gap-1"><Plus className="w-3.5 h-3.5" /> Thêm dòng</button>
           <button onClick={openPaste} className="border border-violet-300 text-violet-700 text-[12px] px-3 py-1.5 rounded-lg hover:bg-violet-50">📋 Dán nhiều dòng (Excel / Sheets / ChatGPT)</button>
           <button disabled={saving} onClick={save} className="bg-emerald-600 text-white text-[12px] px-4 py-1.5 rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1 ml-auto">
-            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />} Lưu bảng ({rows.length} dòng)
+            {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />} Lưu ({rows.length} dòng)
           </button>
-        </>}
-      </div>
+        </div>
+      )}
 
       {paste !== null && (
         <div className="border border-violet-200 bg-violet-50/40 rounded-lg p-3 space-y-2">
-          <p className="text-[12px] text-gray-700 font-medium">Dán bảng từ Excel / Google Sheets / ChatGPT rồi xem trước — chỉnh cột nếu sai, xong bấm “Thêm {previewRows.length} dòng”.</p>
-          <p className="text-[11px] text-gray-500">Thứ tự cột chuẩn: <b>Nhóm · Tình huống · Khách hỏi/nói · Lulu nên trả lời · Ghi chú</b>. Thiếu cột cũng được — bảng tự suy.</p>
+          <p className="text-[12px] text-gray-700 font-medium">Dán từ Excel / Google Sheets / ChatGPT — mỗi dòng một cặp, xong bấm “Thêm {previewRows.length} dòng”.</p>
+          <p className="text-[11px] text-gray-500">2 cột: <b>Khách hỏi / nói</b> · <b>Lulu nên trả lời</b> (cách nhau bằng Tab hoặc dấu <b>|</b>). Nhiều cột hơn cũng được — chỉnh cột bên dưới.</p>
           <textarea value={paste.text} onChange={(e) => onPasteText(e.target.value)} rows={5}
-            placeholder={"Album cưới\tChê giá cao\tSao mắc vậy em?\tDạ em hiểu ạ, giá gồm…\tghi chú\nAlbum cưới\tXin nghĩ thêm\tĐể chị suy nghĩ\tDạ chị cứ thong thả ạ…\t"}
+            placeholder={"Gói này bao nhiêu tiền?\tDạ gói hiện tại {{PRICE}}, gồm {{PACKAGE_CONTENT}} ạ\nCó bao gồm in ảnh không?\tDạ có ạ, gói gồm {{PACKAGE_CONTENT}} nha chị"}
             className="w-full border rounded-lg px-2 py-1.5 text-[12px] font-mono" />
 
           {paste.matrix.length > 0 && (
@@ -899,28 +933,24 @@ function ScriptTablePanel({ nodeKey, scenarioKey, title, serviceKey, groupName, 
           <table className="w-full text-[13px]">
             <thead className="bg-gray-50 sticky top-0"><tr className="text-left text-[11px] text-gray-500">
               <th className="px-2 py-1.5 w-8">#</th>
-              <th className="px-2 py-1.5 w-[12%]">NHÓM</th>
-              <th className="px-2 py-1.5 w-[14%]">TÌNH HUỐNG</th>
-              <th className="px-2 py-1.5 w-[28%]">KHÁCH HỎI / NÓI</th>
+              <th className="px-2 py-1.5 w-[42%]">KHÁCH HỎI / NÓI</th>
               <th className="px-2 py-1.5">LULU NÊN TRẢ LỜI</th>
-              <th className="px-2 py-1.5 w-[14%]">GHI CHÚ</th>
+              {showNotes && <th className="px-2 py-1.5 w-[18%]">GHI CHÚ</th>}
               <th className="w-12"></th>
             </tr></thead>
             <tbody>
               {visible.map(({ r, i }) => (
                 <tr key={i} className="border-t align-top">
                   <td className="px-2 py-1 text-gray-400">{i + 1}</td>
-                  <td className="px-1 py-1">{cell(r.groupLabel, (v) => setRow(i, { groupLabel: v }), "Nhóm…", "text-[12px]")}</td>
-                  <td className="px-1 py-1">{cell(r.situationLabel, (v) => setRow(i, { situationLabel: v }), "Tình huống…", "text-[12px]")}</td>
-                  <td className="px-1 py-1">{cell(r.customerText, (v) => setRow(i, { customerText: v }), "Câu khách…")}</td>
+                  <td className="px-1 py-1">{cell(r.customerText, (v) => setRow(i, { customerText: v }), "Câu khách hỏi / nói…")}</td>
                   <td className="px-1 py-1">
-                    {cell(r.idealResponse, (v) => setRow(i, { idealResponse: v }), "Câu Lulu trả lời… (dùng {{PRICE}} thay số tiền)", hasHardcodedPriceFE(r.idealResponse) ? "border-amber-400 bg-amber-50" : "")}
+                    {cell(r.idealResponse, (v) => setRow(i, { idealResponse: v }), "Câu Lulu trả lời… (dùng {{PRICE}} thay số tiền)", hasHardcodedPriceFE(r.idealResponse) ? "border-amber-400 bg-amber-50" : "", 2, () => setFocusedCell(i))}
                     {hasHardcodedPriceFE(r.idealResponse) && isAdmin && (
                       <button onClick={() => setRow(i, { idealResponse: suggestPriceReplace(r.idealResponse) })}
                         className="text-[10px] text-amber-700 underline mt-0.5">⚠ Có số tiền — bấm thay bằng {"{{PRICE}}"} (lấy giá thật)</button>
                     )}
                   </td>
-                  <td className="px-1 py-1">{cell(r.notes, (v) => setRow(i, { notes: v }), "Ghi chú", "text-[12px]")}</td>
+                  {showNotes && <td className="px-1 py-1">{cell(r.notes, (v) => setRow(i, { notes: v }), "Ghi chú", "text-[12px]")}</td>}
                   <td className="px-1 py-1">
                     {isAdmin && <div className="flex flex-col gap-1">
                       <button onClick={() => dupRow(i)} title="Nhân bản" className="text-gray-400 hover:text-gray-700"><Copy className="w-3.5 h-3.5" /></button>
@@ -929,11 +959,29 @@ function ScriptTablePanel({ nodeKey, scenarioKey, title, serviceKey, groupName, 
                   </td>
                 </tr>
               ))}
-              {visible.length === 0 && <tr><td colSpan={7} className="text-center text-gray-400 py-6 text-[13px]">{rows.length ? "Không có dòng khớp tìm kiếm/lọc." : "Chưa có dòng nào — bấm 'Thêm dòng' hoặc 'Dán nhiều dòng'."}</td></tr>}
+              {visible.length === 0 && <tr><td colSpan={showNotes ? 5 : 4} className="text-center text-gray-400 py-6 text-[13px]">{rows.length ? "Không có dòng khớp tìm kiếm." : "Chưa có dòng nào — bấm 'Thêm dòng' hoặc 'Dán nhiều dòng'."}</td></tr>}
             </tbody>
           </table>
         </div>
       )}
+
+      {/* Cài đặt nâng cao — đóng sẵn (Req 3, 8): Ghi chú + tìm kiếm; Nhóm/Tình huống ẩn. */}
+      <div className="border-t pt-2">
+        <button onClick={() => setShowAdvanced(!showAdvanced)} className="text-[11px] text-gray-400 flex items-center gap-1 hover:text-gray-600">
+          {showAdvanced ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />} Cài đặt nâng cao
+        </button>
+        {showAdvanced && (
+          <div className="flex items-center gap-3 flex-wrap text-[12px] bg-gray-50 rounded-lg p-2 mt-1">
+            <label className="flex items-center gap-1.5 text-gray-600"><input type="checkbox" checked={showNotes} onChange={(e) => setShowNotes(e.target.checked)} /> Hiện cột Ghi chú</label>
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 text-gray-400 absolute left-2.5 top-2" />
+              <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Tìm trong bảng…" className="border rounded-lg pl-8 pr-3 py-1 text-[12px] w-52" />
+            </div>
+            <span className="text-gray-400">Nhóm/Tình huống tự lưu theo dịch vụ — ẩn cho gọn.</span>
+          </div>
+        )}
+      </div>
+     </div>
     </div>
   );
 }
@@ -1034,6 +1082,10 @@ function TreeRowView({ node, depth, expanded, toggle, onOpenScript, ctx, service
         </button>
         {isOpen && (
           <div className="border-t border-gray-100 py-1 bg-gray-50/40">
+            {/* BẢNG GIÁ REALTIME ngay đầu card — ảnh + gói + giá đọc thẳng từ Bảng giá (Req 1). */}
+            <div className="px-3 pt-2 pb-1">
+              <PricingNode serviceKey={node.serviceKey} groupName={m.groupName ?? node.title} variant="card" />
+            </div>
             {onCopyGolden && serviceOptions && node.serviceKey && filled < total && (
               <CopyGoldenBar toServiceKey={node.serviceKey} toGroupName={m.groupName ?? node.title} options={serviceOptions} onCopy={onCopyGolden} />
             )}
@@ -1395,7 +1447,7 @@ export default function LuluSaleScenariosPage() {
 
       {view === "tree" && (
         <ScenarioTreeView reloadKey={treeReloadKey}
-          onOpenScript={(t) => { setScriptNode(t); setEditing(null!); window.scrollTo({ top: 0, behavior: "smooth" }); }}
+          onOpenScript={(t) => { setScriptNode(t); setEditing(null!); }}
           showErr={showErr} autoOpenServiceKey={autoOpenServiceKey}
           onCopyGolden={effectiveIsAdmin ? async (from, to, toGroupName) => {
             try {

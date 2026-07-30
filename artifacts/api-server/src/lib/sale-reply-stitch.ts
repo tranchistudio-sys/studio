@@ -27,6 +27,12 @@ const MONEY_TOKEN_RE =
 // Placeholder chủ nên dùng thay số tiền — luôn nội suy bằng giá CRM.
 const PRICE_PLACEHOLDER_RE = /\{\{\s*price\s*\}\}/gi;
 
+// Các placeholder FACT khác — cũng luôn nội suy từ CRM (không để kịch bản viết cứng).
+// Kịch bản = CÁCH NÓI; tên gói / nội dung gói / ưu đãi = SỰ THẬT từ Bảng giá.
+const PACKAGE_NAME_PLACEHOLDER_RE = /\{\{\s*package_name\s*\}\}/gi;
+const PACKAGE_CONTENT_PLACEHOLDER_RE = /\{\{\s*package_content\s*\}\}/gi;
+const PROMOTION_PLACEHOLDER_RE = /\{\{\s*promotion\s*\}\}/gi;
+
 /**
  * Thay MỌI con số tiền (và {{PRICE}}) trong câu kịch bản bằng giá CRM hiện tại.
  * Giữ nguyên câu chữ xung quanh (cách nói). Trả về câu mới + các số cũ đã bị thay.
@@ -72,15 +78,30 @@ export type StitchInput = {
   crmPriceVnd: number;
   /** CRM có promo active không (để gỡ tuyên bố giảm nếu tắt). */
   promoActive: boolean;
+  /** Tên gói đại diện từ CRM — nội suy {{PACKAGE_NAME}} (fail-soft nếu thiếu). */
+  packageName?: string | null;
+  /** Nội dung/mô tả gói từ CRM — nội suy {{PACKAGE_CONTENT}}. */
+  packageContent?: string | null;
+  /** Mô tả ưu đãi hiện tại từ CRM — nội suy {{PROMOTION}} (rỗng khi CRM tắt promo). */
+  promotion?: string | null;
 };
 
 /**
- * Ghép câu trả lời cuối: GIỮ cách nói của kịch bản, THAY số cũ = giá CRM, GỠ tuyên bố
- * ưu đãi nếu CRM tắt promo. Đây là mục F/E/D thể hiện bằng code (không cần AI).
+ * Ghép câu trả lời cuối: GIỮ cách nói của kịch bản, THAY mọi FACT (giá / tên gói /
+ * nội dung gói / ưu đãi) = dữ liệu CRM hiện tại, GỠ tuyên bố ưu đãi nếu CRM tắt promo.
+ * Đây là mục F/E/D thể hiện bằng code (không cần AI). CRM luôn thắng.
  */
 export function stitchReplyFromGolden(input: StitchInput): string {
   let text = input.idealResponse ?? "";
-  if (!input.promoActive) text = stripPromoClaims(text).text;
+  // 1) Giá TRƯỚC: thay {{PRICE}} và mọi số tiền cũ trong kịch bản = giá CRM.
+  //    Làm trước khi chèn FACT để KHÔNG đụng số tiền nằm trong mô tả gói/ưu đãi CRM.
   text = replacePricesWith(text, input.crmPriceVnd).text;
-  return text.trim();
+  // 2) Nội suy tên gói / nội dung gói từ CRM (chỉ khi có token trong câu).
+  if (input.packageName != null) text = text.replace(PACKAGE_NAME_PLACEHOLDER_RE, input.packageName || "");
+  if (input.packageContent != null) text = text.replace(PACKAGE_CONTENT_PLACEHOLDER_RE, input.packageContent || "");
+  // 3) Ưu đãi: CRM bật promo → điền mô tả ưu đãi; CRM tắt promo → xoá token + gỡ tuyên bố giảm.
+  text = text.replace(PROMOTION_PLACEHOLDER_RE, input.promoActive ? (input.promotion || "") : "");
+  if (!input.promoActive) text = stripPromoClaims(text).text;
+  // Dọn khoảng trắng dư sau khi bỏ token rỗng (không đổi khi không có token).
+  return text.replace(/[ \t]{2,}/g, " ").replace(/\s+([,.;!?])/g, "$1").trim();
 }

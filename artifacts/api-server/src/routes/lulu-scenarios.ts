@@ -564,6 +564,8 @@ async function runScenarioTest(opts: {
   let crmPackageName: string | null = null;
   let crmBasePrice: number | null = null;
   let crmEffectivePrice: number | null = null;
+  let crmPackageContent: string | null = null;
+  let crmPromotion: string | null = null;
   let promoActive: boolean | undefined = undefined;
   if (serviceKey) {
     try {
@@ -575,7 +577,14 @@ async function runScenarioTest(opts: {
         crmPackageName = rep.name || null;
         crmBasePrice = rep.basePrice;
         crmEffectivePrice = rep.effectivePrice;
+        crmPackageContent = rep.description || null;
         promoActive = pkgs.some((p) => p.promoActive);
+        // Mô tả ưu đãi realtime từ CRM (dùng nội suy {{PROMOTION}}) — lấy gói đang giảm.
+        const promoPkg = pkgs.find((p) => p.promoActive);
+        if (promoPkg) {
+          const saved = promoPkg.savedAmount ? ` (tiết kiệm ${formatVnd(promoPkg.savedAmount)})` : "";
+          crmPromotion = `${promoPkg.promoName || "đang có ưu đãi"}${saved}`;
+        }
       }
     } catch { /* fail-soft */ }
   }
@@ -598,6 +607,7 @@ async function runScenarioTest(opts: {
     const oldPrices = extractMoneyVnd(topGolden.idealResponse).filter((v) => v !== crmEffectivePrice);
     const stitched = stitchReplyFromGolden({
       idealResponse: topGolden.idealResponse, crmPriceVnd: crmEffectivePrice, promoActive: !!promoActive,
+      packageName: crmPackageName, packageContent: crmPackageContent, promotion: crmPromotion,
     });
     let stitchedVerdict: "PASS" | "BLOCK" = "PASS";
     try { stitchedVerdict = validateWith(stitched).verdict === "BLOCK" ? "BLOCK" : "PASS"; } catch { /* keep PASS */ }

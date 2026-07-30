@@ -77,4 +77,23 @@ describe("stitchReplyFromGolden — công thức trả lời (mục F)", () => {
     const out = stitchReplyFromGolden({ idealResponse: "Dạ gói hiện tại là {{PRICE}} ạ", crmPriceVnd: 9_500_000, promoActive: false });
     expect(out).toBe("Dạ gói hiện tại là 9.500.000đ ạ");
   });
+
+  it("nội suy {{PACKAGE_NAME}} + {{PACKAGE_CONTENT}} + {{PRICE}} từ CRM", () => {
+    const out = stitchReplyFromGolden({
+      idealResponse: "Dạ gói {{PACKAGE_NAME}} giá {{PRICE}}, gồm {{PACKAGE_CONTENT}} nha chị",
+      crmPriceVnd: 9_500_000, promoActive: false,
+      packageName: "Gói Bạc", packageContent: "50 ảnh + 1 album",
+    });
+    expect(out).toBe("Dạ gói Gói Bạc giá 9.500.000đ, gồm 50 ảnh + 1 album nha chị");
+  });
+
+  it("{{PROMOTION}}: CRM bật promo → điền mô tả; CRM tắt promo → xoá token", () => {
+    const golden = "Dạ hiện {{PROMOTION}}, gói còn {{PRICE}} ạ";
+    const on = stitchReplyFromGolden({ idealResponse: golden, crmPriceVnd: 8_500_000, promoActive: true, promotion: "giảm hè (tiết kiệm 1.000.000đ)" });
+    expect(on).toContain("giảm hè");
+    expect(on).toContain("8.500.000đ");
+    const off = stitchReplyFromGolden({ idealResponse: golden, crmPriceVnd: 9_500_000, promoActive: false, promotion: "giảm hè" });
+    expect(off).not.toContain("giảm hè");
+    expect(off).toContain("9.500.000đ");
+  });
 });

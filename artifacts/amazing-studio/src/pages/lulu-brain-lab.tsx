@@ -66,7 +66,38 @@ type SimResult = {
   overrideApplied?: boolean;
   /** Cách lượt này dùng câu sửa tay admin: "exact_reply" = nói y chang; "learn_from_this" = AI học theo. */
   responseMode?: "exact_reply" | "learn_from_this" | null;
+  /** X-quang pipeline (LULU_BRAIN_STRUCTURED_ENABLED=1): service→stage→scenario→action→golden→giá→validator. */
+  trace?: {
+    structured: boolean; service: string | null; serviceGroup: string | null; stage: string;
+    scenarioWinner: string | null; scenarioName: string | null; action: string; goldenCount: number;
+    crmPriceText: string | null; priceSource: string; brainVersion: string; provider: string;
+    fallbackUsed: "none" | "stitched" | "safe"; regenerated: boolean;
+    validator: { verdict: string; reason?: string };
+  } | null;
 };
+
+/** Dải X-quang pipeline dưới mỗi câu Lulu — chỉ hiện khi backend trả trace (structured bật). */
+function PipelineTraceStrip({ trace }: { trace: NonNullable<SimResult["trace"]> }) {
+  const vOk = trace.validator?.verdict !== "BLOCK";
+  return (
+    <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-gray-500 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1">
+      <span className="font-semibold text-slate-600">🩻 X-quang:</span>
+      {trace.serviceGroup && <span className="bg-white border rounded-full px-1.5 py-0.5">📷 {trace.serviceGroup}</span>}
+      <span className="bg-white border rounded-full px-1.5 py-0.5">giai đoạn: {trace.stage}</span>
+      {trace.scenarioName && <span className="bg-violet-50 border border-violet-200 text-violet-700 rounded-full px-1.5 py-0.5">thẻ: {trace.scenarioName}</span>}
+      <span className="bg-white border rounded-full px-1.5 py-0.5">action: {trace.action}</span>
+      <span className="bg-white border rounded-full px-1.5 py-0.5">golden: {trace.goldenCount}</span>
+      {trace.crmPriceText && <span className="bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-full px-1.5 py-0.5">💰 {trace.crmPriceText} · {trace.priceSource}</span>}
+      <span className="bg-white border rounded-full px-1.5 py-0.5">🧠 {trace.brainVersion}</span>
+      <span className={`border rounded-full px-1.5 py-0.5 ${vOk ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-rose-50 border-rose-200 text-rose-700"}`}>
+        validator: {trace.validator?.verdict ?? "?"}
+      </span>
+      <span className="bg-white border rounded-full px-1.5 py-0.5">
+        {trace.provider}{trace.fallbackUsed !== "none" ? ` · fallback ${trace.fallbackUsed}` : ""}{trace.regenerated ? " · đã tái sinh" : ""}
+      </span>
+    </div>
+  );
+}
 // Ảnh trong kho (khớp ImageStoreItem ở backend).
 type StoreItem = { imageUrl: string; title: string; detailUrl?: string; sourceType: string; kind?: string; serviceIntent: string; albumName?: string; tags?: string; albumId?: number; publicForCustomer?: boolean };
 // Debug kho ảnh (khớp ImageStoreDebug ở backend) — cho admin biết vì sao rỗng.
@@ -1911,6 +1942,7 @@ function FixTestTab({
                   );
                 })()}
                 {t.result.sampleNote && <p className="text-[11px] text-amber-600 italic">{t.result.sampleNote}</p>}
+                {t.result.trace && <PipelineTraceStrip trace={t.result.trace} />}
                 <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-400">
                   {t.result.detectedIntent && <span>intent: <b className="text-violet-600">{t.result.detectedIntent}</b></span>}
                   <span>{t.result.responseTimeMs}ms</span>

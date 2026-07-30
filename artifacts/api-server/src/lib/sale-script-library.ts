@@ -289,12 +289,14 @@ function tokens(s: string): string[] {
 export type GoldenExample = { customerText: string; idealResponse: string; notes: string; score: number };
 
 /**
- * Lấy top-N ví dụ GẦN NHẤT với tin khách cho 1 scenario. Điểm = số từ khoá trùng giữa
- * tin khách và câu-khách-mẫu (Jaccard-ish, thiên về overlap). fail-soft → [].
+ * Lấy top-N ví dụ GẦN NHẤT với tin khách — SERVICE-FIRST (luật chủ):
+ * khách đang bàn dịch vụ nào thì script CỦA DỊCH VỤ ĐÓ thắng script chung.
  *
- * serviceSlug (tuỳ chọn): FALLBACK khi scenario không có ví dụ — lấy theo DỊCH VỤ
- * (service_key = slug nhóm giá). Nhờ đó kịch bản soạn/tự sinh từ CÂY (scenario_key null)
- * vẫn được Lulu học giọng. Giá trong ví dụ vẫn là historical — CRM luôn thắng.
+ * Xếp hạng nguồn (tier): (1) script của ĐÚNG dịch vụ (service_key = serviceSlug, gồm cả
+ * script gắn scenario lẫn script cây) → (2) script gắn scenario thắng nhưng KHÔNG gắn
+ * dịch vụ (bộ chung/cũ) — chỉ dùng khi tier 1 thiếu. KHÔNG lấy script của dịch vụ KHÁC.
+ * Trong cùng tier: điểm = số từ khoá trùng giữa tin khách và câu-khách-mẫu + mật độ.
+ * Giá trong ví dụ vẫn là historical — CRM luôn thắng. fail-soft → [].
  */
 export async function getGoldenExamples(
   scenarioKey: string | null, customerMessage: string, topN = 4, serviceSlug: string | null = null,
@@ -302,24 +304,32 @@ export async function getGoldenExamples(
   if (!scenarioKey && !serviceSlug) return [];
   try {
     await ensureScriptTable();
-    let rows: Array<{ customer_text: string; ideal_response: string; notes: string }> = [];
-    if (scenarioKey) {
+    type Row = { customer_text: string; ideal_response: string; notes: string; service_key: string | null; scenario_key: string | null };
+    let rows: Row[] = [];
+    if (scenarioKey && serviceSlug) {
       const r = await pool.query(
-        `SELECT customer_text, ideal_response, notes FROM lulu_sale_script_examples
+        `SELECT customer_text, ideal_response, notes, service_key, scenario_key FROM lulu_sale_script_examples
+         WHERE is_active = true AND ideal_response <> ''
+           AND (service_key = $1 OR (scenario_key = $2 AND service_key IS NULL))
+         ORDER BY node_key, sort_order LIMIT 400`,
+        [serviceSlug, scenarioKey],
+      );
+      rows = r.rows as Row[];
+    } else if (serviceSlug) {
+      const r = await pool.query(
+        `SELECT customer_text, ideal_response, notes, service_key, scenario_key FROM lulu_sale_script_examples
+         WHERE service_key = $1 AND is_active = true AND ideal_response <> ''
+         ORDER BY node_key, sort_order LIMIT 400`,
+        [serviceSlug],
+      );
+      rows = r.rows as Row[];
+    } else if (scenarioKey) {
+      const r = await pool.query(
+        `SELECT customer_text, ideal_response, notes, service_key, scenario_key FROM lulu_sale_script_examples
          WHERE scenario_key = $1 AND is_active = true AND ideal_response <> ''`,
         [scenarioKey],
       );
-      rows = r.rows as typeof rows;
-    }
-    // Fallback theo dịch vụ: script từ cây service-first (auto/manual) có scenario_key null.
-    if (rows.length === 0 && serviceSlug) {
-      const r2 = await pool.query(
-        `SELECT customer_text, ideal_response, notes FROM lulu_sale_script_examples
-         WHERE service_key = $1 AND is_active = true AND ideal_response <> ''
-         ORDER BY node_key, sort_order LIMIT 200`,
-        [serviceSlug],
-      );
-      rows = r2.rows as typeof rows;
+      rows = r.rows as Row[];
     }
     if (rows.length === 0) return [];
     const msgTokens = new Set(tokens(customerMessage));
@@ -328,13 +338,16 @@ export async function getGoldenExamples(
       let overlap = 0;
       for (const tk of exTokens) if (msgTokens.has(tk)) overlap++;
       const denom = Math.max(1, exTokens.length);
-      const score = overlap + overlap / denom; // ưu tiên trùng nhiều + mật độ cao
-      return { customerText: row.customer_text, idealResponse: row.ideal_response, notes: row.notes ?? "", score };
+      const kw = overlap + overlap / denom; // điểm khớp từ khoá (mật độ cao hơn = tốt hơn)
+      // SERVICE-FIRST: cùng dịch vụ trội 1 BẬC — script chung dù khớp từ khoá mạnh
+      // cũng không vượt được script đúng dịch vụ (tier + kw, tier = 100).
+      const sameService = !!(serviceSlug && row.service_key === serviceSlug);
+      return { customerText: row.customer_text, idealResponse: row.ideal_response, notes: row.notes ?? "", kw, score: (sameService ? 100 : 0) + kw };
     });
     scored.sort((a, b) => b.score - a.score);
-    // Nếu không tin nào trùng từ khoá (score 0), vẫn trả vài ví dụ đầu làm "giọng chung".
-    const hits = scored.filter((s) => s.score > 0);
-    return (hits.length ? hits : scored).slice(0, topN);
+    // Không tin nào trùng từ khoá → vẫn trả vài ví dụ ĐẦU TIER CAO làm "giọng chung".
+    const hits = scored.filter((s) => s.kw > 0);
+    return (hits.length ? hits : scored).slice(0, topN).map(({ kw: _kw, ...e }) => e);
   } catch (err) {
     console.error("[ScriptLib] getGoldenExamples lỗi (fail-soft):", String(err).slice(0, 150));
     return [];

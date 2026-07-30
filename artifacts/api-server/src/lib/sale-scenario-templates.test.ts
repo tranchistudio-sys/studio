@@ -53,4 +53,25 @@ describe("sale-scenario-templates", () => {
     }
     expect(missing).toEqual([]);
   });
+
+  it("không có customerText TRÙNG NHAU giữa các tình huống (chống thư viện rác)", () => {
+    const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9 ]/g, "").trim();
+    const seen = new Map<string, string>();
+    const dups: string[] = [];
+    for (const r of allRows) {
+      const n = norm(r.customerText);
+      if (!n) continue;
+      const prev = seen.get(n);
+      if (prev && prev !== r.key) dups.push(`"${r.customerText.slice(0, 40)}" ở cả ${prev} và ${r.key}`);
+      else seen.set(n, r.key);
+    }
+    expect(dups).toEqual([]);
+  });
+
+  it("mỗi tình huống có ≥2 biến thể (coverage sâu, không phải 1 câu demo)", () => {
+    const thin: string[] = [];
+    for (const [k, rows] of Object.entries(SERVICE_TEMPLATES)) if (rows.length < 2) thin.push(`service/${k}(${rows.length})`);
+    for (const [k, rows] of Object.entries(GREETING_TEMPLATES)) if (rows.length < 2) thin.push(`greeting/${k}(${rows.length})`);
+    expect(thin).toEqual([]);
+  });
 });

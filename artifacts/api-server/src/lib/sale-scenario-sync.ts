@@ -21,13 +21,15 @@ export type SyncReport = {
   mappingsCreated: number;    // nhóm dịch vụ (slug) lần đầu thấy trong lần sync này
   situationsCreated: number;  // số TÌNH HUỐNG (node) được tạo kịch bản mới
   scriptsCreated: number;     // tổng số DÒNG câu hỏi–đáp auto tạo mới
-  scriptsSkipped: number;     // số node bỏ qua (đã có kịch bản → không đè)
+  situationsUpdated: number;  // số node TOÀN-auto được nâng cấp template (nội dung đổi)
+  scriptsUpdated: number;     // tổng số DÒNG sau nâng cấp ở các node đó
+  scriptsSkipped: number;     // số node bỏ qua (có dòng manual HOẶC template không đổi)
   errors: string[];
 };
 
 const emptyReport = (): SyncReport => ({
   groupsScanned: 0, packagesScanned: 0, mappingsCreated: 0,
-  situationsCreated: 0, scriptsCreated: 0, scriptsSkipped: 0, errors: [],
+  situationsCreated: 0, scriptsCreated: 0, situationsUpdated: 0, scriptsUpdated: 0, scriptsSkipped: 0, errors: [],
 });
 
 /**
@@ -47,9 +49,10 @@ export async function syncPricingToSaleScenarios(
     for (const sit of GREETING_SITUATIONS) {
       const nodeKey = `${GREETING_ROOT_KEY}::${sit.key}`;
       try {
-        const r = await insertIfEmpty(nodeKey, null, sit.title, "Chào hỏi chung", GREETING_TEMPLATES[sit.key] ?? []);
-        if (r === "skipped") report.scriptsSkipped++;
-        else { report.situationsCreated++; report.scriptsCreated += r; }
+        const r = await upsertAutoNode(nodeKey, null, sit.title, "Chào hỏi chung", GREETING_TEMPLATES[sit.key] ?? []);
+        if (r.kind === "skipped") report.scriptsSkipped++;
+        else if (r.kind === "created") { report.situationsCreated++; report.scriptsCreated += r.rows; }
+        else { report.situationsUpdated++; report.scriptsUpdated += r.rows; }
       } catch (e) { report.errors.push(`greeting/${sit.key}: ${msg(e)}`); }
     }
   }
@@ -76,9 +79,10 @@ export async function syncPricingToSaleScenarios(
       for (const sit of step.situations) {
         const nodeKey = `svc::${svcSlug}::${step.key}::${sit.key}`;
         try {
-          const r = await insertIfEmpty(nodeKey, svcSlug, sit.title, g.name, SERVICE_TEMPLATES[sit.key] ?? []);
-          if (r === "skipped") report.scriptsSkipped++;
-          else { report.situationsCreated++; report.scriptsCreated += r; }
+          const r = await upsertAutoNode(nodeKey, svcSlug, sit.title, g.name, SERVICE_TEMPLATES[sit.key] ?? []);
+          if (r.kind === "skipped") report.scriptsSkipped++;
+          else if (r.kind === "created") { report.situationsCreated++; report.scriptsCreated += r.rows; }
+          else { report.situationsUpdated++; report.scriptsUpdated += r.rows; }
         } catch (e) { report.errors.push(`${nodeKey}: ${msg(e)}`); }
       }
     }
@@ -86,21 +90,36 @@ export async function syncPricingToSaleScenarios(
   return report;
 }
 
+type UpsertResult = { kind: "skipped" | "created" | "updated"; rows: number };
+
 /**
- * Chèn template vào node NẾU node còn TRỐNG. Trả 'skipped' nếu:
- *  - không có template cho tình huống này, HOẶC
- *  - node đã có ≥1 dòng (auto/manual) → GIỮ NGUYÊN (không đè).
- * Trả số dòng đã chèn nếu tạo mới (source='auto').
+ * Upsert template vào 1 node theo luật KHÔNG-ĐÈ-MANUAL:
+ *  - node có ≥1 dòng MANUAL (admin nhập/chỉnh) → SKIP tuyệt đối.
+ *  - node TRỐNG → chèn template (created).
+ *  - node TOÀN dòng auto → so NỘI DUNG với template hiện tại:
+ *      giống hệt → skip (idempotent, chạy N lần không đổi);
+ *      khác → THAY bằng template mới (updated) — cho phép nâng cấp thư viện auto.
  */
-async function insertIfEmpty(
+async function upsertAutoNode(
   nodeKey: string, serviceKey: string | null, situationLabel: string, groupLabel: string, rows: TemplateRow[],
-): Promise<"skipped" | number> {
-  if (!rows.length) return "skipped";
-  const exist = await pool.query(`SELECT 1 FROM lulu_sale_script_examples WHERE node_key = $1 LIMIT 1`, [nodeKey]);
-  if ((exist.rowCount ?? 0) > 0) return "skipped";
+): Promise<UpsertResult> {
+  if (!rows.length) return { kind: "skipped", rows: 0 };
+  const exist = await pool.query(
+    `SELECT customer_text, ideal_response, notes, source FROM lulu_sale_script_examples
+     WHERE node_key = $1 ORDER BY sort_order ASC, id ASC`,
+    [nodeKey],
+  );
+  const cur = exist.rows as Array<{ customer_text: string; ideal_response: string; notes: string; source: string }>;
+  const hasManual = cur.some((r) => r.source !== "auto");
+  if (hasManual) return { kind: "skipped", rows: 0 }; // admin đã đụng node này → bất khả xâm phạm
+  const sig = (xs: Array<{ c: string; a: string; n: string }>) => xs.map((x) => `${x.c}${x.a}${x.n}`).join("");
+  const curSig = sig(cur.map((r) => ({ c: r.customer_text, a: r.ideal_response, n: r.notes ?? "" })));
+  const tplSig = sig(rows.map((r) => ({ c: r.customerText, a: r.idealResponse, n: r.notes ?? "" })));
+  if (cur.length > 0 && curSig === tplSig) return { kind: "skipped", rows: 0 }; // template không đổi
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await client.query(`DELETE FROM lulu_sale_script_examples WHERE node_key = $1 AND source = 'auto'`, [nodeKey]);
     let order = 10, n = 0;
     for (const r of rows) {
       await client.query(
@@ -112,7 +131,7 @@ async function insertIfEmpty(
       order += 10; n++;
     }
     await client.query("COMMIT");
-    return n;
+    return { kind: cur.length === 0 ? "created" : "updated", rows: n };
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     throw err;
@@ -128,8 +147,9 @@ export function syncReportVN(r: SyncReport): string {
   const parts = [
     `${r.groupsScanned} nhóm · ${r.packagesScanned} gói`,
     `tạo mới ${r.situationsCreated} tình huống (${r.scriptsCreated} câu)`,
-    `giữ nguyên ${r.scriptsSkipped} tình huống đã có`,
   ];
+  if (r.situationsUpdated) parts.push(`nâng cấp ${r.situationsUpdated} tình huống auto (${r.scriptsUpdated} câu)`);
+  parts.push(`giữ nguyên ${r.scriptsSkipped} tình huống`);
   if (r.errors.length) parts.push(`⚠ ${r.errors.length} lỗi`);
   return parts.join(" · ");
 }

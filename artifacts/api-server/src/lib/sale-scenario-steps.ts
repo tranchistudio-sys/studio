@@ -17,29 +17,41 @@ const S = (key: string, title: string) => ({ key, title });
 export const SERVICE_STEPS: StepTpl[] = [
   { key: "tim-hieu", title: "1. Tìm hiểu nhu cầu", situations: [
     S("chua-ro-nhu-cau", "Chưa rõ nhu cầu"), S("chup-dip-gi", "Chụp dịp gì"), S("so-nguoi-doi-tuong", "Số người / đối tượng"),
+    S("tham-khao-truoc", "Chỉ đang tham khảo"), S("hoi-ho-nguoi-khac", "Hỏi hộ người khác"), S("co-ngay-cu-the", "Khách có ngày cụ thể"),
+    S("ngan-sach", "Ngân sách của khách"), S("doi-dich-vu", "Đổi nhu cầu giữa chừng"), S("tra-loi-ngan", "Khách trả lời cụt"),
   ]},
   { key: "tu-van", title: "2. Tư vấn & Concept", situations: [
     S("xem-anh-mau", "Xem ảnh mẫu"), S("chua-biet-gu", "Chưa biết gu"), S("phong-cach-han", "Phong cách Hàn"),
     S("tu-nhien", "Tự nhiên"), S("sang-trong", "Sang trọng"), S("lo-khong-an-anh", "Lo không ăn ảnh"),
     S("chon-dia-diem", "Chọn địa điểm"), S("trang-phuc", "Trang phục"), S("makeup", "Makeup"),
+    S("chon-goi-nao", "Nên chọn gói nào"), S("toi-gian-ngan-sach", "Muốn tối giản / vừa túi"), S("cao-cap-nhat", "Muốn cao cấp nhất"),
+    S("hoi-ekip", "Hỏi ekip / photographer"), S("so-anh-file", "Số ảnh / file gốc"), S("san-pham-ban-giao", "Sản phẩm bàn giao"),
+    S("xem-review", "Muốn xem review / khách thật"), S("ca-nhan-hoa", "Muốn concept riêng"),
   ]},
   { key: "bao-gia", title: "3. Báo giá", showPricing: true, situations: [
     S("hoi-gia", "Hỏi giá"), S("goi-gom-gi", "Gói gồm gì"), S("so-sanh-goi", "So sánh gói"), S("hoi-uu-dai", "Hỏi ưu đãi"),
+    S("xin-bang-gia", "Xin cả bảng giá"), S("goi-re-nhat", "Gói rẻ nhất / cao nhất"),
+    S("phu-thu-phat-sinh", "Phụ thu / phát sinh"), S("hoi-nhieu-goi", "Hỏi nhiều gói cùng lúc"),
   ]},
   { key: "xu-ly-phan-van", title: "4. Xử lý phân vân", situations: [
     S("gia-cao", "Giá cao"), S("xin-giam", "Xin giảm"), S("ben-khac-re-hon", "Bên khác rẻ hơn"),
     S("hoi-chong-gia-dinh", "Cần hỏi chồng / gia đình"), S("can-suy-nghi", "Cần suy nghĩ"),
     S("chua-du-ngan-sach", "Chưa đủ ngân sách"), S("lo-chup-khong-dep", "Lo chụp không đẹp"), S("muon-xem-them", "Muốn xem thêm"),
+    S("xin-qua-them", "Xin quà / tặng thêm"), S("phan-van-2-goi", "Phân vân 2 gói"), S("trai-nghiem-xau", "Từng thất vọng nơi khác"),
   ]},
   { key: "chot", title: "5. Chốt sale", situations: [
     S("chon-goi", "Chọn gói"), S("kiem-tra-lich", "Kiểm tra lịch"), S("giu-lich", "Giữ lịch"),
     S("coc", "Cọc"), S("thong-tin-lien-he", "Thông tin liên hệ"), S("chuyen-nhan-vien", "Chuyển nhân viên"),
+    S("buoc-tiep-theo", "Hỏi bước tiếp theo"), S("den-studio", "Muốn đến studio"), S("doi-goi-truoc-chot", "Đổi / xác nhận lại gói"),
   ]},
-  { key: "khong-chot", title: "6. Không chốt", situations: [
-    S("tu-choi", "Từ chối"), S("hen-lai", "Hẹn lại"), S("follow-up", "Follow-up"),
+  { key: "khong-chot", title: "6. Không chốt / Follow-up", situations: [
+    S("tu-choi", "Từ chối"), S("hen-lai", "Hẹn lại / để tính"), S("follow-up", "Follow-up theo lý do"),
+    S("khach-seen", "Khách seen / im lặng"), S("quay-lai-sau", "Khách quay lại sau im lặng"),
   ]},
   { key: "sau-chot", title: "7. Sau chốt / chuyển người", situations: [
-    S("xac-nhan-lich", "Xác nhận lịch"), S("nhac-chuan-bi", "Nhắc chuẩn bị"), S("chuyen-nguoi-that", "Chuyển người thật"),
+    S("xac-nhan-lich", "Xác nhận thông tin"), S("nhac-chuan-bi", "Nhắc chuẩn bị"), S("chuyen-nguoi-that", "Chuyển người thật"),
+    S("doi-thong-tin", "Đổi ngày / đổi gói sau chốt"), S("cham-soc-sau-coc", "Chăm sóc sau cọc"),
+    S("khieu-nai-thanh-toan", "Vấn đề cọc / thanh toán"), S("yeu-cau-dac-biet", "Yêu cầu ngoài quyền Lulu"),
   ]},
 ];
 export const SITUATIONS_PER_SERVICE = SERVICE_STEPS.reduce((n, s) => n + s.situations.length, 0);

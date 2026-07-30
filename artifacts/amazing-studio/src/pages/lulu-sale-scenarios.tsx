@@ -1101,7 +1101,8 @@ function TreeRowView({ node, depth, expanded, toggle, onOpenScript, ctx, service
     );
   }
 
-  // BÁO GIÁ (pricing step) — folder: mở ra hiện BẢNG GIÁ realtime trên cùng + tình huống bên dưới.
+  // BÁO GIÁ (pricing step) — folder thường; KHÔNG lặp lại bảng giá ở đây
+  // (bảng giá realtime đã hiện 1 lần ở ĐẦU card dịch vụ — tránh trùng UI).
   if (node.nodeType === "pricing") {
     return (
       <div id={`tree-node-${node.nodeKey}`}>
@@ -1109,14 +1110,11 @@ function TreeRowView({ node, depth, expanded, toggle, onOpenScript, ctx, service
           className="w-full text-left flex items-center gap-2 py-1.5 pr-2 rounded hover:bg-emerald-50 text-[13px]">
           <ChevronDown className={`w-3.5 h-3.5 text-emerald-500 transition-transform ${isOpen ? "" : "-rotate-90"}`} />
           <span className="font-medium text-emerald-700">💰 {node.title}</span>
-          <span className="text-[11px] text-gray-400">(bảng giá realtime)</span>
+          <span className="text-[11px] text-gray-400">{node.meta?.situationCount ?? node.children.length} tình huống · giá ở bảng đầu thẻ</span>
         </button>
-        {isOpen && <>
-          <PricingNode serviceKey={node.serviceKey} groupName={node.priceSource} />
-          {node.children.map((c) => (
-            <TreeRowView key={c.nodeKey} node={c} depth={depth + 1} expanded={expanded} toggle={toggle} onOpenScript={onOpenScript} ctx={childCtx} />
-          ))}
-        </>}
+        {isOpen && node.children.map((c) => (
+          <TreeRowView key={c.nodeKey} node={c} depth={depth + 1} expanded={expanded} toggle={toggle} onOpenScript={onOpenScript} ctx={childCtx} />
+        ))}
       </div>
     );
   }

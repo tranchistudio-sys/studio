@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { finalizeSaleReply, SAFE_REPLY_LINE, type PipelineValidator } from "./sale-pipeline";
+import { finalizeSaleReply, intentFallbackLine, SAFE_REPLY_LINE, type PipelineValidator } from "./sale-pipeline";
 
 /**
  * Tầng chốt pipeline (mandate F/VI): LLM → validator → regenerate 1 lần → stitched
@@ -68,6 +68,33 @@ describe("finalizeSaleReply", () => {
     expect(r.fallbackUsed).toBe("safe");
     expect(r.needsHuman).toBe(true);
     expect(r.provider).toBe("safe-fallback");
+  });
+
+  it("PRE-SERVICE ('em cần tư vấn ạ'): không golden/không giá → INTENT fallback, KHÔNG safe/chuyển người", async () => {
+    const r = await finalizeSaleReply({
+      callLlm: null, golden: [], facts: { crmPriceVnd: null, promoActive: false },
+      validate: passAll, action: "ASK_SERVICE",
+    });
+    expect(r.fallbackUsed).toBe("intent");
+    expect(r.needsHuman).toBe(false);
+    expect(r.replyText).toContain("dịch vụ nào");
+  });
+
+  it("IDENTIFY_SERVICE có serviceName → câu fallback nêu ĐÚNG dịch vụ đang khoá", async () => {
+    const r = await finalizeSaleReply({
+      callLlm: null, golden: [], facts: { crmPriceVnd: null, promoActive: false, serviceName: "BEAUTY / THỜI TRANG" },
+      validate: passAll, action: "IDENTIFY_SERVICE",
+    });
+    expect(r.fallbackUsed).toBe("intent");
+    expect(r.replyText).toContain("BEAUTY / THỜI TRANG");
+    expect(r.replyText).not.toMatch(/cưới|Dâu/);
+  });
+
+  it("intentFallbackLine: QUOTE cần giá — thiếu giá → null (không bịa)", () => {
+    expect(intentFallbackLine("QUOTE_REFERENCE", { crmPriceVnd: null, promoActive: false })).toBeNull();
+    const line = intentFallbackLine("QUOTE_REFERENCE", { crmPriceVnd: 3_900_000, promoActive: false, packageName: "Chụp beauty master" });
+    expect(line).toContain("3.900.000đ");
+    expect(line).toContain("Chụp beauty master");
   });
 
   it("stitched cũng BLOCK → câu an toàn (validator là lớp cuối tuyệt đối)", async () => {

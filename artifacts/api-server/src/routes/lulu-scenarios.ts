@@ -30,6 +30,7 @@ import { listServiceMap, resolveGroupNameForService } from "../lib/sale-service-
 import { slugifyGroup } from "../lib/sale-scenario-steps";
 import { listScripts, saveScripts, searchScripts, getGoldenExamples, buildGoldenExamplesBlock, copyServiceGolden } from "../lib/sale-script-library";
 import { syncPricingToSaleScenarios, syncReportVN } from "../lib/sale-scenario-sync";
+import { naturalizePackageContent } from "../lib/sale-content-naturalizer";
 
 /**
  * API "Kịch bản tư vấn Lulu" (Scenario Manager).
@@ -603,7 +604,8 @@ async function runScenarioTest(opts: {
         crmPackageName = rep.name || null;
         crmBasePrice = rep.basePrice;
         crmEffectivePrice = rep.effectivePrice;
-        crmPackageContent = rep.description || null;
+        // FACT SELECTION: mô tả CRM thô → cụm tự nhiên (chống database-voice trong stitched).
+        crmPackageContent = naturalizePackageContent(rep.description) || null;
         promoActive = pkgs.some((p) => p.promoActive);
         // Mô tả ưu đãi realtime từ CRM (dùng nội suy {{PROMOTION}}) — lấy gói đang giảm.
         const promoPkg = pkgs.find((p) => p.promoActive);

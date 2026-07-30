@@ -286,7 +286,11 @@ function tokens(s: string): string[] {
   return normalizeVi(s).replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length >= 2 && !STOP.has(w));
 }
 
-export type GoldenExample = { customerText: string; idealResponse: string; notes: string; score: number };
+export type GoldenExample = {
+  customerText: string; idealResponse: string; notes: string; score: number;
+  /** Nguồn script (trace SCRIPT SOURCE): 'service' = đúng dịch vụ khoá; 'scenario' = thẻ chung; 'greeting' = chào hỏi global. */
+  source?: "service" | "scenario" | "greeting";
+};
 
 /**
  * Lấy top-N ví dụ GẦN NHẤT với tin khách — SERVICE-FIRST (luật chủ):
@@ -300,15 +304,15 @@ export type GoldenExample = { customerText: string; idealResponse: string; notes
  */
 export async function getGoldenExamples(
   scenarioKey: string | null, customerMessage: string, topN = 4, serviceSlug: string | null = null,
+  stepHint: string | null = null,
 ): Promise<GoldenExample[]> {
-  if (!scenarioKey && !serviceSlug) return [];
   try {
     await ensureScriptTable();
-    type Row = { customer_text: string; ideal_response: string; notes: string; service_key: string | null; scenario_key: string | null };
+    type Row = { node_key: string; customer_text: string; ideal_response: string; notes: string; service_key: string | null; scenario_key: string | null };
     let rows: Row[] = [];
     if (scenarioKey && serviceSlug) {
       const r = await pool.query(
-        `SELECT customer_text, ideal_response, notes, service_key, scenario_key FROM lulu_sale_script_examples
+        `SELECT node_key, customer_text, ideal_response, notes, service_key, scenario_key FROM lulu_sale_script_examples
          WHERE is_active = true AND ideal_response <> ''
            AND (service_key = $1 OR (scenario_key = $2 AND service_key IS NULL))
          ORDER BY node_key, sort_order LIMIT 400`,
@@ -317,7 +321,7 @@ export async function getGoldenExamples(
       rows = r.rows as Row[];
     } else if (serviceSlug) {
       const r = await pool.query(
-        `SELECT customer_text, ideal_response, notes, service_key, scenario_key FROM lulu_sale_script_examples
+        `SELECT node_key, customer_text, ideal_response, notes, service_key, scenario_key FROM lulu_sale_script_examples
          WHERE service_key = $1 AND is_active = true AND ideal_response <> ''
          ORDER BY node_key, sort_order LIMIT 400`,
         [serviceSlug],
@@ -325,11 +329,24 @@ export async function getGoldenExamples(
       rows = r.rows as Row[];
     } else if (scenarioKey) {
       const r = await pool.query(
-        `SELECT customer_text, ideal_response, notes, service_key, scenario_key FROM lulu_sale_script_examples
+        `SELECT node_key, customer_text, ideal_response, notes, service_key, scenario_key FROM lulu_sale_script_examples
          WHERE scenario_key = $1 AND is_active = true AND ideal_response <> ''`,
         [scenarioKey],
       );
       rows = r.rows as Row[];
+    }
+    // Fallback CHÀO HỎI CHUNG: khách CHƯA có dịch vụ (serviceSlug null) và scenario không có
+    // script → dùng bộ chào hỏi global (node global-chao-hoi::*) làm giọng chung. KHÔNG áp khi
+    // đã khoá dịch vụ (service-first tuyệt đối).
+    let greetingSource = false;
+    if (rows.length === 0 && !serviceSlug) {
+      const rg = await pool.query(
+        `SELECT node_key, customer_text, ideal_response, notes, service_key, scenario_key FROM lulu_sale_script_examples
+         WHERE node_key LIKE 'global-chao-hoi::%' AND is_active = true AND ideal_response <> ''
+         ORDER BY node_key, sort_order LIMIT 100`,
+      );
+      rows = rg.rows as Row[];
+      greetingSource = true;
     }
     if (rows.length === 0) return [];
     const msgTokens = new Set(tokens(customerMessage));
@@ -342,7 +359,11 @@ export async function getGoldenExamples(
       // SERVICE-FIRST: cùng dịch vụ trội 1 BẬC — script chung dù khớp từ khoá mạnh
       // cũng không vượt được script đúng dịch vụ (tier + kw, tier = 100).
       const sameService = !!(serviceSlug && row.service_key === serviceSlug);
-      return { customerText: row.customer_text, idealResponse: row.ideal_response, notes: row.notes ?? "", kw, score: (sameService ? 100 : 0) + kw };
+      const source: GoldenExample["source"] = greetingSource ? "greeting" : (sameService ? "service" : "scenario");
+      // STEP-HINT: action Router đã chỉ giai đoạn (báo giá/phân vân/chốt...) → row thuộc ĐÚNG BƯỚC
+      // được trội hơn (chống bốc trúng row lệch nghĩa khi điểm keyword thấp/tie).
+      const stepBoost = stepHint && row.node_key.includes(`::${stepHint}::`) ? 50 : 0;
+      return { customerText: row.customer_text, idealResponse: row.ideal_response, notes: row.notes ?? "", kw, score: (sameService ? 100 : 0) + stepBoost + kw, source };
     });
     scored.sort((a, b) => b.score - a.score);
     // Không tin nào trùng từ khoá → vẫn trả vài ví dụ ĐẦU TIER CAO làm "giọng chung".

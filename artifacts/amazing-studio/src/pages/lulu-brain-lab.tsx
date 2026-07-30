@@ -68,11 +68,14 @@ type SimResult = {
   responseMode?: "exact_reply" | "learn_from_this" | null;
   /** X-quang pipeline (LULU_BRAIN_STRUCTURED_ENABLED=1): service→stage→scenario→action→golden→giá→validator. */
   trace?: {
-    structured: boolean; service: string | null; serviceGroup: string | null; stage: string;
+    structured: boolean; service: string | null; serviceGroup: string | null; serviceSwitch?: string | null; stage: string;
     scenarioWinner: string | null; scenarioName: string | null; action: string; goldenCount: number;
+    scriptSource?: "service" | "scenario" | "greeting" | null;
     crmPriceText: string | null; priceSource: string; brainVersion: string; provider: string;
-    fallbackUsed: "none" | "stitched" | "safe"; regenerated: boolean;
+    fallbackUsed: "none" | "stitched" | "intent" | "safe"; regenerated: boolean;
     validator: { verdict: string; reason?: string };
+    serviceConsistency?: "PASS" | "FAIL" | "N/A";
+    blockedReason?: string | null;
   } | null;
 };
 
@@ -87,14 +90,22 @@ function PipelineTraceStrip({ trace }: { trace: NonNullable<SimResult["trace"]> 
       {trace.scenarioName && <span className="bg-violet-50 border border-violet-200 text-violet-700 rounded-full px-1.5 py-0.5">thẻ: {trace.scenarioName}</span>}
       <span className="bg-white border rounded-full px-1.5 py-0.5">action: {trace.action}</span>
       <span className="bg-white border rounded-full px-1.5 py-0.5">golden: {trace.goldenCount}</span>
+      {trace.serviceSwitch && <span className="bg-amber-50 border border-amber-200 text-amber-700 rounded-full px-1.5 py-0.5">🔀 đổi DV: {trace.serviceSwitch}</span>}
+      {trace.scriptSource && <span className="bg-white border rounded-full px-1.5 py-0.5">script: {trace.scriptSource === "service" ? "đúng dịch vụ" : trace.scriptSource === "greeting" ? "chào hỏi chung" : "thẻ chung"}</span>}
       {trace.crmPriceText && <span className="bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-full px-1.5 py-0.5">💰 {trace.crmPriceText} · {trace.priceSource}</span>}
       <span className="bg-white border rounded-full px-1.5 py-0.5">🧠 {trace.brainVersion}</span>
       <span className={`border rounded-full px-1.5 py-0.5 ${vOk ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-rose-50 border-rose-200 text-rose-700"}`}>
         validator: {trace.validator?.verdict ?? "?"}
       </span>
+      {trace.serviceConsistency && trace.serviceConsistency !== "N/A" && (
+        <span className={`border rounded-full px-1.5 py-0.5 ${trace.serviceConsistency === "PASS" ? "bg-emerald-50 border-emerald-200 text-emerald-700" : "bg-rose-50 border-rose-200 text-rose-700"}`}>
+          đúng dịch vụ: {trace.serviceConsistency}
+        </span>
+      )}
       <span className="bg-white border rounded-full px-1.5 py-0.5">
         {trace.provider}{trace.fallbackUsed !== "none" ? ` · fallback ${trace.fallbackUsed}` : ""}{trace.regenerated ? " · đã tái sinh" : ""}
       </span>
+      {trace.blockedReason && <span className="bg-rose-50 border border-rose-200 text-rose-600 rounded-full px-1.5 py-0.5" title={trace.blockedReason}>⛔ đã chặn: {trace.blockedReason.slice(0, 60)}</span>}
     </div>
   );
 }
@@ -1714,7 +1725,24 @@ function FixTestTab({
     } finally { setSending(false); }
   };
 
-  const clearChat = () => { setTurns([]); setConvo([]); setFixingId(null); };
+  const clearChat = () => {
+    setTurns([]); setConvo([]); setFixingId(null);
+    try { localStorage.removeItem(CHAT_KEY); } catch { /* quota/private mode — bỏ qua */ }
+  };
+  // Xác nhận xoá 2-BƯỚC INLINE (không dùng confirm() native — bị trình duyệt chặn dialog là nút "chết").
+  const [confirmClear, setConfirmClear] = useState(false);
+  const confirmClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onClearChatClick = () => {
+    if (!confirmClear) {
+      setConfirmClear(true);
+      if (confirmClearTimer.current) clearTimeout(confirmClearTimer.current);
+      confirmClearTimer.current = setTimeout(() => setConfirmClear(false), 4000);
+      return;
+    }
+    if (confirmClearTimer.current) clearTimeout(confirmClearTimer.current);
+    setConfirmClear(false);
+    clearChat();
+  };
   // Xoá 1 lượt khỏi KHUNG CHAT (chỉ dọn hiển thị; KHÔNG đụng bộ luật/bản nháp). Để xoá câu ĐÃ DẠY
   // thì dùng danh sách "Câu Lulu đã được dạy" bên dưới.
   const deleteTurn = (id: string) => { setTurns((p) => p.filter((x) => x.id !== id)); if (fixingId === id) setFixingId(null); };
@@ -1861,10 +1889,12 @@ function FixTestTab({
           <h3 className="font-semibold text-sm flex items-center gap-2"><MessageSquare className="w-4 h-4 text-violet-600" /> Chat test — Lulu trả lời theo Version {testingVersion ?? "—"}</h3>
           {turns.length > 0 && (
             <button
-              onClick={() => { if (confirm("Xóa toàn bộ đoạn chat test này để test lại từ đầu?\n\n(Chỉ xóa khung chat test — KHÔNG ảnh hưởng bản nháp hay bộ luật.)")) clearChat(); }}
+              onClick={onClearChatClick}
               title="Xóa khung chat test để test lại từ đầu (không ảnh hưởng bản nháp / bộ luật)"
-              className="flex items-center gap-1.5 text-[12px] font-medium text-rose-600 border border-rose-200 px-2.5 py-1 rounded-lg hover:bg-rose-50 shrink-0">
-              <Trash2 className="w-3.5 h-3.5" /> Xóa hội thoại
+              className={`flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1 rounded-lg shrink-0 border ${confirmClear
+                ? "text-white bg-rose-600 border-rose-600 hover:bg-rose-700"
+                : "text-rose-600 border-rose-200 hover:bg-rose-50"}`}>
+              <Trash2 className="w-3.5 h-3.5" /> {confirmClear ? "Bấm lần nữa để xóa" : "Xóa hội thoại"}
             </button>
           )}
         </div>

@@ -13,9 +13,12 @@ import { getGoldenExamples, buildGoldenExamplesBlock, type GoldenExample } from 
 import { resolveGroupNameForService } from "./sale-service-map";
 import { slugifyGroup } from "./sale-scenario-steps";
 import { getServicePricePreview } from "./sale-pricing";
-import { validateSaleReply, extractMoneyVnd, type CatalogItem } from "./sale-workflow-validator";
+import { validateSaleReply, extractMoneyVnd, INTENT_TO_KNOWN, type CatalogItem } from "./sale-workflow-validator";
 import { finalizeSaleReply, type PipelineValidator, type PipelineFacts } from "./sale-pipeline";
 import { formatVnd } from "./sale-reply-stitch";
+import { naturalizePackageContent, checkDatabaseVoice } from "./sale-content-naturalizer";
+import { detectServiceDrift } from "./sale-conversation-discipline";
+import { computeServiceTrail } from "./sale-service-context";
 import { classifyCustomerImageFromData, buildImageRoutingBlock } from "./sale-vision";
 import { selectSampleImages, extractRecentSampleUrls, SAMPLES_EXHAUSTED_NOTE } from "./sale-samples";
 import { applyImageOverrides, matchResponseOverride, type ImageOverride } from "./sale-image-overrides";
@@ -73,20 +76,26 @@ export function isBrainStructuredEnabled(): boolean {
 /** Trace X-quang 1 lượt pipeline — additive, FE cũ bỏ qua field này vẫn chạy. */
 export type PipelineTrace = {
   structured: boolean;
-  service: string | null;          // serviceIntent từ state
+  service: string | null;          // serviceIntent từ state (ACTIVE SERVICE)
   serviceGroup: string | null;     // tên nhóm bảng giá đã map
+  /** Khách vừa ĐỔI dịch vụ ở lượt này? "A → B" hoặc null. */
+  serviceSwitch: string | null;
   stage: string;
   scenarioWinner: string | null;
   scenarioName: string | null;
   action: string;
   goldenCount: number;
+  /** Nguồn script golden hàng đầu: đúng dịch vụ / thẻ chung / chào hỏi global. */
+  scriptSource: "service" | "scenario" | "greeting" | null;
   crmPriceText: string | null;     // giá gói đại diện realtime (nguồn Dịch vụ & Bảng giá)
   priceSource: string;             // luôn "Dịch vụ & Bảng giá"
   brainVersion: string;
   provider: string;
-  fallbackUsed: "none" | "stitched" | "safe";
+  fallbackUsed: "none" | "stitched" | "intent" | "safe";
   regenerated: boolean;
   validator: PipelineValidator;
+  /** SERVICE CONSISTENCY: lời CUỐI có còn dính dịch vụ khác không (double-check sau gate). */
+  serviceConsistency: "PASS" | "FAIL" | "N/A";
   /** Lý do lần chặn cuối trước khi rơi fallback (null = không bị chặn). */
   blockedReason: string | null;
   stateBefore: unknown;
@@ -215,7 +224,17 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
           if (groupName) serviceSlug = slugifyGroup(groupName);
         } catch { /* fail-soft */ }
       }
-      const golden = await getGoldenExamples(resolve.winner?.key ?? null, incomingText, 4, serviceSlug);
+      // STEP-HINT: action Router → bước tương ứng trong cây (chống bốc row lệch nghĩa khi tie).
+      const ACTION_STEP_HINT: Record<string, string> = {
+        QUOTE_REFERENCE: "bao-gia", QUOTE_EXACT: "bao-gia", SEND_PRICE: "bao-gia",
+        HANDLE_OBJECTION: "xu-ly-phan-van",
+        ASK_FOR_BOOKING: "chot", ASK_PHONE: "chot",
+        ASK_DATE: "tim-hieu", IDENTIFY_SERVICE: "tim-hieu", ASK_SERVICE: "tim-hieu", GREET: "tim-hieu",
+        SEND_SAMPLE: "tu-van", ANSWER_FAQ: "tu-van",
+        ESCALATE_HUMAN: "sau-chot",
+      };
+      const stepHint = ACTION_STEP_HINT[resolve.decision.action] ?? null;
+      const golden = await getGoldenExamples(resolve.winner?.key ?? null, incomingText, 4, serviceSlug, stepHint);
       const goldenBlock = buildGoldenExamplesBlock(golden);
       if (goldenBlock) context += `\n\n${goldenBlock}`;
       let facts: PipelineFacts = { crmPriceVnd: null, promoActive: false };
@@ -225,16 +244,31 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
           const groups = await getServicePricePreview(state.serviceIntent);
           const pkgs = groups.flatMap((g) => g.packages);
           if (pkgs.length > 0) {
-            const rep = pkgs[0];
+            // FACT ĐÚNG GÓI: khách nhắc TÊN/MÃ gói ("premium", "luxury"...) → dùng ĐÚNG gói đó,
+            // không mặc định gói đầu (bug: hỏi Premium mà báo giá Basic).
+            const normVi = (s: string) => (s ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d");
+            const msgN = normVi(incomingText);
+            const mentioned = pkgs.find((p) => {
+              const code = normVi(p.code ?? "");
+              if (code && code.length >= 4 && msgN.includes(code)) return true;
+              return normVi(p.name ?? "").split(/[^a-z0-9]+/).filter((w) => w.length >= 5).some((w) => msgN.includes(w));
+            });
+            const rep = mentioned ?? pkgs[0];
             const promoPkg = pkgs.find((p) => p.promoActive);
             facts = {
               crmPriceVnd: rep.effectivePrice, promoActive: pkgs.some((p) => p.promoActive),
-              packageName: rep.name || null, packageContent: rep.description || null,
+              packageName: rep.name || null,
+              // FACT SELECTION (chống database voice): mô tả gói CRM thô → cụm tự nhiên ngắn.
+              // Raw description chỉ để LLM HIỂU (đã nằm trong getSaleContext), KHÔNG chèn vào lời.
+              packageContent: naturalizePackageContent(rep.description) || null,
               promotion: promoPkg
                 ? `${promoPkg.promoName || "đang có ưu đãi"}${promoPkg.savedAmount ? ` (tiết kiệm ${formatVnd(promoPkg.savedAmount)})` : ""}`
                 : null,
+              serviceName: groupName,
             };
             crmPriceText = formatVnd(rep.effectivePrice);
+          } else {
+            facts = { crmPriceVnd: null, promoActive: false, serviceName: groupName };
           }
         } catch { /* fail-soft */ }
       }
@@ -304,7 +338,10 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
           return { text: r.raw || null, provider: providerLabel, error: !r.raw ? "AI không trả nội dung" : null };
         }
       : null;
-    fin = await finalizeSaleReply({ callLlm, golden: p.golden, facts: p.facts, validate });
+    fin = await finalizeSaleReply({
+      callLlm, golden: p.golden, facts: p.facts, validate,
+      voiceCheck: checkDatabaseVoice, action: p.resolve.decision.action,
+    });
     // Fallback (stitched/safe) → text KHÔNG phải của LLM: bỏ marker/ảnh của bản reply bị chặn.
     if (fin.fallbackUsed !== "none") reply = null;
   } else {
@@ -414,25 +451,45 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
     || (sampleImages[0]?.serviceIntent ?? null);
 
   // X-quang pipeline — chỉ khi structured chạy được (fail-open → null, FE cũ bỏ qua).
-  const trace: PipelineTrace | null = pipeline && fin ? {
-    structured: true,
-    service: pipeline.state.serviceIntent ?? null,
-    serviceGroup: pipeline.groupName,
-    stage: pipeline.resolve.decision.stage,
-    scenarioWinner: pipeline.resolve.winner?.key ?? null,
-    scenarioName: pipeline.resolve.winner?.name ?? null,
-    action: pipeline.resolve.decision.action,
-    goldenCount: pipeline.golden.length,
-    crmPriceText: pipeline.crmPriceText,
-    priceSource: "Dịch vụ & Bảng giá",
-    brainVersion: input.brainVersionLabel ?? "đang chạy thật",
-    provider: fin.provider,
-    fallbackUsed: fin.fallbackUsed,
-    regenerated: fin.regenerated,
-    validator: fin.validator,
-    blockedReason: fin.blockedReason,
-    stateBefore: pipeline.state,
-  } : null;
+  let trace: PipelineTrace | null = null;
+  if (pipeline && fin) {
+    // SERVICE SWITCH: khách đổi dịch vụ ở lượt này? (đọc từ trail hội thoại)
+    let serviceSwitch: string | null = null;
+    try {
+      const trail = computeServiceTrail(history);
+      if (trail?.switched && trail.previous && trail.current) serviceSwitch = `${trail.previous} → ${trail.current}`;
+    } catch { /* trace-only */ }
+    // SERVICE CONSISTENCY: double-check lời CUỐI không dính dịch vụ khác (sau mọi gate).
+    let serviceConsistency: PipelineTrace["serviceConsistency"] = "N/A";
+    try {
+      const known = pipeline.state.serviceIntent ? INTENT_TO_KNOWN[pipeline.state.serviceIntent] ?? null : null;
+      if (known && fin.replyText) {
+        serviceConsistency = detectServiceDrift(fin.replyText, known).length === 0 ? "PASS" : "FAIL";
+      }
+    } catch { /* trace-only */ }
+    trace = {
+      structured: true,
+      service: pipeline.state.serviceIntent ?? null,
+      serviceGroup: pipeline.groupName,
+      serviceSwitch,
+      stage: pipeline.resolve.decision.stage,
+      scenarioWinner: pipeline.resolve.winner?.key ?? null,
+      scenarioName: pipeline.resolve.winner?.name ?? null,
+      action: pipeline.resolve.decision.action,
+      goldenCount: pipeline.golden.length,
+      scriptSource: pipeline.golden[0]?.source ?? null,
+      crmPriceText: pipeline.crmPriceText,
+      priceSource: "Dịch vụ & Bảng giá",
+      brainVersion: input.brainVersionLabel ?? "đang chạy thật",
+      provider: fin.provider,
+      fallbackUsed: fin.fallbackUsed,
+      regenerated: fin.regenerated,
+      validator: fin.validator,
+      serviceConsistency,
+      blockedReason: fin.blockedReason,
+      stateBefore: pipeline.state,
+    };
+  }
 
   return {
     reply: finalReply,

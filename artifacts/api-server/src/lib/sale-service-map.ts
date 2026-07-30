@@ -1,5 +1,5 @@
 import { pool } from "@workspace/db";
-import { getServicePricePreview } from "./sale-pricing";
+import { getServicePricePreview, matchedGroupNamesForService } from "./sale-pricing";
 import { normalizeVi } from "./sale-text-normalize";
 
 /**
@@ -102,10 +102,12 @@ export async function resolveGroupNameForService(serviceKey: string): Promise<st
   const m = await getServiceMap(serviceKey);
   if (!m) return null;
   if (m.groupName && m.groupName.trim()) return m.groupName.trim();
-  // Chưa ghim: đoán theo keyword trên nhóm giá sống.
+  // Chưa ghim: chỉ nhận nhóm THẬT SỰ khớp keyword. TRƯỚC ĐÂY dùng getServicePricePreview —
+  // service không có nhóm (maternity/rental) bị fallback "trả tất cả" → gán bừa nhóm ĐẦU TIÊN
+  // (bug "chụp bầu" bị trả lời CHỤP CỔNG). Giờ không khớp → null (Lulu hỏi lại, không đoán bừa).
   try {
-    const groups = await getServicePricePreview(serviceKey); // đã khớp keyword server-side
-    return groups[0]?.groupName ?? null;
+    const matched = await matchedGroupNamesForService(serviceKey);
+    return matched[0] ?? null;
   } catch {
     return null;
   }

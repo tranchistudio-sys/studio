@@ -127,6 +127,18 @@ export async function getServicePricePreview(
 }
 
 /**
+ * Tên nhóm giá THẬT SỰ khớp keyword của service — [] khi service không có nhóm tương ứng
+ * (vd maternity/rental chưa có nhóm giá riêng). Khác getServicePricePreview: KHÔNG fallback
+ * trả tất cả — dùng cho service-map để tránh gán bừa nhóm đầu tiên (bug "chụp bầu" → CHỤP CỔNG).
+ */
+export async function matchedGroupNamesForService(serviceKey: string, now = new Date()): Promise<string[]> {
+  const kw = SERVICE_GROUP_KEYWORDS[serviceKey];
+  if (!kw) return [];
+  const all = await getServicePricePreview(null, { now });
+  return all.map((g) => g.groupName).filter((n) => kw.test(n));
+}
+
+/**
  * HÀM CANONICAL: giá hiệu lực của MỘT gói tại `now`. Dùng cho trace test + nơi cần 1 con số.
  * packageCode rỗng → trả gói ĐẦU của nhóm khớp (gói tiêu biểu). null nếu không tìm thấy.
  */

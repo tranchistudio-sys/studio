@@ -154,9 +154,10 @@ describe("Case A — intent=wedding_gate, khách hỏi tone 'Nhẹ nhàng trông
     expect(drift).toContain("reset:can chup dich vu gi");
     // "Chụp cưới, gia đình"
     expect(drift).toContain("reset:chup cuoi, gia dinh");
-    // các dịch vụ KHÁC bị nhắc khi đã khóa cưới: beauty / bầu / sản phẩm / gia đình
+    // các dịch vụ KHÁC bị nhắc khi đã khóa cưới: beauty / bầu / sản phẩm
+    // ("gia dinh" trần đã tinh chỉnh thành cụm dịch vụ "chup gia dinh" — câu "bàn với
+    // gia đình" là sale bình thường; menu-reset ở đây vẫn bị bắt qua reset-phrases trên)
     expect(drift).toContain("offintent:beauty");
-    expect(drift).toContain("offintent:gia dinh");
     expect(drift).toContain("offintent:bau");
     expect(drift).toContain("offintent:san pham");
   });
@@ -249,5 +250,31 @@ describe("Case F — đã gửi concept, khách nói 'đẹp á'", () => {
     expect(detectServiceDrift(good, intent)).toEqual([]);
     const bad = "Dạ vậy anh đang cần chụp dịch vụ gì ạ?";
     expect(detectServiceDrift(bad, intent)).toContain("reset:can chup dich vu gi");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// REGRESSION — bug trộn dịch vụ 30/07: khách hỏi BEAUTY nhưng reply dính
+// "gói cưới/váy cưới/mẹ chụp áo dài". OFF_INTENT_WORDS cũ thiếu marker cưới
+// nên PASS oan. Giờ beauty/family/maternity phải bắt được các marker cưới mạnh.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("Regression — reply nhiễm entity CƯỚI khi khách khoá BEAUTY", () => {
+  it("bắt 'gói cưới/váy cưới/album cưới/chụp cổng' khi intent=beauty", () => {
+    const bad = "Có luôn nha chị, em gửi chị gói cưới mình đang xem kèm phần chụp cho mẹ ạ.";
+    expect(detectServiceDrift(bad, "beauty")).toContain("offintent:goi cuoi");
+    expect(detectServiceDrift("Bên em có váy cưới đẹp lắm ạ", "beauty")).toContain("offintent:vay cuoi");
+    expect(detectServiceDrift("Em gửi mẫu album cưới nha", "beauty")).toContain("offintent:album cuoi");
+    expect(detectServiceDrift("Mình chụp cổng luôn không ạ?", "beauty")).toContain("offintent:chup cong");
+  });
+
+  it("câu Beauty ĐÚNG dịch vụ không bị chặn oan", () => {
+    const good = "Dạ có chị nha, bên em có chụp Beauty/Thời trang ạ.\nChị thích kiểu nhẹ nhàng hay cá tính để em gửi đúng mẫu ạ?";
+    expect(detectServiceDrift(good, "beauty")).toEqual([]);
+  });
+
+  it("intent CƯỚI nói về váy/gói cưới là hợp lệ (marker chỉ áp cho intent ngoài cưới)", () => {
+    expect(detectServiceDrift("Dạ gói cưới bên em đang có ưu đãi váy cưới ạ", "wedding")).toEqual([]);
+    expect(detectServiceDrift("Em gửi mẫu chụp cổng nha chị", "wedding_gate")).toEqual([]);
   });
 });

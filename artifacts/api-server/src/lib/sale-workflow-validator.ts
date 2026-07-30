@@ -140,8 +140,8 @@ const DEPOSIT_CONFIRM_RE =
 const SCHEDULE_PROMISE_RE =
   /((chac chan|dam bao|bao dam|100%|cam ket).{0,15}(con lich|con trong|giu duoc (lich|ngay)|trong lich)|ngay (do|nay) chac chan (con|trong))/;
 
-// Map ServiceIntent (thread state) → KnownIntent (detectServiceDrift).
-const INTENT_TO_KNOWN: Record<string, KnownIntent> = {
+// Map ServiceIntent (thread state) → KnownIntent (detectServiceDrift). Export cho pipeline trace.
+export const INTENT_TO_KNOWN: Record<string, KnownIntent> = {
   wedding_album: "wedding",
   wedding_party: "wedding",
   wedding_gate: "wedding_gate",
@@ -292,8 +292,12 @@ export function validateSaleReply(input: ValidatorInput): ValidatorResult {
   // nhu cầu và Router không chủ động yêu cầu hỏi/chào (GREET/ASK_SERVICE/IDENTIFY_SERVICE
   // có nhiệm vụ hỏi "mình muốn chụp gì" — không được chặn chính câu Router yêu cầu).
   const known = state.serviceIntent ? INTENT_TO_KNOWN[state.serviceIntent] ?? null : null;
+  // GREET/ASK_SERVICE: chưa khoá nhu cầu → miễn soi. IDENTIFY_SERVICE: khi serviceIntent ĐÃ BIẾT
+  // (khách vừa nói rõ dịch vụ) reply vẫn PHẢI đúng dịch vụ đó — bug Beauty bị nhiễm "gói cưới"
+  // lọt qua vì miễn trừ cũ; giờ chỉ miễn khi CHƯA biết nhu cầu.
   const driftExempt =
-    decision.action === "GREET" || decision.action === "ASK_SERVICE" || decision.action === "IDENTIFY_SERVICE";
+    decision.action === "GREET" || decision.action === "ASK_SERVICE"
+    || (decision.action === "IDENTIFY_SERVICE" && !known);
   const drift = known && !driftExempt ? detectServiceDrift(reply, known) : [];
   if (drift.length > 0) {
     return block(

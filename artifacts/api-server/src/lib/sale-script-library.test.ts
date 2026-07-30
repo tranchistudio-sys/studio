@@ -112,7 +112,7 @@ describe("getGoldenExamples — retrieval top-N deterministic", () => {
   function armSelect() {
     // ensureScriptTable chạy CREATE/INDEX (trả rows:[]); chỉ SELECT scenario_key trả EXAMPLES.
     mockQuery.mockImplementation(async (sql: string) => {
-      if (/SELECT customer_text/i.test(sql)) return { rows: EXAMPLES };
+      if (/SELECT (node_key, )?customer_text/i.test(sql)) return { rows: EXAMPLES };
       return { rows: [] };
     });
   }
@@ -136,7 +136,7 @@ describe("getGoldenExamples — retrieval top-N deterministic", () => {
   });
 
   it("fail-soft: query throw → rỗng", async () => {
-    mockQuery.mockImplementation(async (sql: string) => { if (/SELECT customer_text/i.test(sql)) throw new Error("db"); return { rows: [] }; });
+    mockQuery.mockImplementation(async (sql: string) => { if (/SELECT (node_key, )?customer_text/i.test(sql)) throw new Error("db"); return { rows: [] }; });
     expect(await getGoldenExamples("che-gia-cao", "sao mắc")).toEqual([]);
   });
 });

@@ -29,6 +29,8 @@ export type PipelineFacts = {
   packageName?: string | null;
   packageContent?: string | null;
   promotion?: string | null;
+  /** Tên nhóm dịch vụ đang khoá (hiển thị cho khách) — dùng cho fallback theo intent. */
+  serviceName?: string | null;
 };
 
 export type FinalizeInput = {
@@ -37,19 +39,65 @@ export type FinalizeInput = {
   golden: GoldenExample[];
   facts: PipelineFacts;
   validate: (reply: string) => PipelineValidator;
+  /** Detector giọng catalogue (chống DATABASE VOICE) — fail → regenerate/naturalize. Tuỳ chọn. */
+  voiceCheck?: (reply: string) => { ok: boolean; reason: string | null };
+  /** Action Router quyết định (dùng chọn câu fallback THEO INTENT khi stitch không có/bị chặn). */
+  action?: string | null;
 };
 
 export type FinalizeResult = {
   replyText: string | null;
   replyError: string | null;
-  provider: string; // 'anthropic'|'shopaikey'|... | 'stitched-fallback' | 'safe-fallback'
+  provider: string; // 'anthropic'|'shopaikey'|... | 'stitched-fallback' | 'intent-fallback' | 'safe-fallback'
   validator: PipelineValidator;
   regenerated: boolean;
-  fallbackUsed: "none" | "stitched" | "safe";
+  fallbackUsed: "none" | "stitched" | "intent" | "safe";
   needsHuman: boolean;
   /** Lý do lần chặn CUỐI trước khi rơi xuống fallback (debug/trace) — null nếu không bị chặn. */
   blockedReason: string | null;
 };
+
+/**
+ * FALLBACK THEO INTENT (mandate IX) — câu trung lập tự nhiên theo ACTION + FACT của
+ * ĐÚNG dịch vụ đang khoá. Dùng khi golden không có/bị chặn — KHÔNG lấy câu dịch vụ khác,
+ * KHÔNG dump database. null = action không có mẫu → rơi xuống câu an toàn.
+ */
+export function intentFallbackLine(action: string | null | undefined, facts: PipelineFacts): string | null {
+  const svc = (facts.serviceName ?? "").trim();
+  const price = facts.crmPriceVnd != null && facts.crmPriceVnd > 0
+    ? `${Math.round(facts.crmPriceVnd).toLocaleString("vi-VN").replace(/,/g, ".")}đ` : null;
+  const pkg = (facts.packageName ?? "").trim();
+  switch ((action ?? "").toUpperCase()) {
+    case "GREET":
+    case "ASK_SERVICE":
+      // Khách mở lời ĐÃ nêu dịch vụ ("có chụp beauty ko") → xác nhận đúng dịch vụ + 1 câu định hướng.
+      return svc
+        ? `Dạ có mình nha, bên em có ${svc} ạ.\nMình thích kiểu nào để em tư vấn sát hơn ạ?`
+        : "Dạ em chào mình ạ. Mình đang quan tâm dịch vụ nào bên em để em tư vấn đúng ạ?";
+    case "IDENTIFY_SERVICE":
+      return svc
+        ? `Dạ có mình nha, bên em có ${svc} ạ.\nMình thích kiểu nào để em tư vấn sát hơn ạ?`
+        : "Dạ bên em có nhiều gói chụp lắm ạ. Mình đang muốn chụp cho dịp nào để em tư vấn đúng ạ?";
+    case "ASK_DATE":
+      return "Dạ để em tư vấn lịch và gói chính xác, mình dự định chụp khoảng thời gian nào ạ?\nChưa chốt ngày cũng không sao, em gửi mức tham khảo trước cho mình ạ.";
+    case "QUOTE_REFERENCE":
+    case "QUOTE_EXACT":
+      return price
+        ? `Dạ gói ${pkg || "bên em"} hiện là ${price} ạ.\nMình muốn em gửi thêm phần gói gồm những gì không ạ?`
+        : null;
+    case "HANDLE_OBJECTION":
+      return "Dạ em hiểu mình đang cân nhắc ạ.\nMình cho em biết phần mình ưu tiên nhất, em xem phương án phù hợp hơn cho mình nha.";
+    case "ASK_PHONE":
+      return "Dạ để bạn phụ trách hỗ trợ mình nhanh nhất, em xin số điện thoại liên hệ được không ạ?";
+    case "SEND_SAMPLE":
+      return "Dạ em gửi mình vài bộ ảnh thật đúng kiểu mình thích nha.\nMình nghiêng về tông nhẹ nhàng hay sang trọng hơn ạ?";
+    case "ANSWER_FAQ":
+    case "WAIT":
+      return "Dạ mình cứ xem thoải mái nha, cần thêm thông tin gì mình nhắn em liền ạ.";
+    default:
+      return null;
+  }
+}
 
 /** Câu an toàn cuối cùng khi mọi tầng đều fail — không bịa, chuyển người thật. */
 export const SAFE_REPLY_LINE =
@@ -60,13 +108,24 @@ const safeValidate = (validate: FinalizeInput["validate"], reply: string): Pipel
   try { return validate(reply); } catch { return { verdict: "PASS" }; }
 };
 
-/** Stitched fallback: cách nói golden + FACT CRM (deterministic — chính lời khách sẽ nhận khi không LLM). */
+/** Câu có nhắc TIỀN/token giá không? (câu chào hỏi thuần không cần giá CRM vẫn stitch được) */
+const MENTIONS_PRICE_RE = /\{\{\s*price\s*\}\}|(\d{1,3}([.,]\d{3}){1,3}\s*(đ|d|vnd)|\d+\s*(triệu|tr)\b|\d{2,4}\s*k\b)/i;
+
+/** Stitched fallback: cách nói golden + FACT CRM (deterministic — chính lời khách sẽ nhận khi không LLM).
+ *  CONTROLLED VARIATION: các golden ĐỒNG HẠNG (cùng điểm khớp cao nhất) được chọn luân phiên —
+ *  cùng meaning anchor, wording khác nhau giữa các hội thoại. */
 function tryStitch(golden: GoldenExample[], facts: PipelineFacts): string | null {
-  const top = golden.find((g) => (g.idealResponse ?? "").trim());
-  if (!top || facts.crmPriceVnd == null) return null;
+  const usable = golden.filter((g) => (g.idealResponse ?? "").trim());
+  if (!usable.length) return null;
+  const topScore = usable[0].score ?? 0;
+  const ties = usable.filter((g) => (g.score ?? 0) === topScore);
+  const top = ties[Math.floor(Math.random() * ties.length)];
+  if (!top) return null;
+  // Câu cần GIÁ mà chưa có giá CRM → không stitch (không được bịa/để trống giá).
+  if (facts.crmPriceVnd == null && MENTIONS_PRICE_RE.test(top.idealResponse)) return null;
   const text = stitchReplyFromGolden({
     idealResponse: top.idealResponse,
-    crmPriceVnd: facts.crmPriceVnd,
+    crmPriceVnd: facts.crmPriceVnd ?? 0, // 0 = không thay giá (formatVnd(0) rỗng → giữ nguyên câu không-token)
     promoActive: !!facts.promoActive,
     packageName: facts.packageName ?? null,
     packageContent: facts.packageContent ?? null,
@@ -82,25 +141,38 @@ export async function finalizeSaleReply(input: FinalizeInput): Promise<FinalizeR
   let llmError: string | null = null;
   let lastBlock: PipelineValidator | null = null;
 
-  // 1) LLM lần đầu + (nếu BLOCK) tái sinh đúng 1 lần với lý do validator.
+  // Cổng kép trên 1 câu: validator AN TOÀN + voiceCheck GIỌNG (chống database voice).
+  const gate = (reply: string): { pass: boolean; v: PipelineValidator; reason: string | null } => {
+    const v = safeValidate(input.validate, reply);
+    if (v.verdict === "BLOCK") return { pass: false, v, reason: v.reason ?? "vi phạm luật an toàn" };
+    if (input.voiceCheck) {
+      try {
+        const vc = input.voiceCheck(reply);
+        if (!vc.ok) return { pass: false, v: { verdict: "BLOCK", reason: `giọng catalogue: ${vc.reason}`, violatedRule: "database_voice" }, reason: `giọng catalogue/database — ${vc.reason}. Nói NGẮN tự nhiên như sale thật, không đọc nguyên mô tả gói` };
+      } catch { /* detector lỗi → bỏ qua */ }
+    }
+    return { pass: true, v, reason: null };
+  };
+
+  // 1) LLM lần đầu + (nếu BỊ CHẶN bởi an toàn HOẶC giọng) tái sinh đúng 1 lần với lý do.
   if (input.callLlm) {
     try {
       const r1 = await input.callLlm(null);
       llmError = r1.error ?? null;
       if (r1.text) {
-        const v1 = safeValidate(input.validate, r1.text);
-        if (v1.verdict !== "BLOCK") {
-          return { ...base, replyText: r1.text, replyError: null, provider: r1.provider, validator: v1, blockedReason: null };
+        const g1 = gate(r1.text);
+        if (g1.pass) {
+          return { ...base, replyText: r1.text, replyError: null, provider: r1.provider, validator: g1.v, blockedReason: null };
         }
-        lastBlock = v1;
-        const feedback = `${v1.reason ?? "vi phạm luật an toàn"}${v1.suggestedRecovery ? ` — ${v1.suggestedRecovery}` : ""}`;
+        lastBlock = g1.v;
+        const feedback = `${g1.reason}${g1.v.suggestedRecovery ? ` — ${g1.v.suggestedRecovery}` : ""}`;
         const r2 = await input.callLlm(feedback);
         if (r2.text) {
-          const v2 = safeValidate(input.validate, r2.text);
-          if (v2.verdict !== "BLOCK") {
-            return { ...base, regenerated: true, replyText: r2.text, replyError: null, provider: r2.provider, validator: v2, blockedReason: null };
+          const g2 = gate(r2.text);
+          if (g2.pass) {
+            return { ...base, regenerated: true, replyText: r2.text, replyError: null, provider: r2.provider, validator: g2.v, blockedReason: null };
           }
-          lastBlock = v2;
+          lastBlock = g2.v;
         }
         base.regenerated = true; // đã tái sinh mà vẫn không qua → rơi xuống fallback
       }
@@ -109,18 +181,53 @@ export async function finalizeSaleReply(input: FinalizeInput): Promise<FinalizeR
     }
   }
 
-  // 2) Stitched fallback — deterministic từ golden + facts CRM, vẫn phải qua validator.
+  // 2a) Câu "bên em có X không?": chuẩn là XÁC NHẬN ĐÚNG DỊCH VỤ + 1 câu định hướng —
+  // ưu tiên intent-line TRƯỚC golden (situation-script dễ lệch nghĩa khi điểm keyword thấp).
+  // Áp cho IDENTIFY_SERVICE, và GREET/ASK_SERVICE khi khách ĐÃ nêu dịch vụ (serviceName có).
+  const actionU = (input.action ?? "").toUpperCase();
+  const intentFirst = actionU === "IDENTIFY_SERVICE"
+    || ((actionU === "GREET" || actionU === "ASK_SERVICE") && !!(input.facts.serviceName ?? "").trim());
+  if (intentFirst) {
+    const line = intentFallbackLine(input.action, input.facts);
+    if (line) {
+      const gl = gate(line);
+      if (gl.pass) {
+        return {
+          ...base, fallbackUsed: "intent",
+          replyText: line, replyError: llmError, provider: "intent-fallback", validator: gl.v,
+          blockedReason: lastBlock ? (lastBlock.reason ?? "bị chặn") : null,
+        };
+      }
+      lastBlock = gl.v;
+    }
+  }
+
+  // 2) Stitched fallback — deterministic từ golden + facts CRM, vẫn phải qua CẢ 2 cổng.
   const stitched = tryStitch(input.golden, input.facts);
   if (stitched) {
-    const vs = safeValidate(input.validate, stitched);
-    if (vs.verdict !== "BLOCK") {
+    const gs = gate(stitched);
+    if (gs.pass) {
       return {
         ...base, fallbackUsed: "stitched",
-        replyText: stitched, replyError: llmError, provider: "stitched-fallback", validator: vs,
+        replyText: stitched, replyError: llmError, provider: "stitched-fallback", validator: gs.v,
         blockedReason: lastBlock ? (lastBlock.reason ?? "bị chặn") : null,
       };
     }
-    lastBlock = vs;
+    lastBlock = gs.v;
+  }
+
+  // 2b) Fallback THEO INTENT — câu trung lập của ĐÚNG dịch vụ (action + facts), qua cả 2 cổng.
+  const intentLine = intentFallbackLine(input.action, input.facts);
+  if (intentLine) {
+    const gi = gate(intentLine);
+    if (gi.pass) {
+      return {
+        ...base, fallbackUsed: "intent",
+        replyText: intentLine, replyError: llmError, provider: "intent-fallback", validator: gi.v,
+        blockedReason: lastBlock ? (lastBlock.reason ?? "bị chặn") : null,
+      };
+    }
+    lastBlock = gi.v;
   }
 
   // 3) Câu an toàn + chuyển người thật.

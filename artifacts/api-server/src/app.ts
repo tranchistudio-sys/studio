@@ -5,6 +5,7 @@ import pinoHttp from "pino-http";
 import router from "./routes";
 import { mountMcp } from "./lib/mcp/server";
 import { mountFrontend } from "./lib/serve-frontend";
+import { previewBasicAuth } from "./lib/preview-basic-auth";
 import { logger } from "./lib/logger";
 import { startFollowUpScheduler } from "./follow-up-scheduler";
 import { startTestFollowUpScheduler } from "./test-follow-up-scheduler";
@@ -15,6 +16,12 @@ const app: Express = express();
 
 // Cần IP thật của client (xác thực WiFi studio) — tin x-forwarded-for từ proxy (Vite dev / reverse proxy)
 app.set("trust proxy", true);
+
+// BẢN PREVIEW THEO PR (Fly.io review app): chặn toàn site sau 1 mật khẩu, TRƯỚC
+// mọi middleware khác. Production KHÔNG đặt PREVIEW_MODE=1 → trả null → không
+// mount gì cả, hành vi prod không đổi một chút nào.
+const previewGate = previewBasicAuth();
+if (previewGate) app.use(previewGate);
 
 app.use(
   pinoHttp({

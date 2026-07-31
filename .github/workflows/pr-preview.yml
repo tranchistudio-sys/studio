@@ -1,0 +1,241 @@
+# Bản xem thử theo Pull Request cho Amazing Studio.
+#
+# Mỗi PR: BUILD + TEST → dựng một app riêng trên Fly.io → dán link vào PR.
+# Đóng PR: xoá hẳn app đó.
+#
+# KHÔNG đụng gì tới production: production vẫn ở Replit và chỉ được Republish
+# bằng tay theo docs/DEPLOY-CODE-ONLY.md.
+
+name: PR Preview
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+concurrency:
+  group: pr-preview-${{ github.event.pull_request.number }}
+  # Push commit mới thì huỷ lượt đang chạy; nhưng KHÔNG huỷ lượt dọn dẹp khi đóng PR.
+  cancel-in-progress: ${{ github.event.action != 'closed' }}
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  FLY_APP: pr-${{ github.event.pull_request.number }}-amazing-studio
+  PREVIEW_URL: https://pr-${{ github.event.pull_request.number }}-amazing-studio.fly.dev
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # 1. BUILD + TEST — đây là check bắt buộc phải XANH mới được Merge.
+  # ───────────────────────────────────────────────────────────────────────────
+  build-test:
+    name: BUILD + TEST
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    outputs:
+      api_tests: ${{ steps.test_api.outputs.count }}
+      web_tests: ${{ steps.test_web.outputs.count }}
+      typecheck_errors: ${{ steps.typecheck.outputs.errors }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Cài đặt phụ thuộc (đúng y hệt pnpm-lock.yaml)
+        run: pnpm install --frozen-lockfile
+
+      - name: TEST — API (vitest)
+        id: test_api
+        run: |
+          set -o pipefail
+          pnpm --filter @workspace/api-server test 2>&1 | tee api-test.log
+          echo "count=$(grep -oE 'Tests +[0-9]+ passed' api-test.log | grep -oE '[0-9]+' | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: TEST — Giao diện (vitest)
+        id: test_web
+        run: |
+          set -o pipefail
+          pnpm --filter @workspace/amazing-studio test 2>&1 | tee web-test.log
+          echo "count=$(grep -oE 'Tests +[0-9]+ passed' web-test.log | grep -oE '[0-9]+' | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: BUILD — api-server + giao diện (có chạy deploy-guard)
+        run: pnpm run build:deploy
+
+      # Typecheck CHỈ để cảnh báo: nhánh main hiện đã có sẵn 20 lỗi tsc từ trước
+      # (5 file), nếu chặn merge thì mọi PR đều đỏ oan. Có số liệu để theo dõi giảm dần.
+      - name: Typecheck (không chặn merge)
+        id: typecheck
+        continue-on-error: true
+        run: |
+          set +e
+          pnpm run typecheck > typecheck.log 2>&1
+          echo "errors=$(grep -c 'error TS' typecheck.log)" >> "$GITHUB_OUTPUT"
+          tail -30 typecheck.log
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 2. PREVIEW — chỉ chạy khi BUILD + TEST đã xanh.
+  # ───────────────────────────────────────────────────────────────────────────
+  preview:
+    name: PREVIEW (Fly.io)
+    needs: build-test
+    if: >-
+      github.event.action != 'closed' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      url: ${{ steps.deploy.outputs.url }}
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Kiểm tra đã có đủ secret chưa
+        run: |
+          missing=""
+          if [ -z "${{ secrets.FLY_API_TOKEN }}" ];             then missing="$missing FLY_API_TOKEN"; fi
+          if [ -z "${{ secrets.PREVIEW_DATABASE_URL }}" ];      then missing="$missing PREVIEW_DATABASE_URL"; fi
+          if [ -z "${{ secrets.PREVIEW_DB_HOST_ALLOWLIST }}" ]; then missing="$missing PREVIEW_DB_HOST_ALLOWLIST"; fi
+          if [ -z "${{ secrets.PREVIEW_SESSION_SECRET }}" ];    then missing="$missing PREVIEW_SESSION_SECRET"; fi
+          if [ -z "${{ secrets.PREVIEW_BASIC_AUTH_PASS }}" ];   then missing="$missing PREVIEW_BASIC_AUTH_PASS"; fi
+          if [ -n "$missing" ]; then
+            echo "::error::Thiếu GitHub Secret:$missing — xem docs/PREVIEW-PR.md phần 'Cài đặt một lần'."
+            exit 1
+          fi
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Tạo app preview cho PR này (nếu chưa có)
+        run: |
+          if flyctl status --app "$FLY_APP" >/dev/null 2>&1; then
+            echo "App $FLY_APP đã tồn tại — sẽ deploy đè."
+          else
+            echo "Tạo app mới: $FLY_APP"
+            flyctl apps create "$FLY_APP" --org "${{ vars.FLY_ORG || 'personal' }}"
+          fi
+
+      - name: Nạp cấu hình bí mật cho bản xem thử
+        run: |
+          flyctl secrets set --app "$FLY_APP" --stage \
+            DATABASE_URL="${{ secrets.PREVIEW_DATABASE_URL }}" \
+            PREVIEW_DB_HOST_ALLOWLIST="${{ secrets.PREVIEW_DB_HOST_ALLOWLIST }}" \
+            SESSION_SECRET="${{ secrets.PREVIEW_SESSION_SECRET }}" \
+            PREVIEW_BASIC_AUTH_USER="${{ vars.PREVIEW_BASIC_AUTH_USER || 'amazing' }}" \
+            PREVIEW_BASIC_AUTH_PASS="${{ secrets.PREVIEW_BASIC_AUTH_PASS }}"
+
+      - name: Dựng bản xem thử
+        id: deploy
+        run: |
+          flyctl deploy --app "$FLY_APP" --config fly.toml --remote-only --ha=false
+          echo "url=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
+
+      # Bằng chứng bản xem thử THỰC SỰ chạy: gọi /api/healthz (path này được miễn
+      # mật khẩu). Nếu chốt an toàn chặn khởi động (DB sai allowlist…) thì app không
+      # lên và bước này sẽ đỏ → PR không được coi là sẵn sàng.
+      - name: Xác nhận bản xem thử đã sống
+        run: |
+          for i in $(seq 1 20); do
+            body=$(curl -sS --max-time 15 "$PREVIEW_URL/api/healthz" || true)
+            echo "lần $i: $body"
+            case "$body" in *'"status":"ok"'*) echo "Bản xem thử đã sẵn sàng."; exit 0;; esac
+            sleep 10
+          done
+          echo "::error::Bản xem thử không phản hồi /api/healthz sau ~200 giây."
+          flyctl logs --app "$FLY_APP" --no-tail | tail -50
+          exit 1
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 3. Bình luận trạng thái vào PR (luôn chạy, kể cả khi có bước hỏng).
+  # ───────────────────────────────────────────────────────────────────────────
+  comment:
+    name: Cập nhật bình luận trong PR
+    needs: [build-test, preview]
+    if: always() && github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        env:
+          BUILD_TEST: ${{ needs.build-test.result }}
+          PREVIEW: ${{ needs.preview.result }}
+          API_TESTS: ${{ needs.build-test.outputs.api_tests }}
+          WEB_TESTS: ${{ needs.build-test.outputs.web_tests }}
+          TS_ERRORS: ${{ needs.build-test.outputs.typecheck_errors }}
+          URL: ${{ env.PREVIEW_URL }}
+        with:
+          script: |
+            const MARKER = '<!-- amazing-studio-preview -->';
+            const { BUILD_TEST, PREVIEW, API_TESTS, WEB_TESTS, TS_ERRORS, URL } = process.env;
+            const run = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const sha = context.payload.pull_request.head.sha.slice(0, 7);
+            const ok = (r) => r === 'success';
+
+            const lines = [MARKER, '## 📱 Bản xem thử cho PR này', ''];
+
+            if (ok(BUILD_TEST)) {
+              lines.push('✅ **BUILD** — api-server + giao diện build sạch');
+              lines.push(`✅ **TEST** — API ${API_TESTS || '?'} bài · Giao diện ${WEB_TESTS || '?'} bài, tất cả PASS`);
+            } else {
+              lines.push('❌ **BUILD / TEST HỎNG**');
+              lines.push(`👉 [Bấm xem log lỗi](${run})`);
+            }
+
+            if (ok(PREVIEW)) {
+              lines.push('✅ **PREVIEW READY**');
+              lines.push('');
+              lines.push(`### 🔗 [OPEN PREVIEW APP](${URL})`);
+              lines.push('');
+              lines.push('> Mở link bằng iPhone. Trình duyệt sẽ hỏi mật khẩu xem thử một lần.');
+              lines.push('> Dữ liệu trong bản xem thử **đã che tên/SĐT/email khách** và **không nối vào database production**.');
+            } else if (PREVIEW === 'skipped') {
+              lines.push('⛔ **CHƯA DỰNG ĐƯỢC BẢN XEM THỬ** — vì BUILD/TEST chưa xanh.');
+              lines.push('');
+              lines.push('**ĐỪNG MERGE.** Sửa lỗi rồi push lại, bản xem thử sẽ tự dựng lại.');
+            } else {
+              lines.push('❌ **DỰNG BẢN XEM THỬ THẤT BẠI**');
+              lines.push(`👉 [Bấm xem log lỗi](${run})`);
+              lines.push('');
+              lines.push('**ĐỪNG MERGE.**');
+            }
+
+            if (TS_ERRORS && TS_ERRORS !== '0') {
+              lines.push('');
+              lines.push(`<sub>ℹ️ Typecheck: ${TS_ERRORS} lỗi tsc (nợ cũ của main, không chặn merge).</sub>`);
+            }
+            lines.push('');
+            lines.push(`<sub>Commit \`${sha}\` · cập nhật tự động mỗi lần push · [log](${run})</sub>`);
+
+            const body = lines.join('\n');
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo, issue_number: context.issue.number, per_page: 100,
+            });
+            const existing = comments.find((c) => c.body && c.body.includes(MARKER));
+            if (existing) {
+              await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: context.issue.number, body });
+            }
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 4. Đóng PR → xoá hẳn app preview (không để tốn tiền).
+  # ───────────────────────────────────────────────────────────────────────────
+  destroy:
+    name: Dọn bản xem thử
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Xoá app preview của PR
+        run: |
+          if [ -z "$FLY_API_TOKEN" ]; then echo "Chưa cấu hình FLY_API_TOKEN — bỏ qua."; exit 0; fi
+          flyctl apps destroy "$FLY_APP" --yes || echo "Không có app $FLY_APP để xoá."

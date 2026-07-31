@@ -1,0 +1,43 @@
+# fly.toml — cấu hình BẢN XEM THỬ theo Pull Request.
+#
+# Tên app ở đây chỉ là mặc định; workflow .github/workflows/pr-preview.yml luôn
+# truyền --app pr-<số PR>-amazing-studio nên MỖI PR CÓ MỘT APP RIÊNG, URL riêng,
+# và bị xoá hẳn khi PR đóng.
+#
+# Production KHÔNG dùng file này (production vẫn ở Replit).
+
+app = "amazing-studio-preview"
+primary_region = "sin"   # Singapore — gần Việt Nam nhất
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  NODE_ENV = "production"
+  # Bật toàn bộ chốt an toàn preview (xem artifacts/api-server/src/lib/preview-guard.ts).
+  PREVIEW_MODE = "1"
+
+# Các giá trị nhạy cảm (DATABASE_URL preview, SESSION_SECRET, mật khẩu xem thử,
+# allowlist database) KHÔNG nằm trong file này — workflow nạp bằng `flyctl secrets set`.
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Không ai dùng thì máy tự ngủ → gần như không tốn tiền; có người mở link thì tự dậy.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "45s"
+    interval = "30s"
+    method = "GET"
+    timeout = "10s"
+    path = "/api/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+  cpus = 1

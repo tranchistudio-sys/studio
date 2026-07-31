@@ -142,16 +142,6 @@ jobs:
           deploy || { echo "::warning::flyctl deploy lỗi lần 1 (thường do mạng thoáng qua) — thử lại sau 20 giây"; sleep 20; deploy; }
           echo "url=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
 
-      # Khi deploy hỏng: in log khởi động của máy để thấy NGAY nguyên nhân trong CI,
-      # không phải mò vào dashboard Fly.
-      - name: Log máy chủ khi deploy hỏng
-        if: failure()
-        run: |
-          echo "===== TRẠNG THÁI MÁY ====="
-          flyctl status --app "$FLY_APP" || true
-          echo "===== LOG KHỞI ĐỘNG (120 dòng cuối) ====="
-          flyctl logs --app "$FLY_APP" --no-tail 2>/dev/null | tail -120 || true
-
       # Bằng chứng bản xem thử THỰC SỰ chạy: gọi /api/healthz (path này được miễn
       # mật khẩu). Nếu chốt an toàn chặn khởi động (DB sai allowlist…) thì app không
       # lên và bước này sẽ đỏ → PR không được coi là sẵn sàng.
@@ -164,8 +154,18 @@ jobs:
             sleep 10
           done
           echo "::error::Bản xem thử không phản hồi /api/healthz sau ~200 giây."
-          flyctl logs --app "$FLY_APP" --no-tail | tail -50
           exit 1
+
+      # Khi BẤT KỲ bước nào phía trên hỏng (deploy hoặc xác nhận sống): in trạng
+      # thái + log máy để thấy NGAY nguyên nhân trong CI, không phải mò dashboard.
+      # Phải đặt SAU bước xác nhận — if:failure() chỉ nhìn các bước TRƯỚC nó.
+      - name: Log máy chủ khi hỏng
+        if: failure()
+        run: |
+          echo "===== TRẠNG THÁI MÁY ====="
+          flyctl status --app "$FLY_APP" || true
+          echo "===== LOG KHỞI ĐỘNG (120 dòng cuối) ====="
+          flyctl logs --app "$FLY_APP" --no-tail 2>/dev/null | tail -120 || true
 
   # ───────────────────────────────────────────────────────────────────────────
   # 3. Bình luận trạng thái vào PR (luôn chạy, kể cả khi có bước hỏng).

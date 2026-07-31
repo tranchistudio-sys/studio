@@ -24,14 +24,15 @@ primary_region = "sin"   # Singapore — gần Việt Nam nhất
 [http_service]
   internal_port = 8080
   force_https = true
-  # Không ai dùng thì máy tự ngủ → gần như không tốn tiền; có người mở link thì tự dậy.
-  # "suspend" (ngủ đông, giữ RAM) chứ KHÔNG phải "stop": stop = tắt hẳn, lần mở sau
-  # phải boot lại từ đầu (node + migration + chờ Neon thức) mất 15-30s → Fly proxy
-  # hết kiên nhẫn, trả 503 body rỗng → người dùng thấy MÀN HÌNH TRẮNG (lỗi thật
-  # 31/07, ảnh chụp iPhone của chủ). Suspend thức dậy trong ~1 giây, không boot lại.
-  auto_stop_machines = "suspend"
+  # MÁY CHẠY THƯỜNG TRỰC — cố ý KHÔNG cho tự ngủ. Bài học 31/07 (mất nguyên buổi
+  # tối): "stop" → mở link lúc máy ngủ bị 503 body rỗng = màn hình trắng;
+  # "suspend" → máy đóng băng giữ nguyên kết nối Postgres sang Neon, phiên ma ôm
+  # khoá advisory làm boot sau KẸT VÔ HẠN giữa migration, deploy flap timeout.
+  # Giá của ổn định: ~$5.7/tháng cho MỖI PR đang mở (shared-cpu-1x 1GB), app bị
+  # xoá hẳn khi đóng PR nên PR sống vài ngày chỉ tốn vài nghìn đồng.
+  auto_stop_machines = false
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
   processes = ["app"]
 
   # CỐ Ý KHÔNG có [[http_service.checks]] — bài học 31/07: máy tự ngủ (auto_stop)

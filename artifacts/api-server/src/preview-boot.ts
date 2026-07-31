@@ -22,3 +22,11 @@ try {
 }
 
 export const previewModeActive = isPreviewMode();
+
+// Dọn "phiên ma" trên DB preview TRƯỚC khi bất kỳ module nào khác kịp mở kết nối
+// (top-level await chặn các import phía sau trong index.ts cho tới khi xong).
+// Import động để production KHÔNG tải thêm gì từ file này.
+if (previewModeActive) {
+  const { terminateGhostSessions } = await import("./lib/preview-db-marker");
+  await terminateGhostSessions();
+}

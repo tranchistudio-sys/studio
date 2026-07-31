@@ -40,4 +40,35 @@ export async function assertPreviewDatabaseMarker(): Promise<void> {
         "Từ chối khởi động.",
     );
   }
+
+}
+
+/**
+ * Dọn "phiên ma" trên database preview — bài học 31/07: deploy/restart kill tiến
+ * trình GIỮA transaction migration → session phía server (nhất là qua cổng pooler
+ * của Neon) sống thêm ~10 phút, ôm khoá ALTER TABLE → boot sau treo đúng chỗ đó
+ * → deploy timeout dây chuyền.
+ *
+ * PHẢI được gọi từ `preview-boot.ts` — TRƯỚC khi `./app` được import, vì các route
+ * tự mở kết nối (ensure*Schema) ngay lúc import; gọi muộn sẽ ngắt nhầm kết nối
+ * đang làm việc của chính tiến trình này. Preview chỉ có MỘT máy (ha=false) nên
+ * tại thời điểm đó mọi session khác của database đều là xác chết của boot trước.
+ *
+ * Fail-open: dọn không được (lỗi mạng thoáng qua) thì chỉ cảnh báo — migration
+ * phía sau tự chịu, không chặn boot vì một bước dọn dẹp.
+ */
+export async function terminateGhostSessions(): Promise<void> {
+  if (!isPreviewMode()) return;
+  try {
+    const res = await pool.query(
+      `SELECT pg_terminate_backend(pid)
+         FROM pg_stat_activity
+        WHERE datname = current_database() AND pid <> pg_backend_pid()`,
+    );
+    if (res.rowCount) {
+      console.warn(`[preview-boot] Đã ngắt ${res.rowCount} phiên ma của boot trước (chống kẹt khoá migration).`);
+    }
+  } catch (err) {
+    console.warn(`[preview-boot] Không dọn được phiên ma (bỏ qua): ${(err as Error).message}`);
+  }
 }

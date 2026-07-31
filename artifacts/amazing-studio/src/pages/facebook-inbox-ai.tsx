@@ -246,37 +246,42 @@ function LeadInfoPanel({ lead, psid, onOpenCustomer, onOpenLead, onSave, onSyncP
   const fuStatusCls = fu?.optedOut ? "bg-gray-100 text-gray-500" : (fu?.count ?? 0) >= 3 ? "bg-yellow-100 text-yellow-700" : "bg-blue-100 text-blue-700";
 
   return (
-    <div className="w-[250px] border-l border-border bg-muted/30 p-3 flex flex-col gap-3 overflow-y-auto">
-      <div className="flex items-start gap-3">
-        <Avatar url={lead.avatarUrl ?? null} name={lead.name} size={60} psid={psid} />
-        <div className="min-w-0 flex-1">
-          <p className={`font-semibold text-sm truncate ${isGenericName ? "text-muted-foreground italic" : ""}`}>{lead.name}</p>
-          <p className="text-[11px] text-muted-foreground">PSID: {psid.slice(-10)}</p>
-          <span className={`mt-1 inline-flex text-[10px] font-medium px-2 py-0.5 rounded-full ${statusLabel(lead.status).cls}`}>{statusLabel(lead.status).label}</span>
+    <div className="w-[250px] border-l border-border bg-muted/30 flex flex-col min-h-0">
+      {/* Header ghim cố định: avatar + nút "Đồng bộ tên" luôn hiển thị, không bị cuộn khuất */}
+      <div className="p-3 pb-2 flex flex-col gap-2 border-b border-border/60 shrink-0">
+        <div className="flex items-start gap-3">
+          <Avatar url={lead.avatarUrl ?? null} name={lead.name} size={60} psid={psid} />
+          <div className="min-w-0 flex-1">
+            <p className={`font-semibold text-sm truncate ${isGenericName ? "text-muted-foreground italic" : ""}`}>{lead.name}</p>
+            <p className="text-[11px] text-muted-foreground">PSID: {psid.slice(-10)}</p>
+            <span className={`mt-1 inline-flex text-[10px] font-medium px-2 py-0.5 rounded-full ${statusLabel(lead.status).cls}`}>{statusLabel(lead.status).label}</span>
+          </div>
+        </div>
+        {/* Đồng bộ tên/avatar Facebook (giữ tên admin đã sửa) */}
+        <div className="flex items-center justify-between gap-2">
+          {(() => {
+            const st = lead.profileSyncStatus;
+            const badge = st === "synced"
+              ? { t: "Đã đồng bộ Facebook", c: "text-green-600" }
+              : (st === "failed" || st === "unavailable")
+                ? { t: "Không lấy được từ Facebook", c: "text-orange-500" }
+                : isGenericName
+                  ? { t: "Chưa đồng bộ tên", c: "text-gray-400" }
+                  : { t: "Đã có tên", c: "text-green-600" };
+            return <span className={`text-[10px] ${badge.c}`}>{badge.t}</span>;
+          })()}
+          <button
+            onClick={onSyncProfile}
+            disabled={syncing}
+            className="text-[11px] flex items-center gap-1 px-2 py-1 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 disabled:opacity-50 shrink-0"
+            title="Lấy tên & avatar thật từ Facebook"
+          >
+            {syncing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />} Đồng bộ tên
+          </button>
         </div>
       </div>
-      {/* Đồng bộ tên/avatar Facebook (giữ tên admin đã sửa) */}
-      <div className="flex items-center justify-between gap-2 -mt-1">
-        {(() => {
-          const st = lead.profileSyncStatus;
-          const badge = st === "synced"
-            ? { t: "Đã đồng bộ Facebook", c: "text-green-600" }
-            : (st === "failed" || st === "unavailable")
-              ? { t: "Không lấy được từ Facebook", c: "text-orange-500" }
-              : isGenericName
-                ? { t: "Chưa đồng bộ tên", c: "text-gray-400" }
-                : { t: "Đã có tên", c: "text-green-600" };
-          return <span className={`text-[10px] ${badge.c}`}>{badge.t}</span>;
-        })()}
-        <button
-          onClick={onSyncProfile}
-          disabled={syncing}
-          className="text-[11px] flex items-center gap-1 px-2 py-1 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 disabled:opacity-50 shrink-0"
-          title="Lấy tên & avatar thật từ Facebook"
-        >
-          {syncing ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />} Đồng bộ tên
-        </button>
-      </div>
+      {/* Phần còn lại cuộn riêng bên trong panel */}
+      <div className="flex-1 min-h-0 overflow-y-auto p-3 pt-2 flex flex-col gap-3">
       {(() => {
         const hasGroup = (lead.currentSaleStep ?? 0) >= 3 && !!lead.currentScriptId && !!lead.scriptName;
         return (
@@ -350,6 +355,7 @@ function LeadInfoPanel({ lead, psid, onOpenCustomer, onOpenLead, onSave, onSyncP
         {onOpenLead && <button onClick={onOpenLead} className="text-xs border rounded-xl px-3 py-2 hover:bg-white">Mở CRM Lead</button>}
         {onOpenCustomer && <button onClick={onOpenCustomer} className="text-xs border rounded-xl px-3 py-2 hover:bg-white">Mở hồ sơ KH</button>}
         <button onClick={() => window.location.assign(`/bookings/new?customerId=${lead.customerId ?? ""}`)} className="text-xs border rounded-xl px-3 py-2 hover:bg-white">Tạo đơn hàng</button>
+      </div>
       </div>
     </div>
   );
@@ -1110,8 +1116,8 @@ export default function FacebookInboxAiPage() {
                 </div>
               </div>
 
-              {/* LeadInfoPanel — desktop only */}
-              <div className="hidden md:block">
+              {/* LeadInfoPanel — desktop only. md:flex + min-h-0 để panel nhận đúng chiều cao khung chat, phần thân tự cuộn bên trong */}
+              <div className="hidden md:flex md:min-h-0">
                 {lead && <LeadInfoPanel lead={lead} psid={selectedPsid} onOpenLead={() => window.location.assign("/crm")} onOpenCustomer={openCustomer} onSave={saveLead} onSyncProfile={() => syncOneProfileMutation.mutate(selectedPsid)} syncing={syncOneProfileMutation.isPending} />}
               </div>
             </>

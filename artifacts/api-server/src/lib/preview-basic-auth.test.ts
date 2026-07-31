@@ -42,6 +42,12 @@ function fakeReqRes(headerValue?: string, path = "/calendar", cookieHeader?: str
       this.cookies[name] = value;
       return this;
     },
+    redirectUrl: undefined as string | undefined,
+    redirect(status: number, url: string) {
+      this.statusCode = status;
+      this.redirectUrl = url;
+      return this;
+    },
     status(code: number) {
       this.statusCode = code;
       return this;
@@ -164,6 +170,27 @@ describe("previewBasicAuth — chặn/cho qua", () => {
     mw(req, res, next);
     expect(next).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(401);
+  });
+
+  it("link thần kỳ ?xem=<đúng mật khẩu> → cấp cookie + redirect về URL sạch", () => {
+    const mw = previewBasicAuth(PREVIEW_ENV)!;
+    const { req, res, next } = fakeReqRes(undefined, "/calendar", undefined, "text/html");
+    (req as { originalUrl: string }).originalUrl = "/calendar?xem=mat-khau-du-dai&d=2026-07-31";
+    mw(req, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(303);
+    expect(res.redirectUrl).toBe("/calendar?d=2026-07-31"); // mật khẩu đã bị gỡ khỏi URL
+    expect(res.cookies[PREVIEW_COOKIE]).toBe(accessToken("mat-khau-du-dai"));
+  });
+
+  it("link thần kỳ sai mật khẩu → KHÔNG cookie, rơi xuống trang nhập mật khẩu", () => {
+    const mw = previewBasicAuth(PREVIEW_ENV)!;
+    const { req, res, next } = fakeReqRes(undefined, "/", undefined, "text/html");
+    (req as { originalUrl: string }).originalUrl = "/?xem=sai-be-bet";
+    mw(req, res, next);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.cookies[PREVIEW_COOKIE]).toBeUndefined();
+    expect(String(res.body)).toContain('name="password"');
   });
 
   it("user mặc định là 'amazing' khi không đặt PREVIEW_BASIC_AUTH_USER", () => {

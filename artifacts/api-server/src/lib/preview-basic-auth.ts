@@ -40,6 +40,15 @@ export const PREVIEW_COOKIE = "amazing_preview_access";
 /** Path nhận form nhập mật khẩu (chỉ tồn tại trong preview, xử lý ngay trong middleware này). */
 export const PREVIEW_LOGIN_PATH = "/__preview-login";
 
+/**
+ * Tham số "link thần kỳ": mở `/?xem=<mật khẩu>` là được cấp cookie và vào thẳng,
+ * không phải gõ gì (chủ studio mở trên iPhone hay nhầm giữa 2 loại mật khẩu).
+ * An toàn: pino logger cắt query khỏi log (serializer chỉ giữ path), và sau khi
+ * nhận cookie server redirect về URL SẠCH nên mật khẩu không nằm lại trên thanh
+ * địa chỉ. TUYỆT ĐỐI không dán link kèm mật khẩu vào PR comment (repo public).
+ */
+export const PREVIEW_MAGIC_PARAM = "xem";
+
 /** Hạn cookie: 7 ngày — đủ cho một vòng review, hết hạn thì hỏi lại mật khẩu. */
 const COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -236,6 +245,19 @@ export function previewBasicAuth(env: EnvLike = process.env): RequestHandler | n
     //    /api sau khi frontend đã chiếm header Authorization cho Bearer token).
     const cookie = readCookie(req.headers.cookie, PREVIEW_COOKIE);
     if (cookie && safeEqual(cookie, token)) return next();
+
+    // 1b) "Link thần kỳ": GET có ?xem=<mật khẩu đúng> → cấp cookie, redirect về
+    //     URL SẠCH (không còn mật khẩu trên thanh địa chỉ). Sai → rơi xuống form.
+    if (req.method === "GET") {
+      const parsed = new URL(req.originalUrl, "http://preview.local");
+      const magic = parsed.searchParams.get(PREVIEW_MAGIC_PARAM);
+      if (magic !== null && safeEqual(magic, expected.pass)) {
+        issueCookie();
+        parsed.searchParams.delete(PREVIEW_MAGIC_PARAM);
+        res.redirect(303, sanitizeNext(parsed.pathname + parsed.search));
+        return;
+      }
+    }
 
     // 2) Chưa có cookie → vẫn chấp nhận Basic Auth (curl/CI) và cấp cookie.
     if (credentialsMatch(parseBasicAuthHeader(req.headers.authorization), expected)) {

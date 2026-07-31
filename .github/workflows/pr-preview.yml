@@ -58,14 +58,15 @@ jobs:
         run: |
           set -o pipefail
           pnpm --filter @workspace/api-server test 2>&1 | tee api-test.log
-          echo "count=$(grep -oE 'Tests +[0-9]+ passed' api-test.log | grep -oE '[0-9]+' | head -1)" >> "$GITHUB_OUTPUT"
+          # vitest in kèm mã màu ANSI → gỡ màu rồi mới bóc số.
+          echo "count=$(sed 's/\x1b\[[0-9;]*m//g' api-test.log | grep -oE 'Tests +[0-9]+ passed' | grep -oE '[0-9]+' | head -1)" >> "$GITHUB_OUTPUT"
 
       - name: TEST — Giao diện (vitest)
         id: test_web
         run: |
           set -o pipefail
           pnpm --filter @workspace/amazing-studio test 2>&1 | tee web-test.log
-          echo "count=$(grep -oE 'Tests +[0-9]+ passed' web-test.log | grep -oE '[0-9]+' | head -1)" >> "$GITHUB_OUTPUT"
+          echo "count=$(sed 's/\x1b\[[0-9;]*m//g' web-test.log | grep -oE 'Tests +[0-9]+ passed' | grep -oE '[0-9]+' | head -1)" >> "$GITHUB_OUTPUT"
 
       - name: BUILD — api-server + giao diện (có chạy deploy-guard)
         run: pnpm run build:deploy
@@ -204,6 +205,8 @@ jobs:
               lines.push(`👉 [Bấm xem log lỗi](${run})`);
               lines.push('');
               lines.push('**ĐỪNG MERGE.**');
+              lines.push('');
+              lines.push('<sub>Nếu Fly.io/Neon/GitHub Secrets chưa cấu hình xong thì đây là chuyện bình thường — xem `docs/PREVIEW-PR.md`, phần “Cài đặt một lần”.</sub>');
             }
 
             if (TS_ERRORS && TS_ERRORS !== '0') {

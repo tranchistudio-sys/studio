@@ -204,7 +204,7 @@ jobs:
               lines.push('');
               lines.push(`### 🔗 [OPEN PREVIEW APP](${URL})`);
               lines.push('');
-              lines.push('> Mở link bằng iPhone. Trình duyệt sẽ hỏi mật khẩu xem thử một lần.');
+              lines.push('> Mở link bằng iPhone. Trang sẽ hỏi mật khẩu xem thử một lần (mở bằng trình duyệt nào cũng được).');
               lines.push('> Dữ liệu trong bản xem thử **đã che tên/SĐT/email khách** và **không nối vào database production**.');
             } else if (PREVIEW === 'skipped') {
               lines.push('⛔ **CHƯA DỰNG ĐƯỢC BẢN XEM THỬ** — vì BUILD/TEST chưa xanh.');

@@ -5,10 +5,15 @@ import {
   credentialsMatch,
   isExemptPath,
   parseBasicAuthHeader,
+  parseLoginForm,
   previewBasicAuth,
   PREVIEW_COOKIE,
+  PREVIEW_LOGIN_PATH,
   readCookie,
+  renderLoginPage,
   safeEqual,
+  sanitizeNext,
+  wantsHtml,
 } from "./preview-basic-auth.js";
 
 const PREVIEW_ENV = {
@@ -17,11 +22,13 @@ const PREVIEW_ENV = {
   PREVIEW_BASIC_AUTH_PASS: "mat-khau-du-dai",
 };
 
-function fakeReqRes(headerValue?: string, path = "/calendar", cookieHeader?: string) {
+function fakeReqRes(headerValue?: string, path = "/calendar", cookieHeader?: string, accept?: string) {
   const req = {
     path,
+    method: "GET",
+    originalUrl: path,
     protocol: "https",
-    headers: { authorization: headerValue, cookie: cookieHeader },
+    headers: { authorization: headerValue, cookie: cookieHeader, accept },
   } as unknown as Request;
   const res = {
     statusCode: 200,
@@ -62,13 +69,30 @@ describe("previewBasicAuth — production KHÔNG bao giờ có middleware này",
 });
 
 describe("previewBasicAuth — chặn/cho qua", () => {
-  it("không có header → 401 kèm WWW-Authenticate", () => {
+  it("không có header, không phải trình duyệt (curl/API) → 401 kèm WWW-Authenticate", () => {
     const mw = previewBasicAuth(PREVIEW_ENV)!;
     const { req, res, next } = fakeReqRes(undefined);
     mw(req, res, next);
     expect(next).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(401);
     expect(res.headers["WWW-Authenticate"]).toMatch(/^Basic realm=/);
+  });
+
+  // In-app browser trên iPhone KHÔNG hiện hộp Basic Auth → phải trả trang HTML
+  // nhập mật khẩu, tuyệt đối không dựa vào hộp của trình duyệt (lỗi màn hình
+  // trắng đã gặp thật 31/07).
+  it("trình duyệt mở trang (Accept: text/html) → TRANG NHẬP MẬT KHẨU, không có WWW-Authenticate", () => {
+    const mw = previewBasicAuth(PREVIEW_ENV)!;
+    const { req, res, next } = fakeReqRes(undefined, "/calendar", undefined, "text/html,application/xhtml+xml");
+    mw(req, res, next);
+    expect(next).not.toHaveBeenCalled();
+    // 200 chứ không phải 401: webview nhúng nào cũng render chắc chắn.
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["WWW-Authenticate"]).toBeUndefined();
+    expect(String(res.body)).toContain(`action="${PREVIEW_LOGIN_PATH}"`);
+    expect(String(res.body)).toContain('name="password"');
+    // Quay về đúng trang đang mở sau khi nhập mật khẩu.
+    expect(String(res.body)).toContain('value="/calendar"');
   });
 
   it("đúng user + mật khẩu → đi tiếp", () => {
@@ -188,5 +212,39 @@ describe("hàm phụ trợ", () => {
   it("accessToken khác nhau theo từng mật khẩu", () => {
     expect(accessToken("mat-khau-1")).not.toBe(accessToken("mat-khau-2"));
     expect(accessToken("mat-khau-1")).toBe(accessToken("mat-khau-1"));
+  });
+
+  it("wantsHtml — chỉ GET có Accept text/html mới là điều hướng trình duyệt", () => {
+    expect(wantsHtml("GET", "text/html,application/xhtml+xml")).toBe(true);
+    expect(wantsHtml("GET", "*/*")).toBe(false); // curl mặc định
+    expect(wantsHtml("GET", undefined)).toBe(false);
+    expect(wantsHtml("POST", "text/html")).toBe(false);
+  });
+
+  it("sanitizeNext — chặn open-redirect, chỉ cho path nội bộ", () => {
+    expect(sanitizeNext("/calendar?d=2026-07-31")).toBe("/calendar?d=2026-07-31");
+    expect(sanitizeNext("//ke-xau.com/lua-dao")).toBe("/");
+    expect(sanitizeNext("https://ke-xau.com")).toBe("/");
+    expect(sanitizeNext(undefined)).toBe("/");
+    expect(sanitizeNext("")).toBe("/");
+  });
+
+  it("parseLoginForm — đọc đúng password + next từ body form", () => {
+    expect(parseLoginForm("password=mat-khau-du-dai&next=%2Fcalendar")).toEqual({
+      password: "mat-khau-du-dai",
+      next: "/calendar",
+    });
+    expect(parseLoginForm("")).toEqual({ password: "", next: "/" });
+    expect(parseLoginForm("next=//ke-xau.com")).toEqual({ password: "", next: "/" });
+  });
+
+  it("renderLoginPage — escape giá trị next, có báo lỗi khi sai mật khẩu", () => {
+    const ok = renderLoginPage("/calendar");
+    expect(ok).toContain('value="/calendar"');
+    expect(ok).not.toContain("chưa đúng");
+    const bad = renderLoginPage('/x" onmouseover="alert(1)', true);
+    expect(bad).toContain("&quot;"); // đã escape dấu nháy
+    expect(bad).not.toContain('"/x" onmouseover'); // không chèn được attribute
+    expect(bad).toContain("chưa đúng");
   });
 });

@@ -48,6 +48,13 @@ Màn Replit Publishing hiện "Development database changes detected" và sinh m
 - `SKIP_STARTUP_MIGRATIONS=1` — giữ nguyên (tắt DDL startup trên prod).
 - KHÔNG đặt `ALLOW_STARTUP_DDL_IN_PRODUCTION` / `ALLOW_DB_PUSH` trừ khi chủ chủ động migrate.
 
+## Bản xem thử theo PR KHÔNG liên quan tới quy trình này
+Từ 31/07/2026 mỗi PR có một bản chạy thử riêng trên Fly.io (xem [PREVIEW-PR.md](PREVIEW-PR.md)).
+Bản đó dùng **database riêng trên Neon**, có `PREVIEW_MODE=1`, và **không đụng gì** tới
+Replit: không Republish, không migration prod, không đổi `SKIP_STARTUP_MIGRATIONS=1`
+của Deployment env. Bảng `preview_db_marker` chỉ tồn tại trong database preview nên
+màn "Database migrations" của Replit không bị ảnh hưởng.
+
 ## Quy tắc sắt
 - Màn migration còn DROP → Cancel. Không có ngoại lệ.
 - Cấm `drizzle-kit push` thủ công (kể cả dev) khi chưa hiểu diff — bảng runtime-managed

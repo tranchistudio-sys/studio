@@ -1,6 +1,11 @@
+// PHẢI là import ĐẦU TIÊN: chốt an toàn cho bản preview theo PR phải chạy trước
+// khi ./app (và các route đọc env lúc import) được nạp. No-op khi không phải preview.
+import "./preview-boot";
 import app from "./app";
 import { logger } from "./lib/logger";
 import runMigrations from "./migrations";
+import { assertPreviewDatabaseMarker } from "./lib/preview-db-marker";
+import { PreviewGuardError } from "./lib/preview-guard";
 
 // Validate OpenAI integration on startup
 if (!process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"]) {
@@ -10,9 +15,16 @@ if (!process.env["AI_INTEGRATIONS_OPENAI_BASE_URL"]) {
 const rawPort = Number(process.env.PORT);
 const port = Number.isInteger(rawPort) && rawPort > 0 ? rawPort : 3000;
 
-runMigrations()
+// Preview: xác thực chính DATABASE có dấu hiệu "database preview" TRƯỚC mọi DDL.
+// Production: hàm này trả về ngay, không chạm database.
+assertPreviewDatabaseMarker()
+  .then(() => runMigrations())
   .catch((err) => {
-    logger.error({ err }, "Migration failed, aborting startup");
+    if (err instanceof PreviewGuardError) {
+      logger.error({ err }, `[preview-guard] ${err.message}`);
+    } else {
+      logger.error({ err }, "Migration failed, aborting startup");
+    }
     process.exit(1);
   })
   .then(() => {

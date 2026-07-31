@@ -3,3 +3,10 @@
 
 # No need to store the pnpm store twice.
 .local
+
+# Hạ tầng BẢN XEM THỬ theo PR (chạy trên GitHub Actions + Fly.io).
+# Production của Replit không cần và không dùng những file này.
+.github
+Dockerfile
+.dockerignore
+fly.toml

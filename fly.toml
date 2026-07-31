@@ -1,0 +1,52 @@
+# fly.toml — cấu hình BẢN XEM THỬ theo Pull Request.
+#
+# Tên app ở đây chỉ là mặc định; workflow .github/workflows/pr-preview.yml luôn
+# truyền --app pr-<số PR>-amazing-studio nên MỖI PR CÓ MỘT APP RIÊNG, URL riêng,
+# và bị xoá hẳn khi PR đóng.
+#
+# Production KHÔNG dùng file này (production vẫn ở Replit).
+
+app = "amazing-studio-preview"
+primary_region = "sin"   # Singapore — gần Việt Nam nhất
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  NODE_ENV = "production"
+  # Bật toàn bộ chốt an toàn preview (xem artifacts/api-server/src/lib/preview-guard.ts).
+  PREVIEW_MODE = "1"
+  # Ảnh thiếu trong container → tải từ website công khai của studio (GET read-only,
+  # xem preview-object-fallback.ts). Host phải nằm trong PREVIEW_NET_ALLOW vì
+  # preview-net-guard mặc định CẤM mọi kết nối ra ngoài.
+  PREVIEW_OBJECT_FALLBACK_BASE = "https://tranchistudio.com"
+  PREVIEW_NET_ALLOW = "tranchistudio.com"
+
+# Các giá trị nhạy cảm (DATABASE_URL preview, SESSION_SECRET, mật khẩu xem thử,
+# allowlist database) KHÔNG nằm trong file này — workflow nạp bằng `flyctl secrets set`.
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # MÁY CHẠY THƯỜNG TRỰC — cố ý KHÔNG cho tự ngủ. Bài học 31/07 (mất nguyên buổi
+  # tối): "stop" → mở link lúc máy ngủ bị 503 body rỗng = màn hình trắng;
+  # "suspend" → máy đóng băng giữ nguyên kết nối Postgres sang Neon, phiên ma ôm
+  # khoá advisory làm boot sau KẸT VÔ HẠN giữa migration, deploy flap timeout.
+  # Giá của ổn định: ~$5.7/tháng cho MỖI PR đang mở (shared-cpu-1x 1GB), app bị
+  # xoá hẳn khi đóng PR nên PR sống vài ngày chỉ tốn vài nghìn đồng.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  # CỐ Ý KHÔNG có [[http_service.checks]] — bài học 31/07: máy tự ngủ (auto_stop)
+  # trong lúc flyctl đang chờ health check → trạng thái khoẻ/ốm nhấp nháy →
+  # deploy timeout vĩnh viễn. App xem thử 1 máy không cần Fly tự giám sát;
+  # workflow CI đã tự curl /api/healthz qua proxy (lời gọi đó đánh thức máy)
+  # để xác nhận sống thật trước khi báo PREVIEW READY.
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+  cpus = 1

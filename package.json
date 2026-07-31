@@ -11,10 +11,13 @@
     "build:deploy": "pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/amazing-studio run build",
     "deploy:guard": "node scripts/deploy-guard.mjs",
     "build:ci": "pnpm run typecheck && pnpm -r --if-present run build",
+    "test": "pnpm -r --if-present run test",
+    "preview:seed": "node scripts/seed-preview-db.mjs",
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck"
   },
   "private": true,
+  "packageManager": "pnpm@10.34.5",
   "devDependencies": {
     "typescript": "~5.9.2",
     "prettier": "^3.8.1"

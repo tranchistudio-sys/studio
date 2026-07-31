@@ -1,0 +1,34 @@
+# Những thứ KHÔNG cần đưa vào image bản xem thử (giảm dung lượng + thời gian build).
+# Lưu ý: KHÔNG loại artifacts/data/object-storage — đó là ảnh thật của studio,
+# cần có để bản xem thử hiển thị giống production.
+
+.git
+.github
+node_modules
+**/node_modules
+
+# Bản build cũ trên máy — image tự build lại từ đầu.
+**/dist
+artifacts/*/dist
+
+# Bản sao lưu / dữ liệu nặng không liên quan tới việc chạy app.
+*.tar.gz
+*.dump
+*.sql
+screenshots
+exports
+attached_assets/*.zip
+
+# Bản sao thứ hai của kho ảnh (bản dist chỉ đọc artifacts/data/object-storage).
+artifacts/api-server/data
+
+# Bí mật + cấu hình máy cá nhân — TUYỆT ĐỐI không lọt vào image.
+.env
+.env.*
+!.env.example
+
+# Công cụ chỉ dùng ở máy dev.
+.claude
+.canvas
+.agents
+.cursorignore

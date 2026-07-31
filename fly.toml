@@ -34,14 +34,11 @@ primary_region = "sin"   # Singapore — gần Việt Nam nhất
   min_machines_running = 0
   processes = ["app"]
 
-  [[http_service.checks]]
-    # Lần khởi động đầu chạy migration lên Neon; Neon free tier còn phải "thức dậy"
-    # sau khi ngủ → cho app nhiều thời gian hơn trước khi tính là hỏng.
-    grace_period = "120s"
-    interval = "30s"
-    method = "GET"
-    timeout = "10s"
-    path = "/api/healthz"
+  # CỐ Ý KHÔNG có [[http_service.checks]] — bài học 31/07: máy tự ngủ (auto_stop)
+  # trong lúc flyctl đang chờ health check → trạng thái khoẻ/ốm nhấp nháy →
+  # deploy timeout vĩnh viễn. App xem thử 1 máy không cần Fly tự giám sát;
+  # workflow CI đã tự curl /api/healthz qua proxy (lời gọi đó đánh thức máy)
+  # để xác nhận sống thật trước khi báo PREVIEW READY.
 
 [[vm]]
   size = "shared-cpu-1x"

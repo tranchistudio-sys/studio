@@ -10,6 +10,7 @@ import {
   readLocalObject,
   localObjectExists,
 } from "../lib/localObjectStorage";
+import { readLocalObjectWithPreviewFallback } from "../lib/preview-object-fallback";
 import { ObjectPermission } from "../lib/objectAcl";
 
 const RequestUploadUrlBody = z.object({
@@ -150,14 +151,14 @@ router.get("/storage/cms/objects/*path", async (req: Request, res: Response) => 
     const objectPath = `/objects/${wildcardPath}`;
 
     if (useLocalObjectStorage()) {
-      if (await localObjectExists(objectPath)) {
-        const local = await readLocalObject(objectPath);
-        if (local) {
-          res.setHeader("Content-Type", local.contentType);
-          res.setHeader("Cache-Control", CMS_PUBLIC_IMAGE_CACHE);
-          res.send(local.body);
-          return;
-        }
+      // Preview theo PR: file thiếu trên đĩa → tự lấy đúng ảnh đó từ website
+      // công khai của studio (GET read-only, xem preview-object-fallback.ts).
+      const local = await readLocalObjectWithPreviewFallback(objectPath);
+      if (local) {
+        res.setHeader("Content-Type", local.contentType);
+        res.setHeader("Cache-Control", CMS_PUBLIC_IMAGE_CACHE);
+        res.send(local.body);
+        return;
       }
       res.status(404).json({ error: "Object not found" });
       return;
@@ -201,14 +202,13 @@ router.get("/storage/objects/*path", async (req: Request, res: Response) => {
     const objectPath = `/objects/${wildcardPath}`;
 
     if (useLocalObjectStorage()) {
-      if (await localObjectExists(objectPath)) {
-        const local = await readLocalObject(objectPath);
-        if (local) {
-          res.setHeader("Content-Type", local.contentType);
-          res.setHeader("Cache-Control", "public, max-age=3600");
-          res.send(local.body);
-          return;
-        }
+      // Preview theo PR: file thiếu → fallback website studio (read-only).
+      const local = await readLocalObjectWithPreviewFallback(objectPath);
+      if (local) {
+        res.setHeader("Content-Type", local.contentType);
+        res.setHeader("Cache-Control", "public, max-age=3600");
+        res.send(local.body);
+        return;
       }
       res.status(404).json({ error: "Object not found" });
       return;

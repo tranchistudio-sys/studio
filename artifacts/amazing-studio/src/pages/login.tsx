@@ -98,6 +98,13 @@ export default function LoginPage({ onLogin }: Props) {
                 onChange={e => setPhone(e.target.value)}
                 required
                 autoFocus
+                /* Bàn phím iPhone tự viết hoa chữ đầu → "Tranchi" ≠ "tranchi" (so sánh
+                   đúng chữ hoa/thường ở backend) → đăng nhập fail oan trên điện thoại.
+                   Tắt hẳn viết hoa + tự sửa từ cho ô tài khoản. */
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                autoComplete="username"
                 className="w-full h-11 px-4 rounded-xl border border-input bg-background/50 text-sm focus:outline-none focus:ring-2 focus:ring-rose-400/50 focus:border-rose-400 transition-all placeholder:text-muted-foreground/60"
               />
             </div>

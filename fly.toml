@@ -17,6 +17,11 @@ primary_region = "sin"   # Singapore — gần Việt Nam nhất
   NODE_ENV = "production"
   # Bật toàn bộ chốt an toàn preview (xem artifacts/api-server/src/lib/preview-guard.ts).
   PREVIEW_MODE = "1"
+  # Ảnh thiếu trong container → tải từ website công khai của studio (GET read-only,
+  # xem preview-object-fallback.ts). Host phải nằm trong PREVIEW_NET_ALLOW vì
+  # preview-net-guard mặc định CẤM mọi kết nối ra ngoài.
+  PREVIEW_OBJECT_FALLBACK_BASE = "https://tranchistudio.com"
+  PREVIEW_NET_ALLOW = "tranchistudio.com"
 
 # Các giá trị nhạy cảm (DATABASE_URL preview, SESSION_SECRET, mật khẩu xem thử,
 # allowlist database) KHÔNG nằm trong file này — workflow nạp bằng `flyctl secrets set`.

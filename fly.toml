@@ -25,7 +25,11 @@ primary_region = "sin"   # Singapore — gần Việt Nam nhất
   internal_port = 8080
   force_https = true
   # Không ai dùng thì máy tự ngủ → gần như không tốn tiền; có người mở link thì tự dậy.
-  auto_stop_machines = "stop"
+  # "suspend" (ngủ đông, giữ RAM) chứ KHÔNG phải "stop": stop = tắt hẳn, lần mở sau
+  # phải boot lại từ đầu (node + migration + chờ Neon thức) mất 15-30s → Fly proxy
+  # hết kiên nhẫn, trả 503 body rỗng → người dùng thấy MÀN HÌNH TRẮNG (lỗi thật
+  # 31/07, ảnh chụp iPhone của chủ). Suspend thức dậy trong ~1 giây, không boot lại.
+  auto_stop_machines = "suspend"
   auto_start_machines = true
   min_machines_running = 0
   processes = ["app"]

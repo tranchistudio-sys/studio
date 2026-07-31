@@ -136,7 +136,10 @@ jobs:
       - name: Dựng bản xem thử
         id: deploy
         run: |
-          flyctl deploy --app "$FLY_APP" --config fly.toml --remote-only --ha=false --wait-timeout 300
+          # flyctl thỉnh thoảng đứt kết nối tới api.machines.dev giữa chừng ("gave up
+          # after 15 attempts", 31/07) làm deploy fail dù app đã lên — thử lại 1 lần.
+          deploy() { flyctl deploy --app "$FLY_APP" --config fly.toml --remote-only --ha=false --wait-timeout 300; }
+          deploy || { echo "::warning::flyctl deploy lỗi lần 1 (thường do mạng thoáng qua) — thử lại sau 20 giây"; sleep 20; deploy; }
           echo "url=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
 
       # Khi deploy hỏng: in log khởi động của máy để thấy NGAY nguyên nhân trong CI,

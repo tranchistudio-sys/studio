@@ -136,8 +136,18 @@ jobs:
       - name: Dựng bản xem thử
         id: deploy
         run: |
-          flyctl deploy --app "$FLY_APP" --config fly.toml --remote-only --ha=false
+          flyctl deploy --app "$FLY_APP" --config fly.toml --remote-only --ha=false --wait-timeout 300
           echo "url=$PREVIEW_URL" >> "$GITHUB_OUTPUT"
+
+      # Khi deploy hỏng: in log khởi động của máy để thấy NGAY nguyên nhân trong CI,
+      # không phải mò vào dashboard Fly.
+      - name: Log máy chủ khi deploy hỏng
+        if: failure()
+        run: |
+          echo "===== TRẠNG THÁI MÁY ====="
+          flyctl status --app "$FLY_APP" || true
+          echo "===== LOG KHỞI ĐỘNG (120 dòng cuối) ====="
+          flyctl logs --app "$FLY_APP" --no-tail 2>/dev/null | tail -120 || true
 
       # Bằng chứng bản xem thử THỰC SỰ chạy: gọi /api/healthz (path này được miễn
       # mật khẩu). Nếu chốt an toàn chặn khởi động (DB sai allowlist…) thì app không

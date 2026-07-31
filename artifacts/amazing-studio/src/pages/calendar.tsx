@@ -43,6 +43,7 @@ import { SurchargeEditor, type SurchargeItem } from "@/components/surcharge-edit
 import { DeductionEditor, type DeductionItem } from "@/components/deduction-editor";
 import { StaffAssignmentEditor, type StaffAssignment, newStaffAssignment } from "@/components/staff-assignment-editor";
 import { castAmountFromResult, lookupCastByPkg, resolveCastAmount } from "@/lib/resolve-cast";
+import { pickReturnDate, isoDateOrNull, type ShowOrigin } from "@/lib/calendar-nav-context";
 import { collectCrew, crewDetailLines, crewCompactLine, crewFlags, canonicalRole, type CrewGroup } from "@/lib/crew-display";
 import { reflowDescriptionLines, firstDescriptionLine, parseDescriptionBlocks } from "@/lib/package-description";
 import { buildDressWarningsByDate, type DressWarnRow, type DressWarnChip } from "@/lib/dress-warnings";
@@ -1348,14 +1349,20 @@ const ALLOWANCE_TYPE_LABELS: Record<string, string> = {
 // ─── Show form (create / edit booking) ────────────────────────────────────────
 function ShowFormPanel({
   date, initialTime = "07:00", onDateChange, booking, onClose, onSaved, onPromotedToFamily, siblingBookings = [], isAdmin, viewerId,
+  origin = null,
 }: {
   date: Date;
   initialTime?: string;
   onDateChange: (d: Date) => void;
   booking: Booking | null;
   onClose: () => void;
-  /** savedDate (YYYY-MM-DD) = ngày chính vừa lưu — calendar nhảy thẳng tới ngày đó. */
+  /** savedDate (YYYY-MM-DD) = ngày lịch phải quay về sau khi lưu — xem pickReturnDate. */
   onSaved: (savedDate?: string) => void;
+  /**
+   * Show người dùng đã bấm mở (id + ngày). Nhờ nó nhánh lưu hợp đồng gộp bám ĐÚNG dịch vụ
+   * đang sửa thay vì Dịch vụ 1 — xem @/lib/calendar-nav-context. null = tạo mới.
+   */
+  origin?: ShowOrigin | null;
   /** Đơn lẻ vừa được backend nâng thành hợp đồng nhiều dịch vụ → mở lại form ở dạng gia đình. */
   /** parentId = null: đã chuyển xong dưới DB nhưng không tải lại được → phải ĐÓNG form. */
   onPromotedToFamily?: (parentId: number | null) => void | Promise<void>;
@@ -2123,6 +2130,14 @@ function ShowFormPanel({
     if (occConflict) { setError(occConflict); return; }
     const isMulti = subDrafts.length >= 2;
 
+    /**
+     * Ngày lịch quay về sau khi lưu — bám ĐÚNG dịch vụ đang sửa. SỰ CỐ 31/07/2026: chỗ này
+     * từng là `subDrafts[0]?.shootDate` ⇒ sửa Dịch vụ 3 (18/10) xong lịch nhảy về ngày
+     * Dịch vụ 1 (20/09). `fallback` giờ chỉ còn phục vụ luồng TẠO MỚI.
+     */
+    const returnDateAfterSave = (fallback: string) =>
+      pickReturnDate({ origin, drafts: subDrafts, fallback }) ?? fallback;
+
     // ── Giải quyết khách hàng cho show (dùng chung cho cả luồng đơn & hợp đồng gộp) ──
     // Quy tắc chống bug "khách bị quay về khách cũ":
     //  • KHÔNG dùng SĐT placeholder ("0", rỗng...) để tra/merge khách.
@@ -2398,7 +2413,8 @@ function ShowFormPanel({
           });
         }
         orderCreatedFeedback();
-        onSaved(subDrafts[0]?.shootDate || shootDate);
+        // SỬA hợp đồng gộp: về đúng dịch vụ vừa sửa, KHÔNG về Dịch vụ 1.
+        onSaved(returnDateAfterSave(subDrafts[0]?.shootDate || shootDate));
         return;
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : "Lỗi lưu hợp đồng");
@@ -2533,7 +2549,8 @@ function ShowFormPanel({
           setProofWarning("Ảnh cọc chưa lưu được — đơn đã tạo thành công. Bạn có thể đóng form.");
           return;
         }
-        onSaved(subDrafts[0]?.shootDate || shootDate);
+        // TẠO MỚI hợp đồng gộp: chưa có ngữ cảnh cũ ⇒ về ngày dịch vụ đầu vừa tạo (như cũ).
+        onSaved(returnDateAfterSave(subDrafts[0]?.shootDate || shootDate));
         return;
       }
 
@@ -2695,7 +2712,8 @@ function ShowFormPanel({
         setProofWarning("Ảnh cọc chưa lưu được — đơn đã tạo thành công. Bạn có thể đóng form.");
         return;
       }
-      onSaved(effectiveShootDate);
+      // Đơn 1 dịch vụ: ngày của chính nó (form chỉ có 1 dòng nên helper trả về đúng dòng đó).
+      onSaved(returnDateAfterSave(effectiveShootDate));
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Có lỗi, thử lại");
     } finally { setSaving(false); }
@@ -7149,6 +7167,11 @@ function CalendarPageInner() {
   const [showLunar, setShowLunar] = useState(true);
   const [prevCalView, setPrevCalView] = useState<CalView>("month");
   const [highlightedBookingId, setHighlightedBookingId] = useState<number | null>(null);
+  /**
+   * Show người dùng vừa bấm mở: id, ngày, chế độ lịch. Sau khi Lưu show, lịch hạ cánh lại
+   * đúng chỗ này thay vì nhảy về đơn/ngày đầu danh sách (sự cố 31/07/2026).
+   */
+  const [showOrigin, setShowOrigin] = useState<ShowOrigin | null>(null);
 
   const { effectiveIsAdmin, isAdmin: rawIsAdmin, viewMode, setViewMode } = useStaffAuth();
   const isAdmin = effectiveIsAdmin;
@@ -7216,6 +7239,8 @@ function CalendarPageInner() {
       }
     }
     setPrevCalView("month");
+    // Deep-link (thông báo / SmartSearch): ngữ cảnh quay về = chính show đó.
+    setShowOrigin({ bookingId: b.id, dateISO: isoDateOrNull(b.shootDate), view: "month" });
     setViewingBooking(b);
     setCalView("detail");
   }, [bookings, pendingBookingIdFromUrl]);
@@ -7438,6 +7463,7 @@ function CalendarPageInner() {
     setSelectedDate(date);
     setCurrentDate(date);
     setHighlightedBookingId(null);
+    setShowOrigin(null); // đổi ngày = bỏ ngữ cảnh show cũ, không để nó kéo lịch về sau
     setCalView("day");
   }, []);
 
@@ -7446,6 +7472,7 @@ function CalendarPageInner() {
     setSelectedDate(bookingDate);
     setCurrentDate(bookingDate);
     setHighlightedBookingId(b.id);
+    setShowOrigin({ bookingId: b.id, dateISO: isoDateOrNull(b.shootDate), view: "month" });
     setCalView("day");
   }, []);
   // Bấm chip cảnh báo váy → mở đúng đơn (không cần dialog riêng).
@@ -7462,12 +7489,14 @@ function CalendarPageInner() {
     setEditingBooking(null);
     setEditingSiblings([]); // form TẠO MỚI phải sạch — không rớt siblings của đơn xem trước đó
     setViewingBooking(null);
+    setShowOrigin(null);    // ...ngữ cảnh show cũ cũng vậy: tạo mới thì về ngày vừa tạo
     setCalView("form");
   }, []);
 
   // Click event on day → open detail panel
   const handleEventClickFromDay = useCallback((b: Booking) => {
     setPrevCalView("day");
+    setShowOrigin({ bookingId: b.id, dateISO: isoDateOrNull(b.shootDate), view: "day" });
     setViewingBooking(b);
     setSelectedTime(b.shootTime ?? "07:00");
     setCalView("detail");
@@ -7478,6 +7507,16 @@ function CalendarPageInner() {
     setCalView(prevCalView);
     setViewingBooking(null);
   }, [prevCalView]);
+
+  /**
+   * Ngày form chỉnh sửa mở ra = ĐÚNG ngày người dùng đang đứng (showOrigin), KHÔNG phải ngày
+   * hợp đồng cha (= ngày Dịch vụ 1). Mất ngữ cảnh thì mới lùi về ngày cha như hành vi cũ.
+   */
+  const openDateForEdit = useCallback((parent: Booking) => {
+    const clicked = showOrigin?.dateISO;
+    if (clicked) return new Date(`${clicked}T12:00:00`);
+    return parent.shootDate ? new Date(parent.shootDate) : new Date();
+  }, [showOrigin]);
 
   // Detail → edit form (pencil)
   // For merged contracts, parent + siblings are passed in so we route through
@@ -7527,7 +7566,11 @@ function CalendarPageInner() {
     if (parent && sibs && sibs.length > 0) {
       setEditingBooking(parent);
       setEditingSiblings(sibs);
-      const baseDate = parent.shootDate ? new Date(parent.shootDate) : new Date();
+      // SỰ CỐ 31/07/2026: chỗ này từng NHẢY THẲNG về ngày của hợp đồng CHA (= ngày Dịch vụ 1,
+      // ví dụ 20/09) ⇒ ngữ cảnh của người dùng bị xoá NGAY LÚC MỞ form, nên bấm Quay lại (chưa
+      // lưu) cũng đã lạc ngày. Giữ đúng ngày người dùng đang đứng; chỉ khi không có ngữ cảnh
+      // mới lùi về ngày hợp đồng cha như cũ.
+      const baseDate = openDateForEdit(parent);
       setSelectedDate(baseDate);
       setCurrentDate(baseDate);
       setSelectedTime(parent.shootTime ?? "08:00");
@@ -7540,16 +7583,18 @@ function CalendarPageInner() {
       setSelectedTime(single.shootTime ?? "07:00");
     }
     setCalView("form");
-  }, [viewingBooking]);
+  }, [viewingBooking, openDateForEdit]);
 
   const handleEditAllSiblings = useCallback((parent: Booking, sibs: Booking[]) => {
     setEditingBooking(parent);
     setEditingSiblings(sibs);
-    setSelectedDate(new Date(parent.shootDate));
-    setCurrentDate(new Date(parent.shootDate));
+    // Cùng lý do như handleDetailEdit: không kéo lịch về ngày hợp đồng cha.
+    const baseDate = openDateForEdit(parent);
+    setSelectedDate(baseDate);
+    setCurrentDate(baseDate);
     setSelectedTime(parent.shootTime ?? "08:00");
     setCalView("form");
-  }, []);
+  }, [openDateForEdit]);
 
   // Detail → deleted
   const handleDetailDeleteDone = useCallback(() => {
@@ -7577,6 +7622,7 @@ function CalendarPageInner() {
   }, []);
   const handleEventClickFromWeek = useCallback((b: Booking) => {
     setPrevCalView("week");
+    setShowOrigin({ bookingId: b.id, dateISO: isoDateOrNull(b.shootDate), view: "week" });
     setViewingBooking(b);
     setCalView("detail");
   }, []);
@@ -7602,18 +7648,23 @@ function CalendarPageInner() {
     // Sự cố 20/07: chỉ set currentDate là CHƯA ĐỦ — day view render theo
     // selectedDate, thiếu nó thì lịch đứng nguyên NGÀY CŨ dù show đã dời đi
     // (đổi 12 → 27: data đúng nhưng màn hình vẫn chiếu ngày 12).
-    if (savedDate && /^\d{4}-\d{2}-\d{2}$/.test(savedDate)) {
-      const jump = new Date(`${savedDate}T12:00:00`);
-      if (!isNaN(jump.getTime())) {
-        setCurrentDate(jump);
-        setSelectedDate(jump);
-      }
+    //
+    // Sự cố 31/07: `savedDate` từng là ngày Dịch vụ 1 của hợp đồng gộp ⇒ sửa show 18/10 xong
+    // lịch nhảy về 20/09. Nay ngày này đã bám đúng dịch vụ đang sửa (pickReturnDate); còn ở đây
+    // giữ thêm CHẾ ĐỘ LỊCH lúc mở show và tô sáng đúng show vừa lưu.
+    // Phao: ngày vừa lưu → ngày đã mở show. Không bao giờ lấy show đầu danh sách.
+    const dateISO = isoDateOrNull(savedDate) ?? showOrigin?.dateISO ?? null;
+    if (dateISO) {
+      const jump = new Date(`${dateISO}T12:00:00`);
+      setCurrentDate(jump);
+      setSelectedDate(jump);
     }
-    setCalView("day");
+    setHighlightedBookingId(showOrigin?.bookingId ?? null);
+    setCalView(showOrigin?.view ?? "day");
     setEditingBooking(null);
     setEditingSiblings([]);
     setViewingBooking(null);
-  }, []);
+  }, [showOrigin]);
 
   const prevMonth = () => setCurrentDate(subMonths(currentDate, 1));
   const nextMonth = () => setCurrentDate(addMonths(currentDate, 1));
@@ -7677,6 +7728,7 @@ function CalendarPageInner() {
           booking={editingBooking}
           onClose={editingBooking && viewingBooking ? () => { setCalView("detail"); setEditingBooking(null); } : handleBackToDay}
           onSaved={handleFormSaved}
+          origin={showOrigin}
           onPromotedToFamily={handlePromotedToFamily}
           siblingBookings={[...editingSiblings].sort((a, b) => {
             const sA = parseInt((a.orderCode || "").split("-").pop() || "0") || 0;

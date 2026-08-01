@@ -113,7 +113,22 @@ async function normalizeBookingItemsCast(
   opts?: { allowManual?: boolean; prevManual?: Map<string, number[]> },
 ): Promise<unknown[]> {
   const normalized = await normalizeItemsAssignedStaffCast(rawItems, bookingPackageId, opts);
-  return normalizeItemStaff(normalized);
+  return normalizeItemStaffLock(normalizeItemStaff(normalized));
+}
+
+// ─── Cờ "Đã đủ nhân sự" theo TỪNG dịch vụ (items[].staffLocked) ───────────────
+// Xác nhận thủ công của người dùng: dịch vụ không cần studio cử người (khách chỉ
+// thuê váy / tự lo photographer-makeup / chỉ giữ ngày). Lịch đọc cờ này để không
+// báo "Chưa giao việc" oan. CHỈ chấp nhận boolean thật — mọi giá trị lạ ("true",
+// 1, null…) đều quy về false để JSONB không chứa rác và logic lịch không đoán mò.
+// Cờ VẮNG MẶT thì không ghi thêm gì → show cũ giữ nguyên hành vi hiện tại.
+export function normalizeItemStaffLock(rawItems: unknown[]): unknown[] {
+  return rawItems.map((item) => {
+    if (!item || typeof item !== "object") return item;
+    const rec = item as Record<string, unknown>;
+    if (!Object.prototype.hasOwnProperty.call(rec, "staffLocked")) return rec;
+    return { ...rec, staffLocked: rec.staffLocked === true };
+  });
 }
 
 function normalizeItemStaff(rawItems: unknown): unknown[] {
@@ -1797,6 +1812,38 @@ router.put("/bookings/:id", async (req, res) => {
         summarizeItemsForLog(oldBooking.items, fmtVND),
         summarizeItemsForLog(newItems, fmtVND),
       );
+    }
+
+    // Khoá/mở khoá "Đã đủ nhân sự" theo từng dịch vụ — phải để lại dấu vết vì nó
+    // tắt/bật cảnh báo "Chưa giao việc" trên lịch (ai xác nhận, dịch vụ nào).
+    if (items !== undefined) {
+      const lockMap = (its: unknown): Map<string, { name: string; locked: boolean }> => {
+        const m = new Map<string, { name: string; locked: boolean }>();
+        if (!Array.isArray(its)) return m;
+        (its as Record<string, unknown>[]).forEach((it, idx) => {
+          if (!it || typeof it !== "object") return;
+          const name =
+            String(it.serviceName ?? "").trim() ||
+            String(it.title ?? "").trim() ||
+            `Dịch vụ ${idx + 1}`;
+          m.set(`${idx}`, { name, locked: it.staffLocked === true });
+        });
+        return m;
+      };
+      const oldLocks = lockMap(oldBooking.items);
+      const newLocks = lockMap(newItems);
+      for (const [key, nv] of newLocks) {
+        const wasLocked = oldLocks.get(key)?.locked ?? false;
+        if (nv.locked === wasLocked) continue;
+        changes.push({
+          field: `staff_lock_${key}`,
+          label: nv.locked
+            ? `xác nhận đủ nhân sự cho ${nv.name}`
+            : `mở lại phân công nhân sự cho ${nv.name}`,
+          oldDisplay: wasLocked ? "Đã đủ nhân sự" : "Chưa xác nhận",
+          newDisplay: nv.locked ? "Đã đủ nhân sự" : "Chưa xác nhận",
+        });
+      }
     }
 
     // Giá tay: ghi lịch sử khi admin đổi lương tay của nhân sự (minh bạch tiền bạc)

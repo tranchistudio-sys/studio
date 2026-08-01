@@ -34,7 +34,7 @@ vi.mock("drizzle-orm", () => ({
   lte: vi.fn(),
 }));
 
-import { sanitizeDeductions } from "./bookings.js";
+import { sanitizeDeductions, normalizeItemStaffLock } from "./bookings.js";
 import { sanitizeAdditionalServices, validateAdditionalServices } from "@workspace/db/additional-services";
 import { assertAdditionalServicesValid, AdditionalServicesValidationError } from "../lib/additional-services.js";
 
@@ -145,5 +145,40 @@ describe("sumActivePayments logic", () => {
       .filter((p) => (p.status ?? "active") !== "voided")
       .reduce((s, p) => s + parseFloat(p.amount), 0);
     expect(paid).toBe(1000000);
+  });
+});
+
+// ── normalizeItemStaffLock (cờ "Đã đủ nhân sự" theo từng dịch vụ) ─────────────
+
+describe("normalizeItemStaffLock", () => {
+  it("giữ nguyên item cũ KHÔNG có cờ — show cũ không tự thành 'đã đủ nhân sự'", () => {
+    const items = [{ serviceName: "Chụp tiệc", assignedStaff: [] }];
+    expect(normalizeItemStaffLock(items)).toEqual(items);
+    expect(Object.prototype.hasOwnProperty.call(normalizeItemStaffLock(items)[0] as object, "staffLocked")).toBe(false);
+  });
+
+  it("chỉ boolean true mới được lưu là đã khoá; giá trị rác quy về false", () => {
+    const out = normalizeItemStaffLock([
+      { serviceName: "A", staffLocked: true },
+      { serviceName: "B", staffLocked: false },
+      { serviceName: "C", staffLocked: "true" },
+      { serviceName: "D", staffLocked: 1 },
+      { serviceName: "E", staffLocked: null },
+    ]) as { serviceName: string; staffLocked: unknown }[];
+    expect(out.map(i => i.staffLocked)).toEqual([true, false, false, false, false]);
+  });
+
+  it("không đụng tới nhân sự/giá của dòng dịch vụ", () => {
+    const staff = [{ role: "photographer", staffId: 1, staffName: "TranChi", castAmount: 500000 }];
+    const out = normalizeItemStaffLock([
+      { serviceName: "Chụp cổng", price: 3900000, assignedStaff: staff, staffLocked: true },
+    ]) as Record<string, unknown>[];
+    expect(out[0].assignedStaff).toEqual(staff);
+    expect(out[0].price).toBe(3900000);
+    expect(out[0].staffLocked).toBe(true);
+  });
+
+  it("phần tử không phải object thì trả nguyên vẹn (không crash)", () => {
+    expect(normalizeItemStaffLock([null, "x", 3])).toEqual([null, "x", 3]);
   });
 });

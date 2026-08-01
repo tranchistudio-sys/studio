@@ -1,4 +1,4 @@
-import { Check, Pencil, Plus, Trash2, X } from "lucide-react";
+import { Check, Lock, LockOpen, Pencil, Plus, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { cn } from "@/lib/utils";
@@ -76,7 +76,16 @@ interface StaffAssignmentEditorProps {
   /** Cho phép bấm vào ô giá để nhập GIÁ TAY (đè bảng cast). CHỈ bật cho admin —
    *  server cũng tự chặn nếu người lưu không phải admin. */
   canManualPrice?: boolean;
+  // ── Khoá "Đã đủ nhân sự" cho DÒNG DỊCH VỤ (chỉ form Tạo/Sửa show) ──────────
+  /** Hiện nút ổ khoá ở tiêu đề. Tắt ở các màn không gắn với 1 dịch vụ (vd Giao việc). */
+  lockable?: boolean;
+  /** Trạng thái khoá hiện tại của dịch vụ (đọc từ items[].staffLocked). */
+  locked?: boolean;
+  /** Bấm khoá/mở khoá. Không truyền = chỉ xem trạng thái, không đổi được. */
+  onLockedChange?: (locked: boolean) => void;
 }
+
+export const STAFF_LOCK_HINT = "Dịch vụ đã được xác nhận đủ nhân sự. Mở khóa để chỉnh sửa.";
 
 export function StaffAssignmentEditor({
   // Item legacy (nhập qua API/import) có thể THIẾU hẳn key assignedStaff —
@@ -93,7 +102,14 @@ export function StaffAssignmentEditor({
   serviceBookingId = null,
   allowances = [],
   canManualPrice = false,
+  lockable = false,
+  locked = false,
+  onLockedChange,
 }: StaffAssignmentEditorProps) {
+  // Khoá = KHÔNG cho thêm/sửa/xoá nhân sự. Dữ liệu nhân sự đã có GIỮ NGUYÊN,
+  // tuyệt đối không tự xoá dòng nào (mở khoá là chỉnh lại được ngay).
+  const isLocked = lockable && locked;
+  const canToggleLock = lockable && !!onLockedChange;
   const [dupError, setDupError] = useState<string | null>(null);
   // Re-resolve cast when packageId / baseJobType loads after staff was picked first.
   useEffect(() => {
@@ -189,6 +205,7 @@ export function StaffAssignmentEditor({
   // Server persist manual vào job-earnings (trừ sale/photoshop có đường tiền riêng)
   // và lương realtime đọc thẳng castAmount manual — các màn hình cùng 1 số.
   const openPriceEditor = (item: StaffAssignment) => {
+    if (isLocked) return;
     if (!canManualPrice || !item.staffId || !item.role) return;
     if (item.castSource === "pending") return; // đang resolve — đợi xong mới cho gõ (tránh race)
     // Manual 0đ hiện "0" để phân biệt với chưa-có-giá (ô trống).
@@ -223,14 +240,17 @@ export function StaffAssignmentEditor({
   };
 
   const remove = (id: string) => {
+    if (isLocked) return;
     onChange(value.filter(item => item.id !== id));
   };
 
   const add = () => {
+    if (isLocked) return;
     onChange([...value, newStaffAssignment()]);
   };
 
   const handleStaffChange = (itemId: string, staffId: number, role: string) => {
+    if (isLocked) return;
     const staffName = staffOptions.find(s => s.id === staffId)?.name ?? "";
     if (!role) {
       update(itemId, { staffId, staffName, castAmount: 0, castSource: "none" });
@@ -345,39 +365,77 @@ export function StaffAssignmentEditor({
   return (
     <div className={cn("space-y-1.5 sm:space-y-2", className)}>
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
         <span className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
           👥 Nhân sự
         </span>
-        <button
-          type="button"
-          onClick={add}
-          className="flex items-center gap-1 text-[11px] sm:text-xs text-primary hover:text-primary/80 font-semibold transition-colors"
-        >
-          <Plus className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> Thêm nhân sự
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Khoá "Đã đủ nhân sự" — xác nhận thủ công cho RIÊNG dịch vụ này */}
+          {lockable && (
+            <button
+              type="button"
+              onClick={() => onLockedChange?.(!locked)}
+              disabled={!canToggleLock}
+              aria-pressed={isLocked}
+              title={
+                isLocked
+                  ? STAFF_LOCK_HINT
+                  : "Xác nhận dịch vụ này không cần giao thêm người (vẫn lưu nguyên nhân sự đang có)"
+              }
+              className={cn(
+                "flex items-center gap-1 px-2 py-1 rounded-lg border text-[11px] sm:text-xs font-semibold transition-colors",
+                isLocked
+                  ? "border-emerald-300 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:bg-emerald-900/20 dark:text-emerald-300"
+                  : "border-border text-muted-foreground hover:text-foreground hover:bg-muted",
+                !canToggleLock && "opacity-60 cursor-not-allowed",
+              )}
+            >
+              {isLocked ? <Lock className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> : <LockOpen className="w-3 h-3 sm:w-3.5 sm:h-3.5" />}
+              {isLocked ? "Đã đủ nhân sự" : "Đánh dấu đủ nhân sự"}
+            </button>
+          )}
+          {!isLocked && (
+            <button
+              type="button"
+              onClick={add}
+              className="flex items-center gap-1 text-[11px] sm:text-xs text-primary hover:text-primary/80 font-semibold transition-colors"
+            >
+              <Plus className="w-3 h-3 sm:w-3.5 sm:h-3.5" /> Thêm nhân sự
+            </button>
+          )}
+        </div>
       </div>
+      {isLocked && (
+        <p className="text-[10px] sm:text-[11px] text-emerald-700 dark:text-emerald-300">{STAFF_LOCK_HINT}</p>
+      )}
       {dupError && (
         <p className="text-xs text-destructive font-medium">{dupError}</p>
       )}
 
       {/* Lines */}
       {value.length === 0 ? (
-        <button
-          type="button"
-          onClick={add}
-          className="w-full border-2 border-dashed border-border/60 rounded-xl py-2 sm:py-3 text-xs text-muted-foreground hover:border-primary/40 hover:bg-muted/20 transition-all flex items-center justify-center gap-1.5"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          Thêm nhân sự cho công việc
-        </button>
+        isLocked ? (
+          <div className="w-full border-2 border-dashed border-emerald-300/70 rounded-xl py-2 sm:py-3 text-xs text-emerald-700 dark:text-emerald-300 flex items-center justify-center gap-1.5">
+            <Lock className="w-3.5 h-3.5" />
+            Dịch vụ này không cần giao thêm người
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={add}
+            className="w-full border-2 border-dashed border-border/60 rounded-xl py-2 sm:py-3 text-xs text-muted-foreground hover:border-primary/40 hover:bg-muted/20 transition-all flex items-center justify-center gap-1.5"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Thêm nhân sự cho công việc
+          </button>
+        )
       ) : (
         <div className="space-y-1 sm:space-y-1.5">
           {value.map((item, idx) => {
             const myAllowances = rowAllowances(item);
             const allowanceTotal = myAllowances.reduce((s, a) => s + a.amount, 0);
             const totalForRow = (item.castAmount || 0) + allowanceTotal;
-            const canAddAllowance = bookingId != null && !!item.staffId && !!item.role;
+            const canAddAllowance = bookingId != null && !!item.staffId && !!item.role && !isLocked;
             const isOpen = openAllowanceFor === item.id;
             return (
               <div key={item.id} className="space-y-1">
@@ -386,7 +444,12 @@ export function StaffAssignmentEditor({
 
                   {/* Role */}
                   <select
-                    className="flex-1 min-w-[110px] px-2.5 py-2 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-1 focus:ring-primary/40"
+                    className={cn(
+                      "flex-1 min-w-[110px] px-2.5 py-2 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-1 focus:ring-primary/40",
+                      isLocked && "opacity-70 cursor-not-allowed",
+                    )}
+                    disabled={isLocked}
+                    title={isLocked ? STAFF_LOCK_HINT : undefined}
                     value={item.role}
                     onChange={e => {
                       const newRole = e.target.value;
@@ -413,7 +476,12 @@ export function StaffAssignmentEditor({
 
                   {/* Staff */}
                   <select
-                    className="flex-1 min-w-[110px] px-2.5 py-2 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-1 focus:ring-primary/40"
+                    className={cn(
+                      "flex-1 min-w-[110px] px-2.5 py-2 border border-border rounded-lg text-sm bg-background focus:outline-none focus:ring-1 focus:ring-primary/40",
+                      isLocked && "opacity-70 cursor-not-allowed",
+                    )}
+                    disabled={isLocked}
+                    title={isLocked ? STAFF_LOCK_HINT : undefined}
                     value={item.staffId ?? ""}
                     onChange={e => {
                       const staffId = parseInt(e.target.value);
@@ -462,7 +530,7 @@ export function StaffAssignmentEditor({
                         </button>
                       </span>
                     ) : (() => {
-                      const canPrice = canManualPrice && !!item.staffId && !!item.role;
+                      const canPrice = canManualPrice && !!item.staffId && !!item.role && !isLocked;
                       return (
                       <span
                         className={cn(
@@ -482,7 +550,7 @@ export function StaffAssignmentEditor({
                       </span>
                       );
                     })()}
-                    {canManualPrice && !!item.staffId && !!item.role && editingPriceFor !== item.id && (
+                    {canManualPrice && !isLocked && !!item.staffId && !!item.role && editingPriceFor !== item.id && (
                       <button
                         type="button"
                         onClick={() => openPriceEditor(item)}
@@ -506,7 +574,7 @@ export function StaffAssignmentEditor({
                         type="button"
                         onClick={() => isOpen ? setOpenAllowanceFor(null) : openPopupFor(item.id)}
                         disabled={!canAddAllowance}
-                        title={canAddAllowance ? "Thêm phụ cấp" : "Chọn vai trò + nhân sự trước"}
+                        title={isLocked ? STAFF_LOCK_HINT : canAddAllowance ? "Thêm phụ cấp" : "Chọn vai trò + nhân sự trước"}
                         aria-label="Thêm phụ cấp"
                         className={cn(
                           "p-1 rounded-md transition-colors flex-shrink-0",
@@ -522,8 +590,15 @@ export function StaffAssignmentEditor({
                     <button
                       type="button"
                       onClick={() => remove(item.id)}
+                      disabled={isLocked}
+                      title={isLocked ? STAFF_LOCK_HINT : "Xoá nhân sự"}
                       aria-label="Xoá nhân sự"
-                      className="p-1.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 rounded-lg transition-colors flex-shrink-0"
+                      className={cn(
+                        "p-1.5 rounded-lg transition-colors flex-shrink-0",
+                        isLocked
+                          ? "text-muted-foreground/40 cursor-not-allowed"
+                          : "text-muted-foreground hover:text-destructive hover:bg-destructive/10",
+                      )}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -544,9 +619,13 @@ export function StaffAssignmentEditor({
                         <button
                           type="button"
                           onClick={() => removeAllowance.mutate(a.id)}
-                          disabled={removeAllowance.isPending}
+                          disabled={removeAllowance.isPending || isLocked}
+                          title={isLocked ? STAFF_LOCK_HINT : "Xoá phụ cấp"}
                           aria-label="Xoá phụ cấp"
-                          className="ml-auto p-0.5 text-amber-600 hover:text-red-500 transition-colors"
+                          className={cn(
+                            "ml-auto p-0.5 transition-colors",
+                            isLocked ? "text-amber-600/40 cursor-not-allowed" : "text-amber-600 hover:text-red-500",
+                          )}
                         >
                           <X className="w-3 h-3" />
                         </button>

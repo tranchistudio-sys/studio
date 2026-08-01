@@ -20,6 +20,8 @@ export type CrewItemLike = {
   assignedStaff?: unknown;
   photoName?: string | null;
   makeupName?: string | null;
+  /** Xác nhận thủ công "Đã đủ nhân sự" cho DÒNG DỊCH VỤ này (khoá ổ khoá trong form show). */
+  staffLocked?: boolean | null;
 };
 export type CrewTaskAssigneeLike = {
   role?: string | null;
@@ -177,8 +179,41 @@ export function crewNameCount(groups: CrewGroup[]): number {
   return groups.reduce((n, g) => n + g.names.length, 0);
 }
 
-/** Giữ NGUYÊN ngữ nghĩa cảnh báo cũ của lịch. */
-export function crewFlags(groups: CrewGroup[]): { unassigned: boolean; isFullyAssigned: boolean } {
+// ─── Xác nhận thủ công "Đã đủ nhân sự" theo TỪNG DỊCH VỤ ─────────────────────
+// Có show không cần studio cử người (khách chỉ thuê váy, khách tự lo photographer/
+// makeup, giữ ngày…) nhưng logic tự động vẫn coi là thiếu ⇒ lịch kẹt cảnh báo đỏ.
+// Cờ `staffLocked` nằm trên TỪNG phần tử bookings.items (JSONB) — mỗi dịch vụ một
+// cờ riêng, KHÔNG có công tắc chung cho cả show. Mặc định thiếu/undefined = false
+// nên mọi show cũ giữ NGUYÊN hành vi hiện tại.
+
+/** Dịch vụ đã được người dùng khoá & xác nhận "Đã đủ nhân sự". */
+export function isServiceStaffLocked(item: unknown): boolean {
+  return !!item && typeof item === "object" && (item as CrewItemLike).staffLocked === true;
+}
+
+/**
+ * Show được XÁC NHẬN THỦ CÔNG là đủ nhân sự: có ít nhất 1 dịch vụ và MỌI dịch vụ
+ * đều đã khoá. Còn 1 dịch vụ chưa khoá ⇒ false, lịch quay lại chấm theo logic tự
+ * động (dịch vụ chưa khoá đó vẫn phải được kiểm tra như trước).
+ */
+export function allServicesStaffLocked(items: unknown): boolean {
+  if (!Array.isArray(items) || items.length === 0) return false;
+  return items.every(isServiceStaffLocked);
+}
+
+export type CrewFlagOptions = {
+  /** true = mọi dịch vụ của show đã khoá "Đã đủ nhân sự" (xem allServicesStaffLocked). */
+  staffConfirmedComplete?: boolean;
+};
+
+/** Giữ NGUYÊN ngữ nghĩa cảnh báo cũ của lịch; chỉ thêm nhánh xác nhận thủ công. */
+export function crewFlags(
+  groups: CrewGroup[],
+  opts?: CrewFlagOptions,
+): { unassigned: boolean; isFullyAssigned: boolean } {
+  // Xác nhận thủ công thắng: không cảnh báo "Chưa giao việc" và cũng không "Thiếu"
+  // (nếu chỉ tắt `unassigned`, show khoá mà không có ai lại rơi vào nhánh "Thiếu").
+  if (opts?.staffConfirmedComplete) return { unassigned: false, isFullyAssigned: true };
   const has = (c: string) => groups.some(g => g.canon === c && g.names.length > 0);
   const unassigned = !has("photographer") && !has("makeup") && !has("sales") && !has("videographer");
   const isFullyAssigned = (has("photographer") && has("makeup")) || has("videographer");
@@ -194,7 +229,7 @@ export function crewDetailLines(groups: CrewGroup[]): { canon: string; label: st
  * Card tuần/tháng (dạng gọn): 4 role chính dạng chuỗi + extras CÓ TÊN cho mọi
  * role còn lại — thay chip "TL" không tên và hết rớt Marketing/Thợ phụ/Khác.
  */
-export function crewCompactLine(groups: CrewGroup[]): {
+export function crewCompactLine(groups: CrewGroup[], opts?: CrewFlagOptions): {
   p: string; m: string; v: string; sale: string;
   extras: { canon: string; short: string; names: string[] }[];
   unassigned: boolean;
@@ -210,6 +245,6 @@ export function crewCompactLine(groups: CrewGroup[]): {
     v: get("videographer"),
     sale: get("sales"),
     extras,
-    unassigned: crewFlags(groups).unassigned,
+    unassigned: crewFlags(groups, opts).unassigned,
   };
 }

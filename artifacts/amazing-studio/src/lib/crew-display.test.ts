@@ -6,6 +6,7 @@
 import { describe, it, expect } from "vitest";
 import {
   collectCrew, crewNameCount, crewFlags, crewDetailLines, crewCompactLine, canonicalRole,
+  isServiceStaffLocked, allServicesStaffLocked,
 } from "./crew-display";
 
 const sa = (role: string, staffName: string, staffId?: number) => ({ role, staffName, staffId });
@@ -251,5 +252,84 @@ describe("hành vi giữ nguyên + biên", () => {
     expect(crewFlags(only("photographer")).unassigned).toBe(false);
     expect(crewFlags(only("videographer")).isFullyAssigned).toBe(true);
     expect(canonicalRole(null)).toBe("other");
+  });
+});
+
+// ─── Khoá "Đã đủ nhân sự" theo TỪNG dịch vụ (items[].staffLocked) ─────────────
+// Bối cảnh: khách chỉ thuê váy / tự lo photographer-makeup / studio chỉ giữ ngày —
+// không cần cử người, nhưng lịch vẫn kẹt cảnh báo đỏ "Chưa giao việc".
+describe("staffLocked — xác nhận thủ công đủ nhân sự", () => {
+  const dress = (locked?: boolean) => ({
+    serviceName: "Thuê váy cưới",
+    assignedStaff: [],
+    ...(locked === undefined ? {} : { staffLocked: locked }),
+  });
+  const photo = (staff: ReturnType<typeof sa>[], locked?: boolean) => ({
+    serviceName: "Chụp tiệc",
+    assignedStaff: staff,
+    ...(locked === undefined ? {} : { staffLocked: locked }),
+  });
+  const flagsOf = (items: unknown[]) =>
+    crewFlags(collectCrew({ items: items as { assignedStaff?: unknown }[] }), {
+      staffConfirmedComplete: allServicesStaffLocked(items),
+    });
+
+  it("isServiceStaffLocked: chỉ boolean true mới tính là đã khoá", () => {
+    expect(isServiceStaffLocked({ staffLocked: true })).toBe(true);
+    expect(isServiceStaffLocked({ staffLocked: false })).toBe(false);
+    expect(isServiceStaffLocked({})).toBe(false);           // show cũ: không có cờ
+    expect(isServiceStaffLocked({ staffLocked: "true" })).toBe(false); // rác không được tin
+    expect(isServiceStaffLocked({ staffLocked: 1 })).toBe(false);
+    expect(isServiceStaffLocked(null)).toBe(false);
+  });
+
+  it("allServicesStaffLocked: show rỗng / thiếu items không bao giờ tự 'đủ nhân sự'", () => {
+    expect(allServicesStaffLocked([])).toBe(false);
+    expect(allServicesStaffLocked(undefined)).toBe(false);
+    expect(allServicesStaffLocked(null)).toBe(false);
+    expect(allServicesStaffLocked([dress(true)])).toBe(true);
+    expect(allServicesStaffLocked([dress(true), photo([], false)])).toBe(false);
+  });
+
+  it("test 1: show chỉ thuê váy, không nhân sự, ĐÃ khoá → hết 'Chưa giao việc'", () => {
+    const f = flagsOf([dress(true)]);
+    expect(f.unassigned).toBe(false);
+    // và cũng không rơi sang nhãn "Thiếu" (isAssigned && !isFullyAssigned)
+    expect(f.isFullyAssigned).toBe(true);
+  });
+
+  it("test 3: mở khoá, vẫn không nhân sự → lịch hiện lại 'Chưa giao việc'", () => {
+    expect(flagsOf([dress(false)]).unassigned).toBe(true);
+  });
+
+  it("test 4: váy đã khoá + chụp chưa có photographer → show VẪN báo 'Chưa giao việc'", () => {
+    expect(flagsOf([dress(true), photo([], false)]).unassigned).toBe(true);
+  });
+
+  it("test 5: váy đã khoá + chụp đã có photographer → show đủ nhân sự", () => {
+    expect(flagsOf([dress(true), photo([sa("photographer", "TranChi", 1)])]).unassigned).toBe(false);
+  });
+
+  it("test 6: khoá dịch vụ ĐANG CÓ nhân sự → giữ nguyên mọi tên, chỉ tắt cảnh báo", () => {
+    const items = [photo([sa("photographer", "TranChi", 1), sa("makeup", "Diệu Mai", 2)], true)];
+    const groups = collectCrew({ items });
+    expect(crewNameCount(groups)).toBe(2);
+    expect(groups.find(g => g.canon === "photographer")!.names).toEqual(["TranChi"]);
+    expect(crewFlags(groups, { staffConfirmedComplete: allServicesStaffLocked(items) }).unassigned).toBe(false);
+  });
+
+  it("show CŨ (items không có cờ staffLocked) giữ NGUYÊN hành vi hiện tại", () => {
+    expect(flagsOf([dress()]).unassigned).toBe(true);
+    expect(flagsOf([photo([sa("photographer", "TranChi", 1)])]).unassigned).toBe(false);
+  });
+
+  it("crewCompactLine (card tháng/tuần) cùng kết luận với crewFlags", () => {
+    const items = [dress(true)];
+    const line = crewCompactLine(collectCrew({ items }), {
+      staffConfirmedComplete: allServicesStaffLocked(items),
+    });
+    expect(line.unassigned).toBe(false);
+    expect(line.p).toBe("");           // không bịa tên nhân sự
+    expect(line.extras).toEqual([]);
   });
 });

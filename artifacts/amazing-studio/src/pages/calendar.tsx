@@ -28,6 +28,7 @@ import {
   Coffee,
   Shirt,
   Copy,
+  Lock,
 } from "lucide-react";
 import {
   Dialog as UIDialog, DialogContent as UIDialogContent, DialogHeader as UIDialogHeader,
@@ -44,7 +45,7 @@ import { DeductionEditor, type DeductionItem } from "@/components/deduction-edit
 import { StaffAssignmentEditor, type StaffAssignment, newStaffAssignment } from "@/components/staff-assignment-editor";
 import { castAmountFromResult, lookupCastByPkg, resolveCastAmount } from "@/lib/resolve-cast";
 import { pickReturnDate, isoDateOrNull, type ShowOrigin } from "@/lib/calendar-nav-context";
-import { collectCrew, crewDetailLines, crewCompactLine, crewFlags, canonicalRole, type CrewGroup } from "@/lib/crew-display";
+import { collectCrew, crewDetailLines, crewCompactLine, crewFlags, canonicalRole, allServicesStaffLocked, type CrewGroup } from "@/lib/crew-display";
 import { reflowDescriptionLines, firstDescriptionLine, parseDescriptionBlocks } from "@/lib/package-description";
 import { buildDressWarningsByDate, type DressWarnRow, type DressWarnChip } from "@/lib/dress-warnings";
 import { invalidateBookingRelated } from "@/lib/booking-cache";
@@ -368,6 +369,9 @@ type OrderLine = {
   photoId: number | null; photoName: string; photoTask: string;
   makeupId: number | null; makeupName: string; makeupTask: string;
   assignedStaff: StaffAssignment[];
+  /** Xác nhận thủ công "Đã đủ nhân sự" cho RIÊNG dòng dịch vụ này (lưu trong bookings.items).
+   *  undefined/false = kiểm tra nhân sự theo logic tự động như cũ (show cũ không đổi hành vi). */
+  staffLocked?: boolean;
   notes?: string;
   conceptImages?: string[];
   serviceImages?: string[];
@@ -1130,6 +1134,10 @@ function OrderLineRow({ line, photographers, makeupArtists, services, allStaffRa
       <StaffAssignmentEditor
         value={line.assignedStaff}
         onChange={newStaff => onChange({ ...line, assignedStaff: newStaff })}
+        lockable
+        locked={line.staffLocked === true}
+        // Khoá/mở khoá CHỈ đổi cờ — không bao giờ thêm/xoá dòng nhân sự.
+        onLockedChange={next => onChange({ ...line, staffLocked: next })}
         staffOptions={allStaff.map(s => ({ id: s.id, name: s.name, roles: s.roles || [] }))}
         allStaffRates={allStaffRates.map(r => ({ staffId: r.staffId, role: r.role, taskKey: r.taskKey, rate: r.rate }))}
         allCastRates={allCastRates}
@@ -2238,7 +2246,9 @@ function ShowFormPanel({
       return items.filter(item => {
         // Dòng chưa chốt gói nhưng ĐÃ giao nhân sự vẫn phải lưu — nếu lọc bỏ,
         // phân công (Nhiếp ảnh/Makeup...) mất lặng lẽ, show kẹt "Chưa giao việc".
-        if (!(item.serviceName || item.serviceId || lineHasStaff(item))) return false;
+        // Dòng đã KHOÁ "Đã đủ nhân sự" cũng phải lưu (vd giữ ngày, chưa chốt gói,
+        // không cần cử người) — lọc bỏ thì cờ khoá mất và lịch lại báo đỏ.
+        if (!(item.serviceName || item.serviceId || lineHasStaff(item) || item.staffLocked === true)) return false;
         const key = item.serviceKey
           || (item.serviceName || item.serviceId
             ? `svc-${item.serviceId ?? "custom"}-${item.serviceName ?? ""}`
@@ -2452,7 +2462,8 @@ function ShowFormPanel({
 
         const subServicePayloads = subDrafts.map(sub => {
           // Giữ cả dòng chưa chốt gói nhưng đã giao nhân sự (xem lineHasStaff)
-          const validItems = sub.items.filter(l => l.serviceName || l.serviceId || lineHasStaff(l));
+          // hoặc đã khoá "Đã đủ nhân sự" (cờ phải sống sót để lịch không báo đỏ lại)
+          const validItems = sub.items.filter(l => l.serviceName || l.serviceId || lineHasStaff(l) || l.staffLocked === true);
           const subPackageTotal = calcSubPackageTotal(sub.items);
           const subExtrasTotal = calcSubExtrasTotal(sub.additionalServices || []);
           const subTotal = subPackageTotal + subExtrasTotal;
@@ -2577,7 +2588,8 @@ function ShowFormPanel({
       // trước đây bị lọc bỏ nên phân công mất lặng lẽ, show kẹt "Chưa giao việc".
       // (hasServices/packageType vẫn tính theo validLines: chưa chọn gói thì
       // show vẫn là "Chưa chốt dịch vụ", chỉ có nhân sự là được giữ lại.)
-      const linesToSave = sub0.items.filter(l => l.serviceName || l.serviceId || lineHasStaff(l));
+      // Dòng đã khoá "Đã đủ nhân sự" cũng giữ — mất dòng là mất cờ khoá.
+      const linesToSave = sub0.items.filter(l => l.serviceName || l.serviceId || lineHasStaff(l) || l.staffLocked === true);
 
       const packageType = hasServices
         ? (validLines.length === 1
@@ -5775,7 +5787,12 @@ function getFullCrew(
     bookingAssignedStaff: booking.assignedStaff,
     taskAssignees: booking.taskAssignees ?? [],
   });
-  return { badges, ...crewFlags(badges) };
+  // Xác nhận thủ công theo từng dịch vụ (items[].staffLocked) — mọi dịch vụ đã khoá
+  // thì show KHÔNG còn "Chưa giao việc"/"Thiếu"; còn 1 dịch vụ chưa khoá thì chấm như cũ.
+  return {
+    badges,
+    ...crewFlags(badges, { staffConfirmedComplete: allServicesStaffLocked(booking.items) }),
+  };
 }
 
 // ─── (legacy) Mobile agenda — không còn dùng, giữ làm tham chiếu cho mode "Danh sách" tương lai ───
@@ -6102,11 +6119,14 @@ function MonthDayCell({
             const gName = b.servicePackageId ? pkgGroupMap?.get(b.servicePackageId) : undefined;
             // Crew canonical (DH0248): đủ MỌI role — extras CÓ TÊN, hết chip "TL" vô danh,
             // hết rớt Marketing/Thợ phụ/Khác; đọc TẤT CẢ items (không chỉ items[0]).
-            const compact = crewCompactLine(collectCrew({
-              items: b.items ?? [],
-              bookingAssignedStaff: b.assignedStaff,
-              taskAssignees: b.taskAssignees ?? [],
-            }));
+            const compact = crewCompactLine(
+              collectCrew({
+                items: b.items ?? [],
+                bookingAssignedStaff: b.assignedStaff,
+                taskAssignees: b.taskAssignees ?? [],
+              }),
+              { staffConfirmedComplete: allServicesStaffLocked(b.items) },
+            );
             const staffParts: string[] = [];
             if (compact.p) staffParts.push(`P: ${compact.p}`);
             if (compact.m) staffParts.push(`M: ${compact.m}`);
@@ -6161,9 +6181,15 @@ function MonthDayCell({
                   <div className={`${lineCls} font-medium opacity-90 ${isComfort ? "" : "truncate"}`} title={extrasTitle}>
                     {extraParts.join(" | ")}
                   </div>
-                ) : (
+                ) : compact.unassigned ? (
                   <div className={`${lineCls} font-semibold text-red-600 dark:text-red-400 truncate flex items-center gap-1`}>
                     <AlertCircle className="w-3 h-3 flex-shrink-0" /> Chưa giao việc
+                  </div>
+                ) : (
+                  /* Đã xác nhận thủ công đủ nhân sự nhưng không có ai được giao — hiện
+                     trạng thái xanh để card không trống trơn (vd show chỉ thuê váy). */
+                  <div className={`${lineCls} font-semibold text-emerald-700 dark:text-emerald-300 truncate flex items-center gap-1`}>
+                    <Lock className="w-3 h-3 flex-shrink-0" /> Đã đủ nhân sự
                   </div>
                 )}
               </button>
@@ -6773,6 +6799,12 @@ function DayView({
                                         <AlertCircle className="w-2.5 h-2.5" />Chưa giao việc
                                       </span>
                                     )}
+                                    {/* Show đã xác nhận thủ công đủ nhân sự mà không cần cử ai */}
+                                    {isAssigned && crewBadges.length === 0 && (
+                                      <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full font-semibold border border-emerald-300 text-emerald-700 dark:text-emerald-300">
+                                        <Lock className="w-2.5 h-2.5" />Đã đủ nhân sự
+                                      </span>
+                                    )}
                                   </div>
                                 </div>
 
@@ -6857,11 +6889,15 @@ function WeekBookingCard({ booking: b, onEventClick, allStaff, pkgGroupMap }: { 
   const item = b.items?.[0];
   // Crew canonical (DH0248): tuần trước đây RỚT HẲN Trợ lý/Thợ phụ/Marketing/Khác
   // (không render extras) — giờ đủ mọi role, extras có tên, đọc tất cả items.
-  const weekCompact = crewCompactLine(collectCrew({
-    items: b.items ?? [],
-    bookingAssignedStaff: b.assignedStaff,
-    taskAssignees: b.taskAssignees ?? [],
-  }));
+  const weekStaffConfirmed = allServicesStaffLocked(b.items);
+  const weekCompact = crewCompactLine(
+    collectCrew({
+      items: b.items ?? [],
+      bookingAssignedStaff: b.assignedStaff,
+      taskAssignees: b.taskAssignees ?? [],
+    }),
+    { staffConfirmedComplete: weekStaffConfirmed },
+  );
   const { p: photoDisplay, m: makeupDisplay, sale: saleDisplay, v: videoDisplay } = weekCompact;
   const hasPhoto = !!photoDisplay;
   const hasMakeup = !!makeupDisplay;
@@ -6902,6 +6938,14 @@ function WeekBookingCard({ booking: b, onEventClick, allStaff, pkgGroupMap }: { 
           isComfort ? "text-[11px]" : "text-[9px]"
         }`}>
           <AlertCircle className={isComfort ? "w-3 h-3" : "w-2.5 h-2.5"} /> Chưa giao việc
+        </div>
+      )}
+      {/* Xác nhận thủ công "Đã đủ nhân sự" mà không có ai được giao → hiện chip xanh */}
+      {weekStaffConfirmed && !hasPhoto && !hasMakeup && !hasVideo && !hasSale && weekCompact.extras.length === 0 && (
+        <div className={`mt-0.5 inline-flex items-center gap-1 px-1.5 py-0.5 rounded font-semibold bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 ${
+          isComfort ? "text-[11px]" : "text-[9px]"
+        }`}>
+          <Lock className={isComfort ? "w-3 h-3" : "w-2.5 h-2.5"} /> Đã đủ nhân sự
         </div>
       )}
       {(isAssigned || weekCompact.extras.length > 0) && (

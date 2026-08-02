@@ -289,6 +289,11 @@ export type AllocPaymentInput = {
 /** Bộ số phân bổ đầy đủ của MỘT dịch vụ (thành viên countable) — cho evidence/Excel. */
 export type FamilyMemberAllocation = {
   bookingId: number;
+  /** Giá dịch vụ TRƯỚC giảm giá chung hợp đồng (total − giảm-trừ-dòng của chính nó). */
+  listNet: number;
+  /** Phần giảm giá chung hợp đồng (discount trên đơn CHA) phân bổ cho dịch vụ này. */
+  contractDiscountShare: number;
+  /** NET tính nợ = listNet − contractDiscountShare. Mọi phép cap/phân bổ dùng số này. */
   net: number;
   /** Cọc chung chia ĐỀU (đã cap ≤ NET, water-filling — chốt 17/07). */
   equalDeposit: number;
@@ -311,11 +316,82 @@ export type FamilyAllocation = {
   /** Cọc CANONICAL: phiếu 'deposit' CŨ NHẤT (min id) nằm TRÊN ROOT — do máy ô "Tiền cọc" quản lý. */
   totalDeposit: number;
   canonicalDepositPaymentId: number | null;
+  /** Giảm giá chung hợp đồng (discount trên đơn CHA) THỰC ÁP = Σ contractDiscountShare các dịch vụ. */
+  contractDiscount: number;
   eligibleServiceCount: number;
   /** Tiền vượt tổng nợ gia đình — "Khách trả dư" (không tạo nợ âm, không mất tiền). */
   overpayment: number;
   members: FamilyMemberAllocation[];
 };
+
+// ─── GIẢM GIÁ CHUNG HỢP ĐỒNG (discount trên đơn CHA tổng) ────────────────────
+/**
+ * bookings.discount_amount trên đơn CHA tổng = GIẢM GIÁ CHUNG HỢP ĐỒNG — màn
+ * Booking/Hợp đồng trừ ở mức gia đình (total cha − discount cha − đã thu). Đơn cha
+ * KHÔNG countable nên nếu chỉ đọc net từng đơn con thì khoản này bị RƠI: công nợ
+ * Thu tiền/Dashboard/Revenue dư đúng bằng giảm giá (DH0167: 10,2tr thay vì 10tr).
+ * Phân bổ xuống dịch vụ countable: PRO-RATA theo net dịch vụ, phần nguyên trước,
+ * đồng lẻ phát 1đ/lượt theo booking ID tăng dần (cùng convention chia cọc), cap ≤
+ * net từng dịch vụ; giảm giá vượt tổng net gia đình → chỉ áp tối đa bằng tổng net
+ * (không nợ âm). Root là đơn THƯỜNG (đơn lẻ) thì discount đã nằm trong net chính
+ * nó — không áp ở đây để khỏi trừ HAI lần.
+ * @returns map bookingId → phần giảm giá chung được phân bổ (0 nếu không thuộc diện).
+ */
+export function familyContractDiscountShares(
+  allBookings: readonly AllocBookingInput[],
+): Map<number, number> {
+  const byId = new Map(allBookings.map((b) => [b.id, b]));
+  const netOf = (b: AllocBookingInput): number =>
+    clampMin0(money(b.totalAmount) - money(b.discountAmount));
+  const familyMembers = new Map<number, AllocBookingInput[]>();
+  for (const b of allBookings) {
+    const root = b.parentId ?? b.id;
+    const list = familyMembers.get(root) ?? [];
+    list.push(b);
+    familyMembers.set(root, list);
+  }
+  const shares = new Map<number, number>();
+  for (const b of allBookings) shares.set(b.id, 0);
+  for (const [root, members] of familyMembers) {
+    const rootBooking = byId.get(root);
+    if (!rootBooking || rootBooking.isParentContract !== true) continue;
+    if (!isSelfLiveBooking(rootBooking)) continue; // cha chết → con mồ côi, không phân bổ
+    const discount = clampMin0(money(rootBooking.discountAmount));
+    if (discount <= 0) continue;
+    const eligible = members
+      .filter((m) => isRevenueCountable(m, byId))
+      .sort((a, b) => a.id - b.id);
+    const nets = eligible.map(netOf);
+    const familyNet = nets.reduce((s, n) => s + n, 0);
+    if (eligible.length === 0 || familyNet <= 0) continue;
+    const applied = Math.min(discount, familyNet);
+    let assigned = 0;
+    eligible.forEach((m, i) => {
+      const base = Math.floor((applied * nets[i]) / familyNet);
+      shares.set(m.id, base);
+      assigned += base;
+    });
+    // Đồng lẻ sau chia tỷ lệ: phát theo ID tăng dần vào dịch vụ còn chỗ (room chỉ
+    // cạn khi applied = familyNet — khi đó không còn đồng lẻ); guard chống kẹt.
+    let left = applied - assigned;
+    let guard = eligible.length + 2;
+    while (left > 0.000001 && guard-- > 0) {
+      let gave = false;
+      for (let i = 0; i < eligible.length && left > 0.000001; i++) {
+        const id = eligible[i].id;
+        const cur = shares.get(id) ?? 0;
+        const room = nets[i] - cur;
+        if (room <= 0.000001) continue;
+        const give = Math.min(room, left < 1 ? left : 1);
+        shares.set(id, cur + give);
+        left -= give;
+        gave = true;
+      }
+      if (!gave) break;
+    }
+  }
+  return shares;
+}
 
 /**
  * ALLOCATOR TẬP TRUNG — nghiệp vụ chủ chốt 17/07 đêm (thay pro-rata PR #102):
@@ -329,8 +405,11 @@ export type FamilyAllocation = {
  *     + phần THỪA của dịch vụ đã đủ tiền → gom POOL, phân bổ FIFO theo
  *     (ngày thực hiện tăng dần, ID tăng dần) — dịch vụ tới hạn trước trừ trước (Q1-A).
  *  4. Tiền dư sau tất cả = overpayment "Khách trả dư".
- * Bất biến: Σ remaining các dịch vụ = max(0, NET gia đình − tổng tiền hợp lệ) —
- * mọi màn (Booking/Dashboard/Copilot/Revenue) tiếp tục ra CÙNG MỘT SỐ.
+ *  0. (TRƯỚC hết) Giảm giá CHUNG hợp đồng trên đơn CHA phân bổ pro-rata xuống NET
+ *     từng dịch vụ (familyContractDiscountShares) — NET tính nợ = net dịch vụ −
+ *     phần giảm chung; khớp màn Booking/Hợp đồng: total cha − discount cha − đã thu.
+ * Bất biến: Σ remaining các dịch vụ = max(0, NET gia đình SAU GIẢM CHUNG − tổng
+ * tiền hợp lệ) — mọi màn (Booking/Dashboard/Copilot/Revenue) ra CÙNG MỘT SỐ.
  * Chỉ đổi cách ĐỌC — không tạo/sửa/copy payment nào.
  */
 export function allocateFamilies(
@@ -342,8 +421,13 @@ export function allocateFamilies(
   // Tra cha bằng TOÀN BỘ đơn (không chỉ cha tổng) — khớp SQL revenueCountableSql:
   // con của đơn thường ĐÃ CHẾT cũng là mồ côi, không được nhận phân bổ.
   const parentById = byId;
-  const netOf = (b: AllocBookingInput): number =>
+  const listNetOf = (b: AllocBookingInput): number =>
     clampMin0(money(b.totalAmount) - money(b.discountAmount));
+  // Bước 0: giảm giá chung hợp đồng (trên CHA) chia xuống dịch vụ — NET tính nợ
+  // của mọi bước cap/phân bổ bên dưới là NET SAU GIẢM CHUNG.
+  const discountShares = familyContractDiscountShares(allBookings);
+  const netOf = (b: AllocBookingInput): number =>
+    clampMin0(listNetOf(b) - (discountShares.get(b.id) ?? 0));
   // id phiếu thiếu (caller quên SELECT id) KHÔNG được thắng phiếu có id thật.
   const pid = (p: AllocPaymentInput): number =>
     p.id == null ? Number.POSITIVE_INFINITY : Number(p.id);
@@ -440,7 +524,7 @@ export function allocateFamilies(
       // paymentNotOnEmptyParentSql: tiền treo, không tính vào công nợ active).
       out.set(root, {
         rootId: root, totalDeposit, canonicalDepositPaymentId: canonical?.id != null ? Number(canonical.id) : null,
-        eligibleServiceCount: 0, overpayment: 0, members: [],
+        contractDiscount: 0, eligibleServiceCount: 0, overpayment: 0, members: [],
       });
       continue;
     }
@@ -472,14 +556,16 @@ export function allocateFamilies(
     overpayment += poolLeft;
 
     const memberAllocs: FamilyMemberAllocation[] = eligible.map((b) => {
-      const net = netOf(b);
+      const net = netOf(b); // NET SAU GIẢM CHUNG — cơ sở tính nợ
       const equalDeposit = dep.get(b.id) ?? 0;
       const direct = directPaid.get(b.id) ?? 0;
       const credited = directCredited.get(b.id) ?? 0;
       const pf = fifo.get(b.id) ?? 0;
       const allocated = equalDeposit + credited + pf;
       return {
-        bookingId: b.id, net, equalDeposit, directPaid: direct,
+        bookingId: b.id, listNet: listNetOf(b),
+        contractDiscountShare: discountShares.get(b.id) ?? 0, net,
+        equalDeposit, directPaid: direct,
         legacyDepositPaid: legacyDeposit.get(b.id) ?? 0, directCredited: credited,
         parentFifo: pf, allocated, remaining: clampMin0(net - allocated),
       };
@@ -489,6 +575,7 @@ export function allocateFamilies(
       rootId: root,
       totalDeposit,
       canonicalDepositPaymentId: canonical?.id != null ? Number(canonical.id) : null,
+      contractDiscount: memberAllocs.reduce((s, m) => s + m.contractDiscountShare, 0),
       eligibleServiceCount: eligible.length,
       overpayment,
       members: memberAllocs,

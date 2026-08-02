@@ -72,6 +72,11 @@ export type AllocatedBooking = {
   serviceCategory: string | null;
   packageType: string | null;
   shootDate: string | null;
+  /** Giá dịch vụ TRƯỚC giảm giá chung hợp đồng (hiển thị). */
+  listNet: number;
+  /** Phần giảm giá chung hợp đồng (trên đơn CHA) phân bổ cho dịch vụ này. */
+  contractDiscountShare: number;
+  /** NET tính nợ = listNet − contractDiscountShare (SAU giảm chung hợp đồng). */
   net: number;
   /** Cọc chung chia ĐỀU (cap ≤ NET, water-filling). */
   equalDeposit: number;
@@ -180,6 +185,8 @@ export async function engineAllocationSnapshot(): Promise<AllocationSnapshot> {
         serviceCategory: r.service_category,
         packageType: r.package_type,
         shootDate: r.shoot_date ? String(r.shoot_date).slice(0, 10) : null,
+        listNet: m.listNet,
+        contractDiscountShare: m.contractDiscountShare,
         net: m.net,
         equalDeposit: m.equalDeposit,
         directPaid: m.directPaid,

@@ -195,8 +195,15 @@ describe("Phân bổ gia đình hợp đồng gộp (spec #2) — phiếu ở CH
     // Vế độc lập: NET các thành viên countable − tổng phiếu gốc hợp lệ của gia đình.
     const agg = await pool.query(
       `SELECT
-         COALESCE(SUM(GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0)))
-           FILTER (WHERE ${revenueCountableSql("b")}), 0) AS net,
+         GREATEST(0,
+           COALESCE(SUM(GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0)))
+             FILTER (WHERE ${revenueCountableSql("b")}), 0)
+           -- Giảm giá CHUNG hợp đồng (discount trên đơn CHA sống) — trừ ở mức gia đình
+           - COALESCE((SELECT GREATEST(COALESCE(r.discount_amount, 0), 0) FROM bookings r
+               WHERE r.id = $1 AND r.is_parent_contract = true
+                 AND r.deleted_at IS NULL
+                 AND COALESCE(r.status,'') NOT IN ('cancelled','temp_quote')), 0)
+         ) AS net,
          (SELECT COALESCE(SUM(p.amount::numeric), 0)
           FROM payments p JOIN bookings pb ON pb.id = p.booking_id
           WHERE COALESCE(pb.parent_id, pb.id) = $1

@@ -84,6 +84,12 @@ async function bookingScreenFamilyRemaining(root: number): Promise<number> {
            AND b.deleted_at IS NULL AND b.is_parent_contract = false
            AND COALESCE(b.status,'') NOT IN ('cancelled','temp_quote'))
         -
+        -- Giảm giá CHUNG hợp đồng (discount trên đơn CHA sống) — màn Booking trừ mức hợp đồng
+        COALESCE((SELECT GREATEST(COALESCE(r.discount_amount, 0), 0)
+         FROM bookings r
+         WHERE r.id = $1 AND r.is_parent_contract = true
+           AND r.deleted_at IS NULL AND COALESCE(r.status,'') NOT IN ('cancelled','temp_quote')), 0)
+        -
         (SELECT COALESCE(SUM(p.amount::numeric), 0)
          FROM payments p JOIN bookings pb ON pb.id = p.booking_id
          WHERE COALESCE(pb.parent_id, pb.id) = $1

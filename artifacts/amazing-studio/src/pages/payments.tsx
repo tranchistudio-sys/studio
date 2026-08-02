@@ -2326,8 +2326,11 @@ export default function PaymentsPage() {
                             </span>
                           </div>
                           <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
-                            <span>Giá dịch vụ: <b className="text-foreground">{fmtVND(s.net)}</b></span>
+                            <span>Giá dịch vụ: <b className="text-foreground">{fmtVND(s.listNet ?? s.net)}</b></span>
                             <span>Cọc chia đều: <b className="text-foreground">{fmtVND(s.equalDeposit)}</b></span>
+                            {(s.contractDiscountShare ?? 0) > 0 && (
+                              <span>Giảm giá HĐ: <b className="text-amber-600">−{fmtVND(s.contractDiscountShare ?? 0)}</b></span>
+                            )}
                             <span>Đã thu: <b className="text-green-600">{fmtVND(s.allocPaid)}</b></span>
                             <span>Còn phải thu: <b className={s.remaining > 0 ? "text-red-600" : "text-green-600"}>
                               {s.remaining > 0 ? fmtVND(s.remaining) : "✓ Đủ"}

@@ -242,8 +242,15 @@ export async function verifyBookingRemaining(bookingId: number): Promise<TruthCh
   const engine = snap.members.reduce((s, m) => (m.rootId === root ? s + m.debt : s), 0);
 
   // Độc lập với Engine: net gia đình từ bảng bookings + phiếu gốc từ bảng payments.
+  // NET gia đình = Σ net dịch vụ countable − GIẢM GIÁ CHUNG hợp đồng (discount trên
+  // đơn CHA tổng còn sống — màn Booking trừ ở mức hợp đồng, engine phân bổ xuống con).
   const famR = await pool.query(
-    `SELECT COALESCE(SUM(GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0))), 0) AS net
+    `SELECT GREATEST(0,
+        COALESCE(SUM(GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0))), 0)
+        - COALESCE((SELECT GREATEST(COALESCE(r.discount_amount, 0), 0) FROM bookings r
+            WHERE r.id = $1 AND r.is_parent_contract = true
+              AND r.deleted_at IS NULL AND COALESCE(r.status,'') NOT IN ('cancelled','temp_quote')), 0)
+     ) AS net
      FROM bookings b
      WHERE COALESCE(b.parent_id, b.id) = $1 AND ${revenueCountableSql("b")}`,
     [root],
@@ -361,11 +368,40 @@ export async function verifySignedAndCollected(ym: string): Promise<TruthCheck[]
   const from = `${ym}-01`;
   const to = `${ym}-${String(lastDay).padStart(2, "0")}`;
 
+  // NET per-booking = net dịch vụ − phần GIẢM GIÁ CHUNG hợp đồng (discount trên đơn
+  // CHA) phân bổ pro-rata; mirror đúng familyContractDiscountShares (phần nguyên
+  // FLOOR + đồng lẻ theo booking ID tăng dần). Share tính trên TOÀN gia đình rồi mới
+  // lọc created_at trong kỳ — khớp cách data.ts gắn netAmount trước khi lọc tháng.
   const signedSql = await pool.query(
-    `SELECT COALESCE(SUM(GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0))), 0) AS v
-     FROM bookings b
-     WHERE ${revenueCountableSql("b")}
-       AND (b.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Ho_Chi_Minh')::date BETWEEN $1::date AND $2::date`,
+    `WITH m AS (
+       SELECT b.id, COALESCE(b.parent_id, b.id) AS root_id,
+              GREATEST(0, b.total_amount - COALESCE(b.discount_amount, 0))::numeric AS net,
+              ((b.created_at AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Ho_Chi_Minh')::date
+                 BETWEEN $1::date AND $2::date) AS in_range
+       FROM bookings b
+       WHERE ${revenueCountableSql("b")}
+     ), fam AS (
+       SELECT m.id, m.root_id, m.net, m.in_range,
+              SUM(m.net) OVER (PARTITION BY m.root_id) AS fam_net,
+              ROW_NUMBER() OVER (PARTITION BY m.root_id ORDER BY m.id) AS rn,
+              LEAST(
+                COALESCE((SELECT GREATEST(COALESCE(r.discount_amount, 0), 0) FROM bookings r
+                          WHERE r.id = m.root_id AND r.is_parent_contract = true
+                            AND r.deleted_at IS NULL
+                            AND COALESCE(r.status,'') NOT IN ('cancelled','temp_quote')), 0),
+                SUM(m.net) OVER (PARTITION BY m.root_id)
+              ) AS fam_disc
+       FROM m
+     ), sh AS (
+       SELECT id, root_id, net, in_range, rn, fam_disc,
+              CASE WHEN fam_net > 0 THEN FLOOR(fam_disc * net / fam_net) ELSE 0 END AS base_share,
+              CASE WHEN fam_net > 0
+                   THEN fam_disc - SUM(FLOOR(fam_disc * net / fam_net)) OVER (PARTITION BY root_id)
+                   ELSE 0 END AS coins
+       FROM fam
+     )
+     SELECT COALESCE(SUM(GREATEST(0, net - base_share - CASE WHEN rn <= coins THEN 1 ELSE 0 END)), 0) AS v
+     FROM sh WHERE in_range`,
     [from, to],
   );
   const collectedSql = await pool.query(

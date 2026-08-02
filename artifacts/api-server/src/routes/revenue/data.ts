@@ -1,6 +1,6 @@
 import { db } from "@workspace/db";
 import { bookingsTable, expensesTable, paymentsTable, fixedCostsTable } from "@workspace/db/schema";
-import { money, filterRevenueCountable, allocateFamilyPaid } from "../../lib/booking-money";
+import { money, filterRevenueCountable, allocateFamilyPaid, familyContractDiscountShares } from "../../lib/booking-money";
 import { parentIdsWithActiveChild, isEmptyParentContract } from "../../lib/parent-contract";
 // GĐ1b-2 (quy tắc ④ chủ chốt 14/07): cast theo show đọc từ SỔ staff_job_earnings
 // qua FINANCIAL ENGINE — bỏ hẳn tasks.cost (toàn hệ thống 0 dòng có cost > 0,
@@ -96,11 +96,14 @@ export async function loadAllData() {
   // PR #102: paidAmount per-booking = "đã thu PHÂN BỔ" theo gia đình từ payments gốc
   // (mirror ENGINE) — cột paid_amount thô không dùng nữa (phiếu hợp đồng gộp nằm ở CHA).
   const allocPaid = allocateFamilyPaid(bookings, payments);
+  // Giảm giá CHUNG hợp đồng (discount trên đơn CHA) chia pro-rata xuống dịch vụ —
+  // cùng quy tắc allocateFamilies, để netAmount mọi route Revenue khớp Engine/Booking.
+  const contractDiscShares = familyContractDiscountShares(bookings);
   const validBookings = filterRevenueCountable(bookings)
     .map(b => ({
       ...b,
       paidAmount: String(allocPaid.get(b.id) ?? 0),
-      netAmount: Math.max(0, money(b.totalAmount) - money(b.discountAmount)),
+      netAmount: Math.max(0, money(b.totalAmount) - money(b.discountAmount) - (b.id != null ? (contractDiscShares.get(b.id) ?? 0) : 0)),
     }));
 
   // Task #363: kèm danh sách chi phí đã phân lớp + ngày để route nào cần lọc theo range chính xác (ngày/tuần)

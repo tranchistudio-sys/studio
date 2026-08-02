@@ -875,7 +875,7 @@ router.get("/bookings/:id/allocation", async (req, res) => {
     if (rootId == null) {
       // Đơn không countable (báo giá tạm/hủy/thùng rác...) hoặc không tồn tại →
       // không có phân bổ; FE fallback về hành vi thu tiền thẳng như cũ.
-      return res.json({ rootId: id, services: [], totalDeposit: 0, overpayment: 0, totalNet: 0, totalAllocPaid: 0, totalRemaining: 0 });
+      return res.json({ rootId: id, services: [], totalDeposit: 0, contractDiscount: 0, overpayment: 0, totalNet: 0, totalAllocPaid: 0, totalRemaining: 0 });
     }
     const fam = snap.families.get(rootId);
     const members = snap.members
@@ -893,6 +893,8 @@ router.get("/bookings/:id/allocation", async (req, res) => {
       serviceCategory: m.serviceCategory,
       packageType: m.packageType,
       shootDate: m.shootDate,
+      listNet: m.listNet,
+      contractDiscountShare: m.contractDiscountShare,
       net: m.net,
       equalDeposit: m.equalDeposit,
       directPaid: m.directPaid,
@@ -905,6 +907,7 @@ router.get("/bookings/:id/allocation", async (req, res) => {
       rootId,
       totalDeposit: fam?.totalDeposit ?? 0,
       canonicalDepositPaymentId: fam?.canonicalDepositPaymentId ?? null,
+      contractDiscount: fam?.contractDiscount ?? 0,
       overpayment: fam?.overpayment ?? 0,
       totalNet: services.reduce((s, x) => s + x.net, 0),
       totalAllocPaid: services.reduce((s, x) => s + x.allocPaid, 0),

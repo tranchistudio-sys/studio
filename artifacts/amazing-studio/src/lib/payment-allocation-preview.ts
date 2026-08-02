@@ -17,6 +17,11 @@ export interface AllocationService {
   serviceCategory: string | null;
   packageType: string | null;
   shootDate: string | null;
+  /** Giá dịch vụ TRƯỚC giảm giá chung hợp đồng (hiển thị). Server cũ có thể chưa trả. */
+  listNet?: number;
+  /** Phần giảm giá chung hợp đồng (trên đơn CHA) phân bổ cho dịch vụ này. */
+  contractDiscountShare?: number;
+  /** NET tính nợ = listNet − contractDiscountShare (SAU giảm chung hợp đồng). */
   net: number;
   equalDeposit: number;
   directPaid: number;
@@ -30,6 +35,8 @@ export interface FamilyAllocationInfo {
   rootId: number;
   totalDeposit: number;
   canonicalDepositPaymentId?: number | null;
+  /** Giảm giá chung hợp đồng đã áp vào gia đình (Σ contractDiscountShare). */
+  contractDiscount?: number;
   overpayment: number;
   totalNet: number;
   totalAllocPaid: number;

@@ -141,6 +141,10 @@ export const luluThreadState = pgTable("lulu_thread_state", {
   currentStage: text("current_stage").notNull().default("new"),
   previousStage: text("previous_stage"),
   serviceIntent: text("service_intent"),
+  // (Service-rooted 29/07) additive: con trỏ dịch vụ đang bàn / trước đó + trí nhớ riêng từng dịch vụ.
+  currentService: text("current_service"),
+  previousService: text("previous_service"),
+  servicesJson: jsonb("services_json").notNull().default({}),
   customerStatus: text("customer_status").notNull().default("lead"),
   lastAction: text("last_action"),
   slots: jsonb("slots").notNull().default(sql`'{}'::jsonb`),

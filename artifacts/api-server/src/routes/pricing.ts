@@ -8,6 +8,17 @@ import { verifyToken } from "./auth";
 import { defaultRequiresPostProductionForGroupId, defaultRequiresPrintingForGroupId } from "../lib/post-production-eligibility";
 import { resolveDiscount, discountWindowStatus, type DiscountConfig } from "../lib/pricing-discount";
 import { clearSaleContextCache } from "../lib/sale-context";
+import { syncPricingToSaleScenarios } from "../lib/sale-scenario-sync";
+
+/**
+ * Hook fire-and-forget: sau khi tạo/sửa nhóm/gói, tự đồng bộ kịch bản cho ĐÚNG nhóm đó.
+ * KHÔNG await ở request chính → không làm chậm/không crash lưu Bảng giá (Part 6.7 fail-soft).
+ */
+function fireSyncScenarios(groupName: string | null | undefined): void {
+  if (!groupName?.trim()) return;
+  void syncPricingToSaleScenarios({ groupName: groupName.trim() })
+    .catch((e) => console.error("[ScenarioSync] auto-sync (fail-soft):", String(e).slice(0, 140)));
+}
 
 const router: IRouter = Router();
 
@@ -1042,6 +1053,7 @@ router.post("/service-groups", async (req, res) => {
     ...parseDiscountPayload(req.body),
   }).returning();
   clearSaleContextCache();
+  fireSyncScenarios(g.name); // nhóm mới → tự tạo bộ kịch bản bước 2–7 (fail-soft)
   res.status(201).json(fmtGroup(g));
 });
 
@@ -1202,6 +1214,16 @@ router.post("/service-packages", async (req, res) => {
   const savedItems = await db.select().from(packageItemsTable)
     .where(eq(packageItemsTable.packageId, pkg.id)).orderBy(asc(packageItemsTable.sortOrder));
   clearSaleContextCache();
+  // Gói mới → tự đồng bộ kịch bản cho nhóm chứa gói (resolve tên nhóm từ groupId). Fire-and-forget.
+  if (pkg.groupId != null) {
+    void (async () => {
+      try {
+        const gr = await db.select({ name: serviceGroupsTable.name }).from(serviceGroupsTable)
+          .where(eq(serviceGroupsTable.id, pkg.groupId as number)).limit(1);
+        fireSyncScenarios(gr[0]?.name);
+      } catch (e) { console.error("[ScenarioSync] resolve group (fail-soft):", String(e).slice(0, 120)); }
+    })();
+  }
   res.status(201).json({ ...fmtPkg(pkg), items: savedItems });
 });
 

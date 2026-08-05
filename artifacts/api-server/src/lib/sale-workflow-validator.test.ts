@@ -257,3 +257,49 @@ describe("validateSaleReply — từng rule", () => {
     expect(caught.length).toBe(bad.length);
   });
 });
+
+// ─── STATIC-vs-DYNAMIC: CRM là nguồn sự thật, kịch bản KHÔNG override (luật chủ) ──
+describe("Validator STATIC-vs-DYNAMIC — CRM authoritative", () => {
+  const base = { threadState: state({ serviceIntent: "wedding_album" }), decision: decision({ action: "QUOTE_REFERENCE" }) };
+  // CRM hiện tại: giá thường 9.5tr (không promo).
+  const CRM_NOW: CatalogItem[] = [{ code: "AL", name: "Album", price: 9_500_000, finalPrice: null }];
+
+  it("TEST6: fail-CLOSED — reply có giá nhưng KHÔNG load được CRM → BLOCK (không fail-open)", () => {
+    const r = validateSaleReply({ ...base, reply: "Dạ gói này 8.900.000đ ạ", catalog: undefined, catalogAuthoritative: true });
+    expect(r.verdict).toBe("BLOCK");
+    if (r.verdict === "BLOCK") expect(r.violatedRule).toBe("price_unverifiable");
+  });
+
+  it("Không authoritative + không catalog → BỎ QUA check giá (back-compat, không chặn oan)", () => {
+    const r = validateSaleReply({ ...base, reply: "Dạ gói này 8.900.000đ ạ", catalog: undefined });
+    expect(r.verdict).toBe("PASS");
+  });
+
+  it("TEST1: kịch bản ghi 8.9tr, CRM 9.5tr → reply lặp 8.9tr bị BLOCK price_mismatch", () => {
+    const r = validateSaleReply({ ...base, reply: "Dạ gói này hiện bên em là 8.900.000đ ạ", catalog: CRM_NOW, catalogAuthoritative: true });
+    expect(r.verdict).toBe("BLOCK");
+    if (r.verdict === "BLOCK") expect(r.violatedRule).toBe("price_mismatch");
+  });
+
+  it("TEST1 (mặt đúng): reply dùng đúng giá CRM 9.5tr → PASS", () => {
+    const r = validateSaleReply({ ...base, reply: "Dạ gói này hiện bên em là 9.500.000đ ạ", catalog: CRM_NOW, catalogAuthoritative: true });
+    expect(r.verdict).toBe("PASS");
+  });
+
+  it("TEST2: CRM tắt promo (promoActive=false) → reply nói 'đang có ưu đãi' bị BLOCK promo_not_active", () => {
+    const r = validateSaleReply({ ...base, reply: "Dạ bên em đang có ưu đãi cho mình nha", catalog: CRM_NOW, catalogAuthoritative: true, promoActive: false });
+    expect(r.verdict).toBe("BLOCK");
+    if (r.verdict === "BLOCK") expect(r.violatedRule).toBe("promo_not_active");
+  });
+
+  it("TEST2 (phủ định OK): CRM tắt promo nhưng reply nói 'hiện chưa có ưu đãi' → PASS", () => {
+    const r = validateSaleReply({ ...base, reply: "Dạ hiện bên em chưa có ưu đãi ạ, giá gói là 9.500.000đ nha", catalog: CRM_NOW, catalogAuthoritative: true, promoActive: false });
+    expect(r.verdict).toBe("PASS");
+  });
+
+  it("TEST3: CRM bật promo (promoActive=true) → reply nói 'đang ưu đãi' KHÔNG bị chặn theo promo", () => {
+    const PROMO: CatalogItem[] = [{ code: "AL", name: "Album", price: 10_000_000, finalPrice: 8_900_000 }];
+    const r = validateSaleReply({ ...base, reply: "Dạ đang có ưu đãi, giá còn 8.900.000đ ạ", catalog: PROMO, catalogAuthoritative: true, promoActive: true });
+    expect(r.verdict).toBe("PASS");
+  });
+});

@@ -1,5 +1,6 @@
 import type { ThreadState } from "./sale-thread-state";
 import { detectPhone, detectAppointmentIntent, detectEscalation } from "./sale-lead-flags";
+import { detectRefusal, detectObjection } from "./sale-slots-extra";
 
 /**
  * SALE WORKFLOW V1 — Router + Playbook máy-đọc-được cho Lulu ("khúc giữa" tầng 2-3).
@@ -29,7 +30,8 @@ export type SaleStage =
   | "BOOKING_INTENT"  // khách muốn giữ lịch / để SĐT / cọc
   | "WAITING"         // bot đã hỏi, chờ khách (stage nghỉ giữa lượt)
   | "HUMAN_REVIEW"    // người thật phải xử lý
-  | "BOOKED";         // đã cọc/đã thành khách — chăm sóc, không sale lại từ đầu
+  | "BOOKED"          // đã cọc/đã thành khách — chăm sóc, upsell qua thẻ, không sale lại từ đầu
+  | "LOST";           // từ chối rõ / chốt bên khác — tôn trọng, không sale, mở cửa quay lại
 
 export type SaleAction =
   | "GREET"
@@ -185,6 +187,19 @@ export const SALE_PLAYBOOK_V1: Record<SaleStage, StageDef> = {
     nextStages: ["CONSULTING", "QUOTED"],
     escalateWhen: "Mặc định đã ở người thật",
   },
+  LOST: {
+    goal: "Khách đã từ chối rõ — đáp 1 câu tử tế, KHÔNG sale, mở cửa quay lại sau",
+    entryWhen: "customer_status = lost (từ chối rõ / chốt bên khác — detectRefusal)",
+    requiredData: [],
+    allowedActions: ["WAIT", "ANSWER_FAQ", "ESCALATE_HUMAN"],
+    forbiddenActions: [
+      "GREET", "ASK_SERVICE", "IDENTIFY_SERVICE", "ASK_DATE", "QUOTE_REFERENCE", "QUOTE_EXACT",
+      "SEND_PRICE", "SEND_SAMPLE", "ASK_FOR_BOOKING", "ASK_PHONE",
+    ],
+    doneWhen: "Khách chủ động nhắn lại có tín hiệu quan tâm (customer_status về lead)",
+    nextStages: ["DISCOVERY", "CONSULTING"],
+    escalateWhen: "Khiếu nại — luôn người thật",
+  },
   BOOKED: {
     goal: "Khách đã cọc/đã thành khách — chăm sóc, giải đáp; KHÔNG sale lại từ đầu",
     entryWhen: "customer_status = customer / có cọc (tín hiệu V2 — deriveStage chưa tự vào được, chờ nối crm_leads.customer_id)",
@@ -209,8 +224,10 @@ function normalizeVi(text: string): string {
 
 // "bao nhieu" trần chỉ tính khi KHÔNG theo sau bởi danh từ đếm ("bao nhiêu người/kiểu/phút"
 // là câu hỏi số lượng, không phải giá). Đã bỏ `cho.{0,8}gia` (dính "cho gia đình").
+// "tham khao gia" (30/07, demo thật): "cho chị tham khảo giá trước" — cách hỏi giá RẤT phổ biến
+// của khách Việt mà bộ cũ bỏ sót (golden G53).
 const PRICE_QUESTION_RE =
-  /(gia (sao|the nao|nhieu|bao nhieu)|bao nhieu(?!\s*(nguoi|khach|kieu|tam|buc|phut|tieng|gio|ngay|buoi|thang|tuoi|kg|cm|cai|bo|noi))|nhieu tien|gia ca|bang gia|hoi gia|xin gia|gia goi|combo bao nhieu)/;
+  /(gia (sao|the nao|nhieu|bao nhieu)|bao nhieu(?!\s*(nguoi|khach|kieu|tam|buc|phut|tieng|gio|ngay|buoi|thang|tuoi|kg|cm|cai|bo|noi))|nhieu tien|gia ca|bang gia|hoi gia|xin gia|gia goi|combo bao nhieu|tham khao gia|gia tham khao|bao gia (di|em|giup|luon|cho|truoc)|cu bao gia)/;
 const SEND_PRICELIST_RE = /((gui|xin|cho)[^.?!\n]{0,15}bang gia|bang gia day du|gui gia\b)/;
 // Khách đòi gặp người thật — check trên text ĐÃ BỎ DẤU vì detectEscalation (prod) dùng
 // class [oơ] không chứa "ờ" nên "người thật" gõ đủ dấu KHÔNG match (bug tiềm ẩn prod,
@@ -218,11 +235,11 @@ const SEND_PRICELIST_RE = /((gui|xin|cho)[^.?!\n]{0,15}bang gia|bang gia day du|
 const WANT_HUMAN_RE = /((gap|noi chuyen voi|cho (gap|noi chuyen))\s*(nguoi that|nhan vien|nguoi tu van|ai do)|can nguoi that|nguoi that (tu van|tra loi))/;
 // Đã bỏ `xem thu` trần (dính "để chị xem thử rồi báo lại" = khách xin suy nghĩ).
 const WANT_SAMPLE_RE =
-  /(xem (anh|hinh|mau|album|bo anh)|cho.{0,10}(mau|anh mau|hinh)|co (mau|anh mau|hinh mau)|gui (anh|hinh|mau)|mau (nao )?dep|anh (that|chup) (cua )?ben|cho coi|xem thu (anh|hinh|mau|album))/;
-const GREETING_ONLY_RE = /^(hi+|hello+|alo+|chao( em| shop| ban| anh| chi)?|xin chao|cho hoi|e oi|em oi|shop oi)( a| nha| nhe)?[.!~\s]*$/;
+  /(xem (anh|hinh|mau|album|bo anh)|cho.{0,10}(mau|anh mau|hinh)|co (mau|anh mau|hinh mau)|gui (anh|hinh|mau)|mau (nao )?dep|anh (that|chup) (cua )?ben|cho coi|xem thu (anh|hinh|mau|album)|con mau (khac|nao)|gui xem|mau khac (khong|ko|di)|concept (nao )?(dep|la|hay)|xem concept|co concept|cho xem(?!.{0,8}(bang gia|gia|lich))|mau .{0,10}dep)/;
+const GREETING_ONLY_RE = /^((hi+|hello+|alo+)( em| chi| shop)?( oi)?|chao( em| shop| ban| anh| chi)?|xin chao|cho hoi|e oi|em oi|shop oi)( a| nha| nhe)?[.!~\s]*$/;
 // Ack cụt theo TOKEN (chống backtracking + bắt được ack 2-3 từ "ok ạ"/"dạ vâng"/"ok nha").
 // Text vào đã bỏ dấu nên chỉ cần token không dấu.
-const ACK_WORDS = new Set(["da", "vang", "ok", "oke", "okie", "okay", "uk", "u", "uh", "um", "uhm", "a", "nha", "nhe", "👍"]);
+const ACK_WORDS = new Set(["da", "vang", "ok", "oke", "okie", "okay", "uk", "u", "uh", "um", "uhm", "a", "nha", "nhe", "vay", "ha", "hen", "👍"]);
 function isShortAck(t: string): boolean {
   const words = t.replace(/[.!~?]+/g, " ").trim().split(/\s+/).filter(Boolean);
   return words.length > 0 && words.length <= 3 && words.every((w) => ACK_WORDS.has(w) || /^\.+$/.test(w));
@@ -236,9 +253,9 @@ const FAQ_TOPICS: Array<{ topic: string; re: RegExp }> = [
   { topic: "faq:address", re: /(dia chi|o dau|cho nao|nam o|studio o|toi dau|den dau|duong nao)/ },
   { topic: "faq:hours", re: /(may gio|gio mo|gio lam viec|mo cua|dong cua)/ },
   { topic: "faq:delivery", re: /((bao lau|khi nao|bao gio|may ngay)\s*(thi\s*)?(co|nhan|lay|tra|gui|cho|xong)\s*(anh|hinh)|bao lau xong)/ },
-  { topic: "faq:package_detail", re: /(gom (nhung )?gi|bao gom|co nhung gi|trong goi co|goi nay (co|gom))/ },
+  { topic: "faq:package_detail", re: /(gom (nhung )?gi|bao gom|co nhung gi|trong goi co|goi nay (co|gom)|(chup|quay|lam)?\s*(may|bao nhieu) (tieng|gio dong ho)|chup trong bao lau)/ },
   { topic: "faq:services", re: /(co (vay|ao dai|vest|makeup|trang diem|quay phim|make up)|ben (em|minh) co)/ },
-  { topic: "faq:payment", re: /(thanh toan|tra gop|coc bao nhieu|dat coc bao nhieu)/ },
+  { topic: "faq:payment", re: /(thanh toan|tra gop|coc bao nhieu|dat coc bao nhieu|coc (sao|the nao|nhu nao)|dat coc (sao|the nao))/ },
 ];
 
 function detectFaqTopic(t: string): string | null {
@@ -248,15 +265,60 @@ function detectFaqTopic(t: string): string | null {
 
 // Lý do nghiệp vụ MỚI được phép mở lại câu hỏi ngày (theo chỉ đạo golden flow):
 // khách muốn giữ lịch / đặt cọc / nhờ kiểm tra lịch cụ thể / CHỐT MUA.
-const REOPEN_DATE_RE = /(giu lich|chot lich|dat lich|book lich|dat coc|coc giu|kiem tra lich|xem lich (giup|gium)|con lich khong|ngay .{0,12}con (trong|lich))/;
+const REOPEN_DATE_RE = /(giu lich|chot lich|dat lich|book lich|dat coc|coc giu|kiem tra lich|xem lich (giup|gium)|con lich khong|ngay .{0,12}con (trong|lich)|con trong (khong|ko|hong)|(co|lam|ky) hop dong|qua thu (vay|do|ao)|thu (vay|do) duoc (khong|ko))/;
 // Khách CHỐT MUA không kèm chữ "lịch" ("chốt gói này", "lấy gói basic", "ok chốt luôn").
 // Lookbehind chặn phủ định ("chưa chốt nha" KHÔNG phải chốt mua).
 const CLOSE_DEAL_RE =
   /(?<!chua )(?<!khong )(?<!dung )(chot (goi|don|luon|lun|nhe|di\b)|\b(lay|chon)\s+goi|dong y (chot|lam|dat)|ok chot)/;
 
+// ─── Tín hiệu tin khách (export cho Scenario Manager) ─────────────────────────
+// Gom các detector THUẦN của Router thành 1 hàm export để tầng Scenario (data-driven)
+// match trigger bằng ĐÚNG bộ regex đã test — không nhân bản regex (1 nguồn sự thật).
+// KHÔNG đổi hành vi routeSaleAction (hàm này chỉ đọc, không side-effect).
+
+export type MessageSignals = {
+  priceQuestion: boolean;
+  wantPricelist: boolean;
+  wantSample: boolean;
+  greetingOnly: boolean;
+  /** Ack cụt ("ok ạ") hoặc thăm dò "còn đó không". */
+  shortAckOrPresence: boolean;
+  /** "faq:address" | "faq:hours" | "faq:package_detail" | "faq:payment" | ... | null */
+  faqTopic: string | null;
+  wantHuman: boolean;
+  hasPhone: boolean;
+  /** Muốn giữ lịch / kiểm tra lịch / hẹn — lý do nghiệp vụ mở lại câu hỏi ngày. */
+  bookingIntent: boolean;
+  closeDeal: boolean;
+  /** Lý do escalation cứng từ detectEscalation (null nếu không có). */
+  escalation: string | null;
+};
+
+export function detectMessageSignals(customerMessage: string): MessageSignals {
+  const msg = (customerMessage ?? "").trim();
+  const t = normalizeVi(msg);
+  return {
+    priceQuestion: PRICE_QUESTION_RE.test(t),
+    wantPricelist: SEND_PRICELIST_RE.test(t),
+    wantSample: WANT_SAMPLE_RE.test(t),
+    greetingOnly: GREETING_ONLY_RE.test(t),
+    shortAckOrPresence: isShortAck(t) || PRESENCE_CHECK_RE.test(t),
+    faqTopic: detectFaqTopic(t),
+    wantHuman: WANT_HUMAN_RE.test(t),
+    hasPhone: detectPhone(msg),
+    bookingIntent: REOPEN_DATE_RE.test(t) || detectAppointmentIntent(msg),
+    closeDeal: CLOSE_DEAL_RE.test(t),
+    escalation: detectEscalation(msg),
+  };
+}
+
 // ─── Suy stage từ state (V1: stage suy mỗi lượt, chưa persist current_stage) ──
 
 export function deriveStage(state: ThreadState, opts?: { isFirstContact?: boolean }): SaleStage {
+  // V2 (Sales Brain): trạng thái khách THẮNG cả "tin đầu" — khách đã BOOKED/LOST mà mở
+  // thread mới vẫn phải được nhớ đúng (không chào-bán như người lạ).
+  if (state.customerStatus === "lost") return "LOST";
+  if (state.customerStatus === "customer") return "BOOKED";
   if (opts?.isFirstContact) return "NEW_LEAD";
   if (state.quotedPackages.length > 0) return "QUOTED";
   if (state.slots.date_status === "not_decided") {
@@ -311,8 +373,9 @@ export function computeForbiddenQuestions(state: ThreadState, reopenDate: boolea
   return [...forbidden];
 }
 
-/** Áp playbook: action nằm ngoài allowedActions của stage → hạ về fallback an toàn. */
-function enforcePlaybook(d: RouterDecision): RouterDecision {
+/** Áp playbook: action nằm ngoài allowedActions của stage → hạ về fallback an toàn.
+ *  Export cho Scenario Resolver dùng CHUNG lưới an toàn (không nhân bản logic). */
+export function enforcePlaybook(d: RouterDecision): RouterDecision {
   const def = SALE_PLAYBOOK_V1[d.stage];
   if (def.allowedActions.includes(d.action)) return d;
   const fallback: SaleAction = def.allowedActions.includes("ANSWER_FAQ") ? "ANSWER_FAQ" : "WAIT";
@@ -360,6 +423,20 @@ export function routeSaleAction(input: RouterInput): RouterDecision {
         d = alt;
       }
     }
+    // RULE CỨNG (30/07, review đối kháng): tương tự ask_date — KHÔNG BAO GIỜ trả ASK_PHONE
+    // khi 'ask_phone' đang bị cấm (đã hỏi >=2 lần). Khách muốn chốt mà hết quota hỏi
+    // → bàn giao người thật chủ động liên hệ (đúng tinh thần BOOKING_INTENT luôn có người chốt).
+    // Đặt SAU guard ask_date vì nhánh alt của guard đó cũng có thể sinh ASK_PHONE.
+    if (d.action === "ASK_PHONE" && d.forbiddenQuestions.includes("ask_phone")) {
+      const alt = baseDecision(
+        d.stage,
+        "ESCALATE_HUMAN",
+        `${d.reason} → NHƯNG ask_phone đã hỏi đủ, không lặp — bàn giao người thật chủ động liên hệ chốt`,
+      );
+      alt.forbiddenQuestions = d.forbiddenQuestions;
+      alt.shouldEscalate = true;
+      d = alt;
+    }
     // Áp playbook TRƯỚC khi tính knowledge/requiredData — decision cuối phải nhất quán
     // action↔knowledge (hết chuyện ANSWER_FAQ mang knowledge của action đã bị hạ).
     d = enforcePlaybook(d);
@@ -393,6 +470,26 @@ export function routeSaleAction(input: RouterInput): RouterDecision {
   if (WANT_HUMAN_RE.test(t)) {
     const d = baseDecision("HUMAN_REVIEW", "ESCALATE_HUMAN", "Khách muốn gặp người thật — bàn giao ngay");
     d.shouldEscalate = true;
+    return finish(d);
+  }
+
+  // ── 1c. Từ chối rõ / chốt bên khác → LOST: đáp 1 câu tử tế, KHÔNG sale, không níu ──
+  const refusal = detectRefusal(msg);
+  if (refusal) {
+    const d = baseDecision("LOST", "WAIT", `Khách từ chối rõ ("${refusal}") — tôn trọng, chúc mừng/cảm ơn 1 câu ấm áp, mở cửa quay lại, TUYỆT ĐỐI không sale tiếp`);
+    return finish(d);
+  }
+
+  // ── 1d. Chê giá THUẦN ("mắc vậy", "đắt quá") không kèm xin giảm — xử lý băn khoăn
+  //        bằng giá trị, KHÔNG escalate (xin giảm cụ thể mới cần người thật ở nhánh 1) ──
+  const objLite = detectObjection(msg);
+  if (objLite?.type === "PRICE_OBJECTION") {
+    const d = baseDecision(
+      state.quotedPackages.length ? "CONSIDERING" : stage,
+      "HANDLE_OBJECTION",
+      `Khách chê giá ("${objLite.quote.slice(0, 30)}") — đồng cảm + nêu giá trị, TUYỆT ĐỐI không tự giảm`,
+    );
+    d.forbiddenQuestions.push("self_discount");
     return finish(d);
   }
 
@@ -489,6 +586,14 @@ export function routeSaleAction(input: RouterInput): RouterDecision {
     d.knowledgeNeeded = [`services:${intent}`];
     d.allowedQuestions.push("ask_style");
     return finish(d);
+  }
+  // HOÀN TẤT Ý ĐỊNH CŨ (V2 Sales Brain, phát hiện qua nghiệm thu 30/07): bot đã hỏi ngày
+  // (lý do gốc: khách hỏi giá) và khách ĐÃ TRẢ LỜI mốc ngày → đừng quay lại đào gu —
+  // BÁO GIÁ CHÍNH THỨC luôn. (Ack cụt đã bị chặn ở bước 7 nên không rơi vào đây.)
+  if (state.slots.date_status === "known" && state.quotedPackages.length === 0
+      && state.askedQuestions.some((q) => q.key === "ask_date")) {
+    return finish(baseDecision("QUOTED", "QUOTE_EXACT",
+      "Khách đã cho mốc ngày sau khi được hỏi (xuất phát từ hỏi giá) — hoàn tất ý định: báo giá chính thức"));
   }
   // GOLDEN FLOW: khách vừa chốt "chưa biết ngày / tham khảo" (thường là câu trả lời cho
   // câu hỏi ngày sau khi hỏi giá) → giao ngay GIÁ THAM KHẢO thay vì hỏi thêm.

@@ -1,6 +1,13 @@
 import { pool } from "@workspace/db";
 import { detectDateSlot, botAsksDate, type DateStatus } from "./sale-slots";
 import { detectServiceIntentFromText } from "./sale-samples";
+// SLOTS V2 (Sales Brain V1): gu/địa điểm/số người/ngân sách/hoãn/objection/từ chối —
+// module thuần sale-slots-extra, chỉ ghi khi tín hiệu RÕ, "chưa biết" = UNKNOWN_VALID.
+import {
+  detectStyle, detectLocationType, detectHeadcount, detectBudget, detectPostpone,
+  detectObjection, detectRefusal, OBJECTION_LABELS,
+  type LocationType, type ObjectionType, UNKNOWN_VALID,
+} from "./sale-slots-extra";
 
 /**
  * sale-thread-state.ts — TRÍ NHỚ CÓ CẤU TRÚC theo từng khách (Đợt 2 — nền móng).
@@ -45,6 +52,22 @@ export type ThreadSlots = {
   event_date?: string | null;
   /** Nguyên văn mốc thời gian khách nói (vd "cuối tháng 12"). */
   date_text?: string | null;
+  // ── SLOTS V2 (Sales Brain V1 mục 4) — JSONB mở, KHÔNG cần DDL.
+  //    Giá trị "UNKNOWN_VALID" = khách đã nói "chưa biết" → coi là ĐÃ trả lời, cấm hỏi lại.
+  /** Gu/phong cách ("Hàn Quốc", "cá tính"…) hoặc UNKNOWN_VALID. */
+  style?: string;
+  /** studio | outdoor | both | UNKNOWN_VALID. */
+  location_type?: LocationType;
+  /** Số người chụp (1-30) hoặc UNKNOWN_VALID. */
+  headcount?: number | typeof UNKNOWN_VALID;
+  /** Nguyên văn ngân sách khách nói ("tầm 3-5 triệu") hoặc UNKNOWN_VALID — CHỈ để tư vấn gói, không phải giá. */
+  budget_text?: string;
+  /** Ai quyết định: partner (chồng/vợ/gia đình) — ghi khi khách nói "để hỏi chồng". */
+  decision_maker?: "partner";
+  /** Nhật ký phản đối (tối đa 10, mới nhất cuối) — nền cho follow-up có lý do. */
+  objections?: Array<{ type: ObjectionType; quote: string; at: string }>;
+  /** Lý do mất lead (từ chối rõ / chốt bên khác) — đặt customer_status='lost'. */
+  lost_reason?: string;
 };
 
 export type AskedQuestion = { key: string; at: string; count: number };
@@ -71,6 +94,44 @@ export type ThreadState = {
 const MAX_ASKED = 50;
 const MAX_QUOTED = 30;
 const MAX_SAMPLE_URLS = 100;
+const MAX_OBJECTIONS = 10;
+
+/**
+ * SLOTS V2: bóc mọi slot mới từ 1 tin khách (THUẦN — dùng chung cho luồng thật + mô phỏng).
+ * Quy tắc: slot ĐÃ CÓ giá trị thật thì tin sau chỉ đè khi có tín hiệu rõ mới (khách đổi ý
+ * là hợp lệ); UNKNOWN_VALID không đè giá trị thật đã có.
+ */
+export function extractSlotsV2Patch(
+  text: string, prior: ThreadSlots | undefined, atIso: string,
+): Partial<ThreadSlots> {
+  const patch: Partial<ThreadSlots> = {};
+  const keep = <T>(cur: T | undefined, next: T | null): T | undefined => {
+    if (next == null) return undefined;
+    if (next === UNKNOWN_VALID && cur !== undefined && cur !== UNKNOWN_VALID) return undefined;
+    return next as T;
+  };
+  const style = keep(prior?.style, detectStyle(text));
+  if (style !== undefined) patch.style = style;
+  const loc = keep(prior?.location_type, detectLocationType(text));
+  if (loc !== undefined) patch.location_type = loc;
+  const head = keep(prior?.headcount, detectHeadcount(text));
+  if (head !== undefined) patch.headcount = head;
+  const budget = keep(prior?.budget_text, detectBudget(text));
+  if (budget !== undefined) patch.budget_text = budget;
+  const pp = detectPostpone(text);
+  if (pp?.kind === "partner") patch.decision_maker = "partner";
+  const obj = detectObjection(text);
+  if (obj) {
+    const prev = prior?.objections ?? [];
+    // Không ghi trùng liên tiếp cùng type (khách nhắc lại cùng ý trong 1 mạch).
+    if (prev.length === 0 || prev[prev.length - 1].type !== obj.type) {
+      patch.objections = [...prev, { ...obj, at: atIso }].slice(-MAX_OBJECTIONS);
+    }
+  }
+  const refusal = detectRefusal(text);
+  if (refusal) patch.lost_reason = refusal;
+  return patch;
+}
 
 // ─── Bảng (lazy + được migrations.ts gọi lúc startup) ─────────────────────────
 
@@ -99,6 +160,12 @@ export async function ensureThreadStateTable(): Promise<void> {
       updated_at            TIMESTAMP NOT NULL DEFAULT NOW()
     )
   `);
+  // (Service-rooted 29/07) Additive: con trỏ dịch vụ đang bàn + trước đó + trí nhớ RIÊNG
+  // từng dịch vụ (services_json). NỀN cho GĐ4 (nối enforce); đường ghi hiện tại CHƯA dùng nên
+  // KHÔNG đổi hành vi. ADD COLUMN IF NOT EXISTS — additive, không destructive.
+  await pool.query(`ALTER TABLE lulu_thread_state ADD COLUMN IF NOT EXISTS current_service TEXT`);
+  await pool.query(`ALTER TABLE lulu_thread_state ADD COLUMN IF NOT EXISTS previous_service TEXT`);
+  await pool.query(`ALTER TABLE lulu_thread_state ADD COLUMN IF NOT EXISTS services_json JSONB NOT NULL DEFAULT '{}'::jsonb`);
   // KHÔNG nuốt lỗi CREATE INDEX: unique index là điều kiện sống của mọi câu
   // ON CONFLICT (facebook_user_id) bên dưới. Index fail → throw ra caller (mọi caller
   // đều fail-open) và createdTable KHÔNG được set → lần gọi sau tự thử lại.
@@ -182,16 +249,27 @@ export async function applyIncomingMessage(psid: string, text: string): Promise<
     const intent = text.trim().startsWith("[image:") ? "unknown" : detectServiceIntentFromText(text);
     const intentPatch = intent !== "unknown" && intent !== "new_concept_idea" ? intent : null;
 
+    // SLOTS V2 (cùng extractor với mô phỏng — 1 nguồn sự thật).
+    if (!text.trim().startsWith("[image:")) {
+      Object.assign(slotPatch, extractSlotsV2Patch(text, prior?.slots, new Date().toISOString()));
+    }
+
+    // Từ chối rõ → customer_status='lost'; khách quay lại (tin không phải từ chối) → 'lead'.
+    const statusPatch = (slotPatch as Partial<ThreadSlots>).lost_reason
+      ? "lost"
+      : prior?.customerStatus === "lost" ? "lead" : null;
+
     await pool.query(
-      `INSERT INTO lulu_thread_state (facebook_user_id, service_intent, slots, last_user_message_at)
-       VALUES ($1, $2, $3::jsonb, NOW())
+      `INSERT INTO lulu_thread_state (facebook_user_id, service_intent, slots, customer_status, last_user_message_at)
+       VALUES ($1, $2, $3::jsonb, COALESCE($4, 'lead'), NOW())
        ON CONFLICT (facebook_user_id) DO UPDATE SET
          service_intent = COALESCE(EXCLUDED.service_intent, lulu_thread_state.service_intent),
          slots = lulu_thread_state.slots || EXCLUDED.slots,
+         customer_status = COALESCE($4, lulu_thread_state.customer_status),
          last_user_message_at = NOW(),
          version = lulu_thread_state.version + 1,
          updated_at = NOW()`,
-      [psid, intentPatch, JSON.stringify(slotPatch)],
+      [psid, intentPatch, JSON.stringify(slotPatch), statusPatch],
     );
 
     // LOG QUYẾT ĐỊNH (yêu cầu vận hành): trạng thái TRƯỚC + dữ liệu MỚI phát hiện + SAU.
@@ -366,6 +444,12 @@ export function simulateThreadStateFromHistory(
         }
         const intent = detectServiceIntentFromText(msg);
         if (intent !== "unknown" && intent !== "new_concept_idea") state.serviceIntent = intent;
+        // SLOTS V2: gu/địa điểm/số người/ngân sách/hoãn/objection/từ chối (replay y luồng thật).
+        const patch = extractSlotsV2Patch(msg, state.slots, SIM_AT);
+        state.slots = { ...state.slots, ...patch };
+        // Từ chối rõ → lost; tin sau đó KHÔNG phải từ chối → khách quay lại (lead).
+        if (patch.lost_reason) state.customerStatus = "lost";
+        else if (state.customerStatus === "lost") state.customerStatus = "lead";
       }
       state.lastUserMessageAt = SIM_AT;
     }
@@ -415,6 +499,32 @@ export function buildThreadStateBlock(state: ThreadState | null): string {
     lines.push(
       `- ĐÃ BÁO GIÁ các gói: ${codes}. KHÔNG tự bung lại nguyên bảng giá các gói này; chỉ nhắc lại/so sánh khi khách hỏi.`,
     );
+  }
+
+  // ── SLOTS V2 (Sales Brain V1): nhắc từ dữ liệu THẬT — không hỏi lại điều đã biết.
+  const s = state.slots;
+  if (s.style && s.style !== UNKNOWN_VALID) {
+    lines.push(`- GU KHÁCH THÍCH: ${s.style}. Tư vấn/chọn mẫu theo gu này, KHÔNG hỏi lại gu.`);
+  } else if (s.style === UNKNOWN_VALID) {
+    lines.push(`- GU: khách ĐÃ NÓI chưa biết gu — gợi 2-3 hướng cho khách chọn, KHÔNG hỏi trần "mình thích gu gì".`);
+  }
+  if (s.location_type && s.location_type !== UNKNOWN_VALID) {
+    const vn = s.location_type === "studio" ? "trong studio" : s.location_type === "outdoor" ? "ngoại cảnh" : "cả studio lẫn ngoại cảnh";
+    lines.push(`- ĐỊA ĐIỂM: khách muốn chụp ${vn}. KHÔNG hỏi lại.`);
+  }
+  if (typeof s.headcount === "number") lines.push(`- SỐ NGƯỜI CHỤP: ${s.headcount} người. KHÔNG hỏi lại.`);
+  if (s.budget_text && s.budget_text !== UNKNOWN_VALID) {
+    lines.push(`- NGÂN SÁCH khách nhắc: "${s.budget_text}" — ưu tiên tư vấn gói vừa tầm này (giá vẫn CHỈ lấy từ bảng giá).`);
+  }
+  if (s.decision_maker === "partner") {
+    lines.push(`- NGƯỜI QUYẾT ĐỊNH: khách cần hỏi chồng/vợ/gia đình — KHÔNG ép chốt; hỗ trợ khách có đủ thông tin đem về bàn.`);
+  }
+  if (s.objections && s.objections.length > 0) {
+    const last = s.objections[s.objections.length - 1];
+    lines.push(`- KHÁCH TỪNG PHÂN VÂN: ${OBJECTION_LABELS[last.type] ?? last.type} ("${last.quote.slice(0, 80)}") — xử lý đúng mối lo này, đừng coi như chưa nghe.`);
+  }
+  if (s.lost_reason) {
+    lines.push(`- LƯU Ý: khách từng từ chối ("${s.lost_reason}") — nếu khách chủ động quay lại thì tiếp ấm áp đúng mạch cũ, TUYỆT ĐỐI không chào như người lạ, không sale dồn.`);
   }
 
   if (lines.length === 0) return "";

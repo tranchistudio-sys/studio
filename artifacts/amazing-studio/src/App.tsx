@@ -23,6 +23,7 @@ import ContractsPage from "@/pages/contracts";
 import ContractDetailPage from "@/pages/contract-detail";
 import ReportsPage from "@/pages/reports";
 import PaymentsPage from "@/pages/payments";
+import AiCodexPage from "@/pages/ai-codex";
 import ExpensesPage from "@/pages/expenses";
 import RevenuePage from "@/pages/revenue";
 import PhotoshopJobsPage from "@/pages/photoshop-jobs";
@@ -267,6 +268,7 @@ function InternalRouter() {
         <Route path="/bookings/trash" component={() => <AdminRoute component={BookingsTrashPage} />} />
         <Route path="/bookings" component={BookingsPage} />
         <Route path="/payments" component={PaymentsPage} />
+        <Route path="/ai-codex" component={AiCodexPage} />
         <Route path="/expenses" component={ExpensesPage} />
         <Route path="/revenue" component={() => <CmsAdminRoute component={RevenuePage} />} />
         {/* /contracts/:id PHẢI đứng trước /contracts — wouter Switch match theo thứ tự.

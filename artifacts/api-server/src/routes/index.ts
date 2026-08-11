@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import codexRouter from "./codex";
 import healthRouter from "./health";
 import authRouter from "./auth";
 import customersRouter from "./customers";
@@ -111,4 +111,5 @@ router.use(staffAllowancesRouter);
 router.use(goldenHourRouter);
 router.use(autoPostFacebookRouter);
 
+router.use(codexRouter);
 export default router;

@@ -1,0 +1,14 @@
+import assert from "node:assert/strict";
+import os from "node:os";
+import path from "node:path";
+import { mkdtemp, readFile, stat } from "node:fs/promises";
+import { X20_PROVIDER, createTaskMetadata, normalizeResponsesOutput } from "./x20-provider-adapter.mjs";
+import { createSecretStore, redact } from "./x20-secret-store.mjs";
+import { transition } from "./x20-state-machine.mjs";
+assert.equal(X20_PROVIDER.family, "responses");
+assert.equal(normalizeResponsesOutput({ output: [{ type: "message", content: [{ type: "output_text", text: "X20_CONNECTION_OK" }] }] }), "X20_CONNECTION_OK");
+assert.throws(() => createTaskMetadata({ worktree: "/opt/amazing-studio/app" }), /PRODUCTION_PATH/);
+const metadata = createTaskMetadata({ taskId: "t1", baseSha: "abc", branch: "codex/x20", worktree: "/tmp/wt", mode: "readonly", status: "QUEUED" }); assert.equal("apiKey" in metadata, false);
+const dir = await mkdtemp(path.join(os.tmpdir(), "x20-secret-")); const store = createSecretStore(dir); await store.save("fake-key"); assert.equal(await store.configured(), true); assert.equal(await store.read(), "fake-key"); assert.equal((await stat(path.join(dir, "x20-api-key"))).mode & 0o777, 0o600); await store.delete(); assert.equal(await store.configured(), false); assert.equal(redact("Authorization: Bearer secret"), "Authorization: Bearer <REDACTED>");
+let task = { status: "QUEUED", commitSha: "sha" }; task = transition(task, "ANALYZING"); task = transition(task, "CODING"); task = transition(task, "TESTING"); task = transition(task, "REVIEW_READY"); task = transition(task, "PREVIEW_READY"); task = transition(task, "WAITING_MERGE_APPROVAL"); task = transition(task, "MERGED"); task = transition(task, "WAITING_DEPLOY_APPROVAL"); task = transition(task, "DEPLOYING", { approved: true, mergedSha: "sha" }); assert.equal(task.status, "DEPLOYING");
+console.log("X20_LOCAL_TESTS_PASS");

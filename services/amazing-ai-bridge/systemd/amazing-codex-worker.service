@@ -8,6 +8,7 @@ User=codex
 WorkingDirectory=/opt/amazing-ai-bridge
 Environment=CODEX_HOME=/home/codex/.codex
 ExecStart=/usr/bin/node /opt/amazing-ai-bridge/src/worker-safe.mjs
+EnvironmentFile=-/etc/amazing-ai-bridge-x20.env
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

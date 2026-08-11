@@ -1,0 +1,21 @@
+[Unit]
+Description=Amazing Codex Worker (safe versioned runtime)
+After=network-online.target
+
+[Service]
+Type=simple
+User=codex
+WorkingDirectory=/opt/amazing-ai-bridge
+Environment=CODEX_HOME=/home/codex/.codex
+ExecStart=/usr/bin/node /opt/amazing-ai-bridge/src/worker-safe.mjs
+EnvironmentFile=-/etc/amazing-ai-bridge-x20.env
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/amazing-ai-bridge/data/worktrees /opt/amazing-ai-bridge/data/tasks
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

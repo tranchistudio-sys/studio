@@ -25,4 +25,3 @@ export default function AiCodexPage() {
   </main>;
 }
 function StatusIcon({ status }: { status: string }) { if (status === "COMPLETED") return <CheckCircle2 className="text-emerald-600" />; if (status === "FAILED") return <XCircle className="text-red-600" />; if (status === "QUEUED") return <Clock3 className="text-amber-600" />; return <Loader2 className="animate-spin text-primary" />; }
-

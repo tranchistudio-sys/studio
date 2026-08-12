@@ -112,6 +112,18 @@ export default function WeddingCardsCreatePage() {
   const themeKey = templates.find((t) => t.slug === templateSlug)?.themeKey ?? templateSlug;
   const display = getTemplateDisplay(templateSlug);
 
+  // The live preview should react as soon as files are selected. During upload,
+  // use the local object URL; once complete, React automatically switches to
+  // the permanent remote URL stored on the same media item.
+  const previewCoverItem = mediaItems.find((item) => item.role === "cover1");
+  const previewCoupleItem = mediaItems.find((item) => item.role === "cover2");
+  const previewCoverImageUrl = previewCoverItem?.remoteUrl ?? previewCoverItem?.previewUrl ?? coverImageUrl;
+  const previewCoupleImageUrl = previewCoupleItem?.remoteUrl ?? previewCoupleItem?.previewUrl ?? coupleImageUrl;
+  const previewAlbumImageUrls = mediaItems
+    .filter((item) => item.role === "album")
+    .map((item) => item.remoteUrl ?? item.previewUrl)
+    .filter(Boolean);
+
   useEffect(() => {
     if (!templateDetail || templateSeeded) return;
     const bg = templateDetail.defaultBackgroundUrl;
@@ -138,8 +150,8 @@ export default function WeddingCardsCreatePage() {
     mapsUrlBride: mapsUrlBride || null,
     mapsUrlReception: mapsUrlReception || null,
     invitationMessage: invitationMessage || null,
-    coverImageUrl,
-    coupleImageUrl,
+    coverImageUrl: previewCoverImageUrl,
+    coupleImageUrl: previewCoupleImageUrl,
     contactPhone: contactPhone || null,
   };
 
@@ -383,9 +395,9 @@ export default function WeddingCardsCreatePage() {
                 </div>
               </div>
             </WeddingCardPhoneFrame>
-            {albumImageUrls.length > 0 && (
+            {previewAlbumImageUrls.length > 0 && (
               <div className="mt-4 w-full max-w-[280px] flex gap-2 overflow-x-auto pb-1 px-1">
-                {albumImageUrls.map((url, i) => {
+                {previewAlbumImageUrls.map((url, i) => {
                   const src = getImageSrc(url);
                   if (!src) return null;
                   return (

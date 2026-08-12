@@ -152,6 +152,7 @@ export default function WeddingCardsCreatePage() {
     invitationMessage: invitationMessage || null,
     coverImageUrl: previewCoverImageUrl,
     coupleImageUrl: previewCoupleImageUrl,
+    albumImageUrls: previewAlbumImageUrls,
     contactPhone: contactPhone || null,
   };
 

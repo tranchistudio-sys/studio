@@ -52,7 +52,6 @@ import PublicPhotoIdeasPage from "@/pages/public/photo-ideas";
 import CmsTrashPage from "@/pages/cms/trash";
 import CmsHomeSettingsPage from "@/pages/cms/home-settings";
 import CmsWeddingTemplatesPage from "@/pages/cms/wedding-templates";
-import CmsWeddingResponsesPage from "@/pages/cms/wedding-responses";
 import PublicHomePage from "@/pages/public/home";
 import {
   PUBLIC_PREVIEW_PARAM,
@@ -299,7 +298,6 @@ function InternalRouter() {
         <Route path="/cms/home-settings" component={CmsHomeSettingsPage} />
         <Route path="/cms/gallery" component={CmsGalleryPage} />
         <Route path="/cms/wedding-templates" component={CmsWeddingTemplatesPage} />
-        <Route path="/cms/wedding-responses" component={CmsWeddingResponsesPage} />
         <Route path="/cms/pricing" component={CmsPricingPublicPage} />
         <Route path="/cms/rentals" component={() => <Redirect to="/cms/categories" />} />
         <Route path="/cms/products-rental" component={() => <Redirect to="/cms/categories" />} />

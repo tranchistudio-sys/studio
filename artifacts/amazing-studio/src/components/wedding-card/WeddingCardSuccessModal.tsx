@@ -67,7 +67,6 @@ export function WeddingCardSuccessModal({
             <ExternalLink className="w-4 h-4" />
             Xem thiệp
           </Link>
-          <Link href="/cms/wedding-responses" className="wc-bt-btn wc-bt-btn-outline w-full">Quản lý lời chúc</Link>
           <div className="flex gap-2">
             <a href={`https://zalo.me/share?url=${encodeURIComponent(shareUrl)}`} target="_blank" rel="noopener noreferrer" className="wc-bt-btn flex-1 bg-[#0068ff] text-white text-xs">
               Zalo
@@ -77,7 +76,7 @@ export function WeddingCardSuccessModal({
               Facebook
             </a>
           </div>
-          <p className="text-xs leading-relaxed text-[var(--wc-bt-muted)]">Lời chúc và xác nhận của khách được lưu tại trang quản lý thiệp. Thông báo email sẽ hoạt động khi quản trị viên cấu hình nhà cung cấp email.</p>
+          <p className="text-xs leading-relaxed text-[var(--wc-bt-muted)]">Lời chúc của khách sẽ được gửi thẳng đến email bạn đã đăng ký. Amazing Studio không lưu nội dung lời chúc.</p>
         </div>
       </div>
     </div>

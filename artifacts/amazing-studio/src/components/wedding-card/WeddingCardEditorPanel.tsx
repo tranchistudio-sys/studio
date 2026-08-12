@@ -118,9 +118,9 @@ export function WeddingCardEditorPanel({
             />
           </div>
           <div>
-            <label className="text-xs text-[var(--wc-bt-muted)]">Email nhận lời chúc và xác nhận</label>
-            <input type="email" className="wc-bt-input mt-1" value={form.notificationEmail} onChange={(e) => setters.setNotificationEmail(e.target.value)} placeholder="tenban@example.com" />
-            <p className="mt-1 text-[11px] text-[var(--wc-bt-muted)]">Lời chúc và xác nhận tham dự của khách sẽ được gửi về email này. Email không hiển thị công khai.</p>
+            <label className="text-xs text-[var(--wc-bt-muted)]">Email cô dâu/chú rể nhận lời chúc *</label>
+            <input type="email" required className="wc-bt-input mt-1" value={form.notificationEmail} onChange={(e) => setters.setNotificationEmail(e.target.value)} placeholder="tenban@example.com" />
+            <p className="mt-1 text-[11px] text-[var(--wc-bt-muted)]">Khách gửi lời chúc sẽ chuyển thẳng về email này. Email không hiển thị công khai và nội dung lời chúc không được lưu tại Amazing Studio.</p>
           </div>
           <div>
             <label className="text-xs text-[var(--wc-bt-muted)]">Ngày cưới</label>

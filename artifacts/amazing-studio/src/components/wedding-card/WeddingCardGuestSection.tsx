@@ -1,10 +1,5 @@
 import { useState } from "react";
-import { useSubmitGuestEntry, useWeddingCardGuestEntries } from "@/hooks/use-wedding-cards";
-
-const DEMO_WISHES = [
-  { id: 1, guestName: "BT Studio", message: "Chúc hai bạn trăm năm hạnh phúc! 💕", attendance: "yes" as const, guestCount: 2 },
-  { id: 2, guestName: "Ngọc Anh", message: "Mãi mãi yêu thương nhau nhé!", attendance: "unknown" as const, guestCount: 1 },
-];
+import { useSubmitGuestEntry } from "@/hooks/use-wedding-cards";
 
 export function WeddingCardGuestSection({
   slug,
@@ -15,8 +10,6 @@ export function WeddingCardGuestSection({
   compact?: boolean;
   preview?: boolean;
 }) {
-  const { data: apiEntries = [] } = useWeddingCardGuestEntries(preview ? undefined : slug);
-  const entries = preview ? DEMO_WISHES : apiEntries;
   const submit = useSubmitGuestEntry(slug);
   const [guestName, setGuestName] = useState("");
   const [message, setMessage] = useState("");
@@ -48,9 +41,7 @@ export function WeddingCardGuestSection({
 
   return (
     <section className={compact ? "mt-4" : "mx-auto max-w-lg px-6 py-12"}>
-      {preview && (
-        <p className="text-center text-xs text-[var(--wc-bt-muted)] mb-4">2 lời chúc đã được gửi (mẫu)</p>
-      )}
+      <p className="text-center text-xs text-[var(--wc-bt-muted)] mb-4">Lời chúc được gửi thẳng đến email của cô dâu/chú rể và không được lưu tại Amazing Studio.</p>
       {!compact && (
         <h2 className="font-serif text-xl text-center text-[var(--wc-bt-text)] mb-6">
           Lời chúc & xác nhận tham dự
@@ -102,7 +93,7 @@ export function WeddingCardGuestSection({
           />
         </label>}
         {error && <p className="text-sm text-red-700" role="alert">{error}</p>}
-        {done && <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800" role="status">Amazing Studio đã ghi nhận lời chúc và xác nhận của bạn.</p>}
+        {done && <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800" role="status">Lời chúc và xác nhận của bạn đã được gửi đến email của cô dâu/chú rể.</p>}
         <button
           type="submit"
           disabled={submit.isPending || !guestName.trim() || !attendance}
@@ -111,22 +102,6 @@ export function WeddingCardGuestSection({
           {submit.isPending ? "Đang gửi…" : done ? "Đã gửi!" : "Gửi"}
         </button>
       </form>
-      {entries.length > 0 && (
-        <ul className={compact ? "mt-6 space-y-3 max-h-48 overflow-y-auto text-left" : "mt-10 space-y-4"}>
-          {entries.map((e) => (
-            <li key={e.id} className="border-b border-[var(--wc-bt-border)] pb-3">
-              <p className="font-medium text-[var(--wc-bt-text)]">{e.guestName || "Khách"}</p>
-              {e.message && <p className="text-[var(--wc-bt-muted)] text-sm mt-1">{e.message}</p>}
-              {e.attendance !== "unknown" && (
-                <p className="text-[10px] uppercase tracking-wider text-[var(--wc-bt-taupe)] mt-1">
-                  {e.attendance === "yes" ? "Tham dự" : "Không tham dự"}
-                  {e.guestCount > 1 ? ` · ${e.guestCount} người` : ""}
-                </p>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
     </section>
   );
 }

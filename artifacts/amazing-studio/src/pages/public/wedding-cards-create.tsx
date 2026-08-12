@@ -284,6 +284,10 @@ export default function WeddingCardsCreatePage() {
       alert("Vui lòng nhập ngày cưới.");
       return;
     }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(notificationEmail.trim())) {
+      alert("Vui lòng nhập email nhận lời chúc hợp lệ.");
+      return;
+    }
     const body: CreateWeddingCardInput = {
       templateSlug,
       groomName: groomName.trim(),
@@ -338,6 +342,8 @@ export default function WeddingCardsCreatePage() {
       ? "Vui lòng chọn ít nhất 2 ảnh."
       : !weddingDate
         ? "Vui lòng nhập ngày cưới."
+        : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(notificationEmail.trim())
+          ? "Vui lòng nhập email nhận lời chúc hợp lệ."
         : mediaItems.some((item) => item.status === "processing" || item.status === "uploading")
           ? "Vui lòng chờ tải ảnh hoàn tất."
           : null;

@@ -106,7 +106,6 @@ const CMS_NAV: CmsNavItem[] = [
   { href: "/cms/photo-ideas", label: "Ý tưởng chụp ảnh", icon: Lightbulb, adminOnly: false, publicPath: "/y-tuong-chup-anh" },
   // ⚙️ Mở quản lý Website (Thiệp cưới + Thùng rác CMS) cho NHÂN VIÊN (quyết định của chủ studio).
   { href: "/cms/wedding-templates", label: "Cài đặt Thiệp cưới", icon: Heart, adminOnly: false, publicPath: "/thiep-cuoi-online" },
-  { href: "/cms/wedding-responses", label: "Lời chúc & xác nhận", icon: MessageSquare, adminOnly: false },
   { href: "/cms/trash",      label: "Thùng rác CMS", icon: Trash2,     adminOnly: false },
 ];
 

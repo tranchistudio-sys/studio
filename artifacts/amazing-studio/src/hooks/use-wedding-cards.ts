@@ -253,7 +253,7 @@ export function useSubmitGuestEntry(slug: string) {
       attendance?: "yes" | "no" | "unknown";
       guestCount?: number;
     }) =>
-      fetchJson<GuestEntry>(`${WC_BASE}/public/${slug}/guest-entries`, {
+      fetchJson<{ sent: boolean; duplicate?: boolean; createdAt?: string }>(`${WC_BASE}/public/${slug}/guest-entries`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(body),
       }),

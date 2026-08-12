@@ -224,9 +224,6 @@ export default function WeddingCardsCreatePage() {
     } catch (error) {
       setMediaItems((prev) => prev.map((x) => {
         if (x.id !== item.id) return x;
-        if (import.meta.env.DEV && x.previewUrl.startsWith("blob:")) {
-          return { ...x, status: "complete" as const, progress: 100, error: "Chỉ xem trước trên máy local" };
-        }
         return { ...x, status: "failed" as const, progress: 0, error: error instanceof Error ? error.message : "Upload thất bại" };
       }));
     }

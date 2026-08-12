@@ -233,6 +233,98 @@
   aspect-ratio: 4/3;
 }
 
+/* Wedding module music player */
+.wc-music-player {
+  position: fixed;
+  left: max(0.75rem, env(safe-area-inset-left));
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.wc-music-disc {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border: 3px solid rgba(255,255,255,.9);
+  border-radius: 999px;
+  color: white;
+  background: repeating-radial-gradient(circle, #111 0 5px, #272727 6px 8px, #0a0a0a 9px 13px);
+  box-shadow: 0 10px 30px rgba(0,0,0,.25), 0 0 0 1px rgba(0,0,0,.08);
+  cursor: pointer;
+}
+
+.wc-music-disc.is-playing { animation: wc-music-spin 4s linear infinite; }
+@keyframes wc-music-spin { to { transform: rotate(360deg); } }
+
+.wc-music-disc-center {
+  position: absolute;
+  inset: 17px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  color: white;
+  background: linear-gradient(135deg,#a0063d,#d36583);
+}
+.wc-music-disc-center svg { width: 17px; height: 17px; }
+
+.wc-music-mini-controls {
+  display: flex;
+  padding: 0.2rem;
+  border-radius: 999px;
+  background: rgba(255,255,255,.92);
+  box-shadow: 0 6px 22px rgba(0,0,0,.14);
+  backdrop-filter: blur(8px);
+}
+.wc-music-mini-controls button,
+.wc-music-panel button {
+  display: grid;
+  place-items: center;
+  border: 0;
+  cursor: pointer;
+}
+.wc-music-mini-controls button { width: 28px; height: 28px; border-radius: 999px; background: transparent; color: #5c2d4a; }
+.wc-music-mini-controls button:hover { background: #fce4ec; }
+.wc-music-mini-controls svg { width: 14px; height: 14px; }
+.wc-music-label { max-width: 120px; padding: .25rem .5rem; border-radius: 999px; font-size: 10px; line-height: 1.2; text-align: center; color: white; background: rgba(0,0,0,.65); }
+
+.wc-music-panel {
+  position: absolute;
+  left: 0;
+  bottom: 116px;
+  width: min(310px, calc(100vw - 1.5rem));
+  max-height: min(440px, calc(100vh - 160px));
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.7);
+  border-radius: 20px;
+  background: rgba(255,255,255,.96);
+  box-shadow: 0 20px 60px rgba(0,0,0,.2);
+  backdrop-filter: blur(16px);
+}
+.wc-music-panel-head { display:flex; justify-content:space-between; align-items:center; padding:1rem; border-bottom:1px solid #eee; }
+.wc-music-panel-head div { display:flex; flex-direction:column; }
+.wc-music-panel-head strong { color:#3f2435; }
+.wc-music-panel-head span { font-size:11px; color:#8a7482; }
+.wc-music-panel-head button { width:32px; height:32px; border-radius:999px; background:#f8eef2; color:#713848; }
+.wc-music-panel-head svg { width:16px; height:16px; }
+.wc-music-track-list { max-height:340px; overflow-y:auto; padding:.5rem; }
+.wc-music-track-list button { width:100%; grid-template-columns:32px 1fr 24px; gap:.5rem; padding:.7rem; border-radius:12px; background:transparent; color:#5c3d52; text-align:left; }
+.wc-music-track-list button:hover,.wc-music-track-list button.is-active { background:#fce4ec; color:#9f174c; }
+.wc-music-track-list button > span { font-size:11px; opacity:.65; }
+.wc-music-track-list button > strong { font-size:13px; font-weight:600; }
+.wc-music-track-list svg { width:15px; height:15px; }
+
+@media (max-width: 640px) {
+  .wc-music-disc { width: 54px; height: 54px; }
+  .wc-music-disc-center { inset: 14px; }
+  .wc-music-mini-controls { display: none; }
+  .wc-music-label { max-width: 100px; }
+  .wc-music-panel { bottom: 82px; }
+}
+
 /* Demo cards row */
 .wc-bt-demo-row {
   display: flex;

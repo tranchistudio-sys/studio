@@ -72,6 +72,7 @@ import { StaffAuthProvider, useStaffAuth } from "@/contexts/StaffAuthContext";
 import { UploadQueueProvider } from "@/contexts/UploadQueueContext";
 import { Camera, Shirt } from "lucide-react";
 import { Toaster } from "@/components/ui/toaster";
+import { WeddingMusicPlayer } from "@/components/wedding-card/WeddingMusicPlayer";
 
 // Register auth token getter once at app startup so all api-client-react hooks
 // (useListStaff, useListTasks, etc.) automatically include the auth header.
@@ -202,22 +203,23 @@ function PublicNotFound() {
 
 function PublicRouter() {
   const [location] = useLocation();
+  const weddingModule = location === "/thiep-cuoi-online" || location.startsWith("/thiep-cuoi-online/") || (location.startsWith("/thiep-cuoi/") && !location.startsWith("/thiep-cuoi-online"));
 
   // Editor + thiệp public — không header/footer marketing (mobile-first)
   if (location.startsWith("/thiep-cuoi-online/tao")) {
     return (
-      <Switch>
-        <Route path="/thiep-cuoi-online/tao" component={WeddingCardsCreatePage} />
-        <Route component={PublicNotFound} />
-      </Switch>
+      <><Switch>
+          <Route path="/thiep-cuoi-online/tao" component={WeddingCardsCreatePage} />
+          <Route component={PublicNotFound} />
+        </Switch>{weddingModule && <WeddingMusicPlayer />}</>
     );
   }
   if (location.startsWith("/thiep-cuoi/") && !location.startsWith("/thiep-cuoi-online")) {
     return (
-      <Switch>
-        <Route path="/thiep-cuoi/:slug" component={WeddingCardViewPage} />
-        <Route component={PublicNotFound} />
-      </Switch>
+      <><Switch>
+          <Route path="/thiep-cuoi/:slug" component={WeddingCardViewPage} />
+          <Route component={PublicNotFound} />
+        </Switch>{weddingModule && <WeddingMusicPlayer />}</>
     );
   }
   // Hợp đồng online cho khách — trang standalone sạch, không header/footer marketing
@@ -231,7 +233,7 @@ function PublicRouter() {
   }
 
   return (
-    <PublicLayout>
+    <><PublicLayout>
       <Switch>
         <Route path="/" component={PublicHomePage} />
         <Route path="/trang-chu"><Redirect to="/" /></Route>
@@ -245,7 +247,7 @@ function PublicRouter() {
         <Route path="/thiep-cuoi-online" component={WeddingCardsLandingPage} />
         <Route component={PublicNotFound} />
       </Switch>
-    </PublicLayout>
+    </PublicLayout>{weddingModule && <WeddingMusicPlayer />}</>
   );
 }
 

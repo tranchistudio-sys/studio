@@ -1266,6 +1266,14 @@
   min-width: 220px;
 }
 
+.wc-media-upload-button {
+  min-height: 52px;
+  justify-content: center;
+  color: #fff;
+  background: linear-gradient(135deg, #9f174c 0%, #c44d72 100%);
+  box-shadow: 0 10px 24px rgba(159, 23, 76, 0.2);
+}
+
 .wc-bt-collage img.wc-bt-collage-contain {
   object-fit: contain;
   background: #f7f2ee;

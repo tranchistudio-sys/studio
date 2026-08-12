@@ -51,7 +51,7 @@ export function WeddingCardEditorPanel({
   onMediaRole: (id: string, role: WeddingMediaRole) => void;
   onSwapCovers: () => void;
   onRemoveMedia: (id: string) => void;
-  onRetryMedia: (id: string) => void;
+  onRetryMedia: (id: string, file?: File) => void;
   onMoveMedia: (id: string, direction: -1 | 1) => void;
 }) {
   return (

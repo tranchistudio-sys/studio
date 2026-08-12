@@ -469,7 +469,19 @@ export default function WeddingCardsCreatePage() {
             onMediaRole={(id, role) => syncRoles(setMediaRole(mediaItems, id, role))}
             onSwapCovers={() => syncRoles(swapCovers(mediaItems))}
             onRemoveMedia={(id) => syncRoles(removeMedia(mediaItems, id))}
-            onRetryMedia={(id) => { const item = mediaItems.find((x) => x.id === id); if (item?.file) uploadMediaItem(item); }}
+            onRetryMedia={(id, replacementFile) => {
+              const item = mediaItems.find((x) => x.id === id);
+              if (!item) return;
+              if (replacementFile) {
+                const replacement = { ...item, name: replacementFile.name, fingerprint: fileFingerprint(replacementFile), previewUrl: URL.createObjectURL(replacementFile), remoteUrl: null, file: replacementFile, status: "processing" as const, progress: 5, error: undefined };
+                setMediaItems((prev) => prev.map((x) => x.id === id ? replacement : x));
+                void uploadMediaItem(replacement);
+              } else if (item.status === "complete") {
+                setMediaItems((prev) => prev.map((x) => x.id === id ? { ...x, status: "failed" as const, progress: 0, error: "Ảnh cũ không còn tồn tại" } : x));
+              } else if (item.file) {
+                void uploadMediaItem(item);
+              }
+            }}
             onMoveMedia={(id, direction) => {
               const index = mediaItems.findIndex((item) => item.id === id);
               const target = index + direction;

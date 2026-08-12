@@ -1,3 +1,4 @@
+import { Router, type IRouter } from "express";
 import codexRouter from "./codex";
 import healthRouter from "./health";
 import authRouter from "./auth";

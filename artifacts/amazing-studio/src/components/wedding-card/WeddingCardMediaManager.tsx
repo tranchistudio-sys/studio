@@ -35,7 +35,17 @@ export function WeddingCardMediaManager({ items, onPick, onRole, onSwap, onRemov
     <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
       {items.map((item, index) => <article key={item.id} className="relative overflow-hidden rounded-xl border border-[var(--wc-bt-border)] bg-white">
         <div className="relative aspect-[4/5] bg-neutral-100">
-          <img src={getImageSrc(item.previewUrl) ?? item.previewUrl} alt={item.name} className="h-full w-full object-cover" onError={() => onRetry(item.id)} />
+          <img
+            src={getImageSrc(item.previewUrl) ?? item.previewUrl}
+            alt={item.name}
+            className="h-full w-full object-cover"
+            onError={() => {
+              // Drafts restored from localStorage have no original File. If their
+              // remote object is gone, remove the stale placeholder automatically.
+              if (!item.file) onRemove(item.id);
+              else onRetry(item.id);
+            }}
+          />
           {item.status === "failed" && <div className="absolute inset-0 flex items-center justify-center bg-neutral-100 px-3 text-center text-xs font-medium text-red-700">Ảnh đã mất<br />Vui lòng chọn lại</div>}
         </div>
         <span className="absolute left-2 top-2 rounded-full bg-black/75 px-2 py-1 text-[10px] font-bold text-white">{roleLabel[item.role]}</span>

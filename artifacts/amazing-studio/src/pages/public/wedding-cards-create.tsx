@@ -99,19 +99,14 @@ export default function WeddingCardsCreatePage() {
       if (typeof draft.contactPhone === "string") setContactPhone(draft.contactPhone);
       if (typeof draft.notificationEmail === "string") setNotificationEmail(draft.notificationEmail);
       if (typeof draft.invitationMessage === "string") setInvitationMessage(draft.invitationMessage);
-      if (Array.isArray(draft.mediaItems)) {
-        const saved = (draft.mediaItems as WeddingMediaItem[]).filter((item) => item.remoteUrl).map((item) => ({ ...item, file: undefined, status: "complete" as const, progress: 100 }));
-        setMediaItems(saved);
-        setCoverImageUrl(saved.find((item) => item.role === "cover1")?.remoteUrl ?? null);
-        setCoupleImageUrl(saved.find((item) => item.role === "cover2")?.remoteUrl ?? null);
-        setAlbumImageUrls(saved.filter((item) => item.role === "album" && item.remoteUrl).map((item) => item.remoteUrl!));
-      }
+      // A new invitation always starts with an empty photo picker. Persisting
+      // uploaded object URLs caused old photos to leak into the next card.
     } catch { /* ignore corrupt local draft */ }
   }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
-      localStorage.setItem(DRAFT_KEY, JSON.stringify({ groomName, brideName, weddingDate, contactPhone, notificationEmail, invitationMessage, mediaItems: mediaItems.filter((item) => item.remoteUrl).map(({ file: _file, ...item }) => item) }));
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({ groomName, brideName, weddingDate, contactPhone, notificationEmail, invitationMessage }));
     }, 300);
     return () => window.clearTimeout(timer);
   }, [groomName, brideName, weddingDate, contactPhone, notificationEmail, invitationMessage, mediaItems]);

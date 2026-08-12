@@ -6,15 +6,15 @@ import { WeddingCardReveal } from "./WeddingCardReveal";
 export function WeddingCardAlbumSection({
   coverImageUrl,
   coupleImageUrl,
+  albumImageUrls = [],
 }: {
   coverImageUrl: string | null;
   coupleImageUrl: string | null;
+  albumImageUrls?: string[];
 }) {
-  const base = [coverImageUrl, coupleImageUrl]
+  const images = [coverImageUrl, coupleImageUrl, ...albumImageUrls]
     .map((u) => getImageSrc(u))
     .filter((s): s is string => !!s);
-
-  const images = base.length >= 6 ? base.slice(0, 6) : [...base, ...base, ...base].slice(0, 6);
 
   if (images.length === 0) return <div id="wc-section-album" className="sr-only" aria-hidden />;
 

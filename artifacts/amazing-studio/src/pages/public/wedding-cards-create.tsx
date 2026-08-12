@@ -21,6 +21,7 @@ import { WeddingCardViewExtras } from "@/components/wedding-card/WeddingCardView
 import { WeddingCardPetals } from "@/components/wedding-card/WeddingCardPetals";
 import { getTemplateDisplay } from "@/components/wedding-card/wedding-card-config";
 import { cn } from "@/lib/utils";
+import { fileFingerprint, removeMedia, setMediaRole, swapCovers, type WeddingMediaItem, type WeddingMediaRole } from "@/lib/wedding-card-media";
 
 const EMPTY_PREVIEW: PublicWeddingCard = {
   id: 0,
@@ -76,14 +77,52 @@ export default function WeddingCardsCreatePage() {
   const [coupleImageUrl, setCoupleImageUrl] = useState<string | null>(null);
   const [albumImageUrls, setAlbumImageUrls] = useState<string[]>([]);
   const [contactPhone, setContactPhone] = useState("");
+  const [notificationEmail, setNotificationEmail] = useState("");
+  const [createAttempted, setCreateAttempted] = useState(false);
+  const [mediaItems, setMediaItems] = useState<WeddingMediaItem[]>([]);
   const [uploading, setUploading] = useState<"cover" | "couple" | "extra" | null>(null);
   const [templateSeeded, setTemplateSeeded] = useState(false);
   const [createdSlug, setCreatedSlug] = useState<string | null>(null);
   const [previewPulse, setPreviewPulse] = useState(false);
   const previewPulseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  useEffect(() => {
+    try {
+      localStorage.removeItem("amazing-studio:wedding-card-draft:v2");
+    } catch { /* local storage may be unavailable */ }
+  }, []);
+
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => {
+      if (!mediaItems.some((item) => item.status === "processing" || item.status === "uploading")) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [mediaItems]);
+
+  useEffect(() => {
+    if (!mediaItems.length) return;
+    setCoverImageUrl(mediaItems.find((item) => item.role === "cover1")?.remoteUrl ?? null);
+    setCoupleImageUrl(mediaItems.find((item) => item.role === "cover2")?.remoteUrl ?? null);
+    setAlbumImageUrls(mediaItems.filter((item) => item.role === "album" && item.remoteUrl).map((item) => item.remoteUrl!));
+  }, [mediaItems]);
+
   const themeKey = templates.find((t) => t.slug === templateSlug)?.themeKey ?? templateSlug;
   const display = getTemplateDisplay(templateSlug);
+
+  // The live preview should react as soon as files are selected. During upload,
+  // use the local object URL; once complete, React automatically switches to
+  // the permanent remote URL stored on the same media item.
+  const previewCoverItem = mediaItems.find((item) => item.role === "cover1");
+  const previewCoupleItem = mediaItems.find((item) => item.role === "cover2");
+  const previewCoverImageUrl = previewCoverItem?.remoteUrl ?? previewCoverItem?.previewUrl ?? coverImageUrl;
+  const previewCoupleImageUrl = previewCoupleItem?.remoteUrl ?? previewCoupleItem?.previewUrl ?? coupleImageUrl;
+  const previewAlbumImageUrls = mediaItems
+    .filter((item) => item.role === "album")
+    .map((item) => item.remoteUrl ?? item.previewUrl)
+    .filter(Boolean);
 
   useEffect(() => {
     if (!templateDetail || templateSeeded) return;
@@ -111,8 +150,9 @@ export default function WeddingCardsCreatePage() {
     mapsUrlBride: mapsUrlBride || null,
     mapsUrlReception: mapsUrlReception || null,
     invitationMessage: invitationMessage || null,
-    coverImageUrl,
-    coupleImageUrl,
+    coverImageUrl: previewCoverImageUrl,
+    coupleImageUrl: previewCoupleImageUrl,
+    albumImageUrls: previewAlbumImageUrls,
     contactPhone: contactPhone || null,
   };
 
@@ -146,6 +186,7 @@ export default function WeddingCardsCreatePage() {
     mapsUrlReception,
     invitationMessage,
     contactPhone,
+    notificationEmail,
     coverImageUrl,
     coupleImageUrl,
   };
@@ -165,14 +206,82 @@ export default function WeddingCardsCreatePage() {
     }
   };
 
+  const syncRoles = (items: WeddingMediaItem[]) => {
+    setMediaItems(items);
+    setCoverImageUrl(items.find((item) => item.role === "cover1")?.remoteUrl ?? null);
+    setCoupleImageUrl(items.find((item) => item.role === "cover2")?.remoteUrl ?? null);
+    setAlbumImageUrls(items.filter((item) => item.role === "album" && item.remoteUrl).map((item) => item.remoteUrl!));
+    bumpPreview();
+  };
+
+  const uploadMediaItem = async (item: WeddingMediaItem) => {
+    setMediaItems((prev) => prev.map((x) => x.id === item.id ? { ...x, status: "uploading", progress: 35 } : x));
+    try {
+      const remoteUrl = await uploadWeddingCardImage(item.file!, item.role);
+      setMediaItems((prev) => {
+        return prev.map((x) => x.id === item.id ? { ...x, remoteUrl, status: "complete" as const, progress: 100 } : x);
+      });
+    } catch (error) {
+      setMediaItems((prev) => prev.map((x) => {
+        if (x.id !== item.id) return x;
+        return { ...x, status: "failed" as const, progress: 0, error: error instanceof Error ? error.message : "Upload thất bại" };
+      }));
+    }
+  };
+
+  const pickMedia = (files: File[]) => {
+    const accepted = files.slice(0, Math.max(0, 30 - mediaItems.length));
+    const fingerprints = new Set(mediaItems.map((item) => item.fingerprint));
+    const fresh = accepted.filter((file) => !fingerprints.has(fileFingerprint(file)) && /image\/(jpeg|png|webp|heic|heif)/i.test(file.type || "image/jpeg"));
+    const additions = fresh.map((file, index) => ({
+      id: `${Date.now()}-${index}-${file.name}`,
+      name: file.name,
+      fingerprint: fileFingerprint(file),
+      previewUrl: URL.createObjectURL(file),
+      remoteUrl: null,
+      file,
+      status: "processing" as const,
+      progress: 5,
+      role: "album" as const,
+    }));
+    const occupied = new Set(mediaItems.map((item) => item.role));
+    const withRoles = additions.map((item) => {
+      const role: WeddingMediaRole = !occupied.has("cover1") ? "cover1" : !occupied.has("cover2") ? "cover2" : "album";
+      occupied.add(role);
+      return { ...item, role };
+    });
+    setMediaItems((prev) => [...prev, ...withRoles]);
+    void (async () => {
+      for (let index = 0; index < withRoles.length; index += 3) {
+        await Promise.all(withRoles.slice(index, index + 3).map(uploadMediaItem));
+      }
+    })();
+  };
+
   const onCreate = async () => {
+    if (create.isPending) return;
+    setCreateAttempted(true);
     if (!groomName.trim() || !brideName.trim()) {
       alert("Vui lòng nhập tên chú rể và cô dâu");
       return;
     }
     const templateBg = templateDetail?.defaultBackgroundUrl ?? null;
-    if (!coverImageUrl && !coupleImageUrl && !templateBg) {
+    if (!previewCoverImageUrl && !previewCoupleImageUrl && !templateBg) {
       alert("Vui lòng tải ít nhất ảnh bìa hoặc ảnh cặp đôi");
+      return;
+    }
+    if (mediaItems.filter((item) => item.status === "complete").length < 2) {
+      alert("Vui lòng chọn ít nhất 2 ảnh.");
+      return;
+    }
+    if (!weddingDate) {
+      alert("Vui lòng nhập ngày cưới.");
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(notificationEmail.trim())) {
+      const emailInput = document.getElementById("wc-notification-email") as HTMLInputElement | null;
+      emailInput?.scrollIntoView({ behavior: "smooth", block: "center" });
+      window.setTimeout(() => emailInput?.focus(), 350);
       return;
     }
     const body: CreateWeddingCardInput = {
@@ -192,6 +301,8 @@ export default function WeddingCardsCreatePage() {
       coverImageUrl: coverImageUrl ?? templateDetail?.defaultBackgroundUrl ?? null,
       coupleImageUrl,
       contactPhone: contactPhone || null,
+      notificationEmail: notificationEmail || null,
+      albumImageUrls,
     };
     try {
       const res = await create.mutateAsync(body);
@@ -221,6 +332,17 @@ export default function WeddingCardsCreatePage() {
 
   const hasPhoto = !!(coverImageUrl || coupleImageUrl);
   const hasNames = !!(groomName.trim() && brideName.trim());
+  const createDisabledReason = !hasNames
+    ? "Vui lòng nhập tên chú rể và cô dâu."
+    : mediaItems.filter((item) => item.status === "complete").length < 2
+      ? "Vui lòng chọn ít nhất 2 ảnh."
+      : !weddingDate
+        ? "Vui lòng nhập ngày cưới."
+        : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(notificationEmail.trim())
+          ? "Vui lòng nhập email nhận lời chúc hợp lệ."
+        : mediaItems.some((item) => item.status === "processing" || item.status === "uploading")
+          ? "Vui lòng chờ tải ảnh hoàn tất."
+          : null;
 
   return (
     <div className="wc-bt-editor-page wc-mobile-page min-h-screen flex flex-col">
@@ -277,9 +399,9 @@ export default function WeddingCardsCreatePage() {
                 </div>
               </div>
             </WeddingCardPhoneFrame>
-            {albumImageUrls.length > 0 && (
+            {previewAlbumImageUrls.length > 0 && (
               <div className="mt-4 w-full max-w-[280px] flex gap-2 overflow-x-auto pb-1 px-1">
-                {albumImageUrls.map((url, i) => {
+                {previewAlbumImageUrls.map((url, i) => {
                   const src = getImageSrc(url);
                   if (!src) return null;
                   return (
@@ -299,6 +421,7 @@ export default function WeddingCardsCreatePage() {
         <div className="wc-fade-in order-2 lg:order-1 w-full lg:w-[min(420px,40vw)] lg:shrink-0 lg:border-r border-[var(--wc-bt-border,#e8e0d8)] bg-[var(--wc-bt-cream,#fdfbf9)] px-3 sm:px-4 py-4 pb-28 lg:pb-8 lg:max-h-[calc(100vh-120px)] lg:overflow-y-auto">
           <WeddingCardEditorPanel
             form={form}
+            showEmailError={createAttempted && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(notificationEmail.trim())}
             setters={{
               setGroomName: (v) => {
                 setGroomName(v);
@@ -331,27 +454,44 @@ export default function WeddingCardsCreatePage() {
                 bumpPreview();
               },
               setContactPhone,
+              setNotificationEmail,
             }}
-            uploading={uploading}
-            onUpload={uploadImage}
-            onClearCover={() => setCoverImageUrl(null)}
-            onClearCouple={() => setCoupleImageUrl(null)}
-            albumImageUrls={albumImageUrls}
-            onUploadAlbum={(f) => uploadImage(f, "extra")}
-            onRemoveAlbum={(idx) => {
-              setAlbumImageUrls((prev) => prev.filter((_, i) => i !== idx));
-              bumpPreview();
+            mediaItems={mediaItems}
+            onPickMedia={pickMedia}
+            onMediaRole={(id, role) => syncRoles(setMediaRole(mediaItems, id, role))}
+            onSwapCovers={() => syncRoles(swapCovers(mediaItems))}
+            onRemoveMedia={(id) => syncRoles(removeMedia(mediaItems, id))}
+            onRetryMedia={(id, replacementFile) => {
+              const item = mediaItems.find((x) => x.id === id);
+              if (!item) return;
+              if (replacementFile) {
+                const replacement = { ...item, name: replacementFile.name, fingerprint: fileFingerprint(replacementFile), previewUrl: URL.createObjectURL(replacementFile), remoteUrl: null, file: replacementFile, status: "processing" as const, progress: 5, error: undefined };
+                setMediaItems((prev) => prev.map((x) => x.id === id ? replacement : x));
+                void uploadMediaItem(replacement);
+              } else if (item.status === "complete") {
+                setMediaItems((prev) => prev.map((x) => x.id === id ? { ...x, status: "failed" as const, progress: 0, error: "Ảnh cũ không còn tồn tại" } : x));
+              } else if (item.file) {
+                void uploadMediaItem(item);
+              }
             }}
-            uploadingAlbum={uploading === "extra"}
+            onMoveMedia={(id, direction) => {
+              const index = mediaItems.findIndex((item) => item.id === id);
+              const target = index + direction;
+              if (index < 0 || target < 0 || target >= mediaItems.length) return;
+              const next = [...mediaItems];
+              [next[index], next[target]] = [next[target], next[index]];
+              syncRoles(next);
+            }}
           />
+          {createDisabledReason && <p className="mt-3 text-center text-sm font-medium text-[#713848]" role="status">{createDisabledReason}</p>}
           <button
             type="button"
             onClick={onCreate}
             disabled={create.isPending}
-            className="hidden lg:flex mt-6 w-full items-center justify-center gap-2 wc-bt-btn wc-bt-btn-primary rounded-xl disabled:opacity-60"
+            className="wc-create-card-button hidden lg:flex mt-3 w-full items-center justify-center gap-2 wc-bt-btn wc-bt-btn-primary rounded-xl"
           >
             <Sparkles className="h-4 w-4" />
-            Tạo thiệp & lấy link
+            {create.isPending ? "Đang tạo thiệp…" : "Tạo thiệp & lấy link"}
           </button>
         </div>
       </div>
@@ -384,10 +524,10 @@ export default function WeddingCardsCreatePage() {
           type="button"
           onClick={onCreate}
           disabled={create.isPending}
-          className="wc-bt-btn wc-bt-btn-primary w-full flex items-center justify-center gap-2 rounded-xl disabled:opacity-60"
+          className="wc-create-card-button wc-bt-btn wc-bt-btn-primary w-full flex items-center justify-center gap-2 rounded-xl"
         >
           <Sparkles className="h-4 w-4" />
-          Tạo thiệp & lấy link
+          {create.isPending ? "Đang tạo thiệp…" : "Tạo thiệp & lấy link"}
         </button>
       </div>
     </div>

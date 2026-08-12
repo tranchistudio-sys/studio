@@ -48,6 +48,7 @@ export function WeddingCardEnvelope({
         /* ignore */
       }
     }
+    return undefined;
   }, [autoOpen, storageKey]);
 
   const openEnvelope = useCallback(() => {

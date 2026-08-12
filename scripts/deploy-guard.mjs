@@ -35,6 +35,7 @@ const MIGRATIONS_DIR = "lib/db/migrations";
 const MIGRATION_ALLOWLIST = new Set([
   "0001_additional_services.sql",
   "0002_autopost_facebook.sql",
+  "0003_wedding_card_media_rsvp.sql",
 ]);
 const DESTRUCTIVE_SQL =
   /\bDROP\s+(TABLE|COLUMN|CONSTRAINT|SCHEMA|INDEX|SEQUENCE|VIEW)\b|\bTRUNCATE\b|\bALTER\s+TABLE\b[^;]*\bDROP\b/i;

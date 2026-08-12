@@ -51,6 +51,7 @@ export function WeddingCardViewExtras({
       <WeddingCardAlbumSection
           coverImageUrl={card.coverImageUrl}
           coupleImageUrl={card.coupleImageUrl}
+          albumImageUrls={card.albumImageUrls}
         />
 
       <WeddingCardReveal className="wc-bt-view-section">

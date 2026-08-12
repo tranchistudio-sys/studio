@@ -205,11 +205,18 @@
   align-items: start;
 }
 
+.wc-bt-collage-frame {
+  overflow: hidden;
+  border-radius: 1rem;
+  background: #f7f2ee;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.08);
+}
+
 .wc-bt-collage img {
   width: 100%;
-  border-radius: 1rem;
+  height: 100%;
   object-fit: cover;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.08);
+  transition: transform 0.2s ease;
 }
 
 .wc-bt-collage-tall {
@@ -222,8 +229,100 @@
   gap: 0.75rem;
 }
 
-.wc-bt-collage-stack img {
+.wc-bt-collage-stack .wc-bt-collage-frame {
   aspect-ratio: 4/3;
+}
+
+/* Wedding module music player */
+.wc-music-player {
+  position: fixed;
+  left: max(0.75rem, env(safe-area-inset-left));
+  bottom: max(1rem, env(safe-area-inset-bottom));
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.wc-music-disc {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border: 3px solid rgba(255,255,255,.9);
+  border-radius: 999px;
+  color: white;
+  background: repeating-radial-gradient(circle, #111 0 5px, #272727 6px 8px, #0a0a0a 9px 13px);
+  box-shadow: 0 10px 30px rgba(0,0,0,.25), 0 0 0 1px rgba(0,0,0,.08);
+  cursor: pointer;
+}
+
+.wc-music-disc.is-playing { animation: wc-music-spin 4s linear infinite; }
+@keyframes wc-music-spin { to { transform: rotate(360deg); } }
+
+.wc-music-disc-center {
+  position: absolute;
+  inset: 17px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  color: white;
+  background: linear-gradient(135deg,#a0063d,#d36583);
+}
+.wc-music-disc-center svg { width: 17px; height: 17px; }
+
+.wc-music-mini-controls {
+  display: flex;
+  padding: 0.2rem;
+  border-radius: 999px;
+  background: rgba(255,255,255,.92);
+  box-shadow: 0 6px 22px rgba(0,0,0,.14);
+  backdrop-filter: blur(8px);
+}
+.wc-music-mini-controls button,
+.wc-music-panel button {
+  display: grid;
+  place-items: center;
+  border: 0;
+  cursor: pointer;
+}
+.wc-music-mini-controls button { width: 28px; height: 28px; border-radius: 999px; background: transparent; color: #5c2d4a; }
+.wc-music-mini-controls button:hover { background: #fce4ec; }
+.wc-music-mini-controls svg { width: 14px; height: 14px; }
+.wc-music-label { max-width: 120px; padding: .25rem .5rem; border-radius: 999px; font-size: 10px; line-height: 1.2; text-align: center; color: white; background: rgba(0,0,0,.65); }
+
+.wc-music-panel {
+  position: absolute;
+  left: 0;
+  bottom: 116px;
+  width: min(310px, calc(100vw - 1.5rem));
+  max-height: min(440px, calc(100vh - 160px));
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,.7);
+  border-radius: 20px;
+  background: rgba(255,255,255,.96);
+  box-shadow: 0 20px 60px rgba(0,0,0,.2);
+  backdrop-filter: blur(16px);
+}
+.wc-music-panel-head { display:flex; justify-content:space-between; align-items:center; padding:1rem; border-bottom:1px solid #eee; }
+.wc-music-panel-head div { display:flex; flex-direction:column; }
+.wc-music-panel-head strong { color:#3f2435; }
+.wc-music-panel-head span { font-size:11px; color:#8a7482; }
+.wc-music-panel-head button { width:32px; height:32px; border-radius:999px; background:#f8eef2; color:#713848; }
+.wc-music-panel-head svg { width:16px; height:16px; }
+.wc-music-track-list { max-height:340px; overflow-y:auto; padding:.5rem; }
+.wc-music-track-list button { width:100%; grid-template-columns:32px 1fr 24px; gap:.5rem; padding:.7rem; border-radius:12px; background:transparent; color:#5c3d52; text-align:left; }
+.wc-music-track-list button:hover,.wc-music-track-list button.is-active { background:#fce4ec; color:#9f174c; }
+.wc-music-track-list button > span { font-size:11px; opacity:.65; }
+.wc-music-track-list button > strong { font-size:13px; font-weight:600; }
+.wc-music-track-list svg { width:15px; height:15px; }
+
+@media (max-width: 640px) {
+  .wc-music-disc { width: 54px; height: 54px; }
+  .wc-music-disc-center { inset: 14px; }
+  .wc-music-mini-controls { display: none; }
+  .wc-music-label { max-width: 100px; }
+  .wc-music-panel { bottom: 82px; }
 }
 
 /* Demo cards row */
@@ -1167,6 +1266,45 @@
   min-width: 220px;
 }
 
+.wc-media-upload-button {
+  min-height: 52px;
+  justify-content: center;
+  color: #fff;
+  background: linear-gradient(135deg, #9f174c 0%, #c44d72 100%);
+  box-shadow: 0 10px 24px rgba(159, 23, 76, 0.2);
+}
+
+.wc-bt-collage img.wc-bt-collage-contain {
+  object-fit: contain;
+  background: #f7f2ee;
+}
+
+/* Create-card CTA: keep the label readable in every state. */
+.wc-create-card-button {
+  min-height: 58px;
+  border: 2px solid #8f3652;
+  background: linear-gradient(135deg, #b84f70 0%, #923b58 100%);
+  color: #ffffff;
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  box-shadow: 0 12px 28px rgba(143, 54, 82, 0.32);
+}
+
+.wc-create-card-button:focus-visible {
+  outline: 3px solid rgba(143, 54, 82, 0.38);
+  outline-offset: 3px;
+}
+
+.wc-create-card-button:disabled {
+  cursor: not-allowed;
+  opacity: 1;
+  border-color: #c98f9f;
+  background: #f1d9df;
+  color: #673444;
+  box-shadow: 0 8px 20px rgba(143, 54, 82, 0.16);
+}
+
 .wc-bt-carousel-title {
   font-family: var(--font-sans);
   font-weight: 700;
@@ -1707,17 +1845,18 @@
 
 .wc-bt-classic-photos {
   position: relative;
-  height: 140px;
-  max-width: 280px;
+  width: 100%;
+  height: 230px;
+  max-width: 390px;
   margin: 0 auto;
 }
 
 .wc-bt-classic-photo {
   position: absolute;
   top: 0;
-  width: 42%;
-  height: 130px;
-  border-radius: 12px;
+  width: 48%;
+  height: 220px;
+  border-radius: 18px;
   overflow: hidden;
   background: #fff;
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.12);
@@ -1725,13 +1864,13 @@
 }
 
 .wc-bt-classic-photo--l {
-  left: 8%;
-  transform: rotate(-8deg);
+  left: 1%;
+  transform: rotate(-4deg);
 }
 
 .wc-bt-classic-photo--r {
-  right: 8%;
-  transform: rotate(8deg);
+  right: 1%;
+  transform: rotate(4deg);
 }
 
 .wc-bt-classic-photo-heart {
@@ -1844,18 +1983,111 @@
 }
 
 .wc-bt-album-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.65rem;
-  margin-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  margin-top: 1rem;
 }
 
 .wc-bt-album-grid-item {
-  aspect-ratio: 3/4;
-  border-radius: 1rem;
+  width: 100%;
+  aspect-ratio: 4/5;
+  border-radius: 1.25rem;
   overflow: hidden;
   background: #fff;
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.08);
+}
+
+/* Desktop invitation: use the canvas, with an editorial hero and larger photos. */
+@media (min-width: 1024px) {
+  .wc-bt-view-shell {
+    max-width: none;
+    width: 100%;
+    margin: 0;
+  }
+
+  .wc-bt-classic-full {
+    min-height: 100vh;
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
+    align-items: stretch;
+  }
+
+  .wc-bt-classic-full > header {
+    min-height: 100vh;
+    padding: clamp(3.5rem, 7vh, 6rem) clamp(3rem, 7vw, 8rem);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+  }
+
+  .wc-bt-classic-full > section {
+    min-height: 100vh;
+    padding: clamp(4rem, 9vh, 8rem) clamp(3rem, 6vw, 7rem);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.28);
+    border-left: 1px solid rgba(194, 24, 91, 0.1);
+    backdrop-filter: blur(2px);
+  }
+
+  .wc-bt-classic-photos {
+    width: min(100%, 820px);
+    max-width: 820px;
+    height: clamp(330px, 43vh, 500px);
+    margin-top: clamp(2rem, 4vh, 4rem);
+  }
+
+  .wc-bt-classic-photo {
+    width: 46%;
+    height: clamp(310px, 41vh, 480px);
+    border-radius: 24px;
+    border-width: 7px;
+    box-shadow: 0 28px 70px rgba(91, 45, 72, 0.2);
+  }
+
+  .wc-bt-classic-photo--l { left: 4%; }
+  .wc-bt-classic-photo--r { right: 4%; }
+
+  .wc-bt-classic-photo-heart {
+    width: 52px;
+    height: 52px;
+  }
+
+  .wc-bt-view-section {
+    padding: clamp(4.5rem, 8vw, 8rem) max(6vw, calc((100vw - 1280px) / 2));
+  }
+
+  .wc-bt-section-title {
+    font-size: clamp(2rem, 3vw, 3.5rem);
+  }
+
+  .wc-bt-section-desc {
+    max-width: 760px;
+    font-size: 1rem;
+  }
+
+  .wc-bt-album-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: clamp(1.25rem, 2vw, 2.5rem);
+    max-width: 1500px;
+    margin: 2rem auto 0;
+  }
+
+  .wc-bt-album-grid-item {
+    border-radius: 1.5rem;
+    box-shadow: 0 18px 44px rgba(74, 44, 64, 0.14);
+  }
+
+  .wc-bt-family-grid,
+  .wc-bt-story-card,
+  .wc-bt-countdown-grid {
+    max-width: 960px;
+    margin-left: auto;
+    margin-right: auto;
+  }
 }
 
 .wc-bt-gift-icon-btn {
@@ -1981,5 +2213,69 @@
     max-height: calc(100vh - 100px);
     overflow-y: auto;
     overscroll-behavior: contain;
+  }
+
+  /* The editor preview is a phone-width canvas even on a desktop viewport.
+     Keep the invitation's mobile composition here; otherwise the public
+     desktop two-column layout is squeezed into 430px and hides both covers. */
+  .wc-bt-editor-preview .wc-bt-classic-full {
+    min-height: auto;
+    display: block;
+  }
+
+  .wc-bt-editor-preview .wc-bt-classic-full > header {
+    min-height: auto;
+    padding: 2rem 1.25rem 1rem;
+    display: block;
+  }
+
+  .wc-bt-editor-preview .wc-bt-classic-full > section {
+    min-height: auto;
+    padding: 0 1.5rem 2rem;
+    display: block;
+    border-left: 0;
+    backdrop-filter: none;
+  }
+
+  .wc-bt-editor-preview .wc-bt-classic-photos {
+    width: 100%;
+    max-width: 390px;
+    height: 230px;
+    margin: 1.5rem auto 0;
+  }
+
+  .wc-bt-editor-preview .wc-bt-classic-photo {
+    width: 48%;
+    height: 220px;
+    border-radius: 18px;
+    border-width: 3px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.16);
+  }
+
+  .wc-bt-editor-preview .wc-bt-classic-photo--l { left: 1%; }
+  .wc-bt-editor-preview .wc-bt-classic-photo--r { right: 1%; }
+
+  .wc-bt-editor-preview .wc-bt-classic-photo-heart {
+    width: 28px;
+    height: 28px;
+  }
+
+  .wc-bt-editor-preview .wc-bt-classic-full h1 {
+    color: #3f1f34 !important;
+    opacity: 1 !important;
+    text-shadow: 0 1px 0 rgba(255, 255, 255, 0.7);
+  }
+
+  .wc-bt-editor-preview .wc-bt-album-grid {
+    display: flex;
+    max-width: none;
+    gap: 1rem;
+    margin-top: 1rem;
+  }
+
+  .wc-bt-editor-preview .wc-bt-album-grid-item {
+    width: 100%;
+    aspect-ratio: 4 / 5;
+    border-radius: 1.25rem;
   }
 }

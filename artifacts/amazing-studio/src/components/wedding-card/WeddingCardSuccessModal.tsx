@@ -76,6 +76,7 @@ export function WeddingCardSuccessModal({
               Facebook
             </a>
           </div>
+          <p className="text-xs leading-relaxed text-[var(--wc-bt-muted)]">Lời chúc của khách sẽ được gửi thẳng đến email bạn đã đăng ký. Amazing Studio không lưu nội dung lời chúc.</p>
         </div>
       </div>
     </div>

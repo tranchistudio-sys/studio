@@ -30,7 +30,7 @@ function EditableName({
   placeholder: string;
 }) {
   const editable = !!onChange;
-  const handleInput = (event: FormEvent<HTMLHeadingElement>) => {
+  const handleInput = (event: FormEvent<HTMLSpanElement>) => {
     if (!onChange) return;
     onChange(event.currentTarget.textContent?.replace(/\s+/g, " ").trim() || "");
   };

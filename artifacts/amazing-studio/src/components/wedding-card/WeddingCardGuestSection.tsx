@@ -1,10 +1,5 @@
 import { useState } from "react";
-import { useSubmitGuestEntry, useWeddingCardGuestEntries } from "@/hooks/use-wedding-cards";
-
-const DEMO_WISHES = [
-  { id: 1, guestName: "BT Studio", message: "Chúc hai bạn trăm năm hạnh phúc! 💕", attendance: "yes" as const, guestCount: 2 },
-  { id: 2, guestName: "Ngọc Anh", message: "Mãi mãi yêu thương nhau nhé!", attendance: "unknown" as const, guestCount: 1 },
-];
+import { useSubmitGuestEntry } from "@/hooks/use-wedding-cards";
 
 export function WeddingCardGuestSection({
   slug,
@@ -15,28 +10,30 @@ export function WeddingCardGuestSection({
   compact?: boolean;
   preview?: boolean;
 }) {
-  const { data: apiEntries = [] } = useWeddingCardGuestEntries(preview ? undefined : slug);
-  const entries = preview ? DEMO_WISHES : apiEntries;
   const submit = useSubmitGuestEntry(slug);
   const [guestName, setGuestName] = useState("");
   const [message, setMessage] = useState("");
-  const [attendance, setAttendance] = useState<"yes" | "no" | "unknown">("unknown");
+  const [attendance, setAttendance] = useState<"yes" | "no" | "unknown" | null>(null);
   const [guestCount, setGuestCount] = useState(1);
   const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (preview) return;
+    if (!guestName.trim()) { setError("Vui lòng nhập tên khách."); return; }
+    if (!attendance) { setError("Vui lòng chọn trạng thái tham dự."); return; }
+    setError(null);
     try {
       await submit.mutateAsync({ guestName: guestName || null, message: message || null, attendance, guestCount });
       setGuestName("");
       setMessage("");
-      setAttendance("unknown");
+      setAttendance(null);
       setGuestCount(1);
       setDone(true);
       setTimeout(() => setDone(false), 3000);
-    } catch {
-      alert("Không gửi được. Vui lòng thử lại.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không gửi được. Vui lòng thử lại.");
     }
   };
 
@@ -44,9 +41,7 @@ export function WeddingCardGuestSection({
 
   return (
     <section className={compact ? "mt-4" : "mx-auto max-w-lg px-6 py-12"}>
-      {preview && (
-        <p className="text-center text-xs text-[var(--wc-bt-muted)] mb-4">2 lời chúc đã được gửi (mẫu)</p>
-      )}
+      <p className="text-center text-xs text-[var(--wc-bt-muted)] mb-4">Lời chúc được gửi thẳng đến email của cô dâu/chú rể và không được lưu tại Amazing Studio.</p>
       {!compact && (
         <h2 className="font-serif text-xl text-center text-[var(--wc-bt-text)] mb-6">
           Lời chúc & xác nhận tham dự
@@ -60,6 +55,7 @@ export function WeddingCardGuestSection({
           value={guestName}
           onChange={(e) => setGuestName(e.target.value)}
           maxLength={120}
+          required
         />
         <textarea
           placeholder="Gửi lời chúc yêu thương..."
@@ -67,7 +63,7 @@ export function WeddingCardGuestSection({
           onChange={(e) => setMessage(e.target.value)}
           rows={3}
           className={inputClass + " resize-none"}
-          maxLength={2000}
+          maxLength={1000}
         />
         <div className="flex flex-wrap gap-2">
           {(["yes", "no", "unknown"] as const).map((v) => (
@@ -85,7 +81,7 @@ export function WeddingCardGuestSection({
             </button>
           ))}
         </div>
-        <label className="flex items-center gap-2 text-[var(--wc-bt-muted)]">
+        {attendance !== "no" && <label className="flex items-center gap-2 text-[var(--wc-bt-muted)]">
           Số người
           <input
             type="number"
@@ -95,31 +91,17 @@ export function WeddingCardGuestSection({
             onChange={(e) => setGuestCount(Number(e.target.value) || 1)}
             className="w-16 wc-bt-input py-1"
           />
-        </label>
+        </label>}
+        {error && <p className="text-sm text-red-700" role="alert">{error}</p>}
+        {done && <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800" role="status">Lời chúc và xác nhận của bạn đã được gửi đến email của cô dâu/chú rể.</p>}
         <button
           type="submit"
-          disabled={submit.isPending}
-          className="wc-bt-btn wc-bt-btn-primary w-full disabled:opacity-60"
+          disabled={submit.isPending || !guestName.trim() || !attendance}
+          className="wc-bt-btn wc-bt-btn-primary w-full disabled:bg-[#eadde0] disabled:text-[#604f54] disabled:opacity-100 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#8f3f55]"
         >
           {submit.isPending ? "Đang gửi…" : done ? "Đã gửi!" : "Gửi"}
         </button>
       </form>
-      {entries.length > 0 && (
-        <ul className={compact ? "mt-6 space-y-3 max-h-48 overflow-y-auto text-left" : "mt-10 space-y-4"}>
-          {entries.map((e) => (
-            <li key={e.id} className="border-b border-[var(--wc-bt-border)] pb-3">
-              <p className="font-medium text-[var(--wc-bt-text)]">{e.guestName || "Khách"}</p>
-              {e.message && <p className="text-[var(--wc-bt-muted)] text-sm mt-1">{e.message}</p>}
-              {e.attendance !== "unknown" && (
-                <p className="text-[10px] uppercase tracking-wider text-[var(--wc-bt-taupe)] mt-1">
-                  {e.attendance === "yes" ? "Tham dự" : "Không tham dự"}
-                  {e.guestCount > 1 ? ` · ${e.guestCount} người` : ""}
-                </p>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
     </section>
   );
 }

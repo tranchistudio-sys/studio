@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Heart, Loader2, Pencil, Plus, RefreshCw, Trash2, Undo2 } from "lucide-react";
+import { Heart, Images, Loader2, Pencil, Plus, RefreshCw, Save, Trash2, Undo2 } from "lucide-react";
 import { CmsImageField } from "@/components/cms/CmsImageField";
 import { getImageSrc } from "@/lib/imageUtils";
 import { weddingTemplatePlaceholder } from "@/lib/cms-placeholders";
@@ -16,9 +16,14 @@ import {
 import { getPublicPageUrl } from "@/lib/public-site-url";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { EMPTY_HOME_SETTINGS, useAdminHomeSettings, useSaveAdminHomeSettings, type HomeSettingsForm } from "@/hooks/use-cms-home-admin";
 
 const inputClass =
   "w-full rounded-xl border border-border bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-300";
+
+const COLLAGE_1_PLACEHOLDER = "/uploads/cms/083256ee-9f1b-4473-ad68-d22e8ee2adf6.webp";
+const COLLAGE_2_PLACEHOLDER = "/uploads/cms/0e18a432-d5d4-4993-95f8-4f10e72fbe95.webp";
+const COLLAGE_3_PLACEHOLDER = "/uploads/cms/116119cd-b5ee-414b-a5c1-f3166d993484.webp";
 
 function slugify(name: string) {
   return name
@@ -63,6 +68,22 @@ export default function CmsWeddingTemplatesPage() {
   const remove = useDeleteWeddingTemplate();
   const restore = useRestoreWeddingTemplate();
   const { toast } = useToast();
+  const { data: siteSettings } = useAdminHomeSettings();
+  const saveSiteSettings = useSaveAdminHomeSettings();
+  const [introImages, setIntroImages] = useState<HomeSettingsForm>(EMPTY_HOME_SETTINGS);
+
+  useEffect(() => {
+    if (siteSettings) setIntroImages(siteSettings);
+  }, [siteSettings]);
+
+  const saveIntroImages = async () => {
+    try {
+      await saveSiteSettings.mutateAsync(introImages);
+      toast({ title: "Đã lưu 3 ảnh phần Giới thiệu" });
+    } catch (e) {
+      toast({ title: "Lưu ảnh thất bại", description: e instanceof Error ? e.message : undefined, variant: "destructive" });
+    }
+  };
 
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<AdminWeddingTemplate | null>(null);
@@ -188,6 +209,72 @@ export default function CmsWeddingTemplatesPage() {
       </header>
 
       <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+        {!showTrash && (
+          <section className="mb-6 max-w-6xl mx-auto rounded-2xl border border-border/80 bg-white p-5 shadow-sm">
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <Images className="h-5 w-5 text-rose-800" />
+                <div>
+                  <h2 className="font-semibold">Ảnh Giới thiệu trang Thiệp cưới</h2>
+                  <p className="text-xs text-muted-foreground">Thay đổi 3 ảnh tại phần Giới thiệu của /thiep-cuoi-online</p>
+                </div>
+              </div>
+              <button type="button" onClick={() => void saveIntroImages()} disabled={saveSiteSettings.isPending} className="inline-flex items-center gap-2 rounded-xl bg-rose-900 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-60">
+                {saveSiteSettings.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                Lưu 3 ảnh
+              </button>
+            </div>
+            <div className="grid gap-5 md:grid-cols-3">
+              {([
+                ["Ảnh lớn bên trái", "weddingIntroImage1Url", "weddingIntroImage1Fit", "weddingIntroImage1X", "weddingIntroImage1Y", "weddingIntroImage1Zoom", "portrait", COLLAGE_1_PLACEHOLDER],
+                ["Ảnh nhỏ phía trên", "weddingIntroImage2Url", "weddingIntroImage2Fit", "weddingIntroImage2X", "weddingIntroImage2Y", "weddingIntroImage2Zoom", "video", COLLAGE_2_PLACEHOLDER],
+                ["Ảnh nhỏ phía dưới", "weddingIntroImage3Url", "weddingIntroImage3Fit", "weddingIntroImage3X", "weddingIntroImage3Y", "weddingIntroImage3Zoom", "video", COLLAGE_3_PLACEHOLDER],
+              ] as const).map(([label, imageKey, fitKey, xKey, yKey, zoomKey, aspect, placeholder]) => {
+                const fit = introImages[fitKey] === "contain" ? "contain" : "cover";
+                const x = Number(introImages[xKey] ?? 50);
+                const y = Number(introImages[yKey] ?? 50);
+                const zoom = Number(introImages[zoomKey] ?? 100);
+                return (
+                  <div key={imageKey} className="space-y-3">
+                    <CmsImageField
+                      label={label}
+                      value={introImages[imageKey]}
+                      onChange={(v) => setIntroImages((s) => ({ ...s, [imageKey]: v }))}
+                      aspect={aspect}
+                      objectFit={fit}
+                      objectPosition={`${x}% ${y}%`}
+                      positionX={x}
+                      positionY={y}
+                      zoom={zoom}
+                      onPositionChange={(nextX, nextY) => setIntroImages((s) => ({ ...s, [xKey]: String(nextX), [yKey]: String(nextY) }))}
+                      placeholderSrc={placeholder}
+                    />
+                    <label className="block text-xs font-medium text-muted-foreground">
+                      Cách hiển thị ảnh
+                      <select className={inputClass + " mt-1"} value={fit} onChange={(e) => setIntroImages((s) => ({ ...s, [fitKey]: e.target.value }))}>
+                        <option value="contain">Hiện trọn ảnh – không cắt đầu</option>
+                        <option value="cover">Lấp đầy khung – có thể cắt ảnh</option>
+                      </select>
+                    </label>
+                    <div className="rounded-xl border bg-neutral-50 p-3 space-y-3">
+                      {([
+                        ["Trái ↔ phải", xKey, x, 0, 100],
+                        ["Lên ↕ xuống", yKey, y, 0, 100],
+                        ["Phóng to / thu nhỏ", zoomKey, zoom, 80, 180],
+                      ] as const).map(([text, key, value, min, max]) => (
+                        <label key={key} className="block text-xs text-muted-foreground">
+                          <span className="flex justify-between"><span>{text}</span><strong>{value}%</strong></span>
+                          <input type="range" min={min} max={max} value={value} onChange={(e) => setIntroImages((s) => ({ ...s, [key]: e.target.value }))} className="mt-1 w-full accent-rose-900" />
+                        </label>
+                      ))}
+                      <button type="button" onClick={() => setIntroImages((s) => ({ ...s, [xKey]: "50", [yKey]: "50", [zoomKey]: "100" }))} className="text-xs font-medium text-rose-800 hover:underline">Đặt lại vị trí</button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
         {!isFetched && isLoading ? (
           <div className="flex justify-center py-20 text-muted-foreground">
             <Loader2 className="w-6 h-6 animate-spin" />

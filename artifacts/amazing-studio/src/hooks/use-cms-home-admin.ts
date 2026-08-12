@@ -28,6 +28,15 @@ export const EMPTY_HOME_SETTINGS: HomeSettingsForm = {
   footerCtaSubtitle: null,
   footerCtaButtonLabel: null,
   footerCtaButtonHref: null,
+  weddingIntroImage1Url: null,
+  weddingIntroImage2Url: null,
+  weddingIntroImage3Url: null,
+  weddingIntroImage1Fit: "contain",
+  weddingIntroImage2Fit: "contain",
+  weddingIntroImage3Fit: "contain",
+  weddingIntroImage1X: "50", weddingIntroImage1Y: "50", weddingIntroImage1Zoom: "100",
+  weddingIntroImage2X: "50", weddingIntroImage2Y: "50", weddingIntroImage2Zoom: "100",
+  weddingIntroImage3X: "50", weddingIntroImage3Y: "50", weddingIntroImage3Zoom: "100",
 };
 
 function parseHomeSettings(raw: unknown): HomeSettingsForm {
@@ -63,6 +72,21 @@ function parseHomeSettings(raw: unknown): HomeSettingsForm {
     footerCtaSubtitle: str("footerCtaSubtitle"),
     footerCtaButtonLabel: str("footerCtaButtonLabel"),
     footerCtaButtonHref: str("footerCtaButtonHref"),
+    weddingIntroImage1Url: str("weddingIntroImage1Url"),
+    weddingIntroImage2Url: str("weddingIntroImage2Url"),
+    weddingIntroImage3Url: str("weddingIntroImage3Url"),
+    weddingIntroImage1Fit: str("weddingIntroImage1Fit") ?? "contain",
+    weddingIntroImage2Fit: str("weddingIntroImage2Fit") ?? "contain",
+    weddingIntroImage3Fit: str("weddingIntroImage3Fit") ?? "contain",
+    weddingIntroImage1X: str("weddingIntroImage1X") ?? "50",
+    weddingIntroImage1Y: str("weddingIntroImage1Y") ?? "50",
+    weddingIntroImage1Zoom: str("weddingIntroImage1Zoom") ?? "100",
+    weddingIntroImage2X: str("weddingIntroImage2X") ?? "50",
+    weddingIntroImage2Y: str("weddingIntroImage2Y") ?? "50",
+    weddingIntroImage2Zoom: str("weddingIntroImage2Zoom") ?? "100",
+    weddingIntroImage3X: str("weddingIntroImage3X") ?? "50",
+    weddingIntroImage3Y: str("weddingIntroImage3Y") ?? "50",
+    weddingIntroImage3Zoom: str("weddingIntroImage3Zoom") ?? "100",
   };
 }
 

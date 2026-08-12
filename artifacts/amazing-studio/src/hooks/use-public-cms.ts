@@ -76,6 +76,21 @@ export interface PublicHomeContent {
   footerCtaSubtitle: string | null;
   footerCtaButtonLabel: string | null;
   footerCtaButtonHref: string | null;
+  weddingIntroImage1Url: string | null;
+  weddingIntroImage2Url: string | null;
+  weddingIntroImage3Url: string | null;
+  weddingIntroImage1Fit: string | null;
+  weddingIntroImage2Fit: string | null;
+  weddingIntroImage3Fit: string | null;
+  weddingIntroImage1X: string | null;
+  weddingIntroImage1Y: string | null;
+  weddingIntroImage1Zoom: string | null;
+  weddingIntroImage2X: string | null;
+  weddingIntroImage2Y: string | null;
+  weddingIntroImage2Zoom: string | null;
+  weddingIntroImage3X: string | null;
+  weddingIntroImage3Y: string | null;
+  weddingIntroImage3Zoom: string | null;
 }
 
 async function fetchPublicJson<T>(path: string, label: string): Promise<T> {
@@ -167,6 +182,21 @@ export function usePublicHomeContent() {
           footerCtaSubtitle: null,
           footerCtaButtonLabel: null,
           footerCtaButtonHref: null,
+          weddingIntroImage1Url: null,
+          weddingIntroImage2Url: null,
+          weddingIntroImage3Url: null,
+          weddingIntroImage1Fit: null,
+          weddingIntroImage2Fit: null,
+          weddingIntroImage3Fit: null,
+          weddingIntroImage1X: null,
+          weddingIntroImage1Y: null,
+          weddingIntroImage1Zoom: null,
+          weddingIntroImage2X: null,
+          weddingIntroImage2Y: null,
+          weddingIntroImage2Zoom: null,
+          weddingIntroImage3X: null,
+          weddingIntroImage3Y: null,
+          weddingIntroImage3Zoom: null,
         };
       }
     },

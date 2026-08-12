@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { pool } from "@workspace/db";
 import { getCallerRole } from "./auth";
 import { withStartupDdlLock } from "../lib/startup-ddl";
@@ -58,6 +58,8 @@ async function ensureWeddingSchema() {
       created_at TIMESTAMP NOT NULL DEFAULT NOW()
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_wedding_cards_slug ON wedding_cards(slug)`);
+  await pool.query(`ALTER TABLE wedding_cards ADD COLUMN IF NOT EXISTS album_image_urls JSONB NOT NULL DEFAULT '[]'::jsonb`);
+  await pool.query(`ALTER TABLE wedding_cards ADD COLUMN IF NOT EXISTS notification_email TEXT`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS wedding_guest_entries (
@@ -201,6 +203,7 @@ const CARD_SELECT = `
   invitation_message AS "invitationMessage",
   cover_image_url AS "coverImageUrl",
   couple_image_url AS "coupleImageUrl",
+  album_image_urls AS "albumImageUrls",
   contact_phone AS "contactPhone",
   view_count AS "viewCount",
   published_at AS "publishedAt",
@@ -215,6 +218,49 @@ function str(v: unknown): string | null {
 
 function normAttendance(v: unknown): "yes" | "no" | "unknown" {
   return v === "yes" || v === "no" ? v : "unknown";
+}
+
+function safeEmail(v: unknown): string | null {
+  const value = str(v);
+  return value && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? value.toLowerCase() : null;
+}
+
+function imageUrls(v: unknown): string[] {
+  return Array.isArray(v) ? v.map(str).filter((x): x is string => !!x).slice(0, 28) : [];
+}
+
+const guestRate = new Map<string, number[]>();
+const guestIdempotency = new Map<string, number>();
+function allowGuestSubmission(key: string): boolean {
+  const now = Date.now();
+  const recent = (guestRate.get(key) ?? []).filter((time) => now - time < 10 * 60_000);
+  if (recent.length >= 5) return false;
+  recent.push(now); guestRate.set(key, recent); return true;
+}
+
+function htmlEscape(value: string): string {
+  return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
+}
+
+async function sendWeddingWishEmail(input: {
+  recipient: string; groomName: string; brideName: string; guestName: string;
+  message: string | null; attendance: "yes" | "no" | "unknown"; guestCount: number;
+}) {
+  const apiKey = process.env.RESEND_API_KEY?.trim();
+  const from = process.env.WEDDING_EMAIL_FROM?.trim();
+  if (!apiKey || !from) throw new Error("EMAIL_PROVIDER_NOT_CONFIGURED");
+  const attendance = input.attendance === "yes" ? `Tham dự (${input.guestCount} người)` : input.attendance === "no" ? "Không tham dự" : "Chưa xác định";
+  const response = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      from,
+      to: [input.recipient],
+      subject: `Lời chúc mới từ ${input.guestName} — ${input.groomName} & ${input.brideName}`,
+      html: `<h2>Lời chúc mới từ thiệp cưới</h2><p><strong>Khách:</strong> ${htmlEscape(input.guestName)}</p><p><strong>Xác nhận:</strong> ${attendance}</p><p><strong>Lời chúc:</strong></p><p>${htmlEscape(input.message || "(Không có nội dung)").replace(/\n/g, "<br>")}</p><hr><p style="color:#666">Thiệp của ${htmlEscape(input.groomName)} & ${htmlEscape(input.brideName)} · Amazing Studio</p>`,
+    }),
+  });
+  if (!response.ok) throw new Error(`EMAIL_DELIVERY_FAILED_${response.status}`);
 }
 
 async function uniqueCardSlug(): Promise<string> {
@@ -261,11 +307,15 @@ router.post("/wedding-cards/public", async (req, res) => {
     const groomName = str(b.groomName);
     const brideName = str(b.brideName);
     const templateSlug = str(b.templateSlug);
+    const notificationEmail = safeEmail(b.notificationEmail);
     if (!groomName || !brideName) {
       return res.status(400).json({ error: "Thiếu tên cô dâu / chú rể" });
     }
     if (!templateSlug) {
       return res.status(400).json({ error: "Thiếu mẫu thiệp" });
+    }
+    if (!notificationEmail) {
+      return res.status(400).json({ error: "Thiếu email nhận lời chúc hợp lệ" });
     }
     const t = await pool.query(
       `SELECT id, slug, theme_key AS "themeKey" FROM wedding_templates
@@ -283,14 +333,14 @@ router.post("/wedding-cards/public", async (req, res) => {
          groom_name, bride_name, wedding_date, ceremony_time, reception_time,
          venue_groom, venue_bride, venue_reception,
          maps_url_groom, maps_url_bride, maps_url_reception,
-         invitation_message, cover_image_url, couple_image_url, contact_phone,
+         invitation_message, cover_image_url, couple_image_url, album_image_urls, contact_phone, notification_email,
          published_at
        ) VALUES (
          $1, 'published', $2, $3, $4,
          $5, $6, $7, $8, $9,
          $10, $11, $12,
          $13, $14, $15,
-         $16, $17, $18, $19,
+         $16, $17, $18, $19::jsonb, $20, $21,
          NOW()
        ) RETURNING id, slug, status, theme_key AS "themeKey"`,
       [
@@ -298,7 +348,7 @@ router.post("/wedding-cards/public", async (req, res) => {
         groomName, brideName, str(b.weddingDate), str(b.ceremonyTime), str(b.receptionTime),
         str(b.venueGroom), str(b.venueBride), str(b.venueReception),
         str(b.mapsUrlGroom), str(b.mapsUrlBride), str(b.mapsUrlReception),
-        str(b.invitationMessage), str(b.coverImageUrl), str(b.coupleImageUrl), str(b.contactPhone),
+        str(b.invitationMessage), str(b.coverImageUrl), str(b.coupleImageUrl), JSON.stringify(imageUrls(b.albumImageUrls)), str(b.contactPhone), notificationEmail,
       ]
     );
     const row = r.rows[0] as { id: number; slug: string; status: string; themeKey: string };
@@ -331,35 +381,42 @@ router.get("/wedding-cards/public/:slug/guest-entries", async (req, res) => {
   try {
     const cardId = await cardIdBySlug(req.params.slug);
     if (cardId == null) return res.status(404).json({ error: "Không tìm thấy thiệp" });
-    const r = await pool.query(
-      `SELECT id, guest_name AS "guestName", message, attendance,
-              guest_count AS "guestCount", created_at AS "createdAt"
-       FROM wedding_guest_entries WHERE card_id = $1
-       ORDER BY created_at DESC, id DESC`,
-      [cardId]
-    );
-    res.json(r.rows);
+    res.json([]);
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
 router.post("/wedding-cards/public/:slug/guest-entries", async (req, res) => {
   try {
-    const cardId = await cardIdBySlug(req.params.slug);
-    if (cardId == null) return res.status(404).json({ error: "Không tìm thấy thiệp" });
+    const cardResult = await pool.query(`SELECT id, groom_name AS "groomName", bride_name AS "brideName", notification_email AS "notificationEmail" FROM wedding_cards WHERE slug = $1 LIMIT 1`, [req.params.slug]);
+    const card = cardResult.rows[0] as { id: number; groomName: string; brideName: string; notificationEmail: string | null } | undefined;
+    if (!card) return res.status(404).json({ error: "Không tìm thấy thiệp" });
+    if (!card.notificationEmail) return res.status(400).json({ error: "Thiệp này chưa có email nhận lời chúc." });
     const b = (req.body ?? {}) as Record<string, unknown>;
+    const guestName = str(b.guestName);
+    const message = str(b.message);
+    const attendance = normAttendance(b.attendance);
+    if (!guestName) return res.status(400).json({ error: "Vui lòng nhập tên khách." });
+    if (!b.attendance || !["yes", "no", "unknown"].includes(String(b.attendance))) return res.status(400).json({ error: "Vui lòng chọn trạng thái tham dự." });
+    if (message && message.length > 1000) return res.status(400).json({ error: "Lời chúc tối đa 1000 ký tự." });
+    const ip = String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "unknown").split(",")[0].trim();
+    if (!allowGuestSubmission(`${card.id}:${ip}`)) return res.status(429).json({ error: "Bạn gửi quá nhanh. Vui lòng thử lại sau." });
     const guestCountRaw = Number(b.guestCount);
-    const guestCount = Number.isFinite(guestCountRaw) && guestCountRaw > 0
+    const guestCount = attendance === "no" ? 0 : Number.isFinite(guestCountRaw) && guestCountRaw > 0
       ? Math.min(50, Math.floor(guestCountRaw))
       : 1;
-    const r = await pool.query(
-      `INSERT INTO wedding_guest_entries (card_id, guest_name, message, attendance, guest_count)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, guest_name AS "guestName", message, attendance,
-                 guest_count AS "guestCount", created_at AS "createdAt"`,
-      [cardId, str(b.guestName), str(b.message), normAttendance(b.attendance), guestCount]
-    );
-    res.status(201).json(r.rows[0]);
-  } catch (e) { res.status(500).json({ error: String(e) }); }
+    const idempotencyKey = str(req.headers["idempotency-key"] ?? b.idempotencyKey)?.slice(0, 120) ?? createHash("sha256").update(`${card.id}:${ip}:${guestName}:${message}:${attendance}:${guestCount}`).digest("hex");
+    const dedupeKey = `${card.id}:${idempotencyKey}`;
+    const previous = guestIdempotency.get(dedupeKey);
+    if (previous && Date.now() - previous < 10 * 60_000) return res.status(200).json({ sent: true, duplicate: true });
+    await sendWeddingWishEmail({ recipient: card.notificationEmail, groomName: card.groomName, brideName: card.brideName, guestName, message, attendance, guestCount });
+    guestIdempotency.set(dedupeKey, Date.now());
+    res.status(201).json({ sent: true, createdAt: new Date().toISOString() });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (message === "EMAIL_PROVIDER_NOT_CONFIGURED") return res.status(503).json({ error: "Hệ thống email chưa được cấu hình." });
+    console.error("[wedding-wish-email] delivery failed", { error: message });
+    res.status(502).json({ error: "Không gửi được email. Nội dung của bạn chưa bị mất; vui lòng thử lại." });
+  }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

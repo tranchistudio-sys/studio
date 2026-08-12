@@ -1,17 +1,5 @@
-import { useState } from "react";
-import { getImageSrc } from "@/lib/imageUtils";
-import { WeddingCardImageUploader } from "./WeddingCardImageUploader";
-import { X } from "lucide-react";
-import { cn } from "@/lib/utils";
-
-const TABS = [
-  { key: "photos", label: "Ảnh" },
-  { key: "info", label: "Thông tin" },
-  { key: "venue", label: "Địa điểm" },
-  { key: "message", label: "Lời mời" },
-] as const;
-
-type TabKey = (typeof TABS)[number]["key"];
+import { WeddingCardMediaManager } from "./WeddingCardMediaManager";
+import type { WeddingMediaItem, WeddingMediaRole } from "@/lib/wedding-card-media";
 
 export interface EditorFormState {
   groomName: string;
@@ -27,6 +15,7 @@ export interface EditorFormState {
   mapsUrlReception: string;
   invitationMessage: string;
   contactPhone: string;
+  notificationEmail: string;
   coverImageUrl: string | null;
   coupleImageUrl: string | null;
 }
@@ -45,119 +34,42 @@ type Setters = {
   setMapsUrlReception: (v: string) => void;
   setInvitationMessage: (v: string) => void;
   setContactPhone: (v: string) => void;
+  setNotificationEmail: (v: string) => void;
 };
 
 export function WeddingCardEditorPanel({
   form,
+  showEmailError,
   setters,
-  uploading,
-  onUpload,
-  onClearCover,
-  onClearCouple,
-  albumImageUrls = [],
-  onUploadAlbum,
-  onRemoveAlbum,
-  uploadingAlbum = false,
+  mediaItems, onPickMedia, onMediaRole, onSwapCovers, onRemoveMedia, onRetryMedia, onMoveMedia,
 }: {
   form: EditorFormState;
+  showEmailError?: boolean;
   setters: Setters;
-  uploading: "cover" | "couple" | "extra" | null;
-  onUpload: (file: File, kind: "cover" | "couple" | "extra") => void;
-  onClearCover: () => void;
-  onClearCouple: () => void;
-  albumImageUrls?: string[];
-  onUploadAlbum?: (file: File) => void;
-  onRemoveAlbum?: (index: number) => void;
-  uploadingAlbum?: boolean;
+  mediaItems: WeddingMediaItem[];
+  onPickMedia: (files: File[]) => void;
+  onMediaRole: (id: string, role: WeddingMediaRole) => void;
+  onSwapCovers: () => void;
+  onRemoveMedia: (id: string) => void;
+  onRetryMedia: (id: string, file?: File) => void;
+  onMoveMedia: (id: string, direction: -1 | 1) => void;
 }) {
-  const [tab, setTab] = useState<TabKey>("photos");
-
   return (
-    <div className="space-y-3">
-      <div className="wc-bt-tabs" role="tablist">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.key}
-            className={cn("wc-bt-tab", tab === t.key && "is-active")}
-            onClick={() => setTab(t.key)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {tab === "photos" && (
-        <div className="space-y-4 wc-fade-in">
-          <div className="rounded-xl bg-white border border-[var(--wc-bt-border,#e8e0d8)] p-4">
-            <p className="text-sm font-semibold text-[var(--wc-bt-text)]">Ảnh cưới của bạn</p>
-            <p className="text-xs text-[var(--wc-bt-muted)] mt-1 mb-3">
-              Tải ảnh lên — thiệp bên cạnh đổi ngay. Nên có ảnh bìa và ảnh cặp đôi.
-            </p>
-            <div className="grid grid-cols-2 gap-3">
-              <WeddingCardImageUploader
-                slot="cover"
-                label="Ảnh bìa"
-                hint="Ảnh nền đầu thiệp"
-                tall
-                imageUrl={form.coverImageUrl}
-                uploading={uploading === "cover"}
-                onPick={(f) => onUpload(f, "cover")}
-                onClear={onClearCover}
-              />
-              <WeddingCardImageUploader
-                slot="couple"
-                label="Ảnh cặp đôi"
-                hint="Cô dâu & chú rể"
-                tall
-                imageUrl={form.coupleImageUrl}
-                uploading={uploading === "couple"}
-                onPick={(f) => onUpload(f, "couple")}
-                onClear={onClearCouple}
-              />
-            </div>
-            {onUploadAlbum && (
-              <div className="mt-3">
-                <WeddingCardImageUploader
-                  slot="extra"
-                  label="Album phụ"
-                  hint="Thêm ảnh kỷ niệm"
-                  imageUrl={null}
-                  uploading={uploadingAlbum}
-                  onPick={onUploadAlbum}
-                />
-                {albumImageUrls.length > 0 && (
-                  <div className="flex flex-wrap gap-2 mt-3">
-                    {albumImageUrls.map((url, i) => {
-                      const src = getImageSrc(url);
-                      if (!src) return null;
-                      return (
-                        <div key={`${url}-${i}`} className="relative h-16 w-16 rounded-lg overflow-hidden">
-                          <img src={src} alt="" className="h-full w-full object-cover" />
-                          {onRemoveAlbum && (
-                            <button
-                              type="button"
-                              onClick={() => onRemoveAlbum(i)}
-                              className="absolute top-0.5 right-0.5 rounded-full bg-black/55 p-0.5 text-white"
-                            >
-                              <X className="h-3 w-3" />
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            )}
+    <div className="space-y-6">
+        <section className="space-y-3 wc-fade-in" aria-labelledby="wc-editor-photos">
+          <div className="flex items-center gap-3 px-1">
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#8f3652] text-sm font-bold text-white">1</span>
+            <h2 id="wc-editor-photos" className="text-lg font-semibold text-[var(--wc-bt-text)]">Ảnh cưới</h2>
           </div>
-        </div>
-      )}
+          <WeddingCardMediaManager items={mediaItems} onPick={onPickMedia} onRole={onMediaRole} onSwap={onSwapCovers} onRemove={onRemoveMedia} onRetry={onRetryMedia} onMove={onMoveMedia} />
+        </section>
 
-      {tab === "info" && (
-        <div className="space-y-3 wc-fade-in rounded-xl bg-white border border-[var(--wc-bt-border,#e8e0d8)] p-4">
+        <section className="space-y-3 wc-fade-in" aria-labelledby="wc-editor-info">
+          <div className="flex items-center gap-3 px-1">
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#8f3652] text-sm font-bold text-white">2</span>
+            <h2 id="wc-editor-info" className="text-lg font-semibold text-[var(--wc-bt-text)]">Thông tin cô dâu chú rể</h2>
+          </div>
+        <div className="space-y-3 rounded-xl bg-white border border-[var(--wc-bt-border,#e8e0d8)] p-4">
           <div>
             <label className="text-xs text-[var(--wc-bt-muted)]">Tên chú rể *</label>
             <input
@@ -184,6 +96,26 @@ export function WeddingCardEditorPanel({
               onChange={(e) => setters.setContactPhone(e.target.value)}
               placeholder="Gọi cho cô dâu chú rể"
             />
+          </div>
+          <div>
+            <label className="text-xs text-[var(--wc-bt-muted)]">Email cô dâu/chú rể nhận lời chúc *</label>
+            <input
+              id="wc-notification-email"
+              type="email"
+              required
+              aria-invalid={showEmailError || undefined}
+              aria-describedby={showEmailError ? "wc-notification-email-error" : undefined}
+              className={`wc-bt-input mt-1 ${showEmailError ? "border-red-500 ring-2 ring-red-200" : ""}`}
+              value={form.notificationEmail}
+              onChange={(e) => setters.setNotificationEmail(e.target.value)}
+              placeholder="tenban@example.com"
+            />
+            {showEmailError && (
+              <p id="wc-notification-email-error" role="alert" className="mt-1 text-xs font-medium text-red-600">
+                Vui lòng nhập email hợp lệ, ví dụ: tenban@gmail.com
+              </p>
+            )}
+            <p className="mt-1 text-[11px] text-[var(--wc-bt-muted)]">Khách gửi lời chúc sẽ chuyển thẳng về email này. Email không hiển thị công khai và nội dung lời chúc không được lưu tại Amazing Studio.</p>
           </div>
           <div>
             <label className="text-xs text-[var(--wc-bt-muted)]">Ngày cưới</label>
@@ -215,10 +147,14 @@ export function WeddingCardEditorPanel({
             </div>
           </div>
         </div>
-      )}
+        </section>
 
-      {tab === "venue" && (
-        <div className="space-y-3 wc-fade-in rounded-xl bg-white border border-[var(--wc-bt-border,#e8e0d8)] p-4">
+        <section className="space-y-3 wc-fade-in" aria-labelledby="wc-editor-venue">
+          <div className="flex items-center gap-3 px-1">
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#8f3652] text-sm font-bold text-white">3</span>
+            <h2 id="wc-editor-venue" className="text-lg font-semibold text-[var(--wc-bt-text)]">Địa điểm tổ chức</h2>
+          </div>
+        <div className="space-y-3 rounded-xl bg-white border border-[var(--wc-bt-border,#e8e0d8)] p-4">
           <div>
             <label className="text-xs text-[var(--wc-bt-muted)]">Nhà trai</label>
             <input
@@ -265,9 +201,13 @@ export function WeddingCardEditorPanel({
             onChange={(e) => setters.setMapsUrlReception(e.target.value)}
           />
         </div>
-      )}
+        </section>
 
-      {tab === "message" && (
+        <section className="space-y-3 wc-fade-in" aria-labelledby="wc-editor-message">
+          <div className="flex items-center gap-3 px-1">
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#8f3652] text-sm font-bold text-white">4</span>
+            <h2 id="wc-editor-message" className="text-lg font-semibold text-[var(--wc-bt-text)]">Lời mời</h2>
+          </div>
         <div className="wc-fade-in rounded-xl bg-white border border-[var(--wc-bt-border,#e8e0d8)] p-4">
           <label className="text-xs text-[var(--wc-bt-muted)]">Lời mời</label>
           <textarea
@@ -278,7 +218,7 @@ export function WeddingCardEditorPanel({
             onChange={(e) => setters.setInvitationMessage(e.target.value)}
           />
         </div>
-      )}
+        </section>
     </div>
   );
 }

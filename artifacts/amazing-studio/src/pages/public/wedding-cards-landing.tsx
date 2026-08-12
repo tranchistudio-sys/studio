@@ -69,8 +69,8 @@ export default function WeddingCardsLandingPage() {
   const demoCard = buildDemoCard(templates[0] ?? null);
   const demoCard2 = buildDemoCard(templates[1] ?? templates[0] ?? null);
   const introImageStyle = (x: string | null | undefined, y: string | null | undefined, zoom: string | null | undefined) => ({
-    objectPosition: `${Number(x ?? 50)}% ${Number(y ?? 50)}%`,
-    transform: `scale(${Number(zoom ?? 100) / 100})`,
+    objectPosition: "50% 50%",
+    transform: `translate3d(${(50 - Number(x ?? 50)) / 2}%, ${(50 - Number(y ?? 50)) / 2}%, 0) scale(${Number(zoom ?? 100) / 100})`,
   });
 
   return (

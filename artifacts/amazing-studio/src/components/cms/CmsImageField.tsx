@@ -141,7 +141,16 @@ export function CmsImageField({
         )}
       >
         {src ? (
-          <img draggable={false} src={src} alt="" style={{ objectPosition, transform: `scale(${zoom / 100})` }} className={cn("pointer-events-none w-full h-full transition-transform", objectFit === "contain" ? "object-contain bg-neutral-100" : "object-cover")} />
+          <img
+            draggable={false}
+            src={src}
+            alt=""
+            style={{
+              objectPosition,
+              transform: `translate3d(${(50 - positionX) / 2}%, ${(50 - positionY) / 2}%, 0) scale(${zoom / 100})`,
+            }}
+            className={cn("pointer-events-none w-full h-full", !dragging && "transition-transform", objectFit === "contain" ? "object-contain bg-neutral-100" : "object-cover")}
+          />
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground gap-2">
             <ImageIcon className="w-8 h-8 opacity-30" />

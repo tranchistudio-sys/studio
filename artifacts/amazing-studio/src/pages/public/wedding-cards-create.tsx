@@ -473,7 +473,7 @@ export default function WeddingCardsCreatePage() {
             type="button"
             onClick={onCreate}
             disabled={create.isPending || !!createDisabledReason}
-            className="hidden lg:flex mt-3 w-full items-center justify-center gap-2 wc-bt-btn wc-bt-btn-primary rounded-xl disabled:bg-[#eadde0] disabled:text-[#604f54] disabled:opacity-100 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#8f3f55]"
+            className="wc-create-card-button hidden lg:flex mt-3 w-full items-center justify-center gap-2 wc-bt-btn wc-bt-btn-primary rounded-xl"
           >
             <Sparkles className="h-4 w-4" />
             {create.isPending ? "Đang tạo thiệp…" : "Tạo thiệp & lấy link"}
@@ -509,7 +509,7 @@ export default function WeddingCardsCreatePage() {
           type="button"
           onClick={onCreate}
           disabled={create.isPending || !!createDisabledReason}
-          className="wc-bt-btn wc-bt-btn-primary w-full flex items-center justify-center gap-2 rounded-xl disabled:bg-[#eadde0] disabled:text-[#604f54] disabled:opacity-100"
+          className="wc-create-card-button wc-bt-btn wc-bt-btn-primary w-full flex items-center justify-center gap-2 rounded-xl"
         >
           <Sparkles className="h-4 w-4" />
           {create.isPending ? "Đang tạo thiệp…" : "Tạo thiệp & lấy link"}

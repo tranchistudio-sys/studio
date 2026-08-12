@@ -134,6 +134,15 @@ async function ensureCmsSchema() {
       wedding_intro_image_1_fit TEXT,
       wedding_intro_image_2_fit TEXT,
       wedding_intro_image_3_fit TEXT,
+      wedding_intro_image_1_x TEXT,
+      wedding_intro_image_1_y TEXT,
+      wedding_intro_image_1_zoom TEXT,
+      wedding_intro_image_2_x TEXT,
+      wedding_intro_image_2_y TEXT,
+      wedding_intro_image_2_zoom TEXT,
+      wedding_intro_image_3_x TEXT,
+      wedding_intro_image_3_y TEXT,
+      wedding_intro_image_3_zoom TEXT,
       updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
       CONSTRAINT cms_home_settings_singleton CHECK (id = 1)
     )`);
@@ -143,6 +152,9 @@ async function ensureCmsSchema() {
   await pool.query(`ALTER TABLE cms_home_settings ADD COLUMN IF NOT EXISTS wedding_intro_image_1_fit TEXT`).catch(() => {});
   await pool.query(`ALTER TABLE cms_home_settings ADD COLUMN IF NOT EXISTS wedding_intro_image_2_fit TEXT`).catch(() => {});
   await pool.query(`ALTER TABLE cms_home_settings ADD COLUMN IF NOT EXISTS wedding_intro_image_3_fit TEXT`).catch(() => {});
+  for (const col of ["wedding_intro_image_1_x", "wedding_intro_image_1_y", "wedding_intro_image_1_zoom", "wedding_intro_image_2_x", "wedding_intro_image_2_y", "wedding_intro_image_2_zoom", "wedding_intro_image_3_x", "wedding_intro_image_3_y", "wedding_intro_image_3_zoom"]) {
+    await pool.query(`ALTER TABLE cms_home_settings ADD COLUMN IF NOT EXISTS ${col} TEXT`).catch(() => {});
+  }
 
   // ─── Seed default dress tree — bọc trong transaction + advisory lock ──
   // Đảm bảo nhiều instance khởi động song song không seed trùng.
@@ -1805,6 +1817,15 @@ const HOME_FIELDS: Array<{ col: string; key: keyof HomeContent }> = [
   { col: "wedding_intro_image_1_fit", key: "weddingIntroImage1Fit" },
   { col: "wedding_intro_image_2_fit", key: "weddingIntroImage2Fit" },
   { col: "wedding_intro_image_3_fit", key: "weddingIntroImage3Fit" },
+  { col: "wedding_intro_image_1_x", key: "weddingIntroImage1X" },
+  { col: "wedding_intro_image_1_y", key: "weddingIntroImage1Y" },
+  { col: "wedding_intro_image_1_zoom", key: "weddingIntroImage1Zoom" },
+  { col: "wedding_intro_image_2_x", key: "weddingIntroImage2X" },
+  { col: "wedding_intro_image_2_y", key: "weddingIntroImage2Y" },
+  { col: "wedding_intro_image_2_zoom", key: "weddingIntroImage2Zoom" },
+  { col: "wedding_intro_image_3_x", key: "weddingIntroImage3X" },
+  { col: "wedding_intro_image_3_y", key: "weddingIntroImage3Y" },
+  { col: "wedding_intro_image_3_zoom", key: "weddingIntroImage3Zoom" },
 ];
 
 type HomeContent = {
@@ -1831,6 +1852,15 @@ type HomeContent = {
   weddingIntroImage1Fit: string | null;
   weddingIntroImage2Fit: string | null;
   weddingIntroImage3Fit: string | null;
+  weddingIntroImage1X: string | null;
+  weddingIntroImage1Y: string | null;
+  weddingIntroImage1Zoom: string | null;
+  weddingIntroImage2X: string | null;
+  weddingIntroImage2Y: string | null;
+  weddingIntroImage2Zoom: string | null;
+  weddingIntroImage3X: string | null;
+  weddingIntroImage3Y: string | null;
+  weddingIntroImage3Zoom: string | null;
 };
 
 const EMPTY_HOME: HomeContent = HOME_FIELDS.reduce((acc, f) => {

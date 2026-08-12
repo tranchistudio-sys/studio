@@ -226,14 +226,17 @@ export default function CmsWeddingTemplatesPage() {
             </div>
             <div className="grid gap-5 md:grid-cols-3">
               {([
-                ["Ảnh lớn bên trái", "weddingIntroImage1Url", "weddingIntroImage1Fit", "portrait", COLLAGE_1_PLACEHOLDER],
-                ["Ảnh nhỏ phía trên", "weddingIntroImage2Url", "weddingIntroImage2Fit", "video", COLLAGE_2_PLACEHOLDER],
-                ["Ảnh nhỏ phía dưới", "weddingIntroImage3Url", "weddingIntroImage3Fit", "video", COLLAGE_3_PLACEHOLDER],
-              ] as const).map(([label, imageKey, fitKey, aspect, placeholder]) => {
+                ["Ảnh lớn bên trái", "weddingIntroImage1Url", "weddingIntroImage1Fit", "weddingIntroImage1X", "weddingIntroImage1Y", "weddingIntroImage1Zoom", "portrait", COLLAGE_1_PLACEHOLDER],
+                ["Ảnh nhỏ phía trên", "weddingIntroImage2Url", "weddingIntroImage2Fit", "weddingIntroImage2X", "weddingIntroImage2Y", "weddingIntroImage2Zoom", "video", COLLAGE_2_PLACEHOLDER],
+                ["Ảnh nhỏ phía dưới", "weddingIntroImage3Url", "weddingIntroImage3Fit", "weddingIntroImage3X", "weddingIntroImage3Y", "weddingIntroImage3Zoom", "video", COLLAGE_3_PLACEHOLDER],
+              ] as const).map(([label, imageKey, fitKey, xKey, yKey, zoomKey, aspect, placeholder]) => {
                 const fit = introImages[fitKey] === "contain" ? "contain" : "cover";
+                const x = Number(introImages[xKey] ?? 50);
+                const y = Number(introImages[yKey] ?? 50);
+                const zoom = Number(introImages[zoomKey] ?? 100);
                 return (
                   <div key={imageKey} className="space-y-3">
-                    <CmsImageField label={label} value={introImages[imageKey]} onChange={(v) => setIntroImages((s) => ({ ...s, [imageKey]: v }))} aspect={aspect} objectFit={fit} placeholderSrc={placeholder} />
+                    <CmsImageField label={label} value={introImages[imageKey]} onChange={(v) => setIntroImages((s) => ({ ...s, [imageKey]: v }))} aspect={aspect} objectFit={fit} objectPosition={`${x}% ${y}%`} zoom={zoom} placeholderSrc={placeholder} />
                     <label className="block text-xs font-medium text-muted-foreground">
                       Cách hiển thị ảnh
                       <select className={inputClass + " mt-1"} value={fit} onChange={(e) => setIntroImages((s) => ({ ...s, [fitKey]: e.target.value }))}>
@@ -241,6 +244,19 @@ export default function CmsWeddingTemplatesPage() {
                         <option value="cover">Lấp đầy khung – có thể cắt ảnh</option>
                       </select>
                     </label>
+                    <div className="rounded-xl border bg-neutral-50 p-3 space-y-3">
+                      {([
+                        ["Trái ↔ phải", xKey, x, 0, 100],
+                        ["Lên ↕ xuống", yKey, y, 0, 100],
+                        ["Phóng to / thu nhỏ", zoomKey, zoom, 80, 180],
+                      ] as const).map(([text, key, value, min, max]) => (
+                        <label key={key} className="block text-xs text-muted-foreground">
+                          <span className="flex justify-between"><span>{text}</span><strong>{value}%</strong></span>
+                          <input type="range" min={min} max={max} value={value} onChange={(e) => setIntroImages((s) => ({ ...s, [key]: e.target.value }))} className="mt-1 w-full accent-rose-900" />
+                        </label>
+                      ))}
+                      <button type="button" onClick={() => setIntroImages((s) => ({ ...s, [xKey]: "50", [yKey]: "50", [zoomKey]: "100" }))} className="text-xs font-medium text-rose-800 hover:underline">Đặt lại vị trí</button>
+                    </div>
                   </div>
                 );
               })}

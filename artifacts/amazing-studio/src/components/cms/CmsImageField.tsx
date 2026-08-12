@@ -15,6 +15,8 @@ type Props = {
   /** Upload nền qua global queue (mặc định bật). */
   useBackgroundUpload?: boolean;
   objectFit?: "cover" | "contain";
+  objectPosition?: string;
+  zoom?: number;
 };
 
 export function CmsImageField({
@@ -26,6 +28,8 @@ export function CmsImageField({
   placeholderSrc,
   useBackgroundUpload = true,
   objectFit = "cover",
+  objectPosition = "50% 50%",
+  zoom = 100,
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
@@ -97,7 +101,7 @@ export function CmsImageField({
         )}
       >
         {src ? (
-          <img src={src} alt="" className={cn("w-full h-full", objectFit === "contain" ? "object-contain bg-neutral-100" : "object-cover")} />
+          <img src={src} alt="" style={{ objectPosition, transform: `scale(${zoom / 100})` }} className={cn("w-full h-full transition-transform", objectFit === "contain" ? "object-contain bg-neutral-100" : "object-cover")} />
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground gap-2">
             <ImageIcon className="w-8 h-8 opacity-30" />

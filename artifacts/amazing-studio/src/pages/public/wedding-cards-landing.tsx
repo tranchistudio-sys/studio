@@ -68,6 +68,10 @@ export default function WeddingCardsLandingPage() {
 
   const demoCard = buildDemoCard(templates[0] ?? null);
   const demoCard2 = buildDemoCard(templates[1] ?? templates[0] ?? null);
+  const introImageStyle = (x: string | null | undefined, y: string | null | undefined, zoom: string | null | undefined) => ({
+    objectPosition: `${Number(x ?? 50)}% ${Number(y ?? 50)}%`,
+    transform: `scale(${Number(zoom ?? 100) / 100})`,
+  });
 
   return (
     <div className="wc-bt-page wc-mobile-page wc-bt-smooth pb-8">
@@ -105,10 +109,10 @@ export default function WeddingCardsLandingPage() {
               </Link>
             </WeddingCardBtReveal>
             <WeddingCardBtReveal className="wc-bt-collage" delay={120}>
-              <img src={getImageSrc(publicContent?.weddingIntroImage1Url) ?? COLLAGE_1} alt="" className={`wc-bt-collage-tall ${publicContent?.weddingIntroImage1Fit === "contain" ? "wc-bt-collage-contain" : ""}`} loading="lazy" />
+              <div className="wc-bt-collage-frame wc-bt-collage-tall"><img src={getImageSrc(publicContent?.weddingIntroImage1Url) ?? COLLAGE_1} alt="" style={introImageStyle(publicContent?.weddingIntroImage1X, publicContent?.weddingIntroImage1Y, publicContent?.weddingIntroImage1Zoom)} className={publicContent?.weddingIntroImage1Fit !== "cover" ? "wc-bt-collage-contain" : ""} loading="lazy" /></div>
               <div className="wc-bt-collage-stack">
-                <img src={getImageSrc(publicContent?.weddingIntroImage2Url) ?? COLLAGE_2} alt="" className={publicContent?.weddingIntroImage2Fit === "contain" ? "wc-bt-collage-contain" : ""} loading="lazy" />
-                <img src={getImageSrc(publicContent?.weddingIntroImage3Url) ?? COLLAGE_3} alt="" className={publicContent?.weddingIntroImage3Fit === "contain" ? "wc-bt-collage-contain" : ""} loading="lazy" />
+                <div className="wc-bt-collage-frame"><img src={getImageSrc(publicContent?.weddingIntroImage2Url) ?? COLLAGE_2} alt="" style={introImageStyle(publicContent?.weddingIntroImage2X, publicContent?.weddingIntroImage2Y, publicContent?.weddingIntroImage2Zoom)} className={publicContent?.weddingIntroImage2Fit !== "cover" ? "wc-bt-collage-contain" : ""} loading="lazy" /></div>
+                <div className="wc-bt-collage-frame"><img src={getImageSrc(publicContent?.weddingIntroImage3Url) ?? COLLAGE_3} alt="" style={introImageStyle(publicContent?.weddingIntroImage3X, publicContent?.weddingIntroImage3Y, publicContent?.weddingIntroImage3Zoom)} className={publicContent?.weddingIntroImage3Fit !== "cover" ? "wc-bt-collage-contain" : ""} loading="lazy" /></div>
               </div>
             </WeddingCardBtReveal>
           </div>

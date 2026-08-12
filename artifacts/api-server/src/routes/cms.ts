@@ -128,9 +128,15 @@ async function ensureCmsSchema() {
       footer_cta_subtitle TEXT,
       footer_cta_button_label TEXT,
       footer_cta_button_href TEXT,
+      wedding_intro_image_1_url TEXT,
+      wedding_intro_image_2_url TEXT,
+      wedding_intro_image_3_url TEXT,
       updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
       CONSTRAINT cms_home_settings_singleton CHECK (id = 1)
     )`);
+  await pool.query(`ALTER TABLE cms_home_settings ADD COLUMN IF NOT EXISTS wedding_intro_image_1_url TEXT`).catch(() => {});
+  await pool.query(`ALTER TABLE cms_home_settings ADD COLUMN IF NOT EXISTS wedding_intro_image_2_url TEXT`).catch(() => {});
+  await pool.query(`ALTER TABLE cms_home_settings ADD COLUMN IF NOT EXISTS wedding_intro_image_3_url TEXT`).catch(() => {});
 
   // ─── Seed default dress tree — bọc trong transaction + advisory lock ──
   // Đảm bảo nhiều instance khởi động song song không seed trùng.
@@ -1787,6 +1793,9 @@ const HOME_FIELDS: Array<{ col: string; key: keyof HomeContent }> = [
   { col: "footer_cta_subtitle", key: "footerCtaSubtitle" },
   { col: "footer_cta_button_label", key: "footerCtaButtonLabel" },
   { col: "footer_cta_button_href", key: "footerCtaButtonHref" },
+  { col: "wedding_intro_image_1_url", key: "weddingIntroImage1Url" },
+  { col: "wedding_intro_image_2_url", key: "weddingIntroImage2Url" },
+  { col: "wedding_intro_image_3_url", key: "weddingIntroImage3Url" },
 ];
 
 type HomeContent = {
@@ -1807,6 +1816,9 @@ type HomeContent = {
   footerCtaSubtitle: string | null;
   footerCtaButtonLabel: string | null;
   footerCtaButtonHref: string | null;
+  weddingIntroImage1Url: string | null;
+  weddingIntroImage2Url: string | null;
+  weddingIntroImage3Url: string | null;
 };
 
 const EMPTY_HOME: HomeContent = HOME_FIELDS.reduce((acc, f) => {

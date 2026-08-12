@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Heart, Loader2, Pencil, Plus, RefreshCw, Trash2, Undo2 } from "lucide-react";
+import { Heart, Images, Loader2, Pencil, Plus, RefreshCw, Save, Trash2, Undo2 } from "lucide-react";
 import { CmsImageField } from "@/components/cms/CmsImageField";
 import { getImageSrc } from "@/lib/imageUtils";
 import { weddingTemplatePlaceholder } from "@/lib/cms-placeholders";
@@ -16,9 +16,14 @@ import {
 import { getPublicPageUrl } from "@/lib/public-site-url";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
+import { EMPTY_HOME_SETTINGS, useAdminHomeSettings, useSaveAdminHomeSettings, type HomeSettingsForm } from "@/hooks/use-cms-home-admin";
 
 const inputClass =
   "w-full rounded-xl border border-border bg-white px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-neutral-300";
+
+const COLLAGE_1_PLACEHOLDER = "/uploads/cms/083256ee-9f1b-4473-ad68-d22e8ee2adf6.webp";
+const COLLAGE_2_PLACEHOLDER = "/uploads/cms/0e18a432-d5d4-4993-95f8-4f10e72fbe95.webp";
+const COLLAGE_3_PLACEHOLDER = "/uploads/cms/116119cd-b5ee-414b-a5c1-f3166d993484.webp";
 
 function slugify(name: string) {
   return name
@@ -63,6 +68,22 @@ export default function CmsWeddingTemplatesPage() {
   const remove = useDeleteWeddingTemplate();
   const restore = useRestoreWeddingTemplate();
   const { toast } = useToast();
+  const { data: siteSettings } = useAdminHomeSettings();
+  const saveSiteSettings = useSaveAdminHomeSettings();
+  const [introImages, setIntroImages] = useState<HomeSettingsForm>(EMPTY_HOME_SETTINGS);
+
+  useEffect(() => {
+    if (siteSettings) setIntroImages(siteSettings);
+  }, [siteSettings]);
+
+  const saveIntroImages = async () => {
+    try {
+      await saveSiteSettings.mutateAsync(introImages);
+      toast({ title: "Đã lưu 3 ảnh phần Giới thiệu" });
+    } catch (e) {
+      toast({ title: "Lưu ảnh thất bại", description: e instanceof Error ? e.message : undefined, variant: "destructive" });
+    }
+  };
 
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<AdminWeddingTemplate | null>(null);
@@ -188,6 +209,28 @@ export default function CmsWeddingTemplatesPage() {
       </header>
 
       <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+        {!showTrash && (
+          <section className="mb-6 max-w-6xl mx-auto rounded-2xl border border-border/80 bg-white p-5 shadow-sm">
+            <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <Images className="h-5 w-5 text-rose-800" />
+                <div>
+                  <h2 className="font-semibold">Ảnh Giới thiệu trang Thiệp cưới</h2>
+                  <p className="text-xs text-muted-foreground">Thay đổi 3 ảnh tại phần Giới thiệu của /thiep-cuoi-online</p>
+                </div>
+              </div>
+              <button type="button" onClick={() => void saveIntroImages()} disabled={saveSiteSettings.isPending} className="inline-flex items-center gap-2 rounded-xl bg-rose-900 px-4 py-2.5 text-sm font-medium text-white disabled:opacity-60">
+                {saveSiteSettings.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                Lưu 3 ảnh
+              </button>
+            </div>
+            <div className="grid gap-5 md:grid-cols-3">
+              <CmsImageField label="Ảnh lớn bên trái" value={introImages.weddingIntroImage1Url} onChange={(v) => setIntroImages((s) => ({ ...s, weddingIntroImage1Url: v }))} aspect="portrait" placeholderSrc={COLLAGE_1_PLACEHOLDER} />
+              <CmsImageField label="Ảnh nhỏ phía trên" value={introImages.weddingIntroImage2Url} onChange={(v) => setIntroImages((s) => ({ ...s, weddingIntroImage2Url: v }))} aspect="video" placeholderSrc={COLLAGE_2_PLACEHOLDER} />
+              <CmsImageField label="Ảnh nhỏ phía dưới" value={introImages.weddingIntroImage3Url} onChange={(v) => setIntroImages((s) => ({ ...s, weddingIntroImage3Url: v }))} aspect="video" placeholderSrc={COLLAGE_3_PLACEHOLDER} />
+            </div>
+          </section>
+        )}
         {!isFetched && isLoading ? (
           <div className="flex justify-center py-20 text-muted-foreground">
             <Loader2 className="w-6 h-6 animate-spin" />

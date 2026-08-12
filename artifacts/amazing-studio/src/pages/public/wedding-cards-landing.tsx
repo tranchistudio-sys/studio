@@ -20,6 +20,7 @@ import type { WeddingCardTemplate } from "@/hooks/use-wedding-cards";
 import { STUDIO_NAME } from "@/lib/public-site-config";
 import { getImageSrc } from "@/lib/imageUtils";
 import { weddingTemplatePlaceholder } from "@/lib/cms-placeholders";
+import { usePublicHomeContent } from "@/hooks/use-public-cms";
 
 const COLLAGE_1 = "/uploads/cms/083256ee-9f1b-4473-ad68-d22e8ee2adf6.webp";
 const COLLAGE_2 = "/uploads/cms/0e18a432-d5d4-4993-95f8-4f10e72fbe95.webp";
@@ -53,6 +54,7 @@ export default function WeddingCardsLandingPage() {
     refetch,
     isFetching,
   } = useWeddingCardTemplates();
+  const { data: publicContent } = usePublicHomeContent();
   const [previewTemplate, setPreviewTemplate] = useState<WeddingCardTemplate | null>(null);
   const galleryRef = useRef<HTMLElement>(null);
 
@@ -103,10 +105,10 @@ export default function WeddingCardsLandingPage() {
               </Link>
             </WeddingCardBtReveal>
             <WeddingCardBtReveal className="wc-bt-collage" delay={120}>
-              <img src={COLLAGE_1} alt="" className="wc-bt-collage-tall" loading="lazy" />
+              <img src={getImageSrc(publicContent?.weddingIntroImage1Url) ?? COLLAGE_1} alt="" className="wc-bt-collage-tall" loading="lazy" />
               <div className="wc-bt-collage-stack">
-                <img src={COLLAGE_2} alt="" loading="lazy" />
-                <img src={COLLAGE_3} alt="" loading="lazy" />
+                <img src={getImageSrc(publicContent?.weddingIntroImage2Url) ?? COLLAGE_2} alt="" loading="lazy" />
+                <img src={getImageSrc(publicContent?.weddingIntroImage3Url) ?? COLLAGE_3} alt="" loading="lazy" />
               </div>
             </WeddingCardBtReveal>
           </div>

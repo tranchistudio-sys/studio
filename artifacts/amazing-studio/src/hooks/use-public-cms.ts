@@ -76,6 +76,9 @@ export interface PublicHomeContent {
   footerCtaSubtitle: string | null;
   footerCtaButtonLabel: string | null;
   footerCtaButtonHref: string | null;
+  weddingIntroImage1Url: string | null;
+  weddingIntroImage2Url: string | null;
+  weddingIntroImage3Url: string | null;
 }
 
 async function fetchPublicJson<T>(path: string, label: string): Promise<T> {
@@ -167,6 +170,9 @@ export function usePublicHomeContent() {
           footerCtaSubtitle: null,
           footerCtaButtonLabel: null,
           footerCtaButtonHref: null,
+          weddingIntroImage1Url: null,
+          weddingIntroImage2Url: null,
+          weddingIntroImage3Url: null,
         };
       }
     },

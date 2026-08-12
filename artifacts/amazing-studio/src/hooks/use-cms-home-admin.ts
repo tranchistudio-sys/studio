@@ -28,6 +28,9 @@ export const EMPTY_HOME_SETTINGS: HomeSettingsForm = {
   footerCtaSubtitle: null,
   footerCtaButtonLabel: null,
   footerCtaButtonHref: null,
+  weddingIntroImage1Url: null,
+  weddingIntroImage2Url: null,
+  weddingIntroImage3Url: null,
 };
 
 function parseHomeSettings(raw: unknown): HomeSettingsForm {
@@ -63,6 +66,9 @@ function parseHomeSettings(raw: unknown): HomeSettingsForm {
     footerCtaSubtitle: str("footerCtaSubtitle"),
     footerCtaButtonLabel: str("footerCtaButtonLabel"),
     footerCtaButtonHref: str("footerCtaButtonHref"),
+    weddingIntroImage1Url: str("weddingIntroImage1Url"),
+    weddingIntroImage2Url: str("weddingIntroImage2Url"),
+    weddingIntroImage3Url: str("weddingIntroImage3Url"),
   };
 }
 

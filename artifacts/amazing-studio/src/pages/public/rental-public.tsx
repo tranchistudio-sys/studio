@@ -1,35 +1,56 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { LazyImage, CMS_BASE } from "@/components/cms-shared";
 import { formatVND, cn } from "@/lib/utils";
 import { Sparkles, Shirt, X, Check } from "lucide-react";
-import { OUTFIT_TAGS, OutfitTagBadge, type OutfitTagKey } from "@/lib/outfit-tags";
+import {
+  OUTFIT_TAGS,
+  OutfitTagBadge,
+  type OutfitTagKey,
+} from "@/lib/outfit-tags";
 import { RENTAL_PAGE } from "@/lib/public-site-config";
-import { PublicReveal, PublicRevealItem } from "@/components/public/PublicReveal";
+import {
+  PublicReveal,
+  PublicRevealItem,
+} from "@/components/public/PublicReveal";
 import { playPublicSound } from "@/lib/feedback";
 import { getGalleryDescendantIds } from "@/hooks/use-public-cms";
 import { GoldenHourBadge, ghDiscounted } from "@/lib/golden-hour";
 import {
-  saveRentalListScroll,
-  readRentalListScroll,
-  clearRentalListScroll,
-} from "@/lib/rental-scroll-state";
+  RENTAL_LIST_STATE_VERSION,
+  createRentalDetailNavigationState,
+  createRentalHistoryEntryId,
+  readRentalListNavigationState,
+  writeRentalListNavigationState,
+  type RentalListNavigationState,
+} from "@/lib/rental-navigation";
 
 const OUTFIT_LABEL_TO_KEY_PUB: Array<[string, OutfitTagKey]> = [
   ["hang moi 100", "HANG_MOI_100"],
   ["gia sieu tiet kiem", "GIA_SIEU_TIET_KIEM"],
   ["gia tiet kiem", "GIA_TIET_KIEM"],
-  ["vay nuoc 1", "VAY_NUOC_1"], ["vay nuoc 2", "VAY_NUOC_2"],
-  ["vay nuoc 3", "VAY_NUOC_3"], ["vay nuoc 4", "VAY_NUOC_4"],
-  ["form dep", "FORM_DEP"], ["hot pick", "HOT_PICK"],
-  ["sieu moi", "SIEU_MOI"], ["hang moi", "HANG_MOI"],
+  ["vay nuoc 1", "VAY_NUOC_1"],
+  ["vay nuoc 2", "VAY_NUOC_2"],
+  ["vay nuoc 3", "VAY_NUOC_3"],
+  ["vay nuoc 4", "VAY_NUOC_4"],
+  ["form dep", "FORM_DEP"],
+  ["hot pick", "HOT_PICK"],
+  ["sieu moi", "SIEU_MOI"],
+  ["hang moi", "HANG_MOI"],
 ];
 function matchOutfitKeysFromQuery(q: string): Set<OutfitTagKey> {
-  const n = q.normalize("NFD").replace(/\p{Diacritic}/gu, "").replace(/đ/g, "d").replace(/Đ/g, "D").toLowerCase();
+  const n = q
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/đ/g, "d")
+    .replace(/Đ/g, "D")
+    .toLowerCase();
   const out = new Set<OutfitTagKey>();
-  for (const t of OUTFIT_TAGS) if (n.includes(t.key.toLowerCase())) out.add(t.key);
-  for (const [label, key] of OUTFIT_LABEL_TO_KEY_PUB) if (n.includes(label)) out.add(key);
+  for (const t of OUTFIT_TAGS)
+    if (n.includes(t.key.toLowerCase())) out.add(t.key);
+  for (const [label, key] of OUTFIT_LABEL_TO_KEY_PUB)
+    if (n.includes(label)) out.add(key);
   return out;
 }
 
@@ -78,10 +99,16 @@ const SORT_OPTIONS: { value: SortMode; label: string }[] = [
 
 function parseCSV(v: string | null | undefined): string[] {
   if (!v) return [];
-  return v.split(",").map((s) => s.trim()).filter(Boolean);
+  return v
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 function stripDiacritics(s: string): string {
-  return s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
+  return s
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase();
 }
 function isWeightToken(s: string): boolean {
   return /kg\s*$/i.test(s);
@@ -108,7 +135,8 @@ function countDressesInBranch(
     })),
     rootId,
   );
-  return dresses.filter((d) => d.categoryId != null && ids.has(d.categoryId)).length;
+  return dresses.filter((d) => d.categoryId != null && ids.has(d.categoryId))
+    .length;
 }
 
 // Thứ tự ưu tiên danh mục gốc (chỉ sort ở frontend, KHÔNG đổi DB):
@@ -127,29 +155,85 @@ function tier1Priority(name: string): number {
 
 export default function PublicRentalPage() {
   const [location, setLocation] = useLocation();
-  const [tier1Id, setTier1Id] = useState<number | null>(null);
-  const [tier2Id, setTier2Id] = useState<number | null>(null);
-  const [tier3Id, setTier3Id] = useState<number | null>(null);
-  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
-  const [selectedSizes, setSelectedSizes] = useState<Set<string>>(new Set());
-  const [selectedWeights, setSelectedWeights] = useState<Set<string>>(new Set());
-  const [selectedColors, setSelectedColors] = useState<Set<string>>(new Set());
-  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
-  const [selectedOutfitTags, setSelectedOutfitTags] = useState<Set<OutfitTagKey>>(new Set());
-  const [query, setQuery] = useState("");
-  const [sortMode, setSortMode] = useState<SortMode>("newest");
+  const initialUrlRef = useRef(
+    typeof window === "undefined"
+      ? "/cho-thue-do"
+      : `${window.location.pathname}${window.location.search}`,
+  );
+  const restoredListStateRef = useRef<
+    RentalListNavigationState | null | undefined
+  >(undefined);
+  if (restoredListStateRef.current === undefined) {
+    restoredListStateRef.current =
+      typeof window === "undefined"
+        ? null
+        : readRentalListNavigationState(initialUrlRef.current);
+  }
+  const restoredListState = restoredListStateRef.current;
+  const entryIdRef = useRef(
+    restoredListState?.entryId ?? createRentalHistoryEntryId(),
+  );
+  const lastAnchorRef = useRef({
+    id: restoredListState?.anchorProductId ?? null,
+    slug: restoredListState?.anchorProductSlug ?? null,
+    code: restoredListState?.anchorProductCode ?? null,
+    viewportTop: restoredListState?.anchorViewportTop ?? null,
+  });
+
+  const [tier1Id, setTier1Id] = useState<number | null>(
+    restoredListState?.tier1Id ?? null,
+  );
+  const [tier2Id, setTier2Id] = useState<number | null>(
+    restoredListState?.tier2Id ?? null,
+  );
+  const [tier3Id, setTier3Id] = useState<number | null>(
+    restoredListState?.tier3Id ?? null,
+  );
+  const [visibleCount, setVisibleCount] = useState(
+    Math.max(PAGE_SIZE, restoredListState?.visibleCount ?? PAGE_SIZE),
+  );
+  const [selectedSizes, setSelectedSizes] = useState<Set<string>>(
+    () => new Set(restoredListState?.selectedSizes ?? []),
+  );
+  const [selectedWeights, setSelectedWeights] = useState<Set<string>>(
+    () => new Set(restoredListState?.selectedWeights ?? []),
+  );
+  const [selectedColors, setSelectedColors] = useState<Set<string>>(
+    () => new Set(restoredListState?.selectedColors ?? []),
+  );
+  const [selectedTags, setSelectedTags] = useState<Set<string>>(
+    () => new Set(restoredListState?.selectedTags ?? []),
+  );
+  const [selectedOutfitTags, setSelectedOutfitTags] = useState<
+    Set<OutfitTagKey>
+  >(
+    () =>
+      new Set((restoredListState?.selectedOutfitTags ?? []) as OutfitTagKey[]),
+  );
+  const [query, setQuery] = useState(restoredListState?.query ?? "");
+  const [sortMode, setSortMode] = useState<SortMode>(
+    restoredListState?.sortMode ?? "newest",
+  );
   const [smartFilterOpen, setSmartFilterOpen] = useState(false);
   const smartFilterRef = useRef<HTMLDivElement>(null);
+  const categoryStripRef = useRef<HTMLDivElement>(null);
 
-  const { data: cats = [], isLoading: catsLoading } = useQuery<PublicCategory[]>({
+  const { data: cats = [], isLoading: catsLoading } = useQuery<
+    PublicCategory[]
+  >({
     queryKey: ["public-categories-dress-tree"],
     queryFn: () =>
-      fetch(`${CMS_BASE}/api/cms/public/categories/dress/tree`).then((r) => r.json()),
+      fetch(`${CMS_BASE}/api/cms/public/categories/dress/tree`).then((r) =>
+        r.json(),
+      ),
     staleTime: 5 * 60 * 1000,
   });
-  const { data: dresses = [], isLoading: dressesLoading } = useQuery<PublicDress[]>({
+  const { data: dresses = [], isLoading: dressesLoading } = useQuery<
+    PublicDress[]
+  >({
     queryKey: ["public-dresses"],
-    queryFn: () => fetch(`${CMS_BASE}/api/cms/public/dresses`).then((r) => r.json()),
+    queryFn: () =>
+      fetch(`${CMS_BASE}/api/cms/public/dresses`).then((r) => r.json()),
     staleTime: 5 * 60 * 1000,
   });
 
@@ -181,15 +265,20 @@ export default function PublicRentalPage() {
   const tier2 = tier1Id != null ? (childrenOf.get(tier1Id) ?? []) : [];
   const tier3 = tier2Id != null ? (childrenOf.get(tier2Id) ?? []) : [];
 
-  const didDeepLink = useRef(false);
+  // A restored history entry is already fully initialized. A fresh URL is initialized
+  // exactly once after the category tree arrives; this avoids the old race where the
+  // default first category overwrote categoryId from the query string.
+  const didDeepLink = useRef(Boolean(restoredListState));
   useEffect(() => {
     if (didDeepLink.current || cats.length === 0) return;
     const sp = new URLSearchParams(window.location.search);
-    const cid = sp.get("categoryId");
+    const cid = sp.get("subcategoryId") ?? sp.get("categoryId");
+    let matchedCategory = false;
     if (cid) {
       const id = parseInt(cid, 10);
       const node = catById.get(id);
       if (node) {
+        matchedCategory = true;
         const path: PublicCategory[] = [];
         let cur: PublicCategory | undefined = node;
         while (cur) {
@@ -201,6 +290,7 @@ export default function PublicRentalPage() {
         if (path[2]) setTier3Id(path[2].id);
       }
     }
+    if (!matchedCategory && tier1.length > 0) setTier1Id(tier1[0].id);
     const sortParam = sp.get("sort");
     if (sortParam && SORT_OPTIONS.some((o) => o.value === sortParam)) {
       setSortMode(sortParam as SortMode);
@@ -208,22 +298,26 @@ export default function PublicRentalPage() {
     const q = sp.get("q");
     if (q) setQuery(q);
     didDeepLink.current = true;
-  }, [cats, catById]);
+  }, [cats, catById, tier1]);
 
   useEffect(() => {
-    if (tier1Id == null && tier1.length > 0 && didDeepLink.current) {
-      setTier1Id(tier1[0].id);
-    }
-  }, [tier1, tier1Id]);
-
-  useEffect(() => {
+    if (!didDeepLink.current) return;
     const selected = tier3Id ?? tier2Id ?? tier1Id;
-    if (selected == null) return;
+    if (selected == null || tier1Id == null) return;
     const sp = new URLSearchParams(window.location.search);
-    if (sp.get("categoryId") === String(selected)) return;
-    sp.set("categoryId", String(selected));
-    setLocation(`${location.split("?")[0]}?${sp.toString()}`, { replace: true });
-  }, [tier1Id, tier2Id, tier3Id, location, setLocation]);
+    sp.set("categoryId", String(tier1Id));
+    if (selected !== tier1Id) sp.set("subcategoryId", String(selected));
+    else sp.delete("subcategoryId");
+    const normalizedQuery = query.trim();
+    if (normalizedQuery) sp.set("q", normalizedQuery);
+    else sp.delete("q");
+    if (sortMode !== "newest") sp.set("sort", sortMode);
+    else sp.delete("sort");
+    const nextUrl = `${location.split("?")[0]}?${sp.toString()}`;
+    const currentUrl = `${window.location.pathname}${window.location.search}`;
+    if (nextUrl === currentUrl) return;
+    setLocation(nextUrl, { replace: true, state: window.history.state });
+  }, [tier1Id, tier2Id, tier3Id, query, sortMode, location, setLocation]);
 
   function resetFilters() {
     setSelectedSizes(new Set());
@@ -327,7 +421,10 @@ export default function PublicRentalPage() {
           ].join(" "),
         );
         if (tokens.every((t) => hay.includes(t))) return true;
-        return d.outfitTag !== null && tagKeysFromSearch.has(d.outfitTag as OutfitTagKey);
+        return (
+          d.outfitTag !== null &&
+          tagKeysFromSearch.has(d.outfitTag as OutfitTagKey)
+        );
       });
     }
 
@@ -357,7 +454,9 @@ export default function PublicRentalPage() {
     }
     if (selectedOutfitTags.size > 0) {
       list = list.filter(
-        (d) => d.outfitTag !== null && selectedOutfitTags.has(d.outfitTag as OutfitTagKey),
+        (d) =>
+          d.outfitTag !== null &&
+          selectedOutfitTags.has(d.outfitTag as OutfitTagKey),
       );
     }
     return list;
@@ -379,15 +478,19 @@ export default function PublicRentalPage() {
         break;
       case "price_asc":
         arr.sort((a, b) => {
-          const ap = a.rentalPrice > 0 ? a.rentalPrice : Number.POSITIVE_INFINITY;
-          const bp = b.rentalPrice > 0 ? b.rentalPrice : Number.POSITIVE_INFINITY;
+          const ap =
+            a.rentalPrice > 0 ? a.rentalPrice : Number.POSITIVE_INFINITY;
+          const bp =
+            b.rentalPrice > 0 ? b.rentalPrice : Number.POSITIVE_INFINITY;
           return ap - bp;
         });
         break;
       case "price_desc":
         arr.sort((a, b) => {
-          const ap = a.rentalPrice > 0 ? a.rentalPrice : Number.NEGATIVE_INFINITY;
-          const bp = b.rentalPrice > 0 ? b.rentalPrice : Number.NEGATIVE_INFINITY;
+          const ap =
+            a.rentalPrice > 0 ? a.rentalPrice : Number.NEGATIVE_INFINITY;
+          const bp =
+            b.rentalPrice > 0 ? b.rentalPrice : Number.NEGATIVE_INFINITY;
           return bp - ap;
         });
         break;
@@ -398,7 +501,10 @@ export default function PublicRentalPage() {
       default:
         // API đã sắp đúng công thức: ưu tiên trước (priority_at mới nhất), rồi mới nhất.
         // Chỉ cần đảm bảo nhóm ưu tiên nổi lên đầu, giữ nguyên thứ tự API trong từng nhóm.
-        arr.sort((a, b) => Number(b.isPriority ?? false) - Number(a.isPriority ?? false));
+        arr.sort(
+          (a, b) =>
+            Number(b.isPriority ?? false) - Number(a.isPriority ?? false),
+        );
         break;
     }
     return arr;
@@ -422,95 +528,151 @@ export default function PublicRentalPage() {
 
   const shownDresses = sortedDresses.slice(0, visibleCount);
   const loading = catsLoading || dressesLoading;
+  const hasRestoredScrollRef = useRef(!restoredListState);
 
-  // Khôi phục vị trí cuộn khi khách bấm Back từ trang chi tiết về đúng danh sách này.
-  // Giữ tham chiếu mới nhất để rAF-loop (chạy 1 lần khi mount) đọc mà không bị stale closure.
-  const restoreScrollRef = useRef({ loading, sortedDresses, visibleCount });
-  restoreScrollRef.current = { loading, sortedDresses, visibleCount };
+  function captureListState(anchor?: PublicDress): RentalListNavigationState {
+    if (anchor) {
+      const card = document.querySelector<HTMLElement>(
+        `[data-rental-product-id="${anchor.id}"]`,
+      );
+      lastAnchorRef.current = {
+        id: anchor.id,
+        slug: anchor.slug,
+        code: anchor.code,
+        viewportTop: card?.getBoundingClientRect().top ?? null,
+      };
+    }
+    const anchorState = lastAnchorRef.current;
+    return {
+      version: RENTAL_LIST_STATE_VERSION,
+      entryId: entryIdRef.current,
+      url: `${window.location.pathname}${window.location.search}`,
+      categoryId: tier1Id,
+      selectedCategoryId: selectedNodeId,
+      tier1Id,
+      tier2Id,
+      tier3Id,
+      selectedSizes: [...selectedSizes],
+      selectedWeights: [...selectedWeights],
+      selectedColors: [...selectedColors],
+      selectedTags: [...selectedTags],
+      selectedOutfitTags: [...selectedOutfitTags],
+      query,
+      sortMode,
+      visibleCount,
+      scrollY: Math.max(0, window.scrollY),
+      categoryScrollLeft: Math.max(
+        0,
+        categoryStripRef.current?.scrollLeft ?? 0,
+      ),
+      anchorProductId: anchorState.id,
+      anchorProductSlug: anchorState.slug,
+      anchorProductCode: anchorState.code,
+      anchorViewportTop: anchorState.viewportTop,
+    };
+  }
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  function openDressDetail(dress: PublicDress) {
+    if (!dress.slug) return;
+    const listState = captureListState(dress);
+    writeRentalListNavigationState(listState);
+    playPublicSound("public_product_card_opened");
+    setLocation(`/san-pham/${dress.slug}`, {
+      state: createRentalDetailNavigationState(listState),
+    });
+  }
+
+  // Keep filter/category/paging state attached to this exact history entry.
+  // The click handler captures scroll and the product anchor at the last possible moment.
   useEffect(() => {
-    const saved = readRentalListScroll();
-    if (!saved) return; // Vào trực tiếp từ menu/nav → không có state → lên đầu trang như bình thường.
+    if (
+      loading ||
+      selectedNodeId == null ||
+      (restoredListState && !hasRestoredScrollRef.current)
+    ) {
+      return;
+    }
+    writeRentalListNavigationState(captureListState());
+  }, [
+    loading,
+    selectedNodeId,
+    tier1Id,
+    tier2Id,
+    tier3Id,
+    selectedSizes,
+    selectedWeights,
+    selectedColors,
+    selectedTags,
+    selectedOutfitTags,
+    query,
+    sortMode,
+    visibleCount,
+  ]);
 
-    // Ngăn trình duyệt tự "restore scroll" (lên đầu/loạn) trong lúc SPA remount còn rỗng;
-    // ta tự khôi phục chính xác. Trả lại giá trị cũ khi rời trang.
-    const prevScrollRestoration =
-      typeof window.history.scrollRestoration === "string"
-        ? window.history.scrollRestoration
-        : null;
-    if (prevScrollRestoration !== null) {
-      try {
-        window.history.scrollRestoration = "manual";
-      } catch {
-        /* một số trình duyệt cấm ghi — bỏ qua */
-      }
+  // Restore only after filters, pagination and the fixed-aspect card layout are ready.
+  // requestAnimationFrame retries cover cached/lazy images without a visible long timeout.
+  useLayoutEffect(() => {
+    const saved = restoredListState;
+    if (
+      !saved ||
+      hasRestoredScrollRef.current ||
+      loading ||
+      selectedNodeId !== saved.selectedCategoryId
+    ) {
+      return;
     }
 
-    let cancelled = false;
-    let rafId = 0;
-    let timerId = 0;
-    let bumped = false;
-    const startedAt = Date.now();
-    const DEADLINE_MS = 2000; // cố gắng tối đa ~2s rồi dừng, tránh giật lặp vô hạn.
-
-    const attempt = () => {
-      if (cancelled) return;
-      const { loading: isLoading, sortedDresses: list, visibleCount: shown } =
-        restoreScrollRef.current;
-      const urlMatches =
-        window.location.pathname + window.location.search === saved.listUrl;
-
-      // Chỉ restore khi đúng ngữ cảnh: URL khớp + data xong + deep-link (category/sort/q) đã áp + có sản phẩm.
-      if (urlMatches && !isLoading && didDeepLink.current && list.length > 0) {
-        // Sản phẩm vừa bấm có thể nằm ngoài trang đầu (infinite scroll) → mở rộng để card được render.
-        if (!bumped) {
-          const idx = list.findIndex((d) => d.id === saved.productId);
-          if (idx >= 0 && idx >= shown) {
-            setVisibleCount(
-              Math.min(list.length, Math.ceil((idx + 1) / PAGE_SIZE) * PAGE_SIZE),
+    categoryStripRef.current?.scrollTo({
+      left: saved.categoryScrollLeft,
+      behavior: "auto",
+    });
+    let frame = 0;
+    let attempts = 0;
+    const restore = () => {
+      attempts += 1;
+      const card =
+        saved.anchorProductId == null
+          ? null
+          : document.querySelector<HTMLElement>(
+              `[data-rental-product-id="${saved.anchorProductId}"]`,
             );
-          }
-          bumped = true;
-        }
-        const el = document.querySelector<HTMLElement>(
-          `[data-product-id="${saved.productId}"]`,
-        );
-        if (el) {
-          el.scrollIntoView({ block: "center" });
-          clearRentalListScroll(); // one-shot: đã dùng xong.
-          return;
-        }
-      }
+      const maxScroll = Math.max(
+        0,
+        document.documentElement.scrollHeight - window.innerHeight,
+      );
+      let target = Math.min(saved.scrollY, maxScroll);
 
-      if (Date.now() - startedAt > DEADLINE_MS) {
-        // Hết giờ: nếu đúng danh sách thì fallback về vị trí cuộn đã lưu (card không còn trong list).
-        // Nếu URL không khớp (ngữ cảnh khác) thì để nguyên state cho lần Back đúng URL sau.
-        if (urlMatches) {
-          window.scrollTo(0, saved.scrollY);
-          clearRentalListScroll();
-        }
+      if (card && saved.anchorViewportTop != null && attempts > 1) {
+        target = Math.min(
+          maxScroll,
+          Math.max(
+            0,
+            window.scrollY +
+              card.getBoundingClientRect().top -
+              saved.anchorViewportTop,
+          ),
+        );
+      }
+      window.scrollTo({ top: target, left: 0, behavior: "auto" });
+
+      const targetReached = Math.abs(window.scrollY - target) <= 2;
+      const anchorReached =
+        !card ||
+        saved.anchorViewportTop == null ||
+        Math.abs(card.getBoundingClientRect().top - saved.anchorViewportTop) <=
+          4;
+      if ((targetReached && anchorReached) || attempts >= 12) {
+        if (!anchorReached && card)
+          card.scrollIntoView({ block: "center", behavior: "auto" });
+        hasRestoredScrollRef.current = true;
+        writeRentalListNavigationState(captureListState());
         return;
       }
-      timerId = window.setTimeout(() => {
-        rafId = requestAnimationFrame(attempt);
-      }, 100);
+      frame = window.requestAnimationFrame(restore);
     };
-
-    rafId = requestAnimationFrame(attempt);
-    return () => {
-      cancelled = true;
-      if (rafId) cancelAnimationFrame(rafId);
-      if (timerId) clearTimeout(timerId);
-      if (prevScrollRestoration !== null) {
-        try {
-          window.history.scrollRestoration = prevScrollRestoration;
-        } catch {
-          /* ignore */
-        }
-      }
-    };
-  }, []);
+    frame = window.requestAnimationFrame(restore);
+    return () => window.cancelAnimationFrame(frame);
+  }, [loading, selectedNodeId, shownDresses.length, restoredListState]);
 
   const hasChipFilter =
     selectedSizes.size > 0 ||
@@ -568,7 +730,10 @@ export default function PublicRentalPage() {
   );
 
   // Lọc tức thì: bấm tag là áp dụng ngay, bấm lại để bỏ chọn; reset phân trang mỗi lần đổi.
-  function instantToggle<T>(setter: React.Dispatch<React.SetStateAction<Set<T>>>, value: T) {
+  function instantToggle<T>(
+    setter: React.Dispatch<React.SetStateAction<Set<T>>>,
+    value: T,
+  ) {
     setter((prev) => toggleSet(prev, value));
     setVisibleCount(PAGE_SIZE);
   }
@@ -601,7 +766,10 @@ export default function PublicRentalPage() {
           <>
             <div className="flex gap-2 sm:gap-3 overflow-hidden mb-6 sm:mb-10">
               {Array.from({ length: 3 }).map((_, i) => (
-                <div key={i} className="gallery-skeleton h-24 w-52 rounded-xl flex-shrink-0" />
+                <div
+                  key={i}
+                  className="gallery-skeleton h-24 w-52 rounded-xl flex-shrink-0"
+                />
               ))}
             </div>
             <RentalGridSkeleton />
@@ -615,6 +783,7 @@ export default function PublicRentalPage() {
           <>
             <PublicReveal className="mb-4 sm:mb-10">
               <div
+                ref={categoryStripRef}
                 className="flex gap-3 sm:gap-4 overflow-x-auto pb-2 -mx-1 px-1 snap-x snap-mandatory"
                 style={{ WebkitOverflowScrolling: "touch" }}
               >
@@ -633,11 +802,17 @@ export default function PublicRentalPage() {
                       <div
                         className={cn(
                           "w-9 h-9 sm:w-14 sm:h-14 flex-shrink-0 rounded-lg overflow-hidden border",
-                          active ? "border-white/30" : "border-neutral-200/80 bg-neutral-100",
+                          active
+                            ? "border-white/30"
+                            : "border-neutral-200/80 bg-neutral-100",
                         )}
                       >
                         {tab.cover ? (
-                          <LazyImage src={tab.cover} cmsCache className="w-full h-full object-cover" />
+                          <LazyImage
+                            src={tab.cover}
+                            cmsCache
+                            className="w-full h-full object-cover"
+                          />
                         ) : (
                           <div className="w-full h-full flex items-center justify-center">
                             <Shirt
@@ -704,12 +879,15 @@ export default function PublicRentalPage() {
                     onClick={toggleSmartFilter}
                     className={cn(
                       "rental-smart-filter-btn inline-flex items-center justify-center gap-1.5 sm:gap-2 h-9 sm:h-10 px-3 sm:px-4 text-[11px] sm:text-sm whitespace-nowrap",
-                      (smartFilterOpen || advancedFilterCount > 0) && "is-active",
+                      (smartFilterOpen || advancedFilterCount > 0) &&
+                        "is-active",
                     )}
                   >
                     <Sparkles className="w-3.5 h-3.5 flex-shrink-0" />
                     <span className="sm:hidden">Lọc</span>
-                    <span className="hidden sm:inline">Tìm kiếm thông minh</span>
+                    <span className="hidden sm:inline">
+                      Tìm kiếm thông minh
+                    </span>
                     {advancedFilterCount > 0 && (
                       <span className="min-w-[1.25rem] h-5 px-1.5 rounded-full bg-white/25 text-[10px] font-semibold flex items-center justify-center">
                         {advancedFilterCount}
@@ -782,14 +960,18 @@ export default function PublicRentalPage() {
             <p className="text-center text-[10px] sm:text-xs tracking-[0.15em] sm:tracking-[0.2em] uppercase text-neutral-500 mb-3 sm:mb-6">
               {breadcrumbLabel}
               <span className="text-neutral-400 mx-2">—</span>
-              <span className="text-neutral-700">{sortedDresses.length} mẫu</span>
+              <span className="text-neutral-700">
+                {sortedDresses.length} mẫu
+              </span>
             </p>
 
             {sortedDresses.length === 0 ? (
               <div className="text-center py-14 sm:py-20 rounded-2xl bg-white/60 border border-neutral-200/60">
                 <Shirt className="w-10 h-10 mx-auto text-neutral-300 mb-4" />
                 <p className="font-serif text-xl text-neutral-800 mb-2">
-                  {hasChipFilter ? "Không có mẫu phù hợp" : "Chưa có sản phẩm trong mục này"}
+                  {hasChipFilter
+                    ? "Không có mẫu phù hợp"
+                    : "Chưa có sản phẩm trong mục này"}
                 </p>
                 <p className="text-sm text-neutral-500">
                   {hasChipFilter
@@ -813,13 +995,7 @@ export default function PublicRentalPage() {
                     <PublicRevealItem key={d.id}>
                       <RentalDressCard
                         dress={d}
-                        onNavigate={() => {
-                          if (d.slug) {
-                            saveRentalListScroll(d.id); // lưu vị trí danh sách để Back về đúng chỗ
-                            playPublicSound("public_product_card_opened");
-                            setLocation(`/san-pham/${d.slug}`);
-                          }
-                        }}
+                        onNavigate={() => openDressDetail(d)}
                       />
                     </PublicRevealItem>
                   ))}
@@ -987,7 +1163,12 @@ function FilterGroup({
       <p className="rental-smart-filter-label">{label}</p>
       <div className="rental-smart-filter-row">
         {options.map((s) => (
-          <FilterPill key={s} label={s} active={selected.has(s)} onClick={() => onToggle(s)} />
+          <FilterPill
+            key={s}
+            label={s}
+            active={selected.has(s)}
+            onClick={() => onToggle(s)}
+          />
         ))}
       </div>
     </div>
@@ -1013,7 +1194,9 @@ function FilterPill({
         active && "is-active",
       )}
     >
-      {active && <Check className="w-2.5 h-2.5 hidden sm:inline-block" aria-hidden />}
+      {active && (
+        <Check className="w-2.5 h-2.5 hidden sm:inline-block" aria-hidden />
+      )}
       {label}
     </button>
   );
@@ -1057,11 +1240,15 @@ function RentalDressCard({
 
   return (
     <article
-      data-product-id={d.id}
+      data-rental-product-id={d.id}
+      data-rental-product-slug={d.slug ?? undefined}
+      data-rental-product-code={d.code}
       role={d.slug ? "link" : undefined}
       tabIndex={d.slug ? 0 : undefined}
       onClick={d.slug ? onNavigate : undefined}
-      onMouseEnter={() => playPublicSound("public_image_hover_soft", { cooldownMs: 1500 })}
+      onMouseEnter={() =>
+        playPublicSound("public_image_hover_soft", { cooldownMs: 1500 })
+      }
       onKeyDown={(e) => {
         if (!d.slug) return;
         if (e.key === "Enter" || e.key === " ") {
@@ -1071,7 +1258,8 @@ function RentalDressCard({
       }}
       className={cn(
         "gallery-card concept-card rental-dress-card group",
-        d.slug && "cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--public-nude,#c4a882)]",
+        d.slug &&
+          "cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--public-nude,#c4a882)]",
       )}
     >
       <div className="relative aspect-[4/5] sm:aspect-[3/4] bg-neutral-100 overflow-hidden">
@@ -1088,24 +1276,36 @@ function RentalDressCard({
               aria-hidden
             />
             <div className="concept-card-title-hover absolute bottom-0 left-0 right-0 p-5 pointer-events-none">
-              <p className="font-serif text-xl text-white leading-snug line-clamp-2">{d.name}</p>
-              {d.rentalPrice > 0 && (
-                (d.salePrice ?? 0) > 0 && (d.salePrice ?? 0) < d.rentalPrice ? (
+              <p className="font-serif text-xl text-white leading-snug line-clamp-2">
+                {d.name}
+              </p>
+              {d.rentalPrice > 0 &&
+                ((d.salePrice ?? 0) > 0 &&
+                (d.salePrice ?? 0) < d.rentalPrice ? (
                   <p className="text-xs mt-1.5 tracking-wide">
-                    <span className="text-white/60 line-through">{formatVND(d.rentalPrice)}</span>{" "}
-                    <span className="text-amber-300 font-semibold">{formatVND(d.salePrice!)}</span>
+                    <span className="text-white/60 line-through">
+                      {formatVND(d.rentalPrice)}
+                    </span>{" "}
+                    <span className="text-amber-300 font-semibold">
+                      {formatVND(d.salePrice!)}
+                    </span>
                   </p>
                 ) : (d.goldenHourPercent ?? 0) > 0 ? (
                   <p className="text-xs mt-1.5 tracking-wide">
-                    <span className="text-white/60 line-through">{formatVND(d.rentalPrice)}</span>{" "}
-                    <span className="text-amber-300 font-semibold">{formatVND(ghDiscounted(d.rentalPrice, d.goldenHourPercent))}</span>
+                    <span className="text-white/60 line-through">
+                      {formatVND(d.rentalPrice)}
+                    </span>{" "}
+                    <span className="text-amber-300 font-semibold">
+                      {formatVND(
+                        ghDiscounted(d.rentalPrice, d.goldenHourPercent),
+                      )}
+                    </span>
                   </p>
                 ) : (
                   <p className="text-white/80 text-xs mt-1.5 tracking-wide">
                     Giá thuê: {formatVND(d.rentalPrice)}
                   </p>
-                )
-              )}
+                ))}
             </div>
           </>
         ) : (
@@ -1123,37 +1323,57 @@ function RentalDressCard({
             </span>
           </div>
         )}
-        {(d.outfitTag || ((d.goldenHourPercent ?? 0) > 0 && !((d.salePrice ?? 0) > 0 && (d.salePrice ?? 0) < d.rentalPrice))) && (
+        {(d.outfitTag ||
+          ((d.goldenHourPercent ?? 0) > 0 &&
+            !(
+              (d.salePrice ?? 0) > 0 && (d.salePrice ?? 0) < d.rentalPrice
+            ))) && (
           <div className="absolute top-1.5 left-1.5 sm:top-3 sm:left-3 z-10 scale-90 sm:scale-100 origin-top-left flex flex-col items-start gap-1">
             {d.outfitTag && <OutfitTagBadge tag={d.outfitTag} size="sm" />}
-            {(d.goldenHourPercent ?? 0) > 0 && !((d.salePrice ?? 0) > 0 && (d.salePrice ?? 0) < d.rentalPrice) && (
-              <GoldenHourBadge percent={d.goldenHourPercent} />
-            )}
+            {(d.goldenHourPercent ?? 0) > 0 &&
+              !(
+                (d.salePrice ?? 0) > 0 && (d.salePrice ?? 0) < d.rentalPrice
+              ) && <GoldenHourBadge percent={d.goldenHourPercent} />}
           </div>
         )}
       </div>
 
       <div className="px-2 py-2 sm:px-4 sm:py-3 border-t border-neutral-100/80 bg-white">
-        <p className="font-serif text-xs sm:text-lg text-neutral-900 leading-snug line-clamp-2">{d.name}</p>
-        <p className="text-[9px] sm:text-[11px] text-neutral-500 font-mono mt-0.5 truncate">{d.code}</p>
-        {d.rentalPrice > 0 && (
-          (d.salePrice ?? 0) > 0 && (d.salePrice ?? 0) < d.rentalPrice ? (
+        <p className="font-serif text-xs sm:text-lg text-neutral-900 leading-snug line-clamp-2">
+          {d.name}
+        </p>
+        <p className="text-[9px] sm:text-[11px] text-neutral-500 font-mono mt-0.5 truncate">
+          {d.code}
+        </p>
+        {d.rentalPrice > 0 &&
+          ((d.salePrice ?? 0) > 0 && (d.salePrice ?? 0) < d.rentalPrice ? (
             <p className="text-[11px] sm:text-sm mt-1 sm:mt-2 leading-tight">
-              <span className="text-neutral-400 text-[10px] sm:text-xs line-through">{formatVND(d.rentalPrice)}</span>{" "}
-              <span className="font-semibold text-rose-600">{formatVND(d.salePrice!)}</span>
+              <span className="text-neutral-400 text-[10px] sm:text-xs line-through">
+                {formatVND(d.rentalPrice)}
+              </span>{" "}
+              <span className="font-semibold text-rose-600">
+                {formatVND(d.salePrice!)}
+              </span>
             </p>
           ) : (d.goldenHourPercent ?? 0) > 0 ? (
             <p className="text-[11px] sm:text-sm mt-1 sm:mt-2 leading-tight">
-              <span className="text-neutral-400 text-[10px] sm:text-xs line-through">{formatVND(d.rentalPrice)}</span>{" "}
-              <span className="font-semibold text-amber-600">{formatVND(ghDiscounted(d.rentalPrice, d.goldenHourPercent))}</span>
+              <span className="text-neutral-400 text-[10px] sm:text-xs line-through">
+                {formatVND(d.rentalPrice)}
+              </span>{" "}
+              <span className="font-semibold text-amber-600">
+                {formatVND(ghDiscounted(d.rentalPrice, d.goldenHourPercent))}
+              </span>
             </p>
           ) : (
             <p className="text-[11px] sm:text-sm text-neutral-800 mt-1 sm:mt-2 leading-tight">
-              <span className="text-neutral-500 text-[10px] sm:text-xs">Giá thuê </span>
-              <span className="font-semibold sm:font-medium">{formatVND(d.rentalPrice)}</span>
+              <span className="text-neutral-500 text-[10px] sm:text-xs">
+                Giá thuê{" "}
+              </span>
+              <span className="font-semibold sm:font-medium">
+                {formatVND(d.rentalPrice)}
+              </span>
             </p>
-          )
-        )}
+          ))}
         {(sizeTags.length > 0 || colorTags.length > 0) && (
           <div className="flex flex-wrap gap-1 sm:gap-1.5 mt-1 sm:mt-2">
             {sizeTags.map((t) => (
@@ -1183,7 +1403,10 @@ function RentalGridSkeleton() {
   return (
     <div className="rental-product-grid grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-3 gap-2 sm:gap-6 lg:gap-8">
       {Array.from({ length: 6 }).map((_, i) => (
-        <div key={i} className="rounded-[0.625rem] overflow-hidden bg-white shadow-sm">
+        <div
+          key={i}
+          className="rounded-[0.625rem] overflow-hidden bg-white shadow-sm"
+        >
           <div className="gallery-skeleton aspect-[4/5] sm:aspect-[3/4] w-full" />
           <div className="p-2 sm:p-4 space-y-1.5 sm:space-y-2">
             <div className="gallery-skeleton h-3 sm:h-4 w-3/4 rounded" />

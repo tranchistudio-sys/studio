@@ -39,6 +39,7 @@ import {
   TRANCHI_CHAT_URL,
   ZALO_CHAT_PHONE,
 } from "@/lib/public-site-config";
+import { readRentalDetailNavigationState } from "@/lib/rental-navigation";
 
 const RENTAL_NOTES = [
   "Đặt cọc theo quy định của studio; số tiền phụ thuộc loại trang phục.",
@@ -56,7 +57,8 @@ const STYLING_PLACEHOLDERS = [
 function isMobileDevice(): boolean {
   try {
     if (typeof window === "undefined") return false;
-    if (window.matchMedia && window.matchMedia("(pointer: coarse)").matches) return true;
+    if (window.matchMedia && window.matchMedia("(pointer: coarse)").matches)
+      return true;
     return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
   } catch {
     return false;
@@ -104,7 +106,10 @@ function openZalo(phone: string) {
   }
 }
 
-function productPriceText(d: { rentalPrice: number; salePrice?: number }): string {
+function productPriceText(d: {
+  rentalPrice: number;
+  salePrice?: number;
+}): string {
   const sale = d.salePrice ?? 0;
   if (sale > 0 && sale < d.rentalPrice) return formatVND(sale);
   return d.rentalPrice > 0 ? formatVND(d.rentalPrice) : "Liên hệ";
@@ -156,7 +161,13 @@ async function copyToClipboard(text: string): Promise<boolean> {
 }
 
 /** Popup fallback khi trình duyệt chặn clipboard — khách copy nhanh nội dung tư vấn. */
-function ConsultCopyPopup({ text, onClose }: { text: string; onClose: () => void }) {
+function ConsultCopyPopup({
+  text,
+  onClose,
+}: {
+  text: string;
+  onClose: () => void;
+}) {
   const taRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     taRef.current?.focus();
@@ -225,7 +236,8 @@ function useSmartConsult(dress: PublicDressDetail) {
     if (ok) {
       toast({
         title: "Đã copy nội dung tư vấn",
-        description: "Dán vào khung chat — nhân viên nhận đủ tên sản phẩm, giá và link.",
+        description:
+          "Dán vào khung chat — nhân viên nhận đủ tên sản phẩm, giá và link.",
       });
     } else {
       setPopupText(msg);
@@ -233,7 +245,8 @@ function useSmartConsult(dress: PublicDressDetail) {
     if (target === "zalo") {
       openZalo(ZALO_CHAT_PHONE);
     } else {
-      const href = target === "fanpage" ? FANPAGE_MESSENGER_URL : TRANCHI_CHAT_URL;
+      const href =
+        target === "fanpage" ? FANPAGE_MESSENGER_URL : TRANCHI_CHAT_URL;
       window.open(href, "_blank", "noopener,noreferrer");
     }
   }
@@ -269,7 +282,9 @@ function ConsultantSection({ dress }: { dress: PublicDressDetail }) {
   return (
     <div className="space-y-3">
       {popup}
-      <h2 className="font-serif text-lg font-light text-neutral-900">Liên hệ tư vấn sản phẩm</h2>
+      <h2 className="font-serif text-lg font-light text-neutral-900">
+        Liên hệ tư vấn sản phẩm
+      </h2>
       <div className="space-y-2.5">
         {CONSULTANTS.map((c) => (
           <div
@@ -281,7 +296,9 @@ function ConsultantSection({ dress }: { dress: PublicDressDetail }) {
                 <User className="w-5 h-5" />
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-neutral-900 truncate">{c.name}</p>
+                <p className="text-sm font-medium text-neutral-900 truncate">
+                  {c.name}
+                </p>
                 <a
                   href={`tel:${c.phone}`}
                   className="text-xs text-neutral-500 tabular-nums hover:text-neutral-900"
@@ -373,20 +390,48 @@ interface PublicDressListItem {
   goldenHourPercent?: number;
 }
 
-const STATUS_MAP: Record<string, { label: string; color: string; bg: string }> = {
-  san_sang: { label: "Có sẵn", color: "text-emerald-800", bg: "bg-emerald-50 border-emerald-200/60" },
-  dang_cho_thue: { label: "Đang thuê", color: "text-amber-800", bg: "bg-amber-50 border-amber-200/60" },
-  giu_do: { label: "Đang thuê", color: "text-amber-800", bg: "bg-amber-50 border-amber-200/60" },
-  ngung_cho_thue: { label: "Ngưng thuê", color: "text-neutral-600", bg: "bg-neutral-100 border-neutral-200/60" },
-};
+const STATUS_MAP: Record<string, { label: string; color: string; bg: string }> =
+  {
+    san_sang: {
+      label: "Có sẵn",
+      color: "text-emerald-800",
+      bg: "bg-emerald-50 border-emerald-200/60",
+    },
+    dang_cho_thue: {
+      label: "Đang thuê",
+      color: "text-amber-800",
+      bg: "bg-amber-50 border-amber-200/60",
+    },
+    giu_do: {
+      label: "Đang thuê",
+      color: "text-amber-800",
+      bg: "bg-amber-50 border-amber-200/60",
+    },
+    ngung_cho_thue: {
+      label: "Ngưng thuê",
+      color: "text-neutral-600",
+      bg: "bg-neutral-100 border-neutral-200/60",
+    },
+  };
 
 function getPublicStatus(status: string) {
   return STATUS_MAP[status] ?? STATUS_MAP.san_sang;
 }
 
-function Chip({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+function Chip({
+  icon,
+  label,
+  value,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+}) {
   if (!value) return null;
-  const items = value.split(/[,;]/).map((s) => s.trim()).filter(Boolean);
+  const items = value
+    .split(/[,;]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
   return (
     <div className="space-y-1">
       <p className="text-[11px] tracking-wide uppercase text-neutral-500 flex items-center gap-1">
@@ -523,7 +568,11 @@ function ImageSlider({
               }`}
               aria-label={`Xem ảnh ${i + 1}`}
             >
-              <img src={getCmsImageSrc(src) ?? src} alt="" className="w-full h-full object-cover" />
+              <img
+                src={getCmsImageSrc(src) ?? src}
+                alt=""
+                className="w-full h-full object-cover"
+              />
             </button>
           ))}
         </div>
@@ -548,7 +597,11 @@ function ProductCtaButtons({
     : "flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-colors w-full";
 
   return (
-    <div className={isBar ? "flex gap-2" : "flex flex-col gap-2 sm:flex-row sm:flex-wrap"}>
+    <div
+      className={
+        isBar ? "flex gap-2" : "flex flex-col gap-2 sm:flex-row sm:flex-wrap"
+      }
+    >
       {popup}
       <button
         type="button"
@@ -603,10 +656,16 @@ function SectionBlock({
       <div>
         <div className="flex items-center gap-2 text-[var(--public-accent-dark)] mb-1">
           {icon}
-          <span className="text-[10px] tracking-[0.25em] uppercase text-neutral-500">Amazing Studio</span>
+          <span className="text-[10px] tracking-[0.25em] uppercase text-neutral-500">
+            Amazing Studio
+          </span>
         </div>
-        <h2 className="font-serif text-xl sm:text-2xl font-light text-neutral-900">{title}</h2>
-        {subtitle && <p className="text-sm text-neutral-600 mt-1">{subtitle}</p>}
+        <h2 className="font-serif text-xl sm:text-2xl font-light text-neutral-900">
+          {title}
+        </h2>
+        {subtitle && (
+          <p className="text-sm text-neutral-600 mt-1">{subtitle}</p>
+        )}
       </div>
       {children}
     </section>
@@ -629,7 +688,9 @@ function RelatedProducts({
             className="rounded-2xl border border-dashed border-neutral-300/80 bg-[var(--public-cream-deep)]/50 aspect-[3/4] flex flex-col items-center justify-center p-3 text-center"
           >
             <Shirt className="w-8 h-8 text-neutral-300 mb-2" />
-            <p className="text-[11px] text-neutral-500 leading-snug">Sắp cập nhật sản phẩm tương tự</p>
+            <p className="text-[11px] text-neutral-500 leading-snug">
+              Sắp cập nhật sản phẩm tương tự
+            </p>
           </div>
         ))}
       </div>
@@ -658,16 +719,26 @@ function RelatedProducts({
             )}
           </div>
           <div className="p-2.5 sm:p-3">
-            <p className="text-sm font-medium text-neutral-900 line-clamp-2 leading-snug">{d.name}</p>
+            <p className="text-sm font-medium text-neutral-900 line-clamp-2 leading-snug">
+              {d.name}
+            </p>
             {(d.salePrice ?? 0) > 0 && (d.salePrice ?? 0) < d.rentalPrice ? (
               <p className="text-xs mt-0.5">
-                <span className="text-neutral-400 line-through">{formatVND(d.rentalPrice)}</span>{" "}
-                <span className="text-rose-600 font-semibold">{formatVND(d.salePrice!)}</span>
+                <span className="text-neutral-400 line-through">
+                  {formatVND(d.rentalPrice)}
+                </span>{" "}
+                <span className="text-rose-600 font-semibold">
+                  {formatVND(d.salePrice!)}
+                </span>
               </p>
             ) : (d.goldenHourPercent ?? 0) > 0 ? (
               <p className="text-xs mt-0.5">
-                <span className="text-neutral-400 line-through">{formatVND(d.rentalPrice)}</span>{" "}
-                <span className="text-amber-600 font-semibold">{formatVND(ghDiscounted(d.rentalPrice, d.goldenHourPercent))}</span>
+                <span className="text-neutral-400 line-through">
+                  {formatVND(d.rentalPrice)}
+                </span>{" "}
+                <span className="text-amber-600 font-semibold">
+                  {formatVND(ghDiscounted(d.rentalPrice, d.goldenHourPercent))}
+                </span>
               </p>
             ) : (
               <p className="text-xs text-neutral-500 mt-0.5">
@@ -686,7 +757,11 @@ export default function RentalDetailPage() {
   const [, setLocation] = useLocation();
   const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
 
-  const { data: dress, isLoading, error } = useQuery<PublicDressDetail>({
+  const {
+    data: dress,
+    isLoading,
+    error,
+  } = useQuery<PublicDressDetail>({
     queryKey: ["public-dress-detail", slug],
     queryFn: async () => {
       const r = await fetch(
@@ -713,14 +788,18 @@ export default function RentalDetailPage() {
 
   const images = useMemo(() => {
     if (!dress) return [];
-    const raw = [dress.coverImageUrl, ...(dress.extraImages || [])].filter(Boolean) as string[];
+    const raw = [dress.coverImageUrl, ...(dress.extraImages || [])].filter(
+      Boolean,
+    ) as string[];
     return [...new Set(raw)];
   }, [dress]);
 
   const related = useMemo(() => {
     if (!dress) return [];
     const others = allDresses.filter((d) => d.slug && d.slug !== dress.slug);
-    const sameCat = others.filter((d) => d.categoryId === dress.categoryId && dress.categoryId != null);
+    const sameCat = others.filter(
+      (d) => d.categoryId === dress.categoryId && dress.categoryId != null,
+    );
     return (sameCat.length >= 2 ? sameCat : others).slice(0, 4);
   }, [allDresses, dress]);
 
@@ -732,6 +811,19 @@ export default function RentalDetailPage() {
 
   const status = dress ? getPublicStatus(dress.rentalStatus) : null;
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
+
+  function returnToRentalList() {
+    const savedReturn = readRentalDetailNavigationState();
+    if (savedReturn && window.history.length > 1) {
+      window.history.back();
+      return;
+    }
+    const categoryQuery =
+      dress?.categoryId != null
+        ? `?categoryId=${encodeURIComponent(String(dress.categoryId))}`
+        : "";
+    setLocation(`${BASE}/cho-thue-do${categoryQuery}`);
+  }
 
   if (isLoading) {
     return (
@@ -751,13 +843,15 @@ export default function RentalDetailPage() {
       <div className="min-h-[50vh] flex items-center justify-center text-center px-6">
         <div>
           <p className="text-4xl mb-4">😔</p>
-          <h1 className="font-serif text-xl font-light mb-2">Không tìm thấy sản phẩm</h1>
+          <h1 className="font-serif text-xl font-light mb-2">
+            Không tìm thấy sản phẩm
+          </h1>
           <p className="text-neutral-600 text-sm mb-6">
             Sản phẩm này có thể đã hết hoặc không còn cho thuê.
           </p>
           <button
             type="button"
-            onClick={() => setLocation(`${BASE}/cho-thue-do`)}
+            onClick={returnToRentalList}
             className="px-6 py-2.5 bg-neutral-900 text-white rounded-xl text-sm tracking-wide hover:bg-neutral-800"
           >
             Xem tất cả đồ cho thuê
@@ -778,7 +872,7 @@ export default function RentalDetailPage() {
       <div className="sticky top-0 z-30 bg-[var(--public-cream,#faf8f5)]/90 backdrop-blur-sm border-b border-neutral-200/80 px-4 sm:px-6 py-3">
         <button
           type="button"
-          onClick={() => setLocation(`${BASE}/cho-thue-do`)}
+          onClick={returnToRentalList}
           className="flex items-center gap-1.5 text-sm text-neutral-600 hover:text-neutral-900 transition-colors max-w-[1100px] mx-auto"
         >
           <ArrowLeft className="w-4 h-4" />
@@ -808,9 +902,11 @@ export default function RentalDetailPage() {
                   </span>
                 )}
                 <OutfitTagBadge tag={dress.outfitTag} />
-                {(dress.goldenHourPercent ?? 0) > 0 && !((dress.salePrice ?? 0) > 0 && (dress.salePrice ?? 0) < dress.rentalPrice) && (
-                  <GoldenHourBadge percent={dress.goldenHourPercent} />
-                )}
+                {(dress.goldenHourPercent ?? 0) > 0 &&
+                  !(
+                    (dress.salePrice ?? 0) > 0 &&
+                    (dress.salePrice ?? 0) < dress.rentalPrice
+                  ) && <GoldenHourBadge percent={dress.goldenHourPercent} />}
               </div>
 
               {dress.categoryName && (
@@ -822,15 +918,22 @@ export default function RentalDetailPage() {
                 {dress.name}
               </h1>
               {dress.code && (
-                <p className="text-xs text-neutral-500 font-mono tracking-wide">Mã: {dress.code}</p>
+                <p className="text-xs text-neutral-500 font-mono tracking-wide">
+                  Mã: {dress.code}
+                </p>
               )}
 
-              <p className="text-sm text-neutral-600 leading-relaxed">{shortDesc}</p>
+              <p className="text-sm text-neutral-600 leading-relaxed">
+                {shortDesc}
+              </p>
 
               <div className="rounded-xl bg-[var(--public-cream-deep)]/80 border border-neutral-200/50 p-4 space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs tracking-wide uppercase text-neutral-500">Giá thuê</span>
-                  {(dress.salePrice ?? 0) > 0 && (dress.salePrice ?? 0) < dress.rentalPrice ? (
+                  <span className="text-xs tracking-wide uppercase text-neutral-500">
+                    Giá thuê
+                  </span>
+                  {(dress.salePrice ?? 0) > 0 &&
+                  (dress.salePrice ?? 0) < dress.rentalPrice ? (
                     <span className="text-right">
                       <span className="block text-sm text-neutral-400 line-through leading-tight">
                         {formatVND(dress.rentalPrice)}
@@ -845,7 +948,12 @@ export default function RentalDetailPage() {
                         {formatVND(dress.rentalPrice)}
                       </span>
                       <span className="block font-serif text-xl text-amber-600 leading-tight">
-                        {formatVND(ghDiscounted(dress.rentalPrice, dress.goldenHourPercent))}
+                        {formatVND(
+                          ghDiscounted(
+                            dress.rentalPrice,
+                            dress.goldenHourPercent,
+                          ),
+                        )}
                       </span>
                       <span className="block text-[11px] font-semibold text-amber-700 mt-0.5">
                         ⚡ Giờ vàng -{Math.round(dress.goldenHourPercent!)}%
@@ -853,14 +961,18 @@ export default function RentalDetailPage() {
                     </span>
                   ) : (
                     <span className="font-serif text-xl text-[var(--public-accent-dark)]">
-                      {dress.rentalPrice > 0 ? formatVND(dress.rentalPrice) : "Liên hệ"}
+                      {dress.rentalPrice > 0
+                        ? formatVND(dress.rentalPrice)
+                        : "Liên hệ"}
                     </span>
                   )}
                 </div>
                 {dress.depositRequired > 0 && (
                   <div className="flex items-center justify-between text-sm">
                     <span className="text-neutral-500">Đặt cọc</span>
-                    <span className="font-medium text-neutral-800">{formatVND(dress.depositRequired)}</span>
+                    <span className="font-medium text-neutral-800">
+                      {formatVND(dress.depositRequired)}
+                    </span>
                   </div>
                 )}
               </div>
@@ -888,17 +1000,37 @@ export default function RentalDetailPage() {
             dress.materialText ||
             dress.tagsText) && (
             <div className="rounded-2xl border border-neutral-200/70 bg-white/80 p-5 sm:p-6 space-y-3">
-              <h2 className="font-serif text-lg font-light text-neutral-900">Chi tiết</h2>
-              <Chip icon={<Ruler className="w-3 h-3" />} label="Size / Số đo" value={dress.sizeText || dress.size || ""} />
-              <Chip icon={<Palette className="w-3 h-3" />} label="Màu sắc" value={dress.colorText || dress.color || ""} />
-              <Chip icon={<Package className="w-3 h-3" />} label="Chất liệu" value={dress.materialText ?? ""} />
-              <Chip icon={<Tag className="w-3 h-3" />} label="Tags" value={dress.tagsText ?? ""} />
+              <h2 className="font-serif text-lg font-light text-neutral-900">
+                Chi tiết
+              </h2>
+              <Chip
+                icon={<Ruler className="w-3 h-3" />}
+                label="Size / Số đo"
+                value={dress.sizeText || dress.size || ""}
+              />
+              <Chip
+                icon={<Palette className="w-3 h-3" />}
+                label="Màu sắc"
+                value={dress.colorText || dress.color || ""}
+              />
+              <Chip
+                icon={<Package className="w-3 h-3" />}
+                label="Chất liệu"
+                value={dress.materialText ?? ""}
+              />
+              <Chip
+                icon={<Tag className="w-3 h-3" />}
+                label="Tags"
+                value={dress.tagsText ?? ""}
+              />
             </div>
           )}
 
           {dress.description && (
             <div className="text-sm text-neutral-700 leading-relaxed whitespace-pre-wrap border-t border-neutral-200/80 pt-6">
-              <p className="text-[11px] tracking-[0.25em] uppercase text-neutral-500 mb-2">Mô tả</p>
+              <p className="text-[11px] tracking-[0.25em] uppercase text-neutral-500 mb-2">
+                Mô tả
+              </p>
               {dress.description}
             </div>
           )}
@@ -915,7 +1047,10 @@ export default function RentalDetailPage() {
           >
             <ul className="space-y-3">
               {STYLING_PLACEHOLDERS.map((tip, i) => (
-                <li key={i} className="flex gap-3 text-sm text-neutral-700 leading-relaxed">
+                <li
+                  key={i}
+                  className="flex gap-3 text-sm text-neutral-700 leading-relaxed"
+                >
                   <span className="flex-shrink-0 w-6 h-6 rounded-full bg-[var(--public-cream-deep)] text-[var(--public-accent-dark)] text-xs flex items-center justify-center font-medium">
                     {i + 1}
                   </span>
@@ -939,8 +1074,13 @@ export default function RentalDetailPage() {
           >
             <ul className="space-y-2.5">
               {RENTAL_NOTES.map((note, i) => (
-                <li key={i} className="flex gap-2.5 text-sm text-neutral-700 leading-relaxed">
-                  <span className="text-[var(--public-accent-dark)] mt-0.5">·</span>
+                <li
+                  key={i}
+                  className="flex gap-2.5 text-sm text-neutral-700 leading-relaxed"
+                >
+                  <span className="text-[var(--public-accent-dark)] mt-0.5">
+                    ·
+                  </span>
                   {note}
                 </li>
               ))}
@@ -969,14 +1109,21 @@ export default function RentalDetailPage() {
       </div>
 
       {lightboxIdx !== null && images.length > 0 && (
-        <PublicGalleryLightbox items={images} startIndex={lightboxIdx} onClose={() => setLightboxIdx(null)} />
+        <PublicGalleryLightbox
+          items={images}
+          startIndex={lightboxIdx}
+          onClose={() => setLightboxIdx(null)}
+        />
       )}
     </div>
   );
 }
 
 function PublicScheduleBlock({ dressId }: { dressId: number }) {
-  const { data: schedule = [], isLoading } = useOutfitSchedule(dressId, "public");
+  const { data: schedule = [], isLoading } = useOutfitSchedule(
+    dressId,
+    "public",
+  );
   const today = new Date().toISOString().slice(0, 10);
   const future = schedule.filter((s) => s.returnDate >= today);
   if (isLoading)
@@ -1017,7 +1164,11 @@ function PublicScheduleBlock({ dressId }: { dressId: number }) {
                     : "bg-amber-100 text-amber-800"
               }`}
             >
-              {s.status === "returned" ? "Đã trả" : s.status === "picked_up" ? "Đã lấy" : "Đã giữ"}
+              {s.status === "returned"
+                ? "Đã trả"
+                : s.status === "picked_up"
+                  ? "Đã lấy"
+                  : "Đã giữ"}
             </span>
           </div>
         ))}

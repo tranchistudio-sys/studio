@@ -40,10 +40,8 @@ export function WeddingCardMediaManager({ items, onPick, onRole, onSwap, onRemov
             alt={item.name}
             className="h-full w-full object-cover"
             onError={() => {
-              // Drafts restored from localStorage have no original File. If their
-              // remote object is gone, remove the stale placeholder automatically.
+              // A display error must never start another upload automatically.
               if (!item.file) onRemove(item.id);
-              else onRetry(item.id);
             }}
           />
           {item.status === "failed" && <div className="absolute inset-0 flex items-center justify-center bg-neutral-100 px-3 text-center text-xs font-medium text-red-700">Ảnh đã mất<br />Vui lòng chọn lại</div>}

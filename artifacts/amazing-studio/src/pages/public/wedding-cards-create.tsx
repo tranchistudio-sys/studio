@@ -219,7 +219,7 @@ export default function WeddingCardsCreatePage() {
     try {
       const remoteUrl = await uploadWeddingCardImage(item.file!, item.role);
       setMediaItems((prev) => {
-        return prev.map((x) => x.id === item.id ? { ...x, remoteUrl, previewUrl: remoteUrl, status: "complete" as const, progress: 100 } : x);
+        return prev.map((x) => x.id === item.id ? { ...x, remoteUrl, status: "complete" as const, progress: 100 } : x);
       });
     } catch (error) {
       setMediaItems((prev) => prev.map((x) => x.id === item.id ? { ...x, status: "failed", progress: 0, error: error instanceof Error ? error.message : "Upload thất bại" } : x));

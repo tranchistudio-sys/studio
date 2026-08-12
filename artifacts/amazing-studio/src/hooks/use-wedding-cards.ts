@@ -41,6 +41,7 @@ export interface PublicWeddingCard {
   invitationMessage: string | null;
   coverImageUrl: string | null;
   coupleImageUrl: string | null;
+  albumImageUrls?: string[];
   contactPhone: string | null;
   viewCount: number;
   publishedAt: string | null;
@@ -64,6 +65,8 @@ export interface CreateWeddingCardInput {
   coverImageUrl?: string | null;
   coupleImageUrl?: string | null;
   contactPhone?: string | null;
+  notificationEmail?: string | null;
+  albumImageUrls?: string[];
 }
 
 export interface GuestEntry {
@@ -252,7 +255,7 @@ export function useSubmitGuestEntry(slug: string) {
     }) =>
       fetchJson<GuestEntry>(`${WC_BASE}/public/${slug}/guest-entries`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+        headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(body),
       }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["wedding-card-guests", slug] });

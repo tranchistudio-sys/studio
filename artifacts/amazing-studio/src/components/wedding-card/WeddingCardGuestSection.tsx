@@ -20,23 +20,27 @@ export function WeddingCardGuestSection({
   const submit = useSubmitGuestEntry(slug);
   const [guestName, setGuestName] = useState("");
   const [message, setMessage] = useState("");
-  const [attendance, setAttendance] = useState<"yes" | "no" | "unknown">("unknown");
+  const [attendance, setAttendance] = useState<"yes" | "no" | "unknown" | null>(null);
   const [guestCount, setGuestCount] = useState(1);
   const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (preview) return;
+    if (!guestName.trim()) { setError("Vui lòng nhập tên khách."); return; }
+    if (!attendance) { setError("Vui lòng chọn trạng thái tham dự."); return; }
+    setError(null);
     try {
       await submit.mutateAsync({ guestName: guestName || null, message: message || null, attendance, guestCount });
       setGuestName("");
       setMessage("");
-      setAttendance("unknown");
+      setAttendance(null);
       setGuestCount(1);
       setDone(true);
       setTimeout(() => setDone(false), 3000);
-    } catch {
-      alert("Không gửi được. Vui lòng thử lại.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Không gửi được. Vui lòng thử lại.");
     }
   };
 
@@ -60,6 +64,7 @@ export function WeddingCardGuestSection({
           value={guestName}
           onChange={(e) => setGuestName(e.target.value)}
           maxLength={120}
+          required
         />
         <textarea
           placeholder="Gửi lời chúc yêu thương..."
@@ -67,7 +72,7 @@ export function WeddingCardGuestSection({
           onChange={(e) => setMessage(e.target.value)}
           rows={3}
           className={inputClass + " resize-none"}
-          maxLength={2000}
+          maxLength={1000}
         />
         <div className="flex flex-wrap gap-2">
           {(["yes", "no", "unknown"] as const).map((v) => (
@@ -85,7 +90,7 @@ export function WeddingCardGuestSection({
             </button>
           ))}
         </div>
-        <label className="flex items-center gap-2 text-[var(--wc-bt-muted)]">
+        {attendance !== "no" && <label className="flex items-center gap-2 text-[var(--wc-bt-muted)]">
           Số người
           <input
             type="number"
@@ -95,11 +100,13 @@ export function WeddingCardGuestSection({
             onChange={(e) => setGuestCount(Number(e.target.value) || 1)}
             className="w-16 wc-bt-input py-1"
           />
-        </label>
+        </label>}
+        {error && <p className="text-sm text-red-700" role="alert">{error}</p>}
+        {done && <p className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-800" role="status">Amazing Studio đã ghi nhận lời chúc và xác nhận của bạn.</p>}
         <button
           type="submit"
-          disabled={submit.isPending}
-          className="wc-bt-btn wc-bt-btn-primary w-full disabled:opacity-60"
+          disabled={submit.isPending || !guestName.trim() || !attendance}
+          className="wc-bt-btn wc-bt-btn-primary w-full disabled:bg-[#eadde0] disabled:text-[#604f54] disabled:opacity-100 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-[#8f3f55]"
         >
           {submit.isPending ? "Đang gửi…" : done ? "Đã gửi!" : "Gửi"}
         </button>

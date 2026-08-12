@@ -1,5 +1,5 @@
 import { Router, type IRouter, type Request, type Response } from "express";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { pool } from "@workspace/db";
 import { getCallerRole } from "./auth";
 import { withStartupDdlLock } from "../lib/startup-ddl";
@@ -58,6 +58,8 @@ async function ensureWeddingSchema() {
       created_at TIMESTAMP NOT NULL DEFAULT NOW()
     )`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_wedding_cards_slug ON wedding_cards(slug)`);
+  await pool.query(`ALTER TABLE wedding_cards ADD COLUMN IF NOT EXISTS album_image_urls JSONB NOT NULL DEFAULT '[]'::jsonb`);
+  await pool.query(`ALTER TABLE wedding_cards ADD COLUMN IF NOT EXISTS notification_email TEXT`);
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS wedding_guest_entries (
@@ -72,6 +74,11 @@ async function ensureWeddingSchema() {
   await pool.query(
     `CREATE INDEX IF NOT EXISTS idx_wedding_guest_entries_card ON wedding_guest_entries(card_id)`
   );
+  await pool.query(`ALTER TABLE wedding_guest_entries ADD COLUMN IF NOT EXISTS is_read BOOLEAN NOT NULL DEFAULT FALSE`);
+  await pool.query(`ALTER TABLE wedding_guest_entries ADD COLUMN IF NOT EXISTS moderation_status TEXT NOT NULL DEFAULT 'approved'`);
+  await pool.query(`ALTER TABLE wedding_guest_entries ADD COLUMN IF NOT EXISTS spam_fingerprint TEXT`);
+  await pool.query(`ALTER TABLE wedding_guest_entries ADD COLUMN IF NOT EXISTS idempotency_key TEXT`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_wedding_guest_entries_idempotency ON wedding_guest_entries(card_id, idempotency_key) WHERE idempotency_key IS NOT NULL`);
 
   // ─── ADD-ONLY: giữ lại schema cũ để dev là superset của prod ──────────────
   // Để publish không sinh destructive diff (DROP COLUMN / DROP TABLE / DROP CONSTRAINT).
@@ -201,6 +208,7 @@ const CARD_SELECT = `
   invitation_message AS "invitationMessage",
   cover_image_url AS "coverImageUrl",
   couple_image_url AS "coupleImageUrl",
+  album_image_urls AS "albumImageUrls",
   contact_phone AS "contactPhone",
   view_count AS "viewCount",
   published_at AS "publishedAt",
@@ -215,6 +223,23 @@ function str(v: unknown): string | null {
 
 function normAttendance(v: unknown): "yes" | "no" | "unknown" {
   return v === "yes" || v === "no" ? v : "unknown";
+}
+
+function safeEmail(v: unknown): string | null {
+  const value = str(v);
+  return value && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) ? value.toLowerCase() : null;
+}
+
+function imageUrls(v: unknown): string[] {
+  return Array.isArray(v) ? v.map(str).filter((x): x is string => !!x).slice(0, 28) : [];
+}
+
+const guestRate = new Map<string, number[]>();
+function allowGuestSubmission(key: string): boolean {
+  const now = Date.now();
+  const recent = (guestRate.get(key) ?? []).filter((time) => now - time < 10 * 60_000);
+  if (recent.length >= 5) return false;
+  recent.push(now); guestRate.set(key, recent); return true;
 }
 
 async function uniqueCardSlug(): Promise<string> {
@@ -283,14 +308,14 @@ router.post("/wedding-cards/public", async (req, res) => {
          groom_name, bride_name, wedding_date, ceremony_time, reception_time,
          venue_groom, venue_bride, venue_reception,
          maps_url_groom, maps_url_bride, maps_url_reception,
-         invitation_message, cover_image_url, couple_image_url, contact_phone,
+         invitation_message, cover_image_url, couple_image_url, album_image_urls, contact_phone, notification_email,
          published_at
        ) VALUES (
          $1, 'published', $2, $3, $4,
          $5, $6, $7, $8, $9,
          $10, $11, $12,
          $13, $14, $15,
-         $16, $17, $18, $19,
+         $16, $17, $18, $19::jsonb, $20, $21,
          NOW()
        ) RETURNING id, slug, status, theme_key AS "themeKey"`,
       [
@@ -298,7 +323,7 @@ router.post("/wedding-cards/public", async (req, res) => {
         groomName, brideName, str(b.weddingDate), str(b.ceremonyTime), str(b.receptionTime),
         str(b.venueGroom), str(b.venueBride), str(b.venueReception),
         str(b.mapsUrlGroom), str(b.mapsUrlBride), str(b.mapsUrlReception),
-        str(b.invitationMessage), str(b.coverImageUrl), str(b.coupleImageUrl), str(b.contactPhone),
+        str(b.invitationMessage), str(b.coverImageUrl), str(b.coupleImageUrl), JSON.stringify(imageUrls(b.albumImageUrls)), str(b.contactPhone), safeEmail(b.notificationEmail),
       ]
     );
     const row = r.rows[0] as { id: number; slug: string; status: string; themeKey: string };
@@ -334,7 +359,7 @@ router.get("/wedding-cards/public/:slug/guest-entries", async (req, res) => {
     const r = await pool.query(
       `SELECT id, guest_name AS "guestName", message, attendance,
               guest_count AS "guestCount", created_at AS "createdAt"
-       FROM wedding_guest_entries WHERE card_id = $1
+       FROM wedding_guest_entries WHERE card_id = $1 AND moderation_status = 'approved'
        ORDER BY created_at DESC, id DESC`,
       [cardId]
     );
@@ -347,18 +372,59 @@ router.post("/wedding-cards/public/:slug/guest-entries", async (req, res) => {
     const cardId = await cardIdBySlug(req.params.slug);
     if (cardId == null) return res.status(404).json({ error: "Không tìm thấy thiệp" });
     const b = (req.body ?? {}) as Record<string, unknown>;
+    const guestName = str(b.guestName);
+    const message = str(b.message);
+    const attendance = normAttendance(b.attendance);
+    if (!guestName) return res.status(400).json({ error: "Vui lòng nhập tên khách." });
+    if (!b.attendance || !["yes", "no", "unknown"].includes(String(b.attendance))) return res.status(400).json({ error: "Vui lòng chọn trạng thái tham dự." });
+    if (message && message.length > 1000) return res.status(400).json({ error: "Lời chúc tối đa 1000 ký tự." });
+    const ip = String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "unknown").split(",")[0].trim();
+    if (!allowGuestSubmission(`${cardId}:${ip}`)) return res.status(429).json({ error: "Bạn gửi quá nhanh. Vui lòng thử lại sau." });
     const guestCountRaw = Number(b.guestCount);
-    const guestCount = Number.isFinite(guestCountRaw) && guestCountRaw > 0
+    const guestCount = attendance === "no" ? 0 : Number.isFinite(guestCountRaw) && guestCountRaw > 0
       ? Math.min(50, Math.floor(guestCountRaw))
       : 1;
+    const idempotencyKey = str(req.headers["idempotency-key"] ?? b.idempotencyKey)?.slice(0, 120) ?? null;
     const r = await pool.query(
-      `INSERT INTO wedding_guest_entries (card_id, guest_name, message, attendance, guest_count)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO wedding_guest_entries (card_id, guest_name, message, attendance, guest_count, spam_fingerprint, idempotency_key)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (card_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO UPDATE SET card_id = EXCLUDED.card_id
        RETURNING id, guest_name AS "guestName", message, attendance,
                  guest_count AS "guestCount", created_at AS "createdAt"`,
-      [cardId, str(b.guestName), str(b.message), normAttendance(b.attendance), guestCount]
+      [cardId, guestName, message, attendance, guestCount, createHash("sha256").update(ip).digest("hex"), idempotencyKey]
     );
     res.status(201).json(r.rows[0]);
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+router.get("/wedding-cards/admin/cards", async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const r = await pool.query(`SELECT id, slug, groom_name AS "groomName", bride_name AS "brideName", wedding_date AS "weddingDate", created_at AS "createdAt" FROM wedding_cards WHERE deleted_at IS NULL ORDER BY created_at DESC`);
+    res.json(r.rows);
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+router.get("/wedding-cards/admin/cards/:id/guest-entries", async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const id = Number(req.params.id);
+    const attendance = str(req.query.attendance);
+    const search = str(req.query.search);
+    const r = await pool.query(`SELECT id, guest_name AS "guestName", message, attendance, guest_count AS "guestCount", is_read AS "isRead", moderation_status AS "moderationStatus", created_at AS "createdAt" FROM wedding_guest_entries WHERE card_id = $1 AND ($2::text IS NULL OR attendance = $2) AND ($3::text IS NULL OR guest_name ILIKE '%' || $3 || '%') ORDER BY created_at DESC`, [id, attendance, search]);
+    const entries = r.rows as Array<{ attendance: string; guestCount: number; isRead: boolean }>;
+    res.json({ summary: { totalResponses: entries.length, attendingGuests: entries.filter((x) => x.attendance === "yes").length, expectedPeople: entries.filter((x) => x.attendance === "yes").reduce((sum, x) => sum + x.guestCount, 0), declinedGuests: entries.filter((x) => x.attendance === "no").length, unknownGuests: entries.filter((x) => x.attendance === "unknown").length, unread: entries.filter((x) => !x.isRead).length }, entries });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
+router.patch("/wedding-cards/admin/guest-entries/:id", async (req, res) => {
+  if (!(await requireAdmin(req, res))) return;
+  try {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const status = ["approved", "hidden"].includes(String(b.moderationStatus)) ? String(b.moderationStatus) : null;
+    const r = await pool.query(`UPDATE wedding_guest_entries SET is_read = COALESCE($1, is_read), moderation_status = COALESCE($2, moderation_status) WHERE id = $3 RETURNING id`, [typeof b.isRead === "boolean" ? b.isRead : null, status, Number(req.params.id)]);
+    if (!r.rows[0]) return res.status(404).json({ error: "Không tìm thấy phản hồi." });
+    res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 

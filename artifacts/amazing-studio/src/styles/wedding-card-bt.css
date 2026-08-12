@@ -2211,4 +2211,55 @@
     overflow-y: auto;
     overscroll-behavior: contain;
   }
+
+  /* The editor preview is a phone-width canvas even on a desktop viewport.
+     Keep the invitation's mobile composition here; otherwise the public
+     desktop two-column layout is squeezed into 430px and hides both covers. */
+  .wc-bt-editor-preview .wc-bt-classic-full {
+    min-height: auto;
+    display: block;
+  }
+
+  .wc-bt-editor-preview .wc-bt-classic-full > header {
+    min-height: auto;
+    padding: 2rem 1.25rem 1rem;
+    display: block;
+  }
+
+  .wc-bt-editor-preview .wc-bt-classic-full > section {
+    min-height: auto;
+    padding: 0 1.5rem 2rem;
+    display: block;
+    border-left: 0;
+    backdrop-filter: none;
+  }
+
+  .wc-bt-editor-preview .wc-bt-classic-photos {
+    width: 100%;
+    max-width: 280px;
+    height: 140px;
+    margin: 1.5rem auto 0;
+  }
+
+  .wc-bt-editor-preview .wc-bt-classic-photo {
+    width: 42%;
+    height: 130px;
+    border-radius: 12px;
+    border-width: 3px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.16);
+  }
+
+  .wc-bt-editor-preview .wc-bt-classic-photo--l { left: 8%; }
+  .wc-bt-editor-preview .wc-bt-classic-photo--r { right: 8%; }
+
+  .wc-bt-editor-preview .wc-bt-classic-photo-heart {
+    width: 28px;
+    height: 28px;
+  }
+
+  .wc-bt-editor-preview .wc-bt-classic-full h1 {
+    color: #3f1f34 !important;
+    opacity: 1 !important;
+    text-shadow: 0 1px 0 rgba(255, 255, 255, 0.7);
+  }
 }

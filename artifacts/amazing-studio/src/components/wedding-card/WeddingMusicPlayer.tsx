@@ -6,20 +6,17 @@ const TRACKS = Array.from({ length: 8 }, (_, index) => ({
   src: `/audio/wedding/track-${String(index + 1).padStart(2, "0")}.mp3`,
 }));
 
-const MUSIC_ENABLED_KEY = "weddingMusicEnabled_v1";
-
 export function WeddingMusicPlayer() {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [trackIndex, setTrackIndex] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [open, setOpen] = useState(false);
-  const [enabled, setEnabled] = useState(() => localStorage.getItem(MUSIC_ENABLED_KEY) !== "0");
+  const [enabled, setEnabled] = useState(true);
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
 
   const play = async () => {
     if (!enabled) {
       setEnabled(true);
-      localStorage.setItem(MUSIC_ENABLED_KEY, "1");
     }
     try {
       await audioRef.current?.play();
@@ -40,7 +37,6 @@ export function WeddingMusicPlayer() {
     if (playing) {
       pause();
       setEnabled(false);
-      localStorage.setItem(MUSIC_ENABLED_KEY, "0");
     } else {
       void play();
     }
@@ -49,7 +45,6 @@ export function WeddingMusicPlayer() {
   const selectTrack = (index: number) => {
     setTrackIndex((index + TRACKS.length) % TRACKS.length);
     setEnabled(true);
-    localStorage.setItem(MUSIC_ENABLED_KEY, "1");
   };
 
   useEffect(() => {
@@ -58,6 +53,22 @@ export function WeddingMusicPlayer() {
     // Autoplay is intentionally attempted once when the wedding module opens.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!autoplayBlocked || !enabled) return;
+    const resume = () => {
+      void play();
+      window.removeEventListener("pointerdown", resume, true);
+      window.removeEventListener("keydown", resume, true);
+    };
+    window.addEventListener("pointerdown", resume, true);
+    window.addEventListener("keydown", resume, true);
+    return () => {
+      window.removeEventListener("pointerdown", resume, true);
+      window.removeEventListener("keydown", resume, true);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoplayBlocked, enabled]);
 
   useEffect(() => {
     if (enabled) void play();

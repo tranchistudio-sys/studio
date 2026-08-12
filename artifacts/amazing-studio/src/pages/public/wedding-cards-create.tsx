@@ -269,7 +269,7 @@ export default function WeddingCardsCreatePage() {
       return;
     }
     const templateBg = templateDetail?.defaultBackgroundUrl ?? null;
-    if (!coverImageUrl && !coupleImageUrl && !templateBg) {
+    if (!previewCoverImageUrl && !previewCoupleImageUrl && !templateBg) {
       alert("Vui lòng tải ít nhất ảnh bìa hoặc ảnh cặp đôi");
       return;
     }

@@ -39,10 +39,12 @@ type Setters = {
 
 export function WeddingCardEditorPanel({
   form,
+  showEmailError,
   setters,
   mediaItems, onPickMedia, onMediaRole, onSwapCovers, onRemoveMedia, onRetryMedia, onMoveMedia,
 }: {
   form: EditorFormState;
+  showEmailError?: boolean;
   setters: Setters;
   mediaItems: WeddingMediaItem[];
   onPickMedia: (files: File[]) => void;
@@ -97,7 +99,22 @@ export function WeddingCardEditorPanel({
           </div>
           <div>
             <label className="text-xs text-[var(--wc-bt-muted)]">Email cô dâu/chú rể nhận lời chúc *</label>
-            <input type="email" required className="wc-bt-input mt-1" value={form.notificationEmail} onChange={(e) => setters.setNotificationEmail(e.target.value)} placeholder="tenban@example.com" />
+            <input
+              id="wc-notification-email"
+              type="email"
+              required
+              aria-invalid={showEmailError || undefined}
+              aria-describedby={showEmailError ? "wc-notification-email-error" : undefined}
+              className={`wc-bt-input mt-1 ${showEmailError ? "border-red-500 ring-2 ring-red-200" : ""}`}
+              value={form.notificationEmail}
+              onChange={(e) => setters.setNotificationEmail(e.target.value)}
+              placeholder="tenban@example.com"
+            />
+            {showEmailError && (
+              <p id="wc-notification-email-error" role="alert" className="mt-1 text-xs font-medium text-red-600">
+                Vui lòng nhập email hợp lệ, ví dụ: tenban@gmail.com
+              </p>
+            )}
             <p className="mt-1 text-[11px] text-[var(--wc-bt-muted)]">Khách gửi lời chúc sẽ chuyển thẳng về email này. Email không hiển thị công khai và nội dung lời chúc không được lưu tại Amazing Studio.</p>
           </div>
           <div>

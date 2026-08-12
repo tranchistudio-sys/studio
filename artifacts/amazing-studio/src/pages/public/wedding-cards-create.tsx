@@ -80,6 +80,7 @@ export default function WeddingCardsCreatePage() {
   const [albumImageUrls, setAlbumImageUrls] = useState<string[]>([]);
   const [contactPhone, setContactPhone] = useState("");
   const [notificationEmail, setNotificationEmail] = useState("");
+  const [createAttempted, setCreateAttempted] = useState(false);
   const [mediaItems, setMediaItems] = useState<WeddingMediaItem[]>([]);
   const [uploading, setUploading] = useState<"cover" | "couple" | "extra" | null>(null);
   const [templateSeeded, setTemplateSeeded] = useState(false);
@@ -267,6 +268,7 @@ export default function WeddingCardsCreatePage() {
 
   const onCreate = async () => {
     if (create.isPending) return;
+    setCreateAttempted(true);
     if (!groomName.trim() || !brideName.trim()) {
       alert("Vui lòng nhập tên chú rể và cô dâu");
       return;
@@ -285,7 +287,9 @@ export default function WeddingCardsCreatePage() {
       return;
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(notificationEmail.trim())) {
-      alert("Vui lòng nhập email nhận lời chúc hợp lệ.");
+      const emailInput = document.getElementById("wc-notification-email") as HTMLInputElement | null;
+      emailInput?.scrollIntoView({ behavior: "smooth", block: "center" });
+      window.setTimeout(() => emailInput?.focus(), 350);
       return;
     }
     const body: CreateWeddingCardInput = {
@@ -425,6 +429,7 @@ export default function WeddingCardsCreatePage() {
         <div className="wc-fade-in order-2 lg:order-1 w-full lg:w-[min(420px,40vw)] lg:shrink-0 lg:border-r border-[var(--wc-bt-border,#e8e0d8)] bg-[var(--wc-bt-cream,#fdfbf9)] px-3 sm:px-4 py-4 pb-28 lg:pb-8 lg:max-h-[calc(100vh-120px)] lg:overflow-y-auto">
           <WeddingCardEditorPanel
             form={form}
+            showEmailError={createAttempted && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(notificationEmail.trim())}
             setters={{
               setGroomName: (v) => {
                 setGroomName(v);
@@ -478,7 +483,7 @@ export default function WeddingCardsCreatePage() {
           <button
             type="button"
             onClick={onCreate}
-            disabled={create.isPending || !!createDisabledReason}
+            disabled={create.isPending}
             className="wc-create-card-button hidden lg:flex mt-3 w-full items-center justify-center gap-2 wc-bt-btn wc-bt-btn-primary rounded-xl"
           >
             <Sparkles className="h-4 w-4" />
@@ -514,7 +519,7 @@ export default function WeddingCardsCreatePage() {
         <button
           type="button"
           onClick={onCreate}
-          disabled={create.isPending || !!createDisabledReason}
+          disabled={create.isPending}
           className="wc-create-card-button wc-bt-btn wc-bt-btn-primary w-full flex items-center justify-center gap-2 rounded-xl"
         >
           <Sparkles className="h-4 w-4" />

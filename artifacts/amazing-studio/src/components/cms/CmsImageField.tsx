@@ -105,6 +105,7 @@ export function CmsImageField({
       <div
         onPointerDown={(e) => {
           if (!onPositionChange || !src) return;
+          e.preventDefault();
           e.currentTarget.setPointerCapture(e.pointerId);
           dragRef.current = { clientX: e.clientX, clientY: e.clientY, x: positionX, y: positionY };
           setDragging(true);
@@ -113,7 +114,8 @@ export function CmsImageField({
           const start = dragRef.current;
           if (!start || !onPositionChange) return;
           const rect = e.currentTarget.getBoundingClientRect();
-          const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
+          e.preventDefault();
+          const clamp = (value: number) => Math.max(0, Math.min(100, Number(value.toFixed(1))));
           onPositionChange(
             clamp(start.x - ((e.clientX - start.clientX) / rect.width) * 100),
             clamp(start.y - ((e.clientY - start.clientY) / rect.height) * 100),
@@ -128,6 +130,10 @@ export function CmsImageField({
           dragRef.current = null;
           setDragging(false);
         }}
+        onLostPointerCapture={() => {
+          dragRef.current = null;
+          setDragging(false);
+        }}
         className={cn(
           "relative rounded-2xl overflow-hidden border border-border/80 bg-[#faf8f5]",
           onPositionChange && src && "touch-none select-none cursor-grab active:cursor-grabbing",
@@ -135,7 +141,7 @@ export function CmsImageField({
         )}
       >
         {src ? (
-          <img src={src} alt="" style={{ objectPosition, transform: `scale(${zoom / 100})` }} className={cn("w-full h-full transition-transform", objectFit === "contain" ? "object-contain bg-neutral-100" : "object-cover")} />
+          <img draggable={false} src={src} alt="" style={{ objectPosition, transform: `scale(${zoom / 100})` }} className={cn("pointer-events-none w-full h-full transition-transform", objectFit === "contain" ? "object-contain bg-neutral-100" : "object-cover")} />
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-muted-foreground gap-2">
             <ImageIcon className="w-8 h-8 opacity-30" />
@@ -148,9 +154,16 @@ export function CmsImageField({
           </div>
         )}
         {onPositionChange && src && !uploading && (
-          <span className={cn("pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/65 px-3 py-1 text-[11px] font-medium text-white transition-opacity", dragging ? "opacity-100" : "opacity-80")}>
-            {dragging ? "Đang di chuyển…" : "Giữ chuột và kéo ảnh"}
-          </span>
+          <>
+            <div className={cn("pointer-events-none absolute inset-0 transition-opacity", dragging ? "opacity-100" : "opacity-0")} aria-hidden>
+              <span className="absolute left-1/2 top-0 h-full w-px -translate-x-1/2 bg-white/70 shadow" />
+              <span className="absolute left-0 top-1/2 h-px w-full -translate-y-1/2 bg-white/70 shadow" />
+              <span className="absolute left-1/2 top-1/2 h-9 w-9 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white shadow" />
+            </div>
+            <span className={cn("pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/65 px-3 py-1 text-[11px] font-medium text-white transition-opacity", dragging ? "opacity-100" : "opacity-80")}>
+              {dragging ? "Đưa khuôn mặt vào vòng tròn giữa" : "Giữ chuột và kéo ảnh"}
+            </span>
+          </>
         )}
       </div>
       <input

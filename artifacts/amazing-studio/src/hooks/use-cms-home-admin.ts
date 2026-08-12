@@ -31,6 +31,9 @@ export const EMPTY_HOME_SETTINGS: HomeSettingsForm = {
   weddingIntroImage1Url: null,
   weddingIntroImage2Url: null,
   weddingIntroImage3Url: null,
+  weddingIntroImage1Fit: "cover",
+  weddingIntroImage2Fit: "cover",
+  weddingIntroImage3Fit: "cover",
 };
 
 function parseHomeSettings(raw: unknown): HomeSettingsForm {
@@ -69,6 +72,9 @@ function parseHomeSettings(raw: unknown): HomeSettingsForm {
     weddingIntroImage1Url: str("weddingIntroImage1Url"),
     weddingIntroImage2Url: str("weddingIntroImage2Url"),
     weddingIntroImage3Url: str("weddingIntroImage3Url"),
+    weddingIntroImage1Fit: str("weddingIntroImage1Fit") ?? "cover",
+    weddingIntroImage2Fit: str("weddingIntroImage2Fit") ?? "cover",
+    weddingIntroImage3Fit: str("weddingIntroImage3Fit") ?? "cover",
   };
 }
 

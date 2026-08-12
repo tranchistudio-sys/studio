@@ -105,10 +105,10 @@ export default function WeddingCardsLandingPage() {
               </Link>
             </WeddingCardBtReveal>
             <WeddingCardBtReveal className="wc-bt-collage" delay={120}>
-              <img src={getImageSrc(publicContent?.weddingIntroImage1Url) ?? COLLAGE_1} alt="" className="wc-bt-collage-tall" loading="lazy" />
+              <img src={getImageSrc(publicContent?.weddingIntroImage1Url) ?? COLLAGE_1} alt="" className={`wc-bt-collage-tall ${publicContent?.weddingIntroImage1Fit === "contain" ? "wc-bt-collage-contain" : ""}`} loading="lazy" />
               <div className="wc-bt-collage-stack">
-                <img src={getImageSrc(publicContent?.weddingIntroImage2Url) ?? COLLAGE_2} alt="" loading="lazy" />
-                <img src={getImageSrc(publicContent?.weddingIntroImage3Url) ?? COLLAGE_3} alt="" loading="lazy" />
+                <img src={getImageSrc(publicContent?.weddingIntroImage2Url) ?? COLLAGE_2} alt="" className={publicContent?.weddingIntroImage2Fit === "contain" ? "wc-bt-collage-contain" : ""} loading="lazy" />
+                <img src={getImageSrc(publicContent?.weddingIntroImage3Url) ?? COLLAGE_3} alt="" className={publicContent?.weddingIntroImage3Fit === "contain" ? "wc-bt-collage-contain" : ""} loading="lazy" />
               </div>
             </WeddingCardBtReveal>
           </div>

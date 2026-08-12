@@ -131,12 +131,18 @@ async function ensureCmsSchema() {
       wedding_intro_image_1_url TEXT,
       wedding_intro_image_2_url TEXT,
       wedding_intro_image_3_url TEXT,
+      wedding_intro_image_1_fit TEXT,
+      wedding_intro_image_2_fit TEXT,
+      wedding_intro_image_3_fit TEXT,
       updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
       CONSTRAINT cms_home_settings_singleton CHECK (id = 1)
     )`);
   await pool.query(`ALTER TABLE cms_home_settings ADD COLUMN IF NOT EXISTS wedding_intro_image_1_url TEXT`).catch(() => {});
   await pool.query(`ALTER TABLE cms_home_settings ADD COLUMN IF NOT EXISTS wedding_intro_image_2_url TEXT`).catch(() => {});
   await pool.query(`ALTER TABLE cms_home_settings ADD COLUMN IF NOT EXISTS wedding_intro_image_3_url TEXT`).catch(() => {});
+  await pool.query(`ALTER TABLE cms_home_settings ADD COLUMN IF NOT EXISTS wedding_intro_image_1_fit TEXT`).catch(() => {});
+  await pool.query(`ALTER TABLE cms_home_settings ADD COLUMN IF NOT EXISTS wedding_intro_image_2_fit TEXT`).catch(() => {});
+  await pool.query(`ALTER TABLE cms_home_settings ADD COLUMN IF NOT EXISTS wedding_intro_image_3_fit TEXT`).catch(() => {});
 
   // ─── Seed default dress tree — bọc trong transaction + advisory lock ──
   // Đảm bảo nhiều instance khởi động song song không seed trùng.
@@ -1796,6 +1802,9 @@ const HOME_FIELDS: Array<{ col: string; key: keyof HomeContent }> = [
   { col: "wedding_intro_image_1_url", key: "weddingIntroImage1Url" },
   { col: "wedding_intro_image_2_url", key: "weddingIntroImage2Url" },
   { col: "wedding_intro_image_3_url", key: "weddingIntroImage3Url" },
+  { col: "wedding_intro_image_1_fit", key: "weddingIntroImage1Fit" },
+  { col: "wedding_intro_image_2_fit", key: "weddingIntroImage2Fit" },
+  { col: "wedding_intro_image_3_fit", key: "weddingIntroImage3Fit" },
 ];
 
 type HomeContent = {
@@ -1819,6 +1828,9 @@ type HomeContent = {
   weddingIntroImage1Url: string | null;
   weddingIntroImage2Url: string | null;
   weddingIntroImage3Url: string | null;
+  weddingIntroImage1Fit: string | null;
+  weddingIntroImage2Fit: string | null;
+  weddingIntroImage3Fit: string | null;
 };
 
 const EMPTY_HOME: HomeContent = HOME_FIELDS.reduce((acc, f) => {

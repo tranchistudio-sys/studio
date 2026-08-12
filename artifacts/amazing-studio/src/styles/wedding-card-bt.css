@@ -1167,6 +1167,11 @@
   min-width: 220px;
 }
 
+.wc-bt-collage img.wc-bt-collage-contain {
+  object-fit: contain;
+  background: #f7f2ee;
+}
+
 /* Create-card CTA: keep the label readable in every state. */
 .wc-create-card-button {
   min-height: 58px;

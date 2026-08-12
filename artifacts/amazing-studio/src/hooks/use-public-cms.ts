@@ -79,6 +79,9 @@ export interface PublicHomeContent {
   weddingIntroImage1Url: string | null;
   weddingIntroImage2Url: string | null;
   weddingIntroImage3Url: string | null;
+  weddingIntroImage1Fit: string | null;
+  weddingIntroImage2Fit: string | null;
+  weddingIntroImage3Fit: string | null;
 }
 
 async function fetchPublicJson<T>(path: string, label: string): Promise<T> {
@@ -173,6 +176,9 @@ export function usePublicHomeContent() {
           weddingIntroImage1Url: null,
           weddingIntroImage2Url: null,
           weddingIntroImage3Url: null,
+          weddingIntroImage1Fit: null,
+          weddingIntroImage2Fit: null,
+          weddingIntroImage3Fit: null,
         };
       }
     },

@@ -225,9 +225,25 @@ export default function CmsWeddingTemplatesPage() {
               </button>
             </div>
             <div className="grid gap-5 md:grid-cols-3">
-              <CmsImageField label="Ảnh lớn bên trái" value={introImages.weddingIntroImage1Url} onChange={(v) => setIntroImages((s) => ({ ...s, weddingIntroImage1Url: v }))} aspect="portrait" placeholderSrc={COLLAGE_1_PLACEHOLDER} />
-              <CmsImageField label="Ảnh nhỏ phía trên" value={introImages.weddingIntroImage2Url} onChange={(v) => setIntroImages((s) => ({ ...s, weddingIntroImage2Url: v }))} aspect="video" placeholderSrc={COLLAGE_2_PLACEHOLDER} />
-              <CmsImageField label="Ảnh nhỏ phía dưới" value={introImages.weddingIntroImage3Url} onChange={(v) => setIntroImages((s) => ({ ...s, weddingIntroImage3Url: v }))} aspect="video" placeholderSrc={COLLAGE_3_PLACEHOLDER} />
+              {([
+                ["Ảnh lớn bên trái", "weddingIntroImage1Url", "weddingIntroImage1Fit", "portrait", COLLAGE_1_PLACEHOLDER],
+                ["Ảnh nhỏ phía trên", "weddingIntroImage2Url", "weddingIntroImage2Fit", "video", COLLAGE_2_PLACEHOLDER],
+                ["Ảnh nhỏ phía dưới", "weddingIntroImage3Url", "weddingIntroImage3Fit", "video", COLLAGE_3_PLACEHOLDER],
+              ] as const).map(([label, imageKey, fitKey, aspect, placeholder]) => {
+                const fit = introImages[fitKey] === "contain" ? "contain" : "cover";
+                return (
+                  <div key={imageKey} className="space-y-3">
+                    <CmsImageField label={label} value={introImages[imageKey]} onChange={(v) => setIntroImages((s) => ({ ...s, [imageKey]: v }))} aspect={aspect} objectFit={fit} placeholderSrc={placeholder} />
+                    <label className="block text-xs font-medium text-muted-foreground">
+                      Cách hiển thị ảnh
+                      <select className={inputClass + " mt-1"} value={fit} onChange={(e) => setIntroImages((s) => ({ ...s, [fitKey]: e.target.value }))}>
+                        <option value="contain">Hiện trọn ảnh – không cắt đầu</option>
+                        <option value="cover">Lấp đầy khung – có thể cắt ảnh</option>
+                      </select>
+                    </label>
+                  </div>
+                );
+              })}
             </div>
           </section>
         )}

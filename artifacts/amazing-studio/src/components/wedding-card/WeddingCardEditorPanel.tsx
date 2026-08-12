@@ -1,16 +1,5 @@
-import { useState } from "react";
-import { cn } from "@/lib/utils";
 import { WeddingCardMediaManager } from "./WeddingCardMediaManager";
 import type { WeddingMediaItem, WeddingMediaRole } from "@/lib/wedding-card-media";
-
-const TABS = [
-  { key: "photos", label: "Ảnh" },
-  { key: "info", label: "Thông tin" },
-  { key: "venue", label: "Địa điểm" },
-  { key: "message", label: "Lời mời" },
-] as const;
-
-type TabKey = (typeof TABS)[number]["key"];
 
 export interface EditorFormState {
   groomName: string;
@@ -63,33 +52,22 @@ export function WeddingCardEditorPanel({
   onRetryMedia: (id: string) => void;
   onMoveMedia: (id: string, direction: -1 | 1) => void;
 }) {
-  const [tab, setTab] = useState<TabKey>("photos");
-
   return (
-    <div className="space-y-3">
-      <div className="wc-bt-tabs" role="tablist">
-        {TABS.map((t) => (
-          <button
-            key={t.key}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.key}
-            className={cn("wc-bt-tab", tab === t.key && "is-active")}
-            onClick={() => setTab(t.key)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
-      {tab === "photos" && (
-        <div className="space-y-4 wc-fade-in">
+    <div className="space-y-6">
+        <section className="space-y-3 wc-fade-in" aria-labelledby="wc-editor-photos">
+          <div className="flex items-center gap-3 px-1">
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#8f3652] text-sm font-bold text-white">1</span>
+            <h2 id="wc-editor-photos" className="text-lg font-semibold text-[var(--wc-bt-text)]">Ảnh cưới</h2>
+          </div>
           <WeddingCardMediaManager items={mediaItems} onPick={onPickMedia} onRole={onMediaRole} onSwap={onSwapCovers} onRemove={onRemoveMedia} onRetry={onRetryMedia} onMove={onMoveMedia} />
-        </div>
-      )}
+        </section>
 
-      {tab === "info" && (
-        <div className="space-y-3 wc-fade-in rounded-xl bg-white border border-[var(--wc-bt-border,#e8e0d8)] p-4">
+        <section className="space-y-3 wc-fade-in" aria-labelledby="wc-editor-info">
+          <div className="flex items-center gap-3 px-1">
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#8f3652] text-sm font-bold text-white">2</span>
+            <h2 id="wc-editor-info" className="text-lg font-semibold text-[var(--wc-bt-text)]">Thông tin cô dâu chú rể</h2>
+          </div>
+        <div className="space-y-3 rounded-xl bg-white border border-[var(--wc-bt-border,#e8e0d8)] p-4">
           <div>
             <label className="text-xs text-[var(--wc-bt-muted)]">Tên chú rể *</label>
             <input
@@ -152,10 +130,14 @@ export function WeddingCardEditorPanel({
             </div>
           </div>
         </div>
-      )}
+        </section>
 
-      {tab === "venue" && (
-        <div className="space-y-3 wc-fade-in rounded-xl bg-white border border-[var(--wc-bt-border,#e8e0d8)] p-4">
+        <section className="space-y-3 wc-fade-in" aria-labelledby="wc-editor-venue">
+          <div className="flex items-center gap-3 px-1">
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#8f3652] text-sm font-bold text-white">3</span>
+            <h2 id="wc-editor-venue" className="text-lg font-semibold text-[var(--wc-bt-text)]">Địa điểm tổ chức</h2>
+          </div>
+        <div className="space-y-3 rounded-xl bg-white border border-[var(--wc-bt-border,#e8e0d8)] p-4">
           <div>
             <label className="text-xs text-[var(--wc-bt-muted)]">Nhà trai</label>
             <input
@@ -202,9 +184,13 @@ export function WeddingCardEditorPanel({
             onChange={(e) => setters.setMapsUrlReception(e.target.value)}
           />
         </div>
-      )}
+        </section>
 
-      {tab === "message" && (
+        <section className="space-y-3 wc-fade-in" aria-labelledby="wc-editor-message">
+          <div className="flex items-center gap-3 px-1">
+            <span className="flex h-8 w-8 items-center justify-center rounded-full bg-[#8f3652] text-sm font-bold text-white">4</span>
+            <h2 id="wc-editor-message" className="text-lg font-semibold text-[var(--wc-bt-text)]">Lời mời</h2>
+          </div>
         <div className="wc-fade-in rounded-xl bg-white border border-[var(--wc-bt-border,#e8e0d8)] p-4">
           <label className="text-xs text-[var(--wc-bt-muted)]">Lời mời</label>
           <textarea
@@ -215,7 +201,7 @@ export function WeddingCardEditorPanel({
             onChange={(e) => setters.setInvitationMessage(e.target.value)}
           />
         </div>
-      )}
+        </section>
     </div>
   );
 }

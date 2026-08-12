@@ -236,7 +236,19 @@ export default function CmsWeddingTemplatesPage() {
                 const zoom = Number(introImages[zoomKey] ?? 100);
                 return (
                   <div key={imageKey} className="space-y-3">
-                    <CmsImageField label={label} value={introImages[imageKey]} onChange={(v) => setIntroImages((s) => ({ ...s, [imageKey]: v }))} aspect={aspect} objectFit={fit} objectPosition={`${x}% ${y}%`} zoom={zoom} placeholderSrc={placeholder} />
+                    <CmsImageField
+                      label={label}
+                      value={introImages[imageKey]}
+                      onChange={(v) => setIntroImages((s) => ({ ...s, [imageKey]: v }))}
+                      aspect={aspect}
+                      objectFit={fit}
+                      objectPosition={`${x}% ${y}%`}
+                      positionX={x}
+                      positionY={y}
+                      zoom={zoom}
+                      onPositionChange={(nextX, nextY) => setIntroImages((s) => ({ ...s, [xKey]: String(nextX), [yKey]: String(nextY) }))}
+                      placeholderSrc={placeholder}
+                    />
                     <label className="block text-xs font-medium text-muted-foreground">
                       Cách hiển thị ảnh
                       <select className={inputClass + " mt-1"} value={fit} onChange={(e) => setIntroImages((s) => ({ ...s, [fitKey]: e.target.value }))}>

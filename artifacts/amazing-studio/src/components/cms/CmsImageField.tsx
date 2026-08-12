@@ -17,6 +17,9 @@ type Props = {
   objectFit?: "cover" | "contain";
   objectPosition?: string;
   zoom?: number;
+  positionX?: number;
+  positionY?: number;
+  onPositionChange?: (x: number, y: number) => void;
 };
 
 export function CmsImageField({
@@ -30,10 +33,15 @@ export function CmsImageField({
   objectFit = "cover",
   objectPosition = "50% 50%",
   zoom = 100,
+  positionX = 50,
+  positionY = 50,
+  onPositionChange,
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const dragRef = useRef<{ clientX: number; clientY: number; x: number; y: number } | null>(null);
   const src = getImageSrc(value) ?? placeholderSrc ?? null;
 
   const aspectClass =
@@ -95,8 +103,34 @@ export function CmsImageField({
         )}
       </div>
       <div
+        onPointerDown={(e) => {
+          if (!onPositionChange || !src) return;
+          e.currentTarget.setPointerCapture(e.pointerId);
+          dragRef.current = { clientX: e.clientX, clientY: e.clientY, x: positionX, y: positionY };
+          setDragging(true);
+        }}
+        onPointerMove={(e) => {
+          const start = dragRef.current;
+          if (!start || !onPositionChange) return;
+          const rect = e.currentTarget.getBoundingClientRect();
+          const clamp = (value: number) => Math.max(0, Math.min(100, Math.round(value)));
+          onPositionChange(
+            clamp(start.x - ((e.clientX - start.clientX) / rect.width) * 100),
+            clamp(start.y - ((e.clientY - start.clientY) / rect.height) * 100),
+          );
+        }}
+        onPointerUp={(e) => {
+          if (dragRef.current) e.currentTarget.releasePointerCapture(e.pointerId);
+          dragRef.current = null;
+          setDragging(false);
+        }}
+        onPointerCancel={() => {
+          dragRef.current = null;
+          setDragging(false);
+        }}
         className={cn(
           "relative rounded-2xl overflow-hidden border border-border/80 bg-[#faf8f5]",
+          onPositionChange && src && "touch-none select-none cursor-grab active:cursor-grabbing",
           aspectClass,
         )}
       >
@@ -112,6 +146,11 @@ export function CmsImageField({
           <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
             <Loader2 className="w-8 h-8 text-white animate-spin" />
           </div>
+        )}
+        {onPositionChange && src && !uploading && (
+          <span className={cn("pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/65 px-3 py-1 text-[11px] font-medium text-white transition-opacity", dragging ? "opacity-100" : "opacity-80")}>
+            {dragging ? "Đang di chuyển…" : "Giữ chuột và kéo ảnh"}
+          </span>
         )}
       </div>
       <input

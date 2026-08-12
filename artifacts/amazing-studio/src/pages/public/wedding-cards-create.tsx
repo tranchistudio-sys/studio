@@ -50,8 +50,6 @@ const EMPTY_PREVIEW: PublicWeddingCard = {
   createdAt: new Date().toISOString(),
 };
 
-const DRAFT_KEY = "amazing-studio:wedding-card-draft:v2";
-
 export default function WeddingCardsCreatePage() {
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
   const initialTemplate = params.get("template") || "classic";
@@ -90,26 +88,9 @@ export default function WeddingCardsCreatePage() {
 
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(DRAFT_KEY);
-      if (!raw) return;
-      const draft = JSON.parse(raw) as Record<string, unknown>;
-      if (typeof draft.groomName === "string") setGroomName(draft.groomName);
-      if (typeof draft.brideName === "string") setBrideName(draft.brideName);
-      if (typeof draft.weddingDate === "string") setWeddingDate(draft.weddingDate);
-      if (typeof draft.contactPhone === "string") setContactPhone(draft.contactPhone);
-      if (typeof draft.notificationEmail === "string") setNotificationEmail(draft.notificationEmail);
-      if (typeof draft.invitationMessage === "string") setInvitationMessage(draft.invitationMessage);
-      // A new invitation always starts with an empty photo picker. Persisting
-      // uploaded object URLs caused old photos to leak into the next card.
-    } catch { /* ignore corrupt local draft */ }
+      localStorage.removeItem("amazing-studio:wedding-card-draft:v2");
+    } catch { /* local storage may be unavailable */ }
   }, []);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      localStorage.setItem(DRAFT_KEY, JSON.stringify({ groomName, brideName, weddingDate, contactPhone, notificationEmail, invitationMessage }));
-    }, 300);
-    return () => window.clearTimeout(timer);
-  }, [groomName, brideName, weddingDate, contactPhone, notificationEmail, invitationMessage, mediaItems]);
 
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {

@@ -31,6 +31,7 @@ export function WeddingCardViewExtras({
   card: PublicWeddingCard;
   preview?: boolean;
 }) {
+  const isClassic = (card.themeKey ?? card.templateSlug ?? "classic") === "classic";
   const dateLabel = formatDate(card.weddingDate);
   const hasVenue = card.venueGroom || card.venueBride || card.venueReception;
   const hasMap =
@@ -42,7 +43,7 @@ export function WeddingCardViewExtras({
     card.mapsUrlReception;
 
   return (
-    <div className="wc-bt-view-sections">
+    <div className={`wc-bt-view-sections${isClassic ? " wc-bt-view-sections--classic" : ""}`}>
       <WeddingCardCountdown weddingDate={card.weddingDate} ceremonyTime={card.ceremonyTime} />
 
       <WeddingCardFamiliesSection card={card} />

@@ -696,6 +696,19 @@
 }
 
 /* Countdown */
+.wc-bt-view-sections--classic .wc-bt-countdown {
+  padding-inline: clamp(1.25rem, 6vw, 5rem);
+}
+
+.wc-bt-view-sections--classic .wc-bt-countdown .wc-bt-section-title {
+  width: min(100%, 16ch);
+  margin-inline: auto;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: normal;
+  text-wrap: balance;
+}
+
 .wc-bt-countdown-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -2264,6 +2277,15 @@
     color: #3f1f34 !important;
     opacity: 1 !important;
     text-shadow: 0 1px 0 rgba(255, 255, 255, 0.7);
+  }
+
+  .wc-bt-editor-preview .wc-bt-view-sections--classic .wc-bt-countdown {
+    padding: 3rem 1.5rem;
+  }
+
+  .wc-bt-editor-preview .wc-bt-view-sections--classic .wc-bt-countdown .wc-bt-section-title {
+    font-size: 2rem;
+    line-height: 1.3;
   }
 
   .wc-bt-editor-preview .wc-bt-album-grid {

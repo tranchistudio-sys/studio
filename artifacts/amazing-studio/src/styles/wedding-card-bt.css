@@ -2168,11 +2168,165 @@
   margin-right: auto;
 }
 
-.wc-bt-thankyou-brand {
-  margin-top: 1.25rem;
-  font-size: 0.65rem;
-  opacity: 0.65;
+.wc-bt-branding-footer {
+  width: min(100%, 680px);
+  margin: 1.25rem auto 0;
+  padding: clamp(2rem, 5vw, 3.5rem) clamp(1.25rem, 5vw, 3rem);
+  text-align: center;
+  color: #4a2c40;
+  background: rgba(255, 255, 255, 0.42);
+  border: 1px solid rgba(92, 61, 82, 0.12);
+  border-radius: 1rem;
+  box-shadow: 0 12px 36px rgba(74, 44, 64, 0.06);
+}
+
+.wc-bt-branding-logo-link {
+  display: block;
+  width: 190px;
+  height: 106px;
+  margin: 0 auto 0.75rem;
+  overflow: hidden;
+  border-radius: 0.75rem;
+  background: #fff;
+}
+
+.wc-bt-branding-logo {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+}
+
+.wc-bt-branding-kicker {
+  margin: 0;
+  font-size: 0.68rem;
   letter-spacing: 0.08em;
+  color: rgba(74, 44, 64, 0.66);
+}
+
+.wc-bt-branding-name {
+  margin: 0.75rem 0 0;
+  font-family: var(--font-serif);
+  font-size: clamp(1.4rem, 3vw, 1.9rem);
+  line-height: 1.2;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.wc-bt-branding-tagline {
+  margin: 0.5rem 0 0;
+  font-size: 0.68rem;
+  letter-spacing: 0.22em;
+  color: #7b526b;
+}
+
+.wc-bt-branding-services {
+  max-width: 34rem;
+  margin: 1rem auto 0;
+  font-size: 0.8rem;
+  line-height: 1.7;
+  color: rgba(74, 44, 64, 0.82);
+}
+
+.wc-bt-branding-contact {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  max-width: 34rem;
+  margin: 1.25rem auto 0;
+  font-style: normal;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  color: rgba(74, 44, 64, 0.76);
+}
+
+.wc-bt-branding-contact p,
+.wc-bt-branding-contact a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin: 0;
+  color: inherit;
+}
+
+.wc-bt-branding-contact svg {
+  width: 0.95rem;
+  height: 0.95rem;
+  flex: 0 0 auto;
+  color: #9c5477;
+}
+
+.wc-bt-branding-contact a {
+  min-height: 2.5rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.wc-bt-branding-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.55rem;
+  min-height: 2.75rem;
+  margin-top: 1.25rem;
+  padding: 0.7rem 1.25rem;
+  border: 1px solid rgba(92, 61, 82, 0.3);
+  border-radius: 999px;
+  color: #4a2c40;
+  background: rgba(255, 255, 255, 0.55);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-decoration: none;
+}
+
+.wc-bt-branding-cta svg {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+@media (hover: hover) {
+  .wc-bt-branding-logo-link,
+  .wc-bt-branding-cta,
+  .wc-bt-branding-contact a {
+    transition: color 0.25s ease, border-color 0.25s ease, background 0.25s ease;
+  }
+
+  .wc-bt-branding-logo-link:hover,
+  .wc-bt-branding-cta:hover,
+  .wc-bt-branding-contact a:hover {
+    color: #8f3f69;
+    border-color: rgba(143, 63, 105, 0.46);
+    background: rgba(255, 255, 255, 0.8);
+  }
+}
+
+@media (max-width: 480px) {
+  .wc-bt-branding-footer {
+    padding-inline: 1rem;
+  }
+
+  .wc-bt-branding-name {
+    font-size: 1.35rem;
+    letter-spacing: 0.12em;
+  }
+
+  .wc-bt-branding-tagline {
+    letter-spacing: 0.14em;
+  }
+
+  .wc-bt-branding-contact p {
+    align-items: flex-start;
+  }
+
+  .wc-bt-branding-cta {
+    width: 100%;
+  }
 }
 
 .wc-bt-guest-pill {

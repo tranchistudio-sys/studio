@@ -1,6 +1,6 @@
 import { Heart } from "lucide-react";
 import type { PublicWeddingCard } from "@/hooks/use-wedding-cards";
-import { STUDIO_NAME } from "@/lib/public-site-config";
+import { WeddingCardBrandingFooter } from "./WeddingCardBrandingFooter";
 import { WeddingCardReveal } from "./WeddingCardReveal";
 
 export function WeddingCardThankYouSection({ card }: { card: PublicWeddingCard }) {
@@ -17,8 +17,8 @@ export function WeddingCardThankYouSection({ card }: { card: PublicWeddingCard }
         <p className="wc-bt-thankyou-msg">
           Cảm ơn bạn đã dành thời gian đọc thiệp mời của chúng tôi. Sự hiện diện của bạn là niềm vui lớn nhất trong ngày hạnh phúc của chúng tôi 💕
         </p>
-        <p className="wc-bt-thankyou-brand">Made with love by {STUDIO_NAME}</p>
       </div>
+      <WeddingCardBrandingFooter />
     </WeddingCardReveal>
   );
 }

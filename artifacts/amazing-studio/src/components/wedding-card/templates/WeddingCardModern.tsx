@@ -1,5 +1,4 @@
 ﻿import { WeddingCardPreviewImage } from "../WeddingCardPreviewImage";
-import { WeddingCardBrandingFooter } from "../WeddingCardBrandingFooter";
 import type { WeddingCardTemplateProps } from "../wedding-card-types";
 import { cn } from "@/lib/utils";
 import { ImagePlus } from "lucide-react";
@@ -150,7 +149,6 @@ export function WeddingCardModern({
             Gọi điện
           </a>
         )}
-        <WeddingCardBrandingFooter className="text-neutral-400 border-neutral-100" />
       </div>
     </article>
   );

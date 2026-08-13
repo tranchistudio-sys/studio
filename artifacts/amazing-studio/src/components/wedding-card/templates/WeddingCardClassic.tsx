@@ -1,5 +1,4 @@
 ﻿import { WeddingCardPreviewImage } from "../WeddingCardPreviewImage";
-import { WeddingCardBrandingFooter } from "../WeddingCardBrandingFooter";
 import type { WeddingCardTemplateProps } from "../wedding-card-types";
 import { cn } from "@/lib/utils";
 import { Heart, ImagePlus } from "lucide-react";
@@ -137,7 +136,6 @@ export function WeddingCardClassic({
             <div className="w-full h-full bg-gradient-to-b from-[#f8bbd0] to-[#f48fb1]" />
           )}
         </div>
-        <WeddingCardBrandingFooter className="text-[#9a6b82] pb-4" />
       </article>
     );
   }

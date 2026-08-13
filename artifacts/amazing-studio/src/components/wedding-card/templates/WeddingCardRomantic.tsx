@@ -1,5 +1,4 @@
 ﻿import { WeddingCardPreviewImage } from "../WeddingCardPreviewImage";
-import { WeddingCardBrandingFooter } from "../WeddingCardBrandingFooter";
 import type { WeddingCardTemplateProps } from "../wedding-card-types";
 import { cn } from "@/lib/utils";
 import { ImagePlus } from "lucide-react";
@@ -144,7 +143,6 @@ export function WeddingCardRomantic({
             Liên hệ
           </a>
         )}
-        <WeddingCardBrandingFooter className="mt-8 text-rose-200/50 border-rose-200/20" />
       </div>
     </article>
   );

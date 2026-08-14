@@ -13,6 +13,7 @@ import { formatVND } from "@/lib/utils";
 import { parseDescriptionBlocks } from "@/lib/package-description";
 import SignaturePad from "./SignaturePad";
 import { serviceDays as buildServiceDays, type ServiceDay } from "@/lib/service-days";
+import { serviceDisplayOrdinal, sortServicesByEventDate } from "@/lib/service-display-order";
 import type { ContractPayload, ContractService } from "./contract-types";
 
 type ContractDocumentProps = {
@@ -86,6 +87,9 @@ export default function ContractDocument({
   // nữa — ngày đã nằm ngay trên từng dòng dịch vụ. Giữ field ở payload để không
   // phá hợp đồng đã ký / bên gọi khác.
   const { contract, studio, customer, services, money, payments, signatures } = payload;
+  // Hợp đồng chỉ đổi vị trí các khối khi render; payload/snapshot và nội dung từng
+  // dịch vụ vẫn nguyên vẹn để không tác động dữ liệu hay logic pháp lý.
+  const displayServices = sortServicesByEventDate(services);
   const isMulti = services.length > 1;
   const contractCode = contract.contractCode || `HD-${String(contract.id).padStart(4, "0")}`;
 
@@ -183,12 +187,12 @@ export default function ContractDocument({
             </div>
           </div>
         ) : (
-          services.map((svc, idx) => (
+          displayServices.map((svc, idx) => (
             <div key={svc.bookingId} className={isMulti ? "border rounded-xl p-4 mb-4" : ""}>
               {isMulti ? (
                 <div className="border-l-4 border-[#222] pl-4 py-2 mb-3">
                   <div className="font-bold text-[#111]">
-                    📋 {svc.serviceLabel || `Dịch vụ ${idx + 1}`}
+                    📋 {svc.serviceLabel || `Dịch vụ ${serviceDisplayOrdinal(svc, idx)}`}
                   </div>
                   {/* Ngày giờ chụp nổi bật — khách nhìn là thấy, không lộn ngày.
                       Dịch vụ nhiều ngày: hiện ĐỦ chip Ngày 1/Ngày 2… ngay tại đây. */}

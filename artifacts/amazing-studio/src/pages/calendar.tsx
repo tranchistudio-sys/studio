@@ -16,6 +16,7 @@ import { vi } from "date-fns/locale";
 import { formatVND } from "@/lib/utils";
 import { ServicePriceBreakdown, renderServiceBreakdownCardHTML } from "@/components/ServiceBreakdownCard";
 import { serviceDays, serviceDayTextLines } from "@/lib/service-days";
+import { serviceDisplayOrdinal, sortServicesByEventDate } from "@/lib/service-display-order";
 import { getImageSrc } from "@/lib/imageUtils";
 import { ConceptImage } from "@/components/ConceptImage";
 import { EvidenceImageViewer, type EvidenceViewerState } from "@/components/EvidenceImageViewer";
@@ -3600,7 +3601,7 @@ function generateContractHTML(
   const todayStr = format(today, "dd/MM/yyyy");
 
   // Multi-service: use siblings list; single: just this booking
-  const allServices = siblings.length > 0 ? siblings : [booking];
+  const allServices = sortServicesByEventDate(siblings.length > 0 ? siblings : [booking]);
   const isMulti = allServices.length > 1;
 
   // Payment summary: use caller-supplied summary (from parentContract or booking) — same source as on-screen
@@ -3806,7 +3807,7 @@ function generateContractHTML(
     ${allServices.map((svc, svcIdx) => {
       const sItems = svc.items || [];
       const sRealName = sItems[0]?.serviceName || svc.serviceLabel || svc.packageType || "";
-      const sTitle = `DỊCH VỤ ${svcIdx + 1}${sRealName ? `: ${sRealName}` : ""}`;
+      const sTitle = `DỊCH VỤ ${serviceDisplayOrdinal(svc, svcIdx)}${sRealName ? `: ${sRealName}` : ""}`;
       const sBookingSurcharges = (svc.surcharges || []) as { name?: string; label?: string; amount: number }[];
       const sItemSurcharges = sItems.flatMap(it => (it.surcharges || []) as { name?: string; label?: string; amount: number }[]);
       const sAllSurcharges = [...sBookingSurcharges, ...sItemSurcharges];
@@ -4658,7 +4659,9 @@ function ShowDetailPanel({
           {/* Contract summary — per-service breakdown + totals (works for both single & multi-service) */}
           {(() => {
                 const contractSrc = parentContract ?? booking;
-                const allSvc = siblings.length > 0 ? siblings : [booking];
+                // Chỉ sắp xếp bản sao để HIỂN THỊ; `siblings` gốc vẫn giữ nguyên cho
+                // form sửa, mã dịch vụ và toàn bộ logic nghiệp vụ hiện tại.
+                const allSvc = sortServicesByEventDate(siblings.length > 0 ? siblings : [booking]);
                 const cTotal = Number(contractSrc.totalAmount ?? 0) || 0;
                 const cDiscount = Number(contractSrc.discountAmount ?? 0) || 0;
                 const cPaid = parentContract
@@ -4688,7 +4691,7 @@ function ShowDetailPanel({
                       {allSvc.map((svc, svcIdx) => {
                         const svcItems = svc.items || [];
                         const svcRealName = svcItems[0]?.serviceName || svc.serviceLabel || svc.packageType || "";
-                        const svcTitle = `DỊCH VỤ ${svcIdx + 1}${svcRealName ? `: ${svcRealName}` : ""}`;
+                        const svcTitle = `DỊCH VỤ ${serviceDisplayOrdinal(svc, svcIdx)}${svcRealName ? `: ${svcRealName}` : ""}`;
                         const svcShootDate = svc.shootDate ? safeFormatDate(svc.shootDate) : "";
                         const svcShootTime = svc.shootTime ? svc.shootTime.slice(0, 5) : "";
                         // Ngày chính + ngày phụ CỦA CHÍNH dịch vụ này (server trả occurrences cho

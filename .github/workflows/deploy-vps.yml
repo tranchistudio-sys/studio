@@ -1,0 +1,144 @@
+name: Deploy VPS (code-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Nhánh hoặc commit cần deploy"
+        required: true
+        default: "main"
+      confirm:
+        description: "Gõ DEPLOY để xác nhận"
+        required: true
+
+concurrency:
+  group: amazing-studio-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Xác nhận lệnh deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Bắt buộc gõ đúng DEPLOY
+        shell: bash
+        run: |
+          if [ "${{ inputs.confirm }}" != "DEPLOY" ]; then
+            echo "::error::Bạn phải gõ đúng DEPLOY để cho phép đưa code lên production."
+            exit 1
+          fi
+
+  verify:
+    name: Build + test + chốt code-only
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - id: commit
+        name: Ghi nhận đúng commit sẽ deploy
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Cài phụ thuộc đúng lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Chốt an toàn — cấm migration/DDL khi deploy
+        run: pnpm deploy:guard
+
+      - name: Test API
+        run: pnpm --filter @workspace/api-server test
+
+      - name: Test giao diện
+        run: pnpm --filter @workspace/amazing-studio test
+
+      - name: Build code production
+        run: pnpm run build:deploy
+
+  deploy:
+    name: Đưa đúng commit lên VPS
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+      VPS_USER: ${{ secrets.VPS_USER }}
+      VPS_PORT: ${{ secrets.VPS_PORT }}
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      DEPLOY_SHA: ${{ needs.verify.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+
+      - name: Kiểm tra GitHub Secrets
+        shell: bash
+        run: |
+          missing=""
+          [ -n "$VPS_HOST" ] || missing="$missing VPS_HOST"
+          [ -n "$VPS_USER" ] || missing="$missing VPS_USER"
+          [ -n "$VPS_SSH_PRIVATE_KEY" ] || missing="$missing VPS_SSH_PRIVATE_KEY"
+          if [ -n "$missing" ]; then
+            echo "::error::Thiếu GitHub Secret:$missing"
+            exit 1
+          fi
+
+      - name: Chuẩn bị SSH
+        shell: bash
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
+          port="${VPS_PORT:-22}"
+          ssh-keyscan -H -p "$port" "$VPS_HOST" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Chép bộ điều khiển code-only lên VPS
+        shell: bash
+        run: |
+          port="${VPS_PORT:-22}"
+          scp -P "$port" -i "$HOME/.ssh/deploy_key" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            scripts/vps-deploy-code-only.sh \
+            "$VPS_USER@$VPS_HOST:/tmp/amazing-vps-deploy-$GITHUB_RUN_ID.sh"
+
+      - name: Deploy và tự rollback nếu health check hỏng
+        shell: bash
+        run: |
+          port="${VPS_PORT:-22}"
+          ssh -p "$port" -i "$HOME/.ssh/deploy_key" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" \
+            "bash /tmp/amazing-vps-deploy-$GITHUB_RUN_ID.sh '$DEPLOY_SHA'; status=\$?; rm -f /tmp/amazing-vps-deploy-$GITHUB_RUN_ID.sh; exit \$status"
+
+      - name: Xác nhận website thật đã sống
+        shell: bash
+        run: |
+          for attempt in $(seq 1 12); do
+            body=$(curl -fsS --max-time 15 https://tranchistudio.com/api/healthz || true)
+            case "$body" in
+              *'"status":"ok"'*) echo "Production healthy at commit $DEPLOY_SHA"; exit 0 ;;
+            esac
+            echo "Health check lần $attempt chưa đạt; chờ 5 giây..."
+            sleep 5
+          done
+          echo "::error::Production không trả status=ok sau khi deploy."
+          exit 1

@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import { db, pool } from "@workspace/db";
 import { staffRatePricesTable } from "@workspace/db/schema";
 import { eq, and } from "drizzle-orm";
-import { verifyToken } from "./auth";
+import { verifyToken, getCallerRole } from "./auth";
 
 const router: IRouter = Router();
 
@@ -91,7 +91,14 @@ router.put("/staff-rates/:id", async (req, res) => {
 });
 
 // ─── DELETE /staff-rates/clear — xóa toàn bộ (admin only) ────────────────────
-router.delete("/staff-rates/clear", async (_req, res) => {
+// Comment "admin only" có từ đầu nhưng CHƯA HỀ có kiểm tra: handler khai (_req)
+// nên không đọc nổi header, và câu lệnh xoá KHÔNG có WHERE → ai cũng xoá sạch
+// bảng đơn giá nhân sự của toàn studio. Bảng này không có soft-delete, không
+// audit, mất là mất luôn; lương/hoa hồng sau đó âm thầm tính bằng 0.
+router.delete("/staff-rates/clear", async (req, res) => {
+  const role = await getCallerRole(req.headers.authorization);
+  if (!role) { res.status(401).json({ error: "Chưa đăng nhập hoặc phiên hết hạn" }); return; }
+  if (role !== "admin") { res.status(403).json({ error: "Chỉ admin mới được xoá toàn bộ bảng giá" }); return; }
   await db.delete(staffRatePricesTable);
   res.json({ ok: true, message: "Đã xóa toàn bộ bảng cast" });
 });

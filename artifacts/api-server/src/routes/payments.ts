@@ -494,8 +494,16 @@ router.post("/payments", async (req, res) => {
 // - Update deposit record nếu amount lệch
 // - Tạo deposit record cho booking nào có depositAmount > 0 nhưng chưa có phiếu thu nào
 // - Cập nhật lại paid_amount trên bookings table
-router.post("/payments/sync-deposits", async (_req, res) => {
+router.post("/payments/sync-deposits", async (req, res) => {
   try {
+  // Quét TOÀN BỘ đơn còn sống trong DB rồi tạo/sửa phiếu cọc và ghi lại
+  // paid_amount hàng loạt → đây là thao tác bảo trì của chủ, không phải việc
+  // hằng ngày của thu ngân. Khoá admin-only cho khớp UI (nút "Đồng bộ cọc cũ"
+  // chỉ hiện khi effectiveIsAdmin), và cùng mức với DELETE /payments/:id.
+  // Trước đây handler khai (_req) nên không đọc nổi header — không thể khoá.
+  const role = await getCallerRole(req.headers.authorization);
+  if (!role) { res.status(401).json({ error: "Chưa đăng nhập hoặc phiên hết hạn" }); return; }
+  if (role !== "admin") { res.status(403).json({ error: "Chỉ admin mới được đồng bộ cọc hàng loạt" }); return; }
   const report: { created: number; removed: number; updated: number; recalculated: number } = {
     created: 0, removed: 0, updated: 0, recalculated: 0,
   };

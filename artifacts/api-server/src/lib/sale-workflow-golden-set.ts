@@ -380,6 +380,54 @@ export const GOLDEN_CASES: GoldenCase[] = [
     quotedCodes: ["CG-BASIC"],
     expected: { stage: "QUOTED", action: "QUOTE_REFERENCE", forbiddenAction: "ASK_DATE" },
   },
+  {
+    // 30/07 — phát hiện từ demo live Scenario Manager: "cho chị tham khảo giá trước" là cách
+    // hỏi giá rất phổ biến mà PRICE_QUESTION_RE cũ bỏ sót → router rơi về IDENTIFY_SERVICE.
+    id: "G53", name: "'chưa chốt ngày, cho chị tham khảo giá trước' → giá tham khảo, cấm hỏi ngày",
+    history: [{ direction: "incoming", message: "Chào em, chị muốn chụp album cưới" }],
+    message: "chị chưa chốt ngày đâu, cho chị tham khảo giá trước nha",
+    expected: {
+      serviceIntent: "wedding_album", dateStatus: "not_decided",
+      stage: "QUOTE_REFERENCE", action: "QUOTE_REFERENCE",
+      forbiddenQuestionsInclude: ["ask_date"],
+      stateChange: "tham khảo giá = hỏi giá; chưa chốt ngày → báo tham khảo, không hỏi ngày",
+    },
+  },
+  // ── V2 (Sales Brain 30/07): BUYING_SIGNAL mở rộng + ack đời thường + LOST ────
+  {
+    id: "G54", name: "BUYING_SIGNAL 'có hợp đồng không em' → booking, ngừng tư vấn dài",
+    history: [{ direction: "incoming", message: "chụp cổng giá sao em" }, ASKED_DATE, { direction: "incoming", message: "20/12" }, { direction: "outgoing", message: "Dạ gói cổng bên em 3.900.000đ ạ" }],
+    message: "có hợp đồng không em",
+    quotedCodes: ["CG-BASIC"],
+    expected: { stage: "BOOKING_INTENT", action: "ASK_PHONE", stateChange: "hỏi hợp đồng = tín hiệu mua; đã có ngày → xin SĐT bàn giao chốt" },
+  },
+  {
+    id: "G55", name: "BUYING_SIGNAL 'qua thử váy được không' → booking (hẹn thử đồ)",
+    history: [{ direction: "incoming", message: "bên em có cho thuê váy cưới không" }, { direction: "outgoing", message: "Dạ có nha chị, bên em nhiều mẫu lắm ạ" }],
+    message: "qua thử váy được không em",
+    expected: { serviceIntent: "rental_outfit", stage: "BOOKING_INTENT", action: "ASK_DATE", stateChange: "muốn qua thử đồ = ý định thật — được phép hỏi ngày" },
+  },
+  {
+    id: "G56", name: "Ack đời thường 'vậy hả' sau báo giá → WAIT, không dồn ép",
+    history: [{ direction: "incoming", message: "chụp cưới giá sao" }, ASKED_DATE, { direction: "incoming", message: "chưa biết ngày" }, { direction: "outgoing", message: "Dạ em gửi giá tham khảo nha" }],
+    message: "vậy hả",
+    quotedCodes: ["ST-BASIC"],
+    expected: { stage: "QUOTED", action: "WAIT", forbiddenAction: "ASK_FOR_BOOKING" },
+  },
+  {
+    id: "G57", name: "Từ chối rõ 'chốt bên khác rồi' → LOST: đáp tử tế, không sale tiếp",
+    history: [{ direction: "incoming", message: "chụp cưới giá sao" }, { direction: "outgoing", message: "Dạ em gửi giá tham khảo nha" }],
+    message: "thôi khỏi em ơi, chị chốt bên khác rồi",
+    expected: { stage: "LOST", action: "WAIT", forbiddenAction: "QUOTE_REFERENCE", shouldEscalate: false },
+  },
+  {
+    // Nghiệm thu 30/07 (T05): khách hỏi giá → bot hỏi ngày → khách trả lời "tháng 12"
+    // KHÔNG kèm chữ giá — phải HOÀN TẤT ý định cũ (báo giá), không quay lại đào gu.
+    id: "G58", name: "Trả lời ngày sau câu hỏi ngày (không nhắc giá) → báo giá luôn, không đào gu",
+    history: [{ direction: "incoming", message: "chụp cổng giá nhiêu vậy" }, ASKED_DATE],
+    message: "tháng 12 gì đó em",
+    expected: { serviceIntent: "wedding_gate", dateStatus: "known", stage: "QUOTED", action: "QUOTE_EXACT", forbiddenQuestionsInclude: ["ask_date"] },
+  },
 ];
 
 // ─── BIẾN THỂ KHÔNG DẤU (slang/typo layer) ───────────────────────────────────

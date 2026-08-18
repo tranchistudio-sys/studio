@@ -66,7 +66,71 @@ type SimResult = {
   overrideApplied?: boolean;
   /** Cách lượt này dùng câu sửa tay admin: "exact_reply" = nói y chang; "learn_from_this" = AI học theo. */
   responseMode?: "exact_reply" | "learn_from_this" | null;
+  /** X-quang pipeline (LULU_BRAIN_STRUCTURED_ENABLED=1): service→stage→scenario→action→golden→giá→validator. */
+  trace?: {
+    structured: boolean; service: string | null; serviceGroup: string | null; serviceSwitch?: string | null; stage: string;
+    scenarioWinner: string | null; scenarioName: string | null; action: string; goldenCount: number;
+    scriptSource?: "service" | "scenario" | "greeting" | null;
+    crmPriceText: string | null; priceSource: string; brainVersion: string; provider: string;
+    fallbackUsed: "none" | "stitched" | "intent" | "safe"; regenerated: boolean;
+    validator: { verdict: string; reason?: string };
+    serviceConsistency?: "PASS" | "FAIL" | "N/A";
+    blockedReason?: string | null;
+  } | null;
 };
+
+// ─── Dọn giao diện chat test: debug ẨN mặc định, bung qua nút "🔍 Chi tiết" / công tắc "Chế độ kỹ thuật" ───
+// CHỈ là hiển thị — trace backend giữ nguyên đầy đủ, không xoá dữ liệu, không đụng pipeline.
+const SCRIPT_SOURCE_LABEL: Record<string, string> = {
+  service: "đúng dịch vụ", greeting: "chào hỏi chung", scenario: "thẻ chung",
+};
+/** Câu Lulu này có điểm cần admin ngó không? (validator chặn / lệch dịch vụ / phải dùng câu an toàn) */
+function traceNeedsCheck(trace: SimResult["trace"]): boolean {
+  if (!trace) return false;
+  return trace.validator?.verdict === "BLOCK" || trace.serviceConsistency === "FAIL"
+    || !!trace.blockedReason || trace.fallbackUsed === "safe";
+}
+/** Panel "Chi tiết" dưới câu Lulu — toàn bộ X-quang pipeline + metadata, dạng nhãn dễ đọc. */
+function TraceDetailPanel({ result }: { result: SimResult }) {
+  const trace = result.trace;
+  const Row = ({ label, children }: { label: string; children: React.ReactNode }) => (
+    <div className="flex gap-2">
+      <span className="w-28 md:w-32 shrink-0 text-gray-400">{label}</span>
+      <span className="text-gray-700 min-w-0 break-words">{children}</span>
+    </div>
+  );
+  return (
+    <div className="text-[11px] bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2 space-y-1">
+      {trace ? (
+        <>
+          <Row label="Dịch vụ nhận diện">📷 {trace.serviceGroup ?? "(chưa xác định)"}{trace.serviceSwitch ? ` · 🔀 đổi: ${trace.serviceSwitch}` : ""}</Row>
+          <Row label="Tình huống">{trace.scenarioName ?? "—"}</Row>
+          <Row label="Giai đoạn">{trace.stage}</Row>
+          <Row label="Hành động">{trace.action}</Row>
+          <Row label="Kịch bản sử dụng">{trace.scriptSource ? (SCRIPT_SOURCE_LABEL[trace.scriptSource] ?? trace.scriptSource) : "—"} · golden: {trace.goldenCount}</Row>
+          <Row label="Nguồn dữ liệu">🧠 {trace.brainVersion} · {trace.provider}</Row>
+          <Row label="Giá realtime">{trace.crmPriceText ? `💰 ${trace.crmPriceText} · ${trace.priceSource}` : "— (lượt này không nhắc giá)"}</Row>
+          <Row label="Validator">
+            <span className={trace.validator?.verdict === "BLOCK" ? "text-rose-600 font-medium" : "text-emerald-700"}>{trace.validator?.verdict ?? "?"}</span>
+            {trace.validator?.reason ? ` · ${trace.validator.reason}` : ""}
+            {trace.serviceConsistency && trace.serviceConsistency !== "N/A" ? (
+              <> · đúng dịch vụ: <span className={trace.serviceConsistency === "PASS" ? "text-emerald-700" : "text-rose-600 font-medium"}>{trace.serviceConsistency}</span></>
+            ) : null}
+          </Row>
+          <Row label="Fallback">{trace.fallbackUsed === "none" ? "không dùng" : trace.fallbackUsed}{trace.regenerated ? " · đã tái sinh" : ""}{trace.blockedReason ? ` · ⛔ ${trace.blockedReason}` : ""}</Row>
+        </>
+      ) : (
+        <Row label="X-quang">Chưa có trace pipeline (structured tắt) — chỉ có thông tin cơ bản bên dưới.</Row>
+      )}
+      {result.detectedIntent && <Row label="Intent">{result.detectedIntent}</Row>}
+      {result.responseMode === "exact_reply" && <Row label="Câu admin dạy">Nói y chang câu admin</Row>}
+      {result.responseMode === "learn_from_this" && <Row label="Câu admin dạy">AI học theo câu admin</Row>}
+      {result.overrideApplied && <Row label="Ảnh">✓ Ảnh do admin dạy</Row>}
+      {result.sampleNote && <Row label="Ghi chú ảnh mẫu">{result.sampleNote}</Row>}
+      <Row label="Thời gian xử lý">{result.responseTimeMs}ms</Row>
+    </div>
+  );
+}
 // Ảnh trong kho (khớp ImageStoreItem ở backend).
 type StoreItem = { imageUrl: string; title: string; detailUrl?: string; sourceType: string; kind?: string; serviceIntent: string; albumName?: string; tags?: string; albumId?: number; publicForCustomer?: boolean };
 // Debug kho ảnh (khớp ImageStoreDebug ở backend) — cho admin biết vì sao rỗng.
@@ -114,6 +178,7 @@ function authHeaders(): Record<string, string> {
 const DRAFT_KEY = "luluBrainLab.draftId";
 const QUEUE_KEY = "luluBrainLab.fixQueue"; // giữ hàng đợi sửa lỗi qua refresh (lưu nhẹ, bỏ base64 ảnh)
 const CHAT_KEY = "luluBrainLab.testChat"; // giữ lịch sử chat test qua đổi tab + refresh; chỉ reset khi tạo nháp mới / bấm "Xóa hội thoại"
+const TECH_KEY = "luluBrainLab.techMode"; // nhớ công tắc "Chế độ kỹ thuật" (OFF mặc định — giao diện sạch như Messenger)
 
 // Khôi phục lịch sử chat test đã lưu (best-effort; ảnh khách đính bị bỏ khi lưu cho nhẹ → text vẫn còn).
 function restoreTestChat(): { ownerDraftId: number | null; turns: TestTurn[]; convo: ConvoMsg[] } {
@@ -1535,7 +1600,9 @@ function AiFixTab({ active, draft, showOk, showErr, onDraftChange, goTest, queue
 // ĐÚNG bản nháp hiện tại (tạo mới từ bản đang chạy nếu chưa có). KHÔNG gửi Messenger thật.
 type TestTurn =
   | { id: string; role: "customer"; text: string; imageUrl?: string }
-  | { id: string; role: "lulu"; result: SimResult; forText: string; fixed?: boolean; preview?: boolean };
+  | { id: string; role: "lulu"; result: SimResult; forText: string; fixed?: boolean; preview?: boolean }
+  // Lỗi hệ thống (vd chưa cấu hình AI key) — hiện BỀN trong khung chat, không chỉ toast 6s.
+  | { id: string; role: "error"; text: string };
 // "Câu Lulu đã được dạy" trong bản nháp (gọn, khớp GET /lulu-brain/draft-overrides).
 type TaughtOverride = {
   id: string; customerQuestion: string; intent: string | null; tone: string | null;
@@ -1573,6 +1640,11 @@ function FixTestTab({
 
   // ── Báo lỗi / sửa phản hồi (panel sửa text & ảnh nằm ở FixResponsePanel) ──
   const [fixingId, setFixingId] = useState<string | null>(null);
+
+  // ── Debug ẨN mặc định: bung theo từng câu (🔍 Chi tiết) hoặc toàn trang (Chế độ kỹ thuật, nhớ qua refresh) ──
+  const [techMode, setTechMode] = useState<boolean>(() => { try { return localStorage.getItem(TECH_KEY) === "1"; } catch { return false; } });
+  const toggleTechMode = () => setTechMode((v) => { const n = !v; try { localStorage.setItem(TECH_KEY, n ? "1" : "0"); } catch { /* quota/private mode — bỏ qua */ } return n; });
+  const [detailOpen, setDetailOpen] = useState<Record<string, boolean>>({});
 
   // ── Human chat pacing: hé lộ bong bóng từng tin theo delayMs (transient, KHÔNG lưu localStorage —
   //    reload giữa chừng thì hiện đủ luôn). Lượt "Xem trước" không dùng → hiện ngay. ──
@@ -1673,10 +1745,32 @@ function FixTestTab({
       }
       if (res.reply?.length) next.push({ direction: "outgoing", text: res.reply.join("\n\n") });
       setConvo(next);
-    } catch (e) { showErr(String((e as Error).message)); } finally { setSending(false); }
+    } catch (e) {
+      const msg = String((e as Error).message);
+      showErr(msg);
+      // Hiện lỗi BỀN trong khung chat — tránh cảnh gửi tin mà im lặng không biết vì sao.
+      setTurns((p) => [...p, { id: newId(), role: "error", text: msg }]);
+    } finally { setSending(false); }
   };
 
-  const clearChat = () => { setTurns([]); setConvo([]); setFixingId(null); };
+  const clearChat = () => {
+    setTurns([]); setConvo([]); setFixingId(null);
+    try { localStorage.removeItem(CHAT_KEY); } catch { /* quota/private mode — bỏ qua */ }
+  };
+  // Xác nhận xoá 2-BƯỚC INLINE (không dùng confirm() native — bị trình duyệt chặn dialog là nút "chết").
+  const [confirmClear, setConfirmClear] = useState(false);
+  const confirmClearTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onClearChatClick = () => {
+    if (!confirmClear) {
+      setConfirmClear(true);
+      if (confirmClearTimer.current) clearTimeout(confirmClearTimer.current);
+      confirmClearTimer.current = setTimeout(() => setConfirmClear(false), 4000);
+      return;
+    }
+    if (confirmClearTimer.current) clearTimeout(confirmClearTimer.current);
+    setConfirmClear(false);
+    clearChat();
+  };
   // Xoá 1 lượt khỏi KHUNG CHAT (chỉ dọn hiển thị; KHÔNG đụng bộ luật/bản nháp). Để xoá câu ĐÃ DẠY
   // thì dùng danh sách "Câu Lulu đã được dạy" bên dưới.
   const deleteTurn = (id: string) => { setTurns((p) => p.filter((x) => x.id !== id)); if (fixingId === id) setFixingId(null); };
@@ -1753,7 +1847,7 @@ function FixTestTab({
         <FlaskConical className="w-5 h-5 flex-shrink-0 mt-0.5" />
         <div>
           <p>Đang test: <b>Version {testingVersion ?? "—"} — {testingDraft ? "Bản nháp" : "Đang chạy thật"}</b></p>
-          <p className="text-[12px] mt-0.5">Khung test mô phỏng — <b>KHÔNG gửi Messenger thật</b>, không tạo đơn. {!testingDraft && "Chưa có bản nháp: bấm “Báo lỗi / Sửa phản hồi này” ở câu trả lời sẽ tự tạo bản nháp mới từ bản đang chạy."}</p>
+          <p className="text-[12px] mt-0.5">Khung test mô phỏng — <b>KHÔNG gửi Messenger thật</b>, không tạo đơn. {!testingDraft && "Chưa có bản nháp: bấm “⚠ Báo lỗi” ở câu trả lời sẽ tự tạo bản nháp mới từ bản đang chạy."}</p>
         </div>
       </div>
 
@@ -1819,23 +1913,38 @@ function FixTestTab({
       {/* Khung chat test — cao để dễ đọc + dễ chụp bằng chứng. Mobile/tablet: 82vh (nhiều hội thoại
           trước khi cuộn). Desktop: 75vh, tối thiểu 620px, tối đa 1120px (~gấp đôi mức cũ). */}
       <div className="bg-white border rounded-xl flex flex-col h-[82vh] min-h-[480px] md:h-[75vh] md:min-h-[620px] md:max-h-[1120px]">
-        <div className="px-4 py-2.5 border-b flex items-center justify-between">
+        <div className="px-4 py-2.5 border-b flex items-center justify-between gap-2 flex-wrap">
           <h3 className="font-semibold text-sm flex items-center gap-2"><MessageSquare className="w-4 h-4 text-violet-600" /> Chat test — Lulu trả lời theo Version {testingVersion ?? "—"}</h3>
-          {turns.length > 0 && (
-            <button
-              onClick={() => { if (confirm("Xóa toàn bộ đoạn chat test này để test lại từ đầu?\n\n(Chỉ xóa khung chat test — KHÔNG ảnh hưởng bản nháp hay bộ luật.)")) clearChat(); }}
-              title="Xóa khung chat test để test lại từ đầu (không ảnh hưởng bản nháp / bộ luật)"
-              className="flex items-center gap-1.5 text-[12px] font-medium text-rose-600 border border-rose-200 px-2.5 py-1 rounded-lg hover:bg-rose-50 shrink-0">
-              <Trash2 className="w-3.5 h-3.5" /> Xóa hội thoại
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Công tắc Chế độ kỹ thuật: ON → tự bung X-quang/debug dưới MỌI câu Lulu (dành cho developer) */}
+            <button onClick={toggleTechMode}
+              title="Bật: tự mở toàn bộ thông tin X-quang/debug dưới mỗi câu Lulu. Tắt: giao diện sạch như Messenger."
+              className={`flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1 rounded-lg border ${techMode
+                ? "text-violet-700 bg-violet-50 border-violet-300"
+                : "text-gray-400 border-gray-200 hover:bg-gray-50"}`}>
+              <span className={`relative inline-block w-6 h-3.5 rounded-full transition-colors ${techMode ? "bg-violet-500" : "bg-gray-300"}`}>
+                <span className={`absolute top-0.5 w-2.5 h-2.5 rounded-full bg-white transition-all ${techMode ? "left-3" : "left-0.5"}`} />
+              </span>
+              Chế độ kỹ thuật
             </button>
-          )}
+            {turns.length > 0 && (
+              <button
+                onClick={onClearChatClick}
+                title="Xóa khung chat test để test lại từ đầu (không ảnh hưởng bản nháp / bộ luật)"
+                className={`flex items-center gap-1.5 text-[12px] font-medium px-2.5 py-1 rounded-lg shrink-0 border ${confirmClear
+                  ? "text-white bg-rose-600 border-rose-600 hover:bg-rose-700"
+                  : "text-rose-600 border-rose-200 hover:bg-rose-50"}`}>
+                <Trash2 className="w-3.5 h-3.5" /> {confirmClear ? "Bấm lần nữa để xóa" : "Xóa hội thoại"}
+              </button>
+            )}
+          </div>
         </div>
 
         <div ref={scrollRef} className="flex-1 overflow-auto p-4 space-y-3">
           {turns.length === 0 && (
             <div className="text-center text-gray-400 text-sm py-6 space-y-2">
               <MessageSquare className="w-8 h-8 mx-auto opacity-40" />
-              <p>Nhập câu khách hỏi để xem Lulu trả lời.<br />Trả lời sai chỗ nào, bấm “Báo lỗi / Sửa phản hồi này” ngay câu đó.</p>
+              <p>Nhập câu khách hỏi để xem Lulu trả lời.<br />Trả lời sai chỗ nào, bấm “⚠ Báo lỗi” ngay câu đó.</p>
             </div>
           )}
           {turns.map((t) => t.role === "customer" ? (
@@ -1844,6 +1953,15 @@ function FixTestTab({
                 className="opacity-0 group-hover:opacity-100 transition text-gray-300 hover:text-rose-500 mt-1.5 shrink-0"><X className="w-3.5 h-3.5" /></button>
               <div className="max-w-[80%] bg-sky-600 text-white rounded-2xl rounded-br-sm px-3 py-2 text-sm">
                 {t.imageUrl && <img src={t.imageUrl} alt="ảnh khách" className="rounded-lg max-h-40 border border-white/30 mb-1" />}
+                <span className="whitespace-pre-wrap break-words">{t.text}</span>
+              </div>
+            </div>
+          ) : t.role === "error" ? (
+            <div key={t.id} className="flex gap-2 items-start group">
+              <div className="w-7 h-7 rounded-full bg-rose-100 flex items-center justify-center text-rose-600 shrink-0"><AlertTriangle className="w-4 h-4" /></div>
+              <div className="max-w-[88%] bg-rose-50 border border-rose-200 text-rose-700 rounded-2xl rounded-bl-sm px-3 py-2 text-[13px] relative">
+                <button onClick={() => deleteTurn(t.id)} title="Xóa thông báo này"
+                  className="absolute -top-1 right-1 opacity-0 group-hover:opacity-100 transition text-rose-300 hover:text-rose-500"><X className="w-3.5 h-3.5" /></button>
                 <span className="whitespace-pre-wrap break-words">{t.text}</span>
               </div>
             </div>
@@ -1894,15 +2012,43 @@ function FixTestTab({
                     </>
                   );
                 })()}
-                {t.result.sampleNote && <p className="text-[11px] text-amber-600 italic">{t.result.sampleNote}</p>}
-                <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-400">
-                  {t.result.detectedIntent && <span>intent: <b className="text-violet-600">{t.result.detectedIntent}</b></span>}
-                  <span>{t.result.responseTimeMs}ms</span>
-                  {t.result.overrideApplied && <span className="text-emerald-600 font-medium">✓ Ảnh do admin dạy</span>}
-                  {t.result.responseMode === "exact_reply" && <span className="text-emerald-600 font-medium">✓ Nói y chang câu admin</span>}
-                  {t.result.responseMode === "learn_from_this" && <span className="text-sky-600 font-medium">✓ AI học theo câu admin</span>}
-                  {t.result.escalated && <span className="text-rose-600 font-medium">⚠ Sẽ chuyển người thật ({t.result.escalationReason})</span>}
-                </div>
+                {/* Dòng gọn dưới câu trả lời: chỉ cảnh báo quan trọng + 2 nút nhỏ. Debug đầy đủ nằm trong "Chi tiết".
+                    (sampleNote / intent / ms / validator PASS / fallback… đều chuyển hết vào TraceDetailPanel) */}
+                {(() => {
+                  const open = techMode || !!detailOpen[t.id];
+                  const warn = traceNeedsCheck(t.result.trace);
+                  return (
+                    <>
+                      <div className="flex flex-wrap items-center gap-2.5">
+                        {t.result.escalated && (
+                          <span className="text-[11px] font-medium text-rose-600 flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3" /> Sẽ chuyển người thật{t.result.escalationReason ? ` (${t.result.escalationReason})` : ""}
+                          </span>
+                        )}
+                        {warn && !open && (
+                          <button onClick={() => setDetailOpen((m) => ({ ...m, [t.id]: true }))}
+                            title="Validator chặn / lệch dịch vụ / phải dùng câu an toàn — bấm xem nguyên nhân"
+                            className="text-[11px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-full px-2 py-0.5 hover:bg-amber-100">
+                            ⚠ Cần kiểm tra
+                          </button>
+                        )}
+                        {!techMode && (
+                          <button onClick={() => setDetailOpen((m) => ({ ...m, [t.id]: !m[t.id] }))}
+                            className="text-[11px] text-gray-400 hover:text-violet-600 flex items-center gap-1">
+                            🔍 {open ? "Thu gọn" : "Chi tiết"}
+                          </button>
+                        )}
+                        {!t.preview && !t.fixed && fixingId !== t.id && (
+                          <button onClick={() => setFixingId(t.id)}
+                            className="text-[11px] text-gray-400 hover:text-rose-600 flex items-center gap-1">
+                            <AlertTriangle className="w-3 h-3" /> Báo lỗi
+                          </button>
+                        )}
+                      </div>
+                      {open && <TraceDetailPanel result={t.result} />}
+                    </>
+                  );
+                })()}
                 {/* Báo lỗi / sửa phản hồi này (text & ảnh). Lượt XEM TRƯỚC thì không hiện (chỉ để xem). */}
                 {/* Mở panel sửa được kiểm TRƯỚC → câu đã dạy rồi vẫn bấm "Sửa lại" để dạy đè được. */}
                 {!t.preview && (fixingId === t.id ? (
@@ -1916,11 +2062,7 @@ function FixTestTab({
                       <Pencil className="w-3.5 h-3.5" /> Sửa lại
                     </button>
                   </div>
-                ) : (
-                  <button onClick={() => setFixingId(t.id)} className="flex items-center gap-1.5 text-[12px] text-rose-600 border border-rose-200 px-2 py-1 rounded-lg hover:bg-rose-50">
-                    <AlertTriangle className="w-3.5 h-3.5" /> Báo lỗi / Sửa phản hồi này
-                  </button>
-                ))}
+                ) : null)}
               </div>
             </div>
           ))}

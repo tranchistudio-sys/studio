@@ -12,7 +12,7 @@ import {
   Camera, Palette, Layers, Banknote, Star, TrendingDown, User, Timer, Funnel, FlaskConical,
   Volume2, VolumeX, CheckCheck,
   Images, DollarSign, Tag, Trash2, Globe, Home, ExternalLink, Heart, LayoutTemplate, Lightbulb,
-  SlidersHorizontal, Activity, RefreshCw, Share2, ShieldAlert, Brain
+  SlidersHorizontal, Activity, RefreshCw, Share2, ShieldAlert, Brain, NotebookPen
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useStaffAuth, type SimulateRole } from "@/contexts/StaffAuthContext";
@@ -72,6 +72,7 @@ const FACEBOOK_NAV = [
   // ⚙️ Mở toàn bộ nhóm Facebook & Sale cho NHÂN VIÊN (quyết định của chủ studio). Vẫn cần đăng nhập.
   { href: "/claude-sale-settings", label: "Lulu Sale Settings", icon: SlidersHorizontal, adminOnly: false },
   { href: "/lulu-brain-lab",       label: "Lulu Brain Lab",     icon: Brain,             adminOnly: false },
+  { href: "/lulu-sale-scenarios",  label: "Kịch bản Lulu",      icon: NotebookPen,       adminOnly: false },
   { href: "/claude-sale-monitor",  label: "Lulu Sale Monitor",  icon: Activity,          adminOnly: false },
   { href: "/lulu-human-review",    label: "Câu hỏi lạ cần xử lý", icon: ShieldAlert,     adminOnly: false },
   { href: "/claude-sale-reengage", label: "Khách cần chăm lại", icon: RefreshCw,         adminOnly: false },

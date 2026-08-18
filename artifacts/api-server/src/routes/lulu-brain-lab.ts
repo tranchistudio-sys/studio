@@ -3,7 +3,7 @@ import { pool } from "@workspace/db";
 import { verifyToken } from "./auth";
 import { callChat, resolveTestProviderOverride } from "../lib/ai-orchestrator";
 import { DEFAULT_BRAIN_RULES } from "../lib/claude-sale";
-import { simulateReply } from "../lib/sale-brain-runner";
+import { simulateReply, isBrainStructuredEnabled } from "../lib/sale-brain-runner";
 import {
   ensureBrainLabTables, getActiveVersion, getVersion, listVersions, getOpenDraftVersion,
   createDraftVersion, updateDraftVersion, rejectVersion, rejectOtherDrafts, applyDraftVersion, rollbackToVersion,
@@ -514,8 +514,13 @@ router.post("/lulu-brain/test", async (req, res) => {
     const message = (b.message ?? "").trim();
     const hasImage = !!(b.imageBase64 ?? "").trim();
     if (!message && !hasImage) return res.status(400).json({ error: "Thiếu nội dung tin nhắn hoặc ảnh" });
-    if (!(process.env.ANTHROPIC_API_KEY ?? "").trim()) {
-      return res.status(400).json({ error: "Chưa cấu hình ANTHROPIC_API_KEY trong .env" });
+    // Sân test chạy được với ANTHROPIC_API_KEY HOẶC ShopAIKey test-only (#144) — trước đây
+    // gate chỉ nhìn ANTHROPIC nên có ShopAIKey vẫn bị chặn 400. Pipeline structured
+    // (LULU_BRAIN_STRUCTURED_ENABLED=1) chạy được KHÔNG cần key (stitched fallback).
+    if (!(process.env.ANTHROPIC_API_KEY ?? "").trim() && !resolveTestProviderOverride() && !isBrainStructuredEnabled()) {
+      return res.status(400).json({
+        error: "Chưa cấu hình AI key cho sân test — dán ANTHROPIC_API_KEY, hoặc ShopAIKey test-only (LULU_TEST_PROVIDER=shopaikey + SHOPAIKEY_API_KEY) vào .env rồi khởi động lại server.",
+      });
     }
 
     const prior = Array.isArray(b.messages)
@@ -542,8 +547,8 @@ router.post("/lulu-brain/test", async (req, res) => {
     const common = { message, prior, imageBase64: b.imageBase64, imageMediaType: b.imageMediaType, providerOverride: resolveTestProviderOverride() };
     // Chạy song song: bản nháp (nếu có) + bản đang chạy thật (để so sánh — TAB 4).
     const [draft, active] = await Promise.all([
-      draftRules != null ? simulateReply({ ...common, brainRules: draftRules, imageOverrides: draftOverrides }) : Promise.resolve(null),
-      b.compareWithActive !== false ? simulateReply({ ...common, brainRules: null, imageOverrides: activeOverrides }) : Promise.resolve(null),
+      draftRules != null ? simulateReply({ ...common, brainRules: draftRules, imageOverrides: draftOverrides, brainVersionLabel: `bản nháp #${draftVersionId}` }) : Promise.resolve(null),
+      b.compareWithActive !== false ? simulateReply({ ...common, brainRules: null, imageOverrides: activeOverrides, brainVersionLabel: "đang chạy thật" }) : Promise.resolve(null),
     ]);
     res.json({ draft, active, draftVersionId });
   } catch (err) {

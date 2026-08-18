@@ -145,13 +145,20 @@ const RESET_PHRASES = [
 // LƯU Ý token (bài học cùng lớp với INTENT_SIGNALS dòng 44): KHÔNG để "co dau"/"chu re"
 // trần — sau bỏ dấu chúng trùng "có đâu"/"chứ rẻ" ("Dạ không có đâu ạ" bị bắt oan).
 // Chỉ giữ cụm ghép "co dau chu re".
+// Từ đặc trưng MẠNH của nhóm cưới — dùng bổ sung cho các intent NGOÀI cưới
+// (bug Beauty: reply nhiễm "gói cưới/váy cưới/album cưới" mà list cũ không bắt được).
+// KHÔNG đưa "ao dai" (đa dịch vụ: gia đình Tết, kỷ yếu... dễ chặn oan).
+const WEDDING_MARKERS = ["chup cuoi", "goi cuoi", "vay cuoi", "album cuoi", "tiec cuoi", "phong su cuoi", "chup cong", "cong cuoi"];
+
+// "chup gia dinh" (cụm DỊCH VỤ) thay vì "gia dinh" trần — "bàn với gia đình/hỏi ý gia đình"
+// là câu sale bình thường, không phải trôi sang dịch vụ Chụp gia đình (fix false-positive S2).
 const OFF_INTENT_WORDS: Record<KnownIntent, string[]> = {
-  wedding_gate: ["beauty", "gia dinh", "bau", "san pham", "doanh nhan"],
-  wedding: ["beauty", "gia dinh", "bau", "san pham", "doanh nhan"],
-  beauty: ["chup cuoi", "co dau chu re", "gia dinh", "bau", "thue vay"],
-  rental: ["beauty", "gia dinh", "bau", "chup cuoi", "san pham"],
-  maternity: ["beauty", "chup cuoi", "gia dinh", "thue vay", "san pham"],
-  family: ["beauty", "chup cuoi", "bau", "thue vay", "san pham"],
+  wedding_gate: ["beauty", "chup gia dinh", "bau", "san pham", "doanh nhan"],
+  wedding: ["beauty", "chup gia dinh", "bau", "san pham", "doanh nhan"],
+  beauty: [...WEDDING_MARKERS, "co dau chu re", "chup gia dinh", "bau", "thue vay"],
+  rental: ["beauty", "chup gia dinh", "bau", "chup cuoi", "san pham"],
+  maternity: [...WEDDING_MARKERS, "beauty", "chup gia dinh", "thue vay", "san pham"],
+  family: [...WEDDING_MARKERS, "beauty", "bau", "thue vay", "san pham"],
 };
 
 /**

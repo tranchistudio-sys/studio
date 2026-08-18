@@ -3,7 +3,22 @@ import { type ClaudeProviderOverride } from "./ai-orchestrator";
 import { formatLuluHumanChatMessages, splitExactReplyMessages, type LuluChatChunk } from "./sale-human-chat";
 import {
   getSaleContext, resolvePriceImagesByCodes, wantsNewConcept, getPhotoIdeasBlock,
+  auditPackages, pkgDiscountCfg, groupDiscountCfg,
 } from "./sale-context";
+import { resolveDiscount } from "./pricing-discount";
+import { simulateThreadStateFromHistory, buildThreadStateBlock, type ThreadState } from "./sale-thread-state";
+import { loadActiveScenarioDefs } from "./sale-scenario-store";
+import { resolveScenario, buildScenarioGuidanceBlock, type ScenarioResolveResult } from "./sale-scenario-resolver";
+import { getGoldenExamples, buildGoldenExamplesBlock, type GoldenExample } from "./sale-script-library";
+import { resolveGroupNameForService } from "./sale-service-map";
+import { slugifyGroup } from "./sale-scenario-steps";
+import { getServicePricePreview } from "./sale-pricing";
+import { validateSaleReply, extractMoneyVnd, INTENT_TO_KNOWN, type CatalogItem } from "./sale-workflow-validator";
+import { finalizeSaleReply, type PipelineValidator, type PipelineFacts } from "./sale-pipeline";
+import { formatVnd } from "./sale-reply-stitch";
+import { naturalizePackageContent, checkDatabaseVoice } from "./sale-content-naturalizer";
+import { detectServiceDrift } from "./sale-conversation-discipline";
+import { computeServiceTrail } from "./sale-service-context";
 import { classifyCustomerImageFromData, buildImageRoutingBlock } from "./sale-vision";
 import { selectSampleImages, extractRecentSampleUrls, SAMPLES_EXHAUSTED_NOTE } from "./sale-samples";
 import { applyImageOverrides, matchResponseOverride, type ImageOverride } from "./sale-image-overrides";
@@ -49,6 +64,41 @@ export type SimulateInput = {
   imageOverrides?: ImageOverride[] | null;
   /** TEST-ONLY: override provider Claude (ShopAIKey) cho Brain Lab. undefined = Anthropic như cũ. */
   providerOverride?: ClaudeProviderOverride;
+  /** Nhãn version não đang test (hiện trong trace) — vd "nháp #12" / "đang chạy thật". */
+  brainVersionLabel?: string;
+};
+
+/** Cờ pipeline structured (mandate "nối dây điện"): state + scenario + golden + validator trong Brain Lab test. */
+export function isBrainStructuredEnabled(): boolean {
+  return (process.env.LULU_BRAIN_STRUCTURED_ENABLED ?? "").trim() === "1";
+}
+
+/** Trace X-quang 1 lượt pipeline — additive, FE cũ bỏ qua field này vẫn chạy. */
+export type PipelineTrace = {
+  structured: boolean;
+  service: string | null;          // serviceIntent từ state (ACTIVE SERVICE)
+  serviceGroup: string | null;     // tên nhóm bảng giá đã map
+  /** Khách vừa ĐỔI dịch vụ ở lượt này? "A → B" hoặc null. */
+  serviceSwitch: string | null;
+  stage: string;
+  scenarioWinner: string | null;
+  scenarioName: string | null;
+  action: string;
+  goldenCount: number;
+  /** Nguồn script golden hàng đầu: đúng dịch vụ / thẻ chung / chào hỏi global. */
+  scriptSource: "service" | "scenario" | "greeting" | null;
+  crmPriceText: string | null;     // giá gói đại diện realtime (nguồn Dịch vụ & Bảng giá)
+  priceSource: string;             // luôn "Dịch vụ & Bảng giá"
+  brainVersion: string;
+  provider: string;
+  fallbackUsed: "none" | "stitched" | "intent" | "safe";
+  regenerated: boolean;
+  validator: PipelineValidator;
+  /** SERVICE CONSISTENCY: lời CUỐI có còn dính dịch vụ khác không (double-check sau gate). */
+  serviceConsistency: "PASS" | "FAIL" | "N/A";
+  /** Lý do lần chặn cuối trước khi rơi fallback (null = không bị chặn). */
+  blockedReason: string | null;
+  stateBefore: unknown;
 };
 
 export type SimulateResult = {
@@ -73,6 +123,8 @@ export type SimulateResult = {
   imageIntent: Awaited<ReturnType<typeof classifyCustomerImageFromData>> | null;
   /** true nếu ảnh mẫu lượt này được THAY bằng ảnh admin đã dạy (override khớp). */
   overrideApplied: boolean;
+  /** X-quang pipeline (chỉ khi LULU_BRAIN_STRUCTURED_ENABLED=1) — FE cũ bỏ qua vẫn chạy. */
+  trace?: PipelineTrace | null;
   /**
    * Cách lượt này dùng câu sửa tay của admin (nếu khớp override có ghim text):
    *  - "exact_reply": câu trả lời LÀ y chang câu admin (không qua AI viết lại).
@@ -84,7 +136,14 @@ export type SimulateResult = {
 
 export async function simulateReply(input: SimulateInput): Promise<SimulateResult> {
   const apiKey = (process.env.ANTHROPIC_API_KEY ?? "").trim();
-  if (!apiKey) throw new Error("Chưa cấu hình ANTHROPIC_API_KEY trong .env");
+  // Có ÍT NHẤT 1 provider LLM khả dụng? (Anthropic / ShopAIKey override / cổng OpenAI fallback)
+  const hasLlm = !!apiKey || !!input.providerOverride
+    || !!(process.env.OPENAI_API_KEY ?? "").trim()
+    || !!(process.env.AI_INTEGRATIONS_OPENAI_API_KEY ?? "").trim();
+  const structured = isBrainStructuredEnabled();
+  // Structured mode chạy được KHÔNG cần LLM (stitched fallback deterministic);
+  // legacy mode giữ gate cũ nhưng nhận cả ShopAIKey (fix bug: trước chỉ nhìn ANTHROPIC).
+  if (!hasLlm && !structured) throw new Error("Chưa cấu hình AI key (ANTHROPIC_API_KEY hoặc ShopAIKey) trong .env");
 
   const message = (input.message ?? "").trim();
   const imageBase64 = (input.imageBase64 ?? "").trim();
@@ -137,24 +196,183 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
     console.log("[SaleBrain] responseMode=learn_from_this (chèn câu mẫu admin vào prompt)");
   }
 
-  const reply = await askClaudeForReply({
-    apiKey,
-    model,
-    customerMessage: incomingText,
-    customerName: "Khách test",
-    history,
-    context,
-    styleGuide,
-    settings,
-    scheduleContext,
-    brainRules: input.brainRules ?? null,
-    providerOverride: input.providerOverride,
-  });
+  // ── PIPELINE STRUCTURED (cờ LULU_BRAIN_STRUCTURED_ENABLED) — "nối dây điện" ──
+  // State → Scenario (đúng dịch vụ) → Golden service-first → Facts CRM realtime →
+  // rồi mới tới LLM; validator + fallback ở tầng finalize bên dưới. Fail-open toàn khối.
+  type PipelineCtx = {
+    state: ThreadState; resolve: ScenarioResolveResult; golden: GoldenExample[];
+    facts: PipelineFacts; catalog?: CatalogItem[]; groupName: string | null; crmPriceText: string | null;
+  };
+  let pipeline: PipelineCtx | null = null;
+  if (structured) {
+    try {
+      const state = simulateThreadStateFromHistory(history);
+      const defs = await loadActiveScenarioDefs();
+      const resolve = resolveScenario({
+        customerMessage: incomingText, threadState: state,
+        isFirstContact: prior.length === 0, scenarios: defs,
+      });
+      const stateBlock = buildThreadStateBlock(state);
+      if (stateBlock) context += `\n\n${stateBlock}`;
+      const guidanceBlock = buildScenarioGuidanceBlock(resolve);
+      if (guidanceBlock) context += `\n\n${guidanceBlock}`;
+      let serviceSlug: string | null = null;
+      let groupName: string | null = null;
+      if (state.serviceIntent) {
+        try {
+          groupName = await resolveGroupNameForService(state.serviceIntent);
+          if (groupName) serviceSlug = slugifyGroup(groupName);
+        } catch { /* fail-soft */ }
+      }
+      // STEP-HINT: action Router → bước tương ứng trong cây (chống bốc row lệch nghĩa khi tie).
+      const ACTION_STEP_HINT: Record<string, string> = {
+        QUOTE_REFERENCE: "bao-gia", QUOTE_EXACT: "bao-gia", SEND_PRICE: "bao-gia",
+        HANDLE_OBJECTION: "xu-ly-phan-van",
+        ASK_FOR_BOOKING: "chot", ASK_PHONE: "chot",
+        ASK_DATE: "tim-hieu", IDENTIFY_SERVICE: "tim-hieu", ASK_SERVICE: "tim-hieu", GREET: "tim-hieu",
+        SEND_SAMPLE: "tu-van", ANSWER_FAQ: "tu-van",
+        ESCALATE_HUMAN: "sau-chot",
+      };
+      // Khách ĐANG HỎI GIÁ → hint bao-gia BẤT KỂ action (ASK_DATE do price-gating vẫn phải
+      // trả lời bằng row báo-giá "giá + hỏi ngày", không phải row tìm-hiểu lệch nghĩa).
+      const asksPrice = /giá|gia sao|bao nhiêu|bao nhieu|nhiu|nhieu tien|bảng giá|bang gia|price/i
+        .test(incomingText.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, ""));
+      const stepHint = asksPrice ? "bao-gia" : (ACTION_STEP_HINT[resolve.decision.action] ?? null);
+      const golden = await getGoldenExamples(resolve.winner?.key ?? null, incomingText, 4, serviceSlug, stepHint);
+      const goldenBlock = buildGoldenExamplesBlock(golden);
+      if (goldenBlock) context += `\n\n${goldenBlock}`;
+      let facts: PipelineFacts = { crmPriceVnd: null, promoActive: false };
+      let crmPriceText: string | null = null;
+      if (state.serviceIntent) {
+        try {
+          const groups = await getServicePricePreview(state.serviceIntent);
+          const pkgs = groups.flatMap((g) => g.packages);
+          if (pkgs.length > 0) {
+            // FACT ĐÚNG GÓI: khách nhắc TÊN/MÃ gói ("premium", "luxury"...) → dùng ĐÚNG gói đó,
+            // không mặc định gói đầu (bug: hỏi Premium mà báo giá Basic).
+            const normVi = (s: string) => (s ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/g, "d");
+            const msgN = normVi(incomingText);
+            const mentioned = pkgs.find((p) => {
+              const code = normVi(p.code ?? "");
+              if (code && code.length >= 4 && msgN.includes(code)) return true;
+              return normVi(p.name ?? "").split(/[^a-z0-9]+/).filter((w) => w.length >= 5).some((w) => msgN.includes(w));
+            });
+            const rep = mentioned ?? pkgs[0];
+            const promoPkg = pkgs.find((p) => p.promoActive);
+            facts = {
+              crmPriceVnd: rep.effectivePrice, promoActive: pkgs.some((p) => p.promoActive),
+              packageName: rep.name || null,
+              // FACT SELECTION (chống database voice): mô tả gói CRM thô → cụm tự nhiên ngắn.
+              // Raw description chỉ để LLM HIỂU (đã nằm trong getSaleContext), KHÔNG chèn vào lời.
+              packageContent: naturalizePackageContent(rep.description) || null,
+              promotion: promoPkg
+                ? `${promoPkg.promoName || "đang có ưu đãi"}${promoPkg.savedAmount ? ` (tiết kiệm ${formatVnd(promoPkg.savedAmount)})` : ""}`
+                : null,
+              serviceName: groupName,
+            };
+            crmPriceText = formatVnd(rep.effectivePrice);
+          } else {
+            facts = { crmPriceVnd: null, promoActive: false, serviceName: groupName };
+          }
+        } catch { /* fail-soft */ }
+      }
+      let catalog: CatalogItem[] | undefined;
+      try {
+        const { kept } = await auditPackages();
+        catalog = kept.map((r) => {
+          const d = resolveDiscount({ basePrice: r.price, pkg: pkgDiscountCfg(r), group: groupDiscountCfg(r) });
+          return {
+            code: (r.code ?? "").trim().toUpperCase(), name: r.pkg_name,
+            price: Math.round(Number(r.price)),
+            finalPrice: d.discountApplied ? Math.round(Number(d.finalPrice)) : null,
+          };
+        });
+      } catch { catalog = undefined; }
+      pipeline = { state, resolve, golden, facts, catalog, groupName, crmPriceText };
+    } catch (e) {
+      console.error("[BrainRunner] structured enrich lỗi (fail-open về legacy):", String(e).slice(0, 160));
+      pipeline = null;
+    }
+  }
+
+  const providerLabel = input.providerOverride?.label ?? (apiKey ? "anthropic" : "openai");
+  let reply: Awaited<ReturnType<typeof askClaudeForReply>> | null = null;
+  let fin: Awaited<ReturnType<typeof finalizeSaleReply>> | null = null;
+
+  if (pipeline) {
+    const p = pipeline;
+    // Số tiền nằm TRONG FACT CRM (mô tả gói có phụ thu "+200.000đ", text ưu đãi…) là dữ liệu
+    // THẬT từ Bảng giá → hợp lệ. Thêm vào catalog để validator không chặn oan câu nói đúng FACT.
+    const factAmounts = [
+      ...(p.facts.crmPriceVnd != null ? [p.facts.crmPriceVnd] : []),
+      ...extractMoneyVnd(p.facts.packageContent ?? ""),
+      ...extractMoneyVnd(p.facts.promotion ?? ""),
+    ];
+    const factCatalog: CatalogItem[] = factAmounts.map((v, i) => ({ code: `FACT-${i}`, name: "CRM fact", price: v, finalPrice: null }));
+    // Đoạn FACT CRM chèn verbatim (nội dung gói/ưu đãi của CHÍNH dịch vụ đang khoá) không được
+    // tính là "trôi dịch vụ"/từ khoá lạ — gột bỏ trước khi validator soi (số tiền đã có factCatalog).
+    // Match linh hoạt khoảng trắng: stitch có chuẩn hoá space nên KHÔNG thể split verbatim.
+    const factTexts = [p.facts.packageContent, p.facts.promotion].filter((s): s is string => !!s && s.length >= 12);
+    const flexPattern = (s: string) => s.trim().split(/\s+/)
+      .map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("[\\s]+");
+    const scrubFacts = (r: string) => factTexts.reduce((acc, s) => {
+      try { return acc.replace(new RegExp(flexPattern(s), "g"), " (thông tin gói theo bảng giá) "); }
+      catch { return acc; }
+    }, r);
+    const validate = (r: string): PipelineValidator => {
+      try {
+        return validateSaleReply({
+          threadState: p.state, decision: p.resolve.decision, reply: scrubFacts(r),
+          catalog: [...(p.catalog ?? []), ...factCatalog],
+          catalogAuthoritative: true, promoActive: p.facts.promoActive,
+        }) as PipelineValidator;
+      } catch { return { verdict: "PASS" }; }
+    };
+    const callLlm = hasLlm
+      ? async (regenFeedback: string | null) => {
+          const ctx = regenFeedback
+            ? `${context}\n\nLƯU Ý TÁI SINH — câu trước bị lớp an toàn chặn (${regenFeedback}). Viết lại câu trả lời tuân thủ ĐÚNG bảng giá CRM và luật an toàn, không tự giảm giá/bịa ưu đãi.`
+            : context;
+          const r = await askClaudeForReply({
+            apiKey, model, customerMessage: incomingText, customerName: "Khách test", history,
+            context: ctx, styleGuide, settings, scheduleContext,
+            brainRules: input.brainRules ?? null, providerOverride: input.providerOverride,
+          });
+          reply = r;
+          return { text: r.raw || null, provider: providerLabel, error: !r.raw ? "AI không trả nội dung" : null };
+        }
+      : null;
+    // Bot đã từng xác nhận dịch vụ này trong hội thoại → không lặp câu "bên em có X" nữa.
+    const alreadyConfirmedService = !!(p.groupName && prior.some(
+      (h) => h.direction === "outgoing" && h.message.toLowerCase().includes((p.groupName as string).toLowerCase()),
+    ));
+    fin = await finalizeSaleReply({
+      callLlm, golden: p.golden, facts: p.facts, validate,
+      voiceCheck: checkDatabaseVoice, action: p.resolve.decision.action,
+      alreadyConfirmedService,
+    });
+    // Fallback (stitched/safe) → text KHÔNG phải của LLM: bỏ marker/ảnh của bản reply bị chặn.
+    if (fin.fallbackUsed !== "none") reply = null;
+  } else {
+    reply = await askClaudeForReply({
+      apiKey,
+      model,
+      customerMessage: incomingText,
+      customerName: "Khách test",
+      history,
+      context,
+      styleGuide,
+      settings,
+      scheduleContext,
+      brainRules: input.brainRules ?? null,
+      providerOverride: input.providerOverride,
+    });
+  }
   const responseTimeMs = Date.now() - startedAt;
 
   let priceImages: string[] = [];
   try {
-    const hits = await resolvePriceImagesByCodes(reply.priceImageCodes ?? []);
+    const hits = await resolvePriceImagesByCodes(reply?.priceImageCodes ?? []);
     priceImages = hits.map((h) => h.objectPath);
   } catch { /* không chặn câu trả lời nếu lỗi ảnh */ }
 
@@ -168,8 +386,8 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
     const lastBotText = [...prior].reverse().find((h) => h.direction === "outgoing")?.message ?? null;
     const excludeUrls = extractRecentSampleUrls(prior);
     const sel = await selectSampleImages({
-      sampleRequested: reply.sampleRequested,
-      sampleIntents: reply.sampleIntents,
+      sampleRequested: reply?.sampleRequested ?? false,
+      sampleIntents: reply?.sampleIntents ?? [],
       messageText: incomingText,
       contextText,
       lastBotText,
@@ -181,7 +399,7 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
     // ÁP OVERRIDE "ADMIN DẠY": nếu khớp (intent + tone/gu) → thay ảnh mẫu bằng ảnh admin chọn.
     const overrides = input.imageOverrides ?? [];
     const detectedIntentForOverride =
-      (reply.sampleIntents && reply.sampleIntents.length ? reply.sampleIntents[0] : null)
+      (reply?.sampleIntents && reply.sampleIntents.length ? reply.sampleIntents[0] : null)
       || (imageIntent?.service_intent ?? null);
     const applied = applyImageOverrides(sel, overrides, {
       detectedIntent: detectedIntentForOverride,
@@ -205,16 +423,23 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
   } catch (e) { console.error("[BrainRunner] sampleImages lỗi:", String(e).slice(0, 160)); }
 
   const escalationReason =
-    reply.escalation
+    reply?.escalation
     || detectEscalation(incomingText)
-    || imageEscalationReason(imageIntent, settings.lowConfidenceThreshold);
+    || imageEscalationReason(imageIntent, settings.lowConfidenceThreshold)
+    || (fin?.needsHuman ? "pipeline_an_toan_chuyen_nguoi" : null);
   const wouldEscalate = !!escalationReason && settings.humanReviewEnabled;
 
   // EXACT REPLY: admin yêu cầu Lulu nói Y CHANG câu đã ghim cho tình huống này → dùng đúng câu đó,
   // KHÔNG dùng text AI, KHÔNG escalate (admin đã cho câu chốt). Ảnh vẫn theo luồng ảnh ở trên.
-  const aiChunks: LuluChatChunk[] = reply.messageChunks.length > 0
-    ? reply.messageChunks
-    : (reply.raw ? [{ text: reply.raw, delayMs: 900 }] : [{ text: "(Lulu không trả về nội dung)", delayMs: 900 }]);
+  // Pipeline fallback (stitched/safe): text từ finalize — tách bubble theo đoạn.
+  const finText = fin && fin.fallbackUsed !== "none" ? (fin.replyText ?? "") : null;
+  const aiChunks: LuluChatChunk[] = finText
+    ? (splitExactReplyMessages(finText).length
+        ? splitExactReplyMessages(finText)
+        : [{ text: finText, delayMs: 900 }])
+    : (reply && reply.messageChunks.length > 0
+        ? reply.messageChunks
+        : (reply?.raw ? [{ text: reply.raw, delayMs: 900 }] : [{ text: "(Lulu không trả về nội dung)", delayMs: 900 }]));
   // GIỮ NGUYÊN câu admin gõ (KHÔNG .trim() để khỏi mất xuống dòng/đoạn) — chỉ cần có nội dung.
   const exactPinned = respOverride?.responseMode === "exact_reply" && (respOverride.editedText ?? "").trim()
     ? (respOverride.editedText as string) : null;
@@ -231,18 +456,59 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
 
   const detectedIntent =
     imageIntent?.service_intent
-    || (reply.sampleIntents && reply.sampleIntents.length ? reply.sampleIntents[0] : null)
+    || (reply?.sampleIntents && reply.sampleIntents.length ? reply.sampleIntents[0] : null)
     || (sampleImages[0]?.serviceIntent ?? null);
+
+  // X-quang pipeline — chỉ khi structured chạy được (fail-open → null, FE cũ bỏ qua).
+  let trace: PipelineTrace | null = null;
+  if (pipeline && fin) {
+    // SERVICE SWITCH: khách đổi dịch vụ ở lượt này? (đọc từ trail hội thoại)
+    let serviceSwitch: string | null = null;
+    try {
+      const trail = computeServiceTrail(history);
+      if (trail?.switched && trail.previous && trail.current) serviceSwitch = `${trail.previous} → ${trail.current}`;
+    } catch { /* trace-only */ }
+    // SERVICE CONSISTENCY: double-check lời CUỐI không dính dịch vụ khác (sau mọi gate).
+    let serviceConsistency: PipelineTrace["serviceConsistency"] = "N/A";
+    try {
+      const known = pipeline.state.serviceIntent ? INTENT_TO_KNOWN[pipeline.state.serviceIntent] ?? null : null;
+      if (known && fin.replyText) {
+        serviceConsistency = detectServiceDrift(fin.replyText, known).length === 0 ? "PASS" : "FAIL";
+      }
+    } catch { /* trace-only */ }
+    trace = {
+      structured: true,
+      service: pipeline.state.serviceIntent ?? null,
+      serviceGroup: pipeline.groupName,
+      serviceSwitch,
+      stage: pipeline.resolve.decision.stage,
+      scenarioWinner: pipeline.resolve.winner?.key ?? null,
+      scenarioName: pipeline.resolve.winner?.name ?? null,
+      action: pipeline.resolve.decision.action,
+      goldenCount: pipeline.golden.length,
+      scriptSource: pipeline.golden[0]?.source ?? null,
+      crmPriceText: pipeline.crmPriceText,
+      priceSource: "Dịch vụ & Bảng giá",
+      brainVersion: input.brainVersionLabel ?? "đang chạy thật",
+      provider: fin.provider,
+      fallbackUsed: fin.fallbackUsed,
+      regenerated: fin.regenerated,
+      validator: fin.validator,
+      serviceConsistency,
+      blockedReason: fin.blockedReason,
+      stateBefore: pipeline.state,
+    };
+  }
 
   return {
     reply: finalReply,
     chunks: finalChunks,
-    raw: reply.raw,
+    raw: finText ?? reply?.raw ?? "",
     model,
     responseTimeMs,
     replyDelayMs: computeReplyDelayMs(incomingText, settings),
-    escalation: exactPinned ? null : reply.escalation,
-    learnedName: reply.learnedName,
+    escalation: exactPinned ? null : (reply?.escalation ?? null),
+    learnedName: reply?.learnedName ?? null,
     escalated: finalEscalated,
     escalationReason: exactPinned ? null : escalationReason,
     holdMessage: finalEscalated ? HOLD_MESSAGE : null,
@@ -255,5 +521,6 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
     imageIntent,
     overrideApplied,
     responseMode,
+    trace,
   };
 }

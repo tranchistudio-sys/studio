@@ -29,6 +29,18 @@ export type ValidatorInput = {
   reply: string;
   /** Catalog để đối chiếu giá — không truyền thì BỎ QUA check giá (không chặn oan). */
   catalog?: CatalogItem[];
+  /**
+   * CRM/DB là NGUỒN SỰ THẬT bắt buộc cho câu này (STATIC-vs-DYNAMIC, luật chủ mục J):
+   * true → mọi số tiền PHẢI verify được với `catalog`. Nếu reply có tiền mà catalog rỗng/thiếu
+   * ⇒ BLOCK (KHÔNG fail-open). Mặc định undefined = hành vi cũ (fail-open, không chặn oan).
+   */
+  catalogAuthoritative?: boolean;
+  /**
+   * Trạng thái KHUYẾN MÃI thật từ CRM tại thời điểm trả lời (mục D):
+   * false → CRM KHÔNG có ưu đãi active ⇒ reply tuyên bố "đang giảm/khuyến mãi/ưu đãi" bị BLOCK.
+   * true/undefined → không chặn theo promo (đúng/không rõ đều để qua, giá vẫn bị rule giá soi).
+   */
+  promoActive?: boolean;
 };
 
 export type ValidatorResult =
@@ -110,11 +122,26 @@ export function extractMoneyVnd(reply: string): number[] {
 const SELF_DISCOUNT_NORM_RE =
   /((em|ben em|ben minh|shop)\s*(chac\s*|se\s*)?(giam|bot|tang them|khuyen mai rieng)|bot cho (anh|chi|minh)|em bot\b|giam them cho|tang rieng|uu dai rieng cho|gia dac biet cho)/;
 const GIAM_CON_RE = /giam con\b/;
+// (Mục D) Tuyên bố ĐANG có ưu đãi/khuyến mãi — chỉ chặn khi CRM nói promoActive===false.
+// Bắt các cách nói khẳng định có chương trình giảm; loại trừ câu PHỦ ĐỊNH ("không/chưa/hết có ưu đãi").
+const PROMO_CLAIM_RE =
+  /(dang (co |ap dung )?(chuong trinh )?(khuyen mai|uu dai|giam gia|sale)|khuyen mai|uu dai|sale off|flash sale|dang giam|dang sale|giu (lai )?uu dai|co (chuong trinh )?(khuyen mai|uu dai))/;
+const PROMO_NEGATED_RE =
+  /(khong|khong con|chua|hien chua|het|hong|chang)\s*(con\s*)?(co\s*)?(chuong trinh\s*)?(khuyen mai|uu dai|giam|sale)/;
 // Lộ nội bộ: marker hệ thống / khối prompt — TUYỆT ĐỐI không được ra khách.
 const LEAK_INTERNAL_RE = /(<<|>>|TRẠNG THÁI KHÁCH|system prompt|instruction nội bộ|RÀNG BUỘC \(BẮT BUỘC)/i;
+// (V2) Chê đối thủ — check trên text đã bỏ dấu.
+const COMPETITOR_BASH_RE =
+  /(ben (kia|do|khac|x)\s*(thi\s*)?(te|xau|dom|kem|re tien|chup xau|khong dep|lua)|(cho|studio) (do|kia|khac) (te|xau|dom|kem|lua)|dung (chup|lam|dat) (o )?(ben|cho) (kia|do|khac))/;
+// (V2) Bot tự xác nhận cọc / thanh toán / đưa STK.
+const DEPOSIT_CONFIRM_RE =
+  /((em|ben em)?\s*(da |xin )?xac nhan (da )?(coc|dat coc|thanh toan|chuyen khoan)|(da )?nhan (duoc )?(tien )?coc|coc thanh cong|so tai khoan|\bstk\b)/;
+// (V2) Hứa chắc còn lịch — bot chỉ đọc lịch, không cam kết.
+const SCHEDULE_PROMISE_RE =
+  /((chac chan|dam bao|bao dam|100%|cam ket).{0,15}(con lich|con trong|giu duoc (lich|ngay)|trong lich)|ngay (do|nay) chac chan (con|trong))/;
 
-// Map ServiceIntent (thread state) → KnownIntent (detectServiceDrift).
-const INTENT_TO_KNOWN: Record<string, KnownIntent> = {
+// Map ServiceIntent (thread state) → KnownIntent (detectServiceDrift). Export cho pipeline trace.
+export const INTENT_TO_KNOWN: Record<string, KnownIntent> = {
   wedding_album: "wedding",
   wedding_party: "wedding",
   wedding_gate: "wedding_gate",
@@ -162,7 +189,9 @@ export function validateSaleReply(input: ValidatorInput): ValidatorResult {
     );
   }
 
-  // 4. Báo giá không khớp catalog (chỉ khi có catalog — fail-open, không chặn oan).
+  // 4. Báo giá không khớp CRM. STATIC-vs-DYNAMIC (luật chủ): con số giá là DYNAMIC FACT,
+  //    chỉ CRM mới quyết. Kịch bản/golden KHÔNG override được.
+  const moneyInReply = extractMoneyVnd(reply);
   if (input.catalog && input.catalog.length > 0) {
     const validPrices = new Set<number>();
     for (const c of input.catalog) {
@@ -174,16 +203,35 @@ export function validateSaleReply(input: ValidatorInput): ValidatorResult {
         if (Number.isFinite(c.price) && c.price > c.finalPrice) validPrices.add(c.price - c.finalPrice);
       }
     }
-    for (const amount of extractMoneyVnd(reply)) {
+    for (const amount of moneyInReply) {
       if (!validPrices.has(amount)) {
         return block(
           "price_mismatch",
-          `Reply nêu số tiền ${amount.toLocaleString("vi-VN")}đ không có trong catalog`,
-          "Tái sinh với bảng giá chèn lại; vẫn sai → escalate người thật, KHÔNG gửi giá sai",
+          `Reply nêu số tiền ${amount.toLocaleString("vi-VN")}đ không khớp bảng giá CRM hiện tại`,
+          "Tái sinh với bảng giá CRM chèn lại; vẫn sai → escalate người thật, KHÔNG gửi giá sai",
           "critical",
         );
       }
     }
+  } else if (input.catalogAuthoritative && moneyInReply.length > 0) {
+    // (Mục J) CRM là nguồn bắt buộc nhưng KHÔNG load được bảng giá để đối chiếu → KHÔNG fail-open.
+    return block(
+      "price_unverifiable",
+      `Reply có số tiền (${moneyInReply.map((a) => a.toLocaleString("vi-VN")).join(", ")}đ) nhưng không đối chiếu được với CRM`,
+      "Không gửi giá khi chưa đọc được bảng giá; escalate người thật hoặc tái sinh sau khi load được CRM",
+      "critical",
+    );
+  }
+
+  // 4b. (Mục D) Tuyên bố đang có KHUYẾN MÃI khi CRM KHÔNG có promo active → BLOCK.
+  //     Kịch bản cũ còn ghi "đang giảm" KHÔNG được lặp lại nếu CRM đã tắt ưu đãi.
+  if (input.promoActive === false && PROMO_CLAIM_RE.test(t) && !PROMO_NEGATED_RE.test(t)) {
+    return block(
+      "promo_not_active",
+      "Reply nói đang có ưu đãi/khuyến mãi nhưng CRM hiện KHÔNG có promo active",
+      "Bỏ mọi câu nói đang giảm/ưu đãi; báo đúng giá thường hiện tại từ CRM",
+      "critical",
+    );
   }
 
   // 5. Tự giảm giá / tự hứa ưu đãi. "giảm còn <số>" hợp lệ khi có catalog đối chiếu
@@ -210,12 +258,46 @@ export function validateSaleReply(input: ValidatorInput): ValidatorResult {
     );
   }
 
+  // 5c. (V2 Sales Brain) Chê/nói xấu đối thủ — mất uy tín studio, cấm tuyệt đối.
+  if (COMPETITOR_BASH_RE.test(t)) {
+    return block(
+      "competitor_bashing",
+      "Reply chê bai/nói xấu bên khác — chỉ được nêu điểm mạnh của mình",
+      "Tái sinh: bỏ mọi nhận xét về đối thủ, thay bằng khác biệt cụ thể của studio",
+      "major",
+    );
+  }
+
+  // 5d. (V2) Bot tự xác nhận cọc / đưa số tài khoản — việc tiền bạc là của người thật.
+  if (DEPOSIT_CONFIRM_RE.test(t)) {
+    return block(
+      "deposit_confirmed_by_bot",
+      "Reply tự xác nhận cọc/thanh toán hoặc đưa số tài khoản — bot không được đụng tiền",
+      "Thay bằng: xin ngày + SĐT rồi hẹn nhân viên xác nhận giữ chỗ; escalate",
+      "critical",
+    );
+  }
+
+  // 5e. (V2) Hứa CHẮC CHẮN còn lịch — bot chỉ đọc lịch, không có quyền cam kết.
+  if (SCHEDULE_PROMISE_RE.test(t)) {
+    return block(
+      "schedule_promised",
+      "Reply cam kết chắc chắn còn lịch/giữ được ngày — bot chỉ được nói 'em kiểm tra lịch giúp mình'",
+      "Tái sinh: đổi thành sẽ kiểm tra lịch và nhờ nhân viên xác nhận",
+      "major",
+    );
+  }
+
   // 6. Trôi dịch vụ (service drift) — nâng từ log-only thành CHẶN, NHƯNG chỉ khi ĐÃ khóa
   // nhu cầu và Router không chủ động yêu cầu hỏi/chào (GREET/ASK_SERVICE/IDENTIFY_SERVICE
   // có nhiệm vụ hỏi "mình muốn chụp gì" — không được chặn chính câu Router yêu cầu).
   const known = state.serviceIntent ? INTENT_TO_KNOWN[state.serviceIntent] ?? null : null;
+  // GREET/ASK_SERVICE: chưa khoá nhu cầu → miễn soi. IDENTIFY_SERVICE: khi serviceIntent ĐÃ BIẾT
+  // (khách vừa nói rõ dịch vụ) reply vẫn PHẢI đúng dịch vụ đó — bug Beauty bị nhiễm "gói cưới"
+  // lọt qua vì miễn trừ cũ; giờ chỉ miễn khi CHƯA biết nhu cầu.
   const driftExempt =
-    decision.action === "GREET" || decision.action === "ASK_SERVICE" || decision.action === "IDENTIFY_SERVICE";
+    decision.action === "GREET" || decision.action === "ASK_SERVICE"
+    || (decision.action === "IDENTIFY_SERVICE" && !known);
   const drift = known && !driftExempt ? detectServiceDrift(reply, known) : [];
   if (drift.length > 0) {
     return block(

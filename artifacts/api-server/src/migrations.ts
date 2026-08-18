@@ -4,6 +4,11 @@ import { ensureBrainLabTables } from "./lib/sale-brain-lab";
 import { ensureHumanReviewTable } from "./lib/sale-human-review";
 import { ensureSalePlaybookTable } from "./lib/sale-playbook";
 import { ensureThreadStateTable } from "./lib/sale-thread-state";
+import { ensureScenarioTables } from "./lib/sale-scenario-store";
+import { ensureScenarioTreeTable } from "./lib/sale-scenario-tree";
+import { ensureScriptTable } from "./lib/sale-script-library";
+import { ensureServiceMapTable, autoLinkServiceGroups, backfillScriptServiceKeys } from "./lib/sale-service-map";
+import { ensureUnknownQuestionsTable } from "./lib/sale-unknown-questions";
 
 async function runMigrationsUnlocked() {
   const client = await pool.connect();
@@ -1215,6 +1220,21 @@ Cọc 30% để giữ lịch. Thanh toán đủ trước ngày chụp 3 ngày.`,
     // lulu_thread_state: trí nhớ hội thoại Lulu (Đợt 2) — ensure từ ngày đầu để không
     // bao giờ rơi vào nhóm "bảng lazy chỉ có trên prod".
     await ensureThreadStateTable();
+    // lulu_sale_scenarios + versions + test_runs: Scenario Manager (thẻ kịch bản tình huống)
+    // — ensure từ ngày đầu, additive, seed 12 thẻ chỉ-khi-bảng-rỗng. Feature flag OFF:
+    // bảng tồn tại nhưng KHÔNG đụng luồng trả lời cho tới khi bật cờ.
+    await ensureScenarioTables();
+    // lulu_scenario_tree: lớp tổ chức cây kịch bản (additive, seed skeleton chỉ khi rỗng).
+    await ensureScenarioTreeTable();
+    // lulu_sale_script_examples: thư viện golden examples (Hỏi & Trả lời) — additive.
+    await ensureScriptTable();
+    // (Service-rooted 29/07) lulu_service_map: GỐC map dịch vụ↔nhóm giá (seed 7 dịch vụ khi rỗng);
+    // lulu_unknown_questions: hàng đợi "câu chưa có kịch bản". Đều additive, cờ OFF.
+    await ensureServiceMapTable();
+    await ensureUnknownQuestionsTable();
+    // Best-effort ghim group_name theo keyword + backfill service_key golden cũ (idempotent, fail-soft).
+    try { await autoLinkServiceGroups(); } catch { /* để lần sau thử lại */ }
+    try { await backfillScriptServiceKeys(); } catch { /* để lần sau thử lại */ }
     console.log("[migrations] lulu_* runtime-managed tables OK");
   } catch (err) {
     console.error("[migrations] lulu_* runtime-managed tables:", err);

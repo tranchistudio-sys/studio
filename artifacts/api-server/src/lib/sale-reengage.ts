@@ -1,4 +1,6 @@
 import { pool } from "@workspace/db";
+import { getThreadState } from "./sale-thread-state";
+import { planFollowUpFromState } from "./sale-followup-plan";
 
 /**
  * Follow-up khách cũ Facebook — "Khách cần chăm lại".
@@ -208,6 +210,17 @@ export async function scanReengageCandidates(opts?: {
       : Infinity;
     const within24h = hoursSinceIncoming <= 24;
 
+    // V2 (Sales Brain): nếu có TRÍ NHỚ (lulu_thread_state) → follow-up CÓ LÝ DO theo đúng
+    // bối cảnh (objection cuối / chờ hỏi chồng / đã báo giá / có mốc ngày) thay vì template
+    // theo nhu cầu đoán. Fail-open: lỗi/không có state → giữ nguyên reason+draft cũ.
+    let planReason: string | null = null;
+    let planDraft: string | null = null;
+    try {
+      const st = await getThreadState(psid);
+      const plan = planFollowUpFromState(st, r.name);
+      if (plan) { planReason = plan.reasonVn; planDraft = plan.draft; }
+    } catch { /* fail-open */ }
+
     out.push({
       facebookUserId: psid,
       name: r.name ?? null,
@@ -220,8 +233,8 @@ export async function scanReengageCandidates(opts?: {
       silenceDays,
       predictedNeed: need.label,
       priority,
-      reason,
-      suggestedMessage: suggestMessage(need.key, r.name),
+      reason: planReason ? `${reason} → ${planReason}` : reason,
+      suggestedMessage: planDraft ?? suggestMessage(need.key, r.name),
       within24h,
       windowNote: within24h
         ? "Trong 24h — có thể gửi qua tin nhắn thường."

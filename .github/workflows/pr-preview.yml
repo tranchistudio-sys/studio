@@ -49,7 +49,6 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
       DEFAULT_TENANT_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
       TENANT_B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_b_test
@@ -84,6 +83,8 @@ jobs:
           psql -h 127.0.0.1 -U postgres -d amazing_platform_test -v ON_ERROR_STOP=1 -c 'CREATE DATABASE tenant_b_test'
 
       - name: Migration platform test (không chạm production)
+        env:
+          PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
         run: |
           pnpm --filter @workspace/platform-db migrate
           pnpm --filter @workspace/platform-db migrate
@@ -100,6 +101,8 @@ jobs:
           echo "count=$(sed 's/\x1b\[[0-9;]*m//g' api-test.log | grep -oE 'Tests +[0-9]+ passed' | grep -oE '[0-9]+' | head -1)" >> "$GITHUB_OUTPUT"
 
       - name: TEST — Platform auth integration + HTTP E2E
+        env:
+          PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
         run: pnpm --filter @workspace/api-server test:platform
 
       - name: TEST — Giao diện (vitest)

@@ -78,7 +78,7 @@ export function MultiImageUploader({
         const { blob, mimeType } = await convertToWebP(list[i]);
         setQueue(q => q.map(x => x.key === key ? { ...x, progress: 50 } : x));
         const outName = (list[i].name || "image").replace(/\.[^.]+$/, "") + ".webp";
-        const path = await uploadFileViaPresign(blob, outName, mimeType);
+        const path = await uploadFileViaPresign(blob, outName, mimeType, "cms-public");
         setQueue(q => q.map(x => x.key === key ? { ...x, progress: 100 } : x));
         results.push({ objectPath: path, mimeType, name: outName });
       } catch (err) {

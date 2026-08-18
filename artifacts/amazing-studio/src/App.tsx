@@ -44,6 +44,8 @@ import AutoPostFacebookPage from "@/pages/auto-post-facebook";
 import NotificationsPage from "@/pages/notifications";
 import NotFound from "@/pages/not-found";
 import LoginPage from "@/pages/login";
+import MembersPage from "@/pages/members";
+import StudioSelectorPage from "@/pages/studio-selector";
 import CmsGalleryPage from "@/pages/cms/gallery";
 import CmsPricingPublicPage from "@/pages/cms/pricing-public";
 import CmsCategoriesPage from "@/pages/cms/categories";
@@ -73,6 +75,7 @@ import { UploadQueueProvider } from "@/contexts/UploadQueueContext";
 import { Camera, Shirt } from "lucide-react";
 import { Toaster } from "@/components/ui/toaster";
 import { WeddingMusicPlayer } from "@/components/wedding-card/WeddingMusicPlayer";
+import { authNeedsStudioSelection } from "@/lib/auth-types";
 
 // Register auth token getter once at app startup so all api-client-react hooks
 // (useListStaff, useListTasks, etc.) automatically include the auth header.
@@ -103,6 +106,7 @@ const PUBLIC_ROUTES = [
 const INTERNAL_PREFIXES = [
   "/dashboard", "/calendar", "/tasks", "/customers",
   "/pricing", "/services", "/staff", "/accounting", "/ai-assistant", "/settings",
+  "/members",
   "/bookings", "/payments", "/expenses", "/revenue", "/contracts", "/reports",
   "/my-profile", "/photoshop-jobs", "/attendance",
   "/crm-leads", "/facebook-inbox-ai", "/ai-sale-scripts", "/ai-test", "/claude-sale-test", "/claude-sale-settings", "/claude-sale-monitor", "/claude-sale-reengage", "/sale-learning", "/lulu-human-review", "/lulu-brain-lab", "/auto-post-facebook", "/notifications",
@@ -159,6 +163,12 @@ function AdminRoute({ component: Component, fallback }: { component: React.Compo
 function CmsAdminRoute({ component: Component, fallback }: { component: React.ComponentType; fallback?: string }) {
   const { isAdmin } = useStaffAuth();
   if (!isAdmin) return <Redirect to={fallback ?? "/calendar"} />;
+  return <Component />;
+}
+
+function TenantManagerRoute({ component: Component, fallback }: { component: React.ComponentType; fallback?: string }) {
+  const { canManageMembers } = useStaffAuth();
+  if (!canManageMembers) return <Redirect to={fallback ?? "/calendar"} />;
   return <Component />;
 }
 
@@ -267,6 +277,7 @@ function InternalRouter() {
         <Route path="/accounting" component={AccountingHrPage} />
         <Route path="/ai-assistant" component={AiAssistantPage} />
         <Route path="/settings" component={() => <AdminRoute component={SettingsPage} />} />
+        <Route path="/members" component={() => <TenantManagerRoute component={MembersPage} />} />
         <Route path="/bookings/trash" component={() => <AdminRoute component={BookingsTrashPage} />} />
         <Route path="/bookings" component={BookingsPage} />
         <Route path="/payments" component={PaymentsPage} />
@@ -323,16 +334,20 @@ function popReturnTo(): string {
 }
 
 function LoginRoute() {
-  const { login, viewer } = useStaffAuth();
+  const { completeLogin, authenticated, platformUser, activeTenant, requiresTenantSelection } = useStaffAuth();
   const [, setLocation] = useLocation();
-  if (viewer) {
-    return <Redirect to={popReturnTo()} />;
+  if (authenticated) {
+    const needsTenant = authNeedsStudioSelection({
+      requiresTenantSelection, platformUser, activeTenant,
+    });
+    return <Redirect to={needsTenant ? "/select-studio" : popReturnTo()} />;
   }
   return (
     <LoginPage
-      onLogin={(u, t) => {
-        login(u, t);
-        setLocation(popReturnTo());
+      onLogin={(response) => {
+        completeLogin(response);
+        const needsSelection = authNeedsStudioSelection(response);
+        setLocation(needsSelection ? "/select-studio" : popReturnTo());
       }}
     />
   );
@@ -354,8 +369,11 @@ function RootLandingRedirect() {
 }
 
 function RouterRoot() {
-  const { viewer, authChecked } = useStaffAuth();
-  const [location] = useLocation();
+  const { viewer, platformUser, authenticated, authChecked, activeTenant, memberships, requiresTenantSelection } = useStaffAuth();
+  const [location, setLocation] = useLocation();
+  const needsTenant = authNeedsStudioSelection({
+    requiresTenantSelection, platformUser, activeTenant, memberships,
+  });
 
   if (!authChecked) {
     return (
@@ -373,6 +391,13 @@ function RouterRoot() {
     return <LoginRoute />;
   }
 
+  if (location === "/select-studio") {
+    if (!authenticated) return <RedirectToLogin from="/calendar" />;
+    if (!requiresTenantSelection && activeTenant && memberships.length <= 1) return <Redirect to={popReturnTo()} />;
+    if (!requiresTenantSelection && viewer && !activeTenant) return <Redirect to={popReturnTo()} />;
+    return <StudioSelectorPage onSelected={() => setLocation(popReturnTo())} />;
+  }
+
   const publicPreview = isPublicPreviewMode();
 
   // Preview mode: staff xem website khách (globe) — luôn hiện public, không vào app.
@@ -381,8 +406,8 @@ function RouterRoot() {
   }
 
   // Nhân viên/admin đã đăng nhập: vào "/" → Lịch Chụp.
-  if ((location === "/" || location === "/trang-chu") && viewer) {
-    return <Redirect to="/calendar" />;
+  if ((location === "/" || location === "/trang-chu") && authenticated) {
+    return <Redirect to={needsTenant ? "/select-studio" : "/calendar"} />;
   }
 
   // Public routes — khách lạ / link ẩn (chưa đăng nhập).
@@ -396,7 +421,8 @@ function RouterRoot() {
 
   // Internal routes — require authentication, preserve return-to.
   if (isInternalPath(location)) {
-    if (!viewer) return <RedirectToLogin from={location} />;
+    if (!authenticated) return <RedirectToLogin from={location} />;
+    if (needsTenant) return <Redirect to="/select-studio" />;
     return <InternalRouter />;
   }
 

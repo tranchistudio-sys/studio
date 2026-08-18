@@ -197,7 +197,7 @@ class UploadQueueStore {
       const { blob: webp, mimeType } = await convertToWebP(blob);
       this.patch(job.id, { progress: 40 });
       const outName = job.fileName.replace(/\.[^.]+$/, "") + ".webp";
-      const objectPath = await uploadFileViaPresign(webp, outName, mimeType);
+      const objectPath = await uploadFileViaPresign(webp, outName, mimeType, "cms-public");
       this.patch(job.id, { status: "uploaded", progress: 100, objectPath, mimeType });
       this.blobs.delete(job.id);
       await idbDeleteBlob(job.id);

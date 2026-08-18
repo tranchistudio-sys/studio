@@ -14,8 +14,8 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { Users, Plus, Pencil, Banknote, DollarSign, Briefcase, ClipboardList, ChevronDown, ChevronUp, AlertCircle, UserCircle, LogOut, ChevronRight, KeyRound, Eye, EyeOff, ShieldCheck, BarChart2, Camera } from "lucide-react";
-import { useStaffAuth, type ViewerUser } from "@/contexts/StaffAuthContext";
+import { Users, Plus, Pencil, Banknote, DollarSign, Briefcase, ClipboardList, ChevronDown, ChevronUp, AlertCircle, UserCircle, ChevronRight, KeyRound, Eye, EyeOff, ShieldCheck, BarChart2, Camera } from "lucide-react";
+import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import StaffAvatar from "@/components/StaffAvatar";
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -931,7 +931,7 @@ function SetPasswordDialog({ staff, onClose }: { staff: Record<string, unknown> 
 
   async function handleSave() {
     if (!staff) return;
-    if (newPw && newPw.length < 4) { setErr("Mật khẩu phải có ít nhất 4 ký tự"); return; }
+    if (newPw && newPw.length < 8) { setErr("Mật khẩu phải có ít nhất 8 ký tự"); return; }
     if (newPw && newPw !== confirm) { setErr("Mật khẩu xác nhận không khớp"); return; }
     if (!username.trim() && !staffPhone) { setErr("Cần có tên đăng nhập hoặc số điện thoại"); return; }
     setSaving(true); setErr("");
@@ -1547,9 +1547,8 @@ export default function StaffPage() {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<"all" | "official" | "freelancer">("all");
   const [roleFilter, setRoleFilter] = useState("all");
-  const [viewerSheet, setViewerSheet] = useState(false);
   const [activeTab, setActiveTab] = useState("staff");
-  const { viewer, setViewer, logout, isAdmin, effectiveIsAdmin } = useStaffAuth();
+  const { isAdmin, effectiveIsAdmin } = useStaffAuth();
 
   const { data: staffList = [], isLoading: staffListLoading } = useQuery<Array<Record<string, unknown>>>({
     queryKey: ["staff"],
@@ -1607,47 +1606,6 @@ export default function StaffPage() {
             <Plus className="w-4 h-4" /> Thêm nhân viên
           </Button>
         )}
-      </div>
-
-      {/* ── Viewer selector ─────────────────────────────────────── */}
-      <div className={`flex items-center gap-3 p-3 rounded-xl border mb-5 ${viewer ? "bg-emerald-50/50 border-emerald-200" : "bg-amber-50 border-amber-200"}`}>
-        {viewer ? (() => {
-          const vs = staffList.find(s => s.id === viewer.id);
-          return (
-            <StaffAvatar
-              name={viewer.name}
-              avatar={(vs as Record<string, unknown> | undefined)?.avatar as string | undefined}
-              role={viewer.role}
-              status="active"
-              size="md"
-            />
-          );
-        })() : (
-          <UserCircle className="w-8 h-8 flex-shrink-0 text-amber-500" />
-        )}
-        <div className="flex-1 min-w-0">
-          {viewer ? (
-            <>
-              <p className="text-sm font-semibold truncate">{viewer.name}</p>
-              <p className="text-xs text-muted-foreground">{viewer.isAdmin ? "👑 Quản lý — xem được tất cả hồ sơ" : "Đang xem hồ sơ của chính mình"}</p>
-            </>
-          ) : (
-            <>
-              <p className="text-sm font-semibold text-amber-700">Bạn là ai?</p>
-              <p className="text-xs text-muted-foreground">Chọn tài khoản để xem hồ sơ cá nhân</p>
-            </>
-          )}
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <button onClick={() => setViewerSheet(true)} className="text-xs px-3 py-1.5 rounded-lg bg-white border border-border font-medium hover:bg-muted transition-colors">
-            {viewer ? "Đổi" : "Chọn tài khoản"}
-          </button>
-          {viewer && (
-            <button onClick={logout} className="p-1.5 rounded-lg hover:bg-red-50 text-muted-foreground hover:text-red-600 transition-colors" title="Đăng xuất">
-              <LogOut className="w-4 h-4" />
-            </button>
-          )}
-        </div>
       </div>
 
       {/* Stats row — admin only (chứa tổng thu nhập toàn studio) */}
@@ -1773,60 +1731,6 @@ export default function StaffPage() {
         onClose={() => setPasswordStaff(null)}
       />
 
-      {/* ── Chọn tài khoản ─────────────────────────────────────── */}
-      <Sheet open={viewerSheet} onOpenChange={setViewerSheet}>
-        <SheetContent side="bottom" className="rounded-t-3xl max-h-[80vh] overflow-y-auto">
-          <SheetHeader className="mb-4">
-            <SheetTitle className="flex items-center gap-2">
-              <UserCircle className="w-5 h-5 text-primary" /> Chọn tài khoản của bạn
-            </SheetTitle>
-          </SheetHeader>
-          <p className="text-sm text-muted-foreground mb-4">
-            Chọn tên của bạn để đăng nhập và xem hồ sơ cá nhân. Admin có thể xem tất cả hồ sơ.
-          </p>
-          <div className="space-y-2">
-            {staffList.map(s => {
-              const roles = getRoles(s);
-              const isAdm = roles.includes("admin");
-              const isMe = viewer?.id === (s.id as number);
-              return (
-                <button
-                  key={String(s.id)}
-                  onClick={() => {
-                    const v: ViewerUser = {
-                      id: s.id as number,
-                      name: String(s.name),
-                      role: String(s.role || "assistant"),
-                      roles: getRoles(s),
-                      isAdmin: isAdm,
-                    };
-                    setViewer(v);
-                    setViewerSheet(false);
-                  }}
-                  className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-all ${isMe ? "border-primary bg-primary/5" : "border-border hover:bg-muted/30"}`}
-                >
-                  <StaffAvatar
-                    name={String(s.name || "?")}
-                    avatar={(s as Record<string, unknown>).avatar as string | undefined}
-                    role={String(s.role || "assistant")}
-                    status={String(s.status || "active")}
-                    isActive={Boolean(s.isActive)}
-                    size="md"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-sm truncate">{String(s.name)}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {roles.map(r => ({ admin: "Quản lý", photographer: "Nhiếp ảnh", makeup: "Trang điểm", sale: "Sale", photoshop: "Chỉnh sửa", assistant: "Hỗ trợ", marketing: "Marketing" }[r] || r)).join(", ")}
-                    </p>
-                  </div>
-                  {isMe && <span className="text-xs bg-primary text-primary-foreground px-2 py-0.5 rounded-full">Đang dùng</span>}
-                  {isAdm && !isMe && <span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">Admin</span>}
-                </button>
-              );
-            })}
-          </div>
-        </SheetContent>
-      </Sheet>
     </div>
   );
 }

@@ -19,6 +19,10 @@ export default defineConfig({
         replacement: path.resolve(__dirname, "../../lib/db/src/index.ts"),
       },
       {
+        find: "@workspace/platform-db",
+        replacement: path.resolve(__dirname, "../../lib/platform-db/src/index.ts"),
+      },
+      {
         find: "@workspace/api-zod",
         replacement: path.resolve(__dirname, "../../lib/api-zod/src/index.ts"),
       },

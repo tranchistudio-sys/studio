@@ -3,8 +3,8 @@
 # Mỗi PR: BUILD + TEST → dựng một app riêng trên Fly.io → dán link vào PR.
 # Đóng PR: xoá hẳn app đó.
 #
-# KHÔNG đụng gì tới production: production vẫn ở Replit và chỉ được Republish
-# bằng tay theo docs/DEPLOY-CODE-ONLY.md.
+# KHÔNG đụng gì tới production: production trên VPS chỉ được deploy bằng workflow
+# thủ công `Deploy VPS (code-only)` theo đúng commit SHA.
 
 name: PR Preview
 
@@ -34,6 +34,28 @@ jobs:
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: amazing_platform_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d amazing_platform_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
+      DEFAULT_TENANT_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
+      SESSION_SECRET: ci-only-session-secret-at-least-32-bytes
+      BOOTSTRAP_OWNER_EMAIL: owner@gmail.com
+      BOOTSTRAP_TENANT_STAFF_ID: "1"
+      GOOGLE_CLIENT_ID: test-google-client.apps.googleusercontent.com
     outputs:
       api_tests: ${{ steps.test_api.outputs.count }}
       web_tests: ${{ steps.test_web.outputs.count }}
@@ -53,6 +75,19 @@ jobs:
       - name: Cài đặt phụ thuộc (đúng y hệt pnpm-lock.yaml)
         run: pnpm install --frozen-lockfile
 
+      - name: Tạo tenant database cô lập cho integration test
+        env:
+          PGPASSWORD: postgres
+        run: psql -h 127.0.0.1 -U postgres -d amazing_platform_test -v ON_ERROR_STOP=1 -c 'CREATE DATABASE tenant_amazing_test'
+
+      - name: Migration platform test (không chạm production)
+        run: |
+          pnpm --filter @workspace/platform-db migrate
+          pnpm --filter @workspace/platform-db migrate
+
+      - name: Typecheck platform database package
+        run: pnpm --filter @workspace/platform-db typecheck
+
       - name: TEST — API (vitest)
         id: test_api
         run: |
@@ -60,6 +95,9 @@ jobs:
           pnpm --filter @workspace/api-server test 2>&1 | tee api-test.log
           # vitest in kèm mã màu ANSI → gỡ màu rồi mới bóc số.
           echo "count=$(sed 's/\x1b\[[0-9;]*m//g' api-test.log | grep -oE 'Tests +[0-9]+ passed' | grep -oE '[0-9]+' | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: TEST — Platform auth integration + HTTP E2E
+        run: pnpm --filter @workspace/api-server test:platform
 
       - name: TEST — Giao diện (vitest)
         id: test_web
@@ -122,6 +160,24 @@ jobs:
           else
             echo "Tạo app mới: $FLY_APP"
             flyctl apps create "$FLY_APP" --org "${{ vars.FLY_ORG || 'personal' }}"
+          fi
+
+      # Dynamic pr-N origins không thể được đăng ký trước một cách an toàn trong
+      # Google Cloud. Preview hiện cũng chỉ có tenant DB ẩn danh, chưa có platform
+      # DB riêng với marker/allowlist độc lập. Fly secrets tồn tại qua nhiều lần
+      # deploy nên phải chủ động xóa cấu hình cũ và kiểm chứng lại (fail-closed).
+      - name: Fail-closed Google và platform auth trên dynamic preview
+        run: |
+          platform_names='^(PLATFORM_DATABASE_URL|DEFAULT_TENANT_DATABASE_URL|GOOGLE_CLIENT_ID|BOOTSTRAP_OWNER_EMAIL|BOOTSTRAP_TENANT_STAFF_ID)$'
+          existing=$(flyctl secrets list --app "$FLY_APP" --json | jq -r '.[] | (.Name // .name)' | awk -v pattern="$platform_names" '$0 ~ pattern')
+          if [ -n "$existing" ]; then
+            mapfile -t names <<< "$existing"
+            flyctl secrets unset --app "$FLY_APP" --stage "${names[@]}"
+          fi
+          remaining=$(flyctl secrets list --app "$FLY_APP" --json | jq -r '.[] | (.Name // .name)' | awk -v pattern="$platform_names" '$0 ~ pattern')
+          if [ -n "$remaining" ]; then
+            echo "::error::Không xóa được cấu hình platform/Google cũ khỏi dynamic preview. Từ chối deploy."
+            exit 1
           fi
 
       - name: Nạp cấu hình bí mật cho bản xem thử
@@ -209,6 +265,7 @@ jobs:
               lines.push('');
               lines.push('> Mở link bằng iPhone. Trang sẽ hỏi mật khẩu xem thử một lần (mở bằng trình duyệt nào cũng được).');
               lines.push('> Dữ liệu trong bản xem thử **đã che tên/SĐT/email khách** và **không nối vào database production**.');
+              lines.push('> Google/platform auth được **cố ý tắt** trên hostname PR động; preview này chỉ kiểm tra local login. Google thật chỉ kiểm tra trên staging cố định, DB test riêng.');
             } else if (PREVIEW === 'skipped') {
               lines.push('⛔ **CHƯA DỰNG ĐƯỢC BẢN XEM THỬ** — vì BUILD/TEST chưa xanh.');
               lines.push('');

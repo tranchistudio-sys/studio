@@ -459,7 +459,7 @@ function BulkUploadModal({ onClose, onCreated }: { onClose: () => void; onCreate
       try {
         const { blob, mimeType } = await convertToWebP(item.file);
         const outName = (item.file.name || "image").replace(/\.[^.]+$/, "") + ".webp";
-        const objectPath = await uploadFileViaPresign(blob, outName, mimeType);
+        const objectPath = await uploadFileViaPresign(blob, outName, mimeType, "cms-public");
         const postResp = await fetch(`${CMS_BASE}/api/dresses`, {
           method: "POST", headers: authHeaders(),
           body: JSON.stringify({

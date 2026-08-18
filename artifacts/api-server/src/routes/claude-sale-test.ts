@@ -1,6 +1,7 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { pool } from "@workspace/db";
 import { verifyToken } from "./auth";
+import { capLegacyAdmin } from "../lib/legacy-auth-token";
 import { askClaudeForReply, resolveModel, type ClaudeHistoryItem } from "../lib/claude-sale";
 import { resolveTestProviderOverride } from "../lib/ai-orchestrator";
 import { getSaleContext, getSaleContextInfo, resolvePriceImagesByCodes, wantsNewConcept, getPhotoIdeasBlock } from "../lib/sale-context";
@@ -42,7 +43,10 @@ async function requireAdmin(req: Request, res: Response): Promise<boolean> {
   }
   const r = await pool.query(`SELECT role, roles FROM staff WHERE id = $1 AND is_active = 1`, [callerId]);
   const u = r.rows[0] as { role?: string; roles?: unknown } | undefined;
-  const isAdmin = u && (u.role === "admin" || (Array.isArray(u.roles) && u.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(
+    req.headers.authorization,
+    Boolean(u && (u.role === "admin" || (Array.isArray(u.roles) && u.roles.includes("admin")))),
+  );
   if (!isAdmin) {
     res.status(403).json({ error: "Chỉ admin được dùng Claude Sale Test" });
     return false;

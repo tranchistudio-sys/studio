@@ -2,6 +2,7 @@ import { Router, type IRouter, type Request, type Response, type NextFunction } 
 import { pool } from "@workspace/db";
 import { verifyToken } from "./auth";
 import { defaultAiSettings, normalizeAiSettings } from "./ai-engine";
+import { capLegacyAdmin } from "../lib/legacy-auth-token";
 
 const router: IRouter = Router();
 
@@ -30,9 +31,9 @@ async function requireAdmin(req: Request, res: Response, next: NextFunction) {
   );
   const caller = r.rows[0] as { id: number; role?: string; roles?: string[] } | undefined;
   if (!caller) return res.status(401).json({ error: "Tài khoản không hợp lệ" });
-  const isAdmin =
+  const isAdmin = capLegacyAdmin(req.headers.authorization,
     caller.role === "admin" ||
-    (Array.isArray(caller.roles) && caller.roles.includes("admin"));
+    (Array.isArray(caller.roles) && caller.roles.includes("admin")));
   if (!isAdmin) return res.status(403).json({ error: "Chỉ admin mới có quyền thực hiện thao tác này" });
   next();
 }

@@ -4,6 +4,11 @@ import { crmLeadsTable, settingsTable } from "@workspace/db/schema";
 import { eq, inArray } from "drizzle-orm";
 import { processIncomingFacebookMessage, ensureFbInboxTable } from "./fb-inbox";
 import { logWebhookEvent as logEvent } from "./webhook-log";
+import {
+  facebookAppSecret,
+  secureStringEqual,
+  verifyFacebookWebhookSignature,
+} from "../lib/facebook-webhook-signature";
 
 const router: IRouter = Router();
 
@@ -82,24 +87,45 @@ router.get("/webhook/facebook", async (req, res) => {
     } catch {}
   }
 
-  if (mode === "subscribe" && (!verifyToken || token === verifyToken)) {
+  if (!verifyToken) {
+    logEvent({ at: new Date().toISOString(), type: "error", summary: "Webhook verification chưa được cấu hình" });
+    return res.sendStatus(503);
+  }
+
+  if (mode === "subscribe" && secureStringEqual(token, verifyToken)) {
     logEvent({ at: new Date().toISOString(), type: "verification", summary: `✅ Verification OK — challenge returned` });
     console.log(`[Webhook][${ts()}] ✅ Verification challenge OK`);
     return res.status(200).send(challenge);
   }
 
-  logEvent({ at: new Date().toISOString(), type: "error", summary: `❌ Verification FAILED — token mismatch (got: ${token}, expected: ${verifyToken ?? "(not set)"})` });
+  logEvent({ at: new Date().toISOString(), type: "error", summary: "❌ Verification FAILED — token mismatch" });
   console.warn(`[Webhook][${ts()}] ❌ Verification FAILED — token mismatch`);
   return res.sendStatus(403);
 });
 
 router.post("/webhook/facebook", async (req, res) => {
+  const rawBody = Buffer.isBuffer(req.body) ? req.body : undefined;
+  const appSecret = facebookAppSecret();
+  if (!appSecret) {
+    res.status(503).send("Webhook signing is not configured");
+    return;
+  }
+  if (!verifyFacebookWebhookSignature(rawBody, req.get("x-hub-signature-256"), appSecret)) {
+    res.status(401).send("Invalid signature");
+    return;
+  }
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(rawBody!.toString("utf8")) as Record<string, unknown>;
+  } catch {
+    res.status(400).send("Invalid JSON");
+    return;
+  }
   res.status(200).send("OK");
 
   try {
-    const body = req.body;
     console.log(`[Webhook][${ts()}] POST received — object=${body?.object ?? "unknown"}, entries=${Array.isArray(body?.entry) ? body.entry.length : 0}`);
-    logEvent({ at: new Date().toISOString(), type: "other", summary: `📩 POST received — object=${body?.object ?? "?"}`, raw: body });
+    logEvent({ at: new Date().toISOString(), type: "other", summary: `📩 POST received — object=${body?.object ?? "?"}` });
 
     if (body?.object !== "page") {
       logEvent({ at: new Date().toISOString(), type: "other", summary: `⚠️ Non-page object: ${body?.object}` });

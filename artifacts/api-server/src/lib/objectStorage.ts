@@ -107,6 +107,14 @@ export class ObjectStorageService {
   }
 
   async getObjectEntityUploadURL(): Promise<string> {
+    return this.getUploadURLForNamespace("uploads");
+  }
+
+  async getCmsPublicUploadURL(): Promise<string> {
+    return this.getUploadURLForNamespace("cms-public");
+  }
+
+  private async getUploadURLForNamespace(namespace: "uploads" | "cms-public"): Promise<string> {
     const privateObjectDir = this.getPrivateObjectDir();
     if (!privateObjectDir) {
       throw new Error(
@@ -116,7 +124,7 @@ export class ObjectStorageService {
     }
 
     const objectId = randomUUID();
-    const fullPath = `${privateObjectDir}/uploads/${objectId}`;
+    const fullPath = `${privateObjectDir.replace(/\/$/, "")}/${namespace}/${objectId}`;
 
     const { bucketName, objectName } = parseObjectPath(fullPath);
 
@@ -125,6 +133,29 @@ export class ObjectStorageService {
       objectName,
       method: "PUT",
       ttlSec: 900,
+    });
+  }
+
+  async getWeddingPublicFile(objectId: string): Promise<File> {
+    if (!/^[0-9a-f-]{36}$/i.test(objectId)) throw new ObjectNotFoundError();
+    const fullPath = `${this.getPrivateObjectDir().replace(/\/$/, "")}/wedding-public/${objectId}`;
+    const { bucketName, objectName } = parseObjectPath(fullPath);
+    const file = objectStorageClient.bucket(bucketName).file(objectName);
+    const [exists] = await file.exists();
+    if (!exists) throw new ObjectNotFoundError();
+    return file;
+  }
+
+  async saveWeddingPublicObject(objectId: string, body: Buffer, contentType: string): Promise<void> {
+    if (!/^[0-9a-f-]{36}$/i.test(objectId)) throw new Error("Invalid wedding object id");
+    const fullPath = `${this.getPrivateObjectDir().replace(/\/$/, "")}/wedding-public/${objectId}`;
+    const { bucketName, objectName } = parseObjectPath(fullPath);
+    await objectStorageClient.bucket(bucketName).file(objectName).save(body, {
+      resumable: false,
+      metadata: {
+        contentType,
+        cacheControl: "public, max-age=31536000, immutable",
+      },
     });
   }
 
@@ -262,6 +293,10 @@ async function signObjectURL({
     );
   }
 
-  const { signed_url: signedURL } = await response.json();
+  const payload = await response.json() as { signed_url?: unknown };
+  const signedURL = payload.signed_url;
+  if (typeof signedURL !== "string" || !signedURL) {
+    throw new Error("Object storage signer returned an invalid URL");
+  }
   return signedURL;
 }

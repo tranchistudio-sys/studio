@@ -1,7 +1,7 @@
 import { Router, type IRouter } from "express";
 import { db } from "@workspace/db";
 import { settingsTable } from "@workspace/db/schema";
-import { verifyToken } from "./auth";
+import { getCallerRole, verifyToken } from "./auth";
 import { pool } from "@workspace/db";
 
 const router: IRouter = Router();
@@ -50,11 +50,7 @@ async function loadSettings() {
 }
 
 async function isAdminCaller(authorization: string | undefined): Promise<boolean> {
-  const callerId = verifyToken(authorization);
-  if (!callerId) return false;
-  const r = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
-  const caller = r.rows[0] as Record<string, unknown> | undefined;
-  return !!(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin"))));
+  return await getCallerRole(authorization) === "admin";
 }
 
 router.get("/settings", async (req, res) => {

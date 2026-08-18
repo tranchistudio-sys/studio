@@ -3,6 +3,7 @@ import { db, pool } from "@workspace/db";
 import { staffCastRatesTable } from "@workspace/db/schema";
 import { eq, and } from "drizzle-orm";
 import { verifyToken } from "./auth";
+import { capLegacyAdmin } from "../lib/legacy-auth-token";
 import { resolveStaffCastAmount } from "../lib/resolve-staff-cast";
 
 const router: IRouter = Router();
@@ -13,7 +14,7 @@ async function requireAdmin(req: Request, res: Response, next: NextFunction) {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const r = await pool.query(`SELECT role FROM staff WHERE id = $1`, [callerId]);
   const role = (r.rows[0] as { role?: string })?.role;
-  if (role !== "admin") {
+  if (!capLegacyAdmin(req.headers.authorization, role === "admin")) {
     return res.status(403).json({ error: "Chỉ admin được chỉnh sửa cast" });
   }
   next();
@@ -78,7 +79,10 @@ router.get("/staff-cast", async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const cr = await pool.query(`SELECT role FROM staff WHERE id=$1`, [callerId]);
-  const isAdmin = (cr.rows[0] as { role?: string })?.role === "admin";
+  const isAdmin = capLegacyAdmin(
+    req.headers.authorization,
+    (cr.rows[0] as { role?: string })?.role === "admin",
+  );
 
   let staffId = req.query.staffId ? parseInt(req.query.staffId as string) : undefined;
   if (!isAdmin) {

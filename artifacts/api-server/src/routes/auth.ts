@@ -1,83 +1,32 @@
 import { Router, type IRouter } from "express";
 import { pool } from "@workspace/db";
 import bcrypt from "bcryptjs";
-import { withStartupDdlLock } from "../lib/startup-ddl";
+import { isPlatformDatabaseConfigured } from "@workspace/platform-db";
+import { createLoginRateLimit } from "../lib/login-rate-limit";
+import { businessAuthGuard, requestIsSameOrigin } from "../middlewares/platform-auth";
+import {
+  readLegacyToken,
+  signLegacyToken,
+  verifyLegacyToken,
+} from "../lib/legacy-auth-token";
+import { establishLocalPlatformSession } from "../platform/service";
+import { verifyLoginCsrf } from "../platform/session";
+import {
+  findTenantStaffMembership,
+  platformContextFromResponse,
+  revokeTenantStaffSessions,
+} from "../platform/tenant-authorization";
 
 const router: IRouter = Router();
-
-async function ensureAuthColumns() {
-  await pool.query(`ALTER TABLE staff ADD COLUMN IF NOT EXISTS password_hash TEXT`).catch(() => {});
-  await pool.query(`ALTER TABLE staff ADD COLUMN IF NOT EXISTS username TEXT`).catch(() => {});
-
-  // Ensure admin user (tranchi) always exists with correct password
-  const adminR = await pool.query(`SELECT id, phone, password_hash FROM staff WHERE username = 'tranchi' LIMIT 1`);
-  const adminHash = await bcrypt.hash("123456", 10);
-
-  if (adminR.rows.length === 0) {
-    // Admin doesn't exist — create it
-    await pool.query(
-      `INSERT INTO staff (name, role, roles, phone, username, password_hash, is_active)
-       VALUES ('Admin', 'admin', '["admin"]', '0392817079', 'tranchi', $1, 1)`,
-      [adminHash]
-    );
-    console.log("[startup] Admin user seeded: username=tranchi password=123456");
-  } else {
-    const admin = adminR.rows[0] as { id: number; phone: string; password_hash: string | null };
-    if (!admin.password_hash) {
-      // No hash — set to 123456
-      await pool.query(`UPDATE staff SET password_hash = $1 WHERE id = $2`, [adminHash, admin.id]);
-      console.log("[startup] Admin password initialized to default 123456");
-    } else {
-      // Hash exists — đảm bảo mật khẩu admin LUÔN là 123456 (quy ước nội bộ).
-      // Nếu hash hiện tại khớp 123456 → giữ nguyên; ngược lại reset về 123456 để
-      // chủ shop không bao giờ bị khoá ngoài hệ thống.
-      const matches123456 = await bcrypt.compare("123456", admin.password_hash);
-      if (!matches123456) {
-        await pool.query(`UPDATE staff SET password_hash = $1 WHERE id = $2`, [adminHash, admin.id]);
-        console.log("[startup] Admin password reset to default 123456");
-      }
-    }
-  }
-
-  // For all other staff: set phone as default password if no hash set
-  const r = await pool.query(`SELECT id, phone, password_hash FROM staff WHERE is_active = 1 AND username != 'tranchi'`);
-  const updates: Promise<void>[] = [];
-  for (const row of r.rows as { id: number; phone: string; password_hash: string | null }[]) {
-    if (!row.password_hash && row.phone) {
-      const hash = await bcrypt.hash(row.phone, 10);
-      updates.push(pool.query(`UPDATE staff SET password_hash = $1 WHERE id = $2`, [hash, row.id]).then(() => {}));
-    }
-  }
-  if (updates.length > 0) await Promise.all(updates);
-}
-withStartupDdlLock(ensureAuthColumns).catch(console.error);
-
-/**
- * Bí mật ký/verify token. PRODUCTION BẮT BUỘC có SESSION_SECRET — thiếu thì FAIL-FAST
- * (throw ngay khi nạp module → server không khởi động) thay vì âm thầm dùng secret
- * mặc định (ai đọc source cũng forge được token). Dev/test được phép dùng fallback
- * có cảnh báo để chạy cục bộ. KHÔNG đổi giá trị secret khi đã có SESSION_SECRET →
- * token đang phát HÀNH vẫn hợp lệ (không logout ai).
- */
-function resolveJwtSecret(): string {
-  const secret = process.env.SESSION_SECRET;
-  if (secret) return secret;
-  if (process.env.NODE_ENV === "production") {
-    throw new Error(
-      "SESSION_SECRET chưa được cấu hình ở production. Từ chối khởi động thay vì dùng secret mặc định (bảo mật). Hãy đặt biến môi trường SESSION_SECRET rồi chạy lại.",
-    );
-  }
-  console.warn("[auth] ⚠️ SESSION_SECRET chưa set — dùng secret DEV mặc định. TUYỆT ĐỐI không dùng ở production.");
-  return "amazing-studio-secret-2025";
-}
-const JWT_SECRET = resolveJwtSecret();
+const loginRateLimit = createLoginRateLimit();
 
 export async function getCallerRole(header: string | undefined): Promise<"admin" | "staff" | null> {
-  const id = verifyToken(header);
-  if (!id) return null;
+  const token = readLegacyToken(header);
+  if (!token) return null;
   try {
-    const r = await pool.query(`SELECT role, roles FROM staff WHERE id = $1 AND is_active = 1`, [id]);
+    const r = await pool.query(`SELECT role, roles FROM staff WHERE id = $1 AND is_active = 1`, [token.id]);
     if (!r.rows.length) return null;
+    if (token.tenantRole) return token.tenantRole === "STAFF" ? "staff" : "admin";
     const u = r.rows[0] as { role: string; roles: unknown };
     const isAdmin = u.role === "admin" || (Array.isArray(u.roles) && u.roles.includes("admin"));
     return isAdmin ? "admin" : "staff";
@@ -85,27 +34,26 @@ export async function getCallerRole(header: string | undefined): Promise<"admin"
 }
 
 export function verifyToken(header: string | undefined): number | null {
-  if (!header?.startsWith("Bearer ")) return null;
-  try {
-    const token = header.slice(7);
-    const parts = token.split(".");
-    if (parts.length !== 3) return null;
-    const [jwtHeader, jwtBody, sig] = parts;
-    const { createHmac, timingSafeEqual } = require("crypto") as typeof import("crypto");
-    const expectedSig = createHmac("sha256", JWT_SECRET).update(`${jwtHeader}.${jwtBody}`).digest("base64url");
-    // So sánh CONSTANT-TIME (chống timing side-channel). timingSafeEqual đòi 2 buffer
-    // cùng độ dài → khác độ dài coi như sai luôn. KHÔNG đổi cách tính chữ ký nên token
-    // hiện có vẫn verify y hệt.
-    const sigBuf = Buffer.from(sig);
-    const expBuf = Buffer.from(expectedSig);
-    if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) return null;
-    const payload = JSON.parse(Buffer.from(jwtBody, "base64url").toString());
-    if (payload.exp && Date.now() / 1000 > payload.exp) return null;
-    return payload.id as number;
-  } catch { return null; }
+  return verifyLegacyToken(header);
+}
+
+async function canManageOtherAccount(
+  res: Parameters<typeof platformContextFromResponse>[0],
+  targetStaffId: number,
+): Promise<boolean | null> {
+  const context = platformContextFromResponse(res);
+  if (!context) return null;
+  if (targetStaffId === context.tenantStaffId) return true;
+  if (context.tenantRole !== "OWNER") return false;
+  const target = await findTenantStaffMembership(context, targetStaffId);
+  // A linked OWNER manages their own credential. Another OWNER cannot reset it.
+  return target?.role !== "OWNER";
 }
 
 router.get("/auth/me", async (req, res) => {
+  if (isPlatformDatabaseConfigured()) {
+    return res.status(401).json({ error: "Phiên đăng nhập cũ không còn được chấp nhận" });
+  }
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập hoặc phiên hết hạn" });
   const r = await pool.query(
@@ -117,7 +65,14 @@ router.get("/auth/me", async (req, res) => {
   res.json({ id: u.id, name: u.name, role: u.role, roles: u.roles ?? [], phone: u.phone, email: u.email, avatar: u.avatar, username: u.username });
 });
 
-router.post("/auth/login", async (req, res) => {
+router.post("/auth/login", (req, res, next) => {
+  if (isPlatformDatabaseConfigured() && (
+    !requestIsSameOrigin(req) || !verifyLoginCsrf(req, req.body?.loginCsrfToken)
+  )) {
+    return res.status(403).json({ error: "Phiên trang đăng nhập không hợp lệ. Vui lòng tải lại trang.", code: "LOGIN_CSRF_INVALID" });
+  }
+  next();
+}, loginRateLimit, async (req, res) => {
   const { phone, password } = req.body as { phone?: string; password?: string };
   if (!phone || !password) return res.status(400).json({ error: "Vui lòng nhập tên đăng nhập và mật khẩu" });
 
@@ -143,39 +98,67 @@ router.post("/auth/login", async (req, res) => {
   const u = r.rows[0] as Record<string, unknown>;
 
   if (!u.password_hash) {
-    const defaultPw = (u.phone as string | null) || "admin123";
-    const hash = await bcrypt.hash(defaultPw, 10);
-    await pool.query(`UPDATE staff SET password_hash = $1 WHERE id = $2`, [hash, u.id]);
-    u.password_hash = hash;
+    return res.status(403).json({
+      error: "Tài khoản này chưa được đặt mật khẩu. Vui lòng dùng Google hoặc liên hệ OWNER.",
+    });
   }
 
   const ok = await bcrypt.compare(password, u.password_hash as string);
   if (!ok) return res.status(401).json({ error: "Tên đăng nhập hoặc mật khẩu không đúng" });
 
-  const { createHmac } = await import("crypto");
-  const jwtHeader = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url");
-  const jwtBody = Buffer.from(JSON.stringify({ id: u.id, exp: Math.floor(Date.now() / 1000) + 365 * 24 * 3600 })).toString("base64url");
-  const sig = createHmac("sha256", JWT_SECRET).update(`${jwtHeader}.${jwtBody}`).digest("base64url");
+  let platformResponse: Awaited<ReturnType<typeof establishLocalPlatformSession>>;
+  try {
+    platformResponse = await establishLocalPlatformSession(req, res, {
+      id: Number(u.id),
+      name: String(u.name),
+      role: String(u.role),
+      roles: u.roles,
+      phone: String(u.phone),
+      email: typeof u.email === "string" ? u.email : null,
+      avatar: typeof u.avatar === "string" ? u.avatar : null,
+      username: typeof u.username === "string" ? u.username : null,
+    });
+  } catch {
+    return res.status(503).json({
+      error: "Dịch vụ xác thực nền tảng tạm thời không khả dụng",
+      code: "PLATFORM_AUTH_UNAVAILABLE",
+    });
+  }
+  if (platformResponse) {
+    res.set("Cache-Control", "no-store");
+    return res.json(platformResponse);
+  }
 
   res.json({
-    token: `${jwtHeader}.${jwtBody}.${sig}`,
+    token: signLegacyToken(Number(u.id), undefined, 12 * 60 * 60),
     user: { id: u.id, name: u.name, role: u.role, roles: u.roles ?? [], phone: u.phone, email: u.email, avatar: u.avatar, username: u.username },
   });
 });
 
-router.get("/auth/staff-account/:id", async (req, res) => {
+// Các route quản lý tài khoản phía dưới không phải public auth endpoints.
+// Áp guard trực tiếp từng route để middleware này không vô tình chặn /healthz
+// hoặc các router được mount sau authRouter.
+router.get("/auth/staff-account/:id", businessAuthGuard, async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
+  const targetId = Number(Array.isArray(req.params.id) ? req.params.id[0] : req.params.id);
+  if (!Number.isInteger(targetId) || targetId <= 0) return res.status(400).json({ error: "Tài khoản không hợp lệ" });
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
-  if (!isAdmin) return res.status(403).json({ error: "Không có quyền" });
-  const r = await pool.query(`SELECT id, name, phone, username FROM staff WHERE id = $1`, [req.params.id]);
+  const tenantRole = readLegacyToken(req.headers.authorization)?.tenantRole;
+  const isAdmin = tenantRole
+    ? tenantRole === "OWNER" || tenantRole === "ADMIN"
+    : caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const platformAllowed = await canManageOtherAccount(res, targetId);
+  if (platformAllowed === false || (platformAllowed === null && !isAdmin)) {
+    return res.status(403).json({ error: "Không có quyền" });
+  }
+  const r = await pool.query(`SELECT id, name, phone, username FROM staff WHERE id = $1`, [targetId]);
   if (r.rows.length === 0) return res.status(404).json({ error: "Không tìm thấy nhân viên" });
   res.json(r.rows[0]);
 });
 
-router.post("/auth/update-account", async (req, res) => {
+router.post("/auth/update-account", businessAuthGuard, async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
 
@@ -183,12 +166,23 @@ router.post("/auth/update-account", async (req, res) => {
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
   if (!caller) return res.status(401).json({ error: "Tài khoản không tồn tại" });
 
-  const isAdmin = caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin"));
-  const { targetId, username, newPassword } = req.body as { targetId?: number; username?: string; newPassword?: string };
-  const changingFor = targetId ?? callerId;
+  const tenantRole = readLegacyToken(req.headers.authorization)?.tenantRole;
+  const isAdmin = tenantRole
+    ? tenantRole === "OWNER" || tenantRole === "ADMIN"
+    : caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin"));
+  const input = req.body as { targetId?: number; username?: string; newPassword?: string };
+  const changingFor = input.targetId === undefined ? callerId : Number(input.targetId);
+  const { username, newPassword } = input;
+  if (!Number.isInteger(changingFor) || changingFor <= 0) return res.status(400).json({ error: "Tài khoản không hợp lệ" });
 
-  if (!isAdmin && changingFor !== callerId) return res.status(403).json({ error: "Không có quyền chỉnh tài khoản người khác" });
-  if (newPassword && newPassword.length < 4) return res.status(400).json({ error: "Mật khẩu phải có ít nhất 4 ký tự" });
+  const platformAllowed = await canManageOtherAccount(res, changingFor);
+  if (platformAllowed === false || (platformAllowed === null && !isAdmin && changingFor !== callerId)) {
+    return res.status(403).json({ error: "Không có quyền chỉnh tài khoản người khác" });
+  }
+  if (newPassword && newPassword.length < 8) return res.status(400).json({ error: "Mật khẩu phải có ít nhất 8 ký tự" });
+  if (newPassword && changingFor === callerId) {
+    return res.status(400).json({ error: "Hãy dùng chức năng đổi mật khẩu và nhập mật khẩu hiện tại" });
+  }
 
   if (username !== undefined) {
     const trimmed = username.trim();
@@ -207,12 +201,16 @@ router.post("/auth/update-account", async (req, res) => {
   if (newPassword) {
     const hash = await bcrypt.hash(newPassword, 10);
     await pool.query(`UPDATE staff SET password_hash = $1 WHERE id = $2`, [hash, changingFor]);
+    const context = platformContextFromResponse(res);
+    if (context && changingFor !== callerId) {
+      await revokeTenantStaffSessions(context, changingFor, "password_reset_by_owner");
+    }
   }
 
   res.json({ success: true });
 });
 
-router.post("/auth/change-password", async (req, res) => {
+router.post("/auth/change-password", businessAuthGuard, async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
 
@@ -220,17 +218,28 @@ router.post("/auth/change-password", async (req, res) => {
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
   if (!caller) return res.status(401).json({ error: "Tài khoản không tồn tại" });
 
-  const isAdmin = caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin"));
-  const { targetId, currentPassword, newPassword } = req.body as { targetId?: number; currentPassword?: string; newPassword?: string };
-  if (!newPassword || newPassword.length < 4) return res.status(400).json({ error: "Mật khẩu mới phải có ít nhất 4 ký tự" });
+  const tenantRole = readLegacyToken(req.headers.authorization)?.tenantRole;
+  const isAdmin = tenantRole
+    ? tenantRole === "OWNER" || tenantRole === "ADMIN"
+    : caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin"));
+  const input = req.body as { targetId?: number; currentPassword?: string; newPassword?: string };
+  const { currentPassword, newPassword } = input;
+  if (!newPassword || newPassword.length < 8) return res.status(400).json({ error: "Mật khẩu mới phải có ít nhất 8 ký tự" });
 
-  const changingFor = targetId ?? callerId;
-  if (!isAdmin && changingFor !== callerId) return res.status(403).json({ error: "Không có quyền đổi mật khẩu người khác" });
+  const changingFor = input.targetId === undefined ? callerId : Number(input.targetId);
+  if (!Number.isInteger(changingFor) || changingFor <= 0) return res.status(400).json({ error: "Tài khoản không hợp lệ" });
+  const platformAllowed = await canManageOtherAccount(res, changingFor);
+  if (platformAllowed === false || (platformAllowed === null && !isAdmin && changingFor !== callerId)) {
+    return res.status(403).json({ error: "Không có quyền đổi mật khẩu người khác" });
+  }
 
-  if (changingFor === callerId && currentPassword) {
+  if (changingFor === callerId) {
     const r2 = await pool.query(`SELECT password_hash FROM staff WHERE id = $1`, [callerId]);
     const existing = (r2.rows[0] as Record<string, unknown>)?.password_hash as string | null;
     if (existing) {
+      if (!currentPassword) {
+        return res.status(400).json({ error: "Vui lòng nhập mật khẩu hiện tại" });
+      }
       const matches = await bcrypt.compare(currentPassword, existing);
       if (!matches) return res.status(401).json({ error: "Mật khẩu hiện tại không đúng" });
     }
@@ -238,6 +247,10 @@ router.post("/auth/change-password", async (req, res) => {
 
   const hash = await bcrypt.hash(newPassword, 10);
   await pool.query(`UPDATE staff SET password_hash = $1 WHERE id = $2`, [hash, changingFor]);
+  const context = platformContextFromResponse(res);
+  if (context && changingFor !== callerId) {
+    await revokeTenantStaffSessions(context, changingFor, "password_reset_by_owner");
+  }
   res.json({ success: true });
 });
 

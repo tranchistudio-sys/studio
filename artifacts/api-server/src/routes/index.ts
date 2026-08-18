@@ -2,6 +2,10 @@ import { Router, type IRouter } from "express";
 import codexRouter from "./codex";
 import healthRouter from "./health";
 import authRouter from "./auth";
+import platformAuthRouter from "./platform-auth";
+import tenantMembersRouter from "./tenant-members";
+import { businessAuthGuard } from "../middlewares/platform-auth";
+import { signCmsPublicMediaResponses } from "../lib/cms-public-media";
 import customersRouter from "./customers";
 import bookingsRouter from "./bookings";
 import bookingOccurrencesRouter from "./booking-occurrences";
@@ -57,7 +61,15 @@ import autoPostFacebookRouter from "./auto-post-facebook";
 
 const router: IRouter = Router();
 
+// Auth/session routes tự có guard riêng và phải đứng trước default-deny business gate.
+router.use(platformAuthRouter);
 router.use(authRouter);
+router.use(tenantMembersRouter);
+router.use(signCmsPublicMediaResponses);
+
+// Mọi API nghiệp vụ phía dưới mặc định cần phiên hợp lệ, trừ allowlist public
+// theo đúng method/path trong middleware. Chặn các route cũ từng để hở.
+router.use(businessAuthGuard);
 router.use(healthRouter);
 router.use(customersRouter);
 router.use(bookingsRouter);

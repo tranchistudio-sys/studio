@@ -11,6 +11,7 @@ import {
   loadScriptSettings,
 } from "./ai-engine";
 import { subscribeTestSession } from "../lib/test-sse";
+import { watchPlatformSessionValidity } from "../platform/session";
 
 const router: IRouter = Router();
 
@@ -276,8 +277,7 @@ router.get("/ai-test/sessions/:id/debug", async (req, res) => {
 // ─── GET /ai-test/sessions/:id/events (SSE) ─────────────────────────────────
 
 router.get("/ai-test/sessions/:id/events", async (req, res) => {
-  const tokenFromQuery = req.query.token ? `Bearer ${req.query.token}` : undefined;
-  const callerId = verifyToken(req.headers.authorization ?? tokenFromQuery);
+  const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(403).json({ error: "Vui lòng đăng nhập để dùng phòng test AI" });
 
   const sessionId = req.params.id;
@@ -291,6 +291,10 @@ router.get("/ai-test/sessions/:id/events", async (req, res) => {
   res.write(`data: ${JSON.stringify({ type: "connected", sessionId })}\n\n`);
 
   const unsubscribe = subscribeTestSession(sessionId, res);
+  const stopSessionWatch = watchPlatformSessionValidity(res, () => {
+    unsubscribe();
+    try { res.end(); } catch {}
+  });
 
   const keepAlive = setInterval(() => {
     try {
@@ -302,6 +306,7 @@ router.get("/ai-test/sessions/:id/events", async (req, res) => {
 
   const cleanup = () => {
     clearInterval(keepAlive);
+    stopSessionWatch();
     unsubscribe();
   };
 

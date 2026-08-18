@@ -1672,9 +1672,7 @@ function DriveConfigSection({ notify }: { notify: Notify }) {
   const hasClient = status?.hasClient ?? true;
   const callbackUri = typeof window !== "undefined" ? `${window.location.origin}/api/autopost/drive/callback` : "";
   const onConnect = () => {
-    const token = localStorage.getItem("amazingStudioToken_v2") || "";
-    if (!token) { notify(false, "Chưa đăng nhập"); return; }
-    const url = `${apiUrl("/api/autopost/drive/connect")}?token=${encodeURIComponent(token)}&redirectUri=${encodeURIComponent(callbackUri)}`;
+    const url = `${apiUrl("/api/autopost/drive/connect")}?redirectUri=${encodeURIComponent(callbackUri)}`;
     window.location.href = url;
   };
 
@@ -1682,7 +1680,7 @@ function DriveConfigSection({ notify }: { notify: Notify }) {
     <div className="rounded-2xl border bg-card p-4 space-y-3">
       <h3 className="font-semibold flex items-center gap-1.5"><Folder className="w-4 h-4 text-amber-500" /> Google Drive (Phase 2)</h3>
       <p className="text-xs text-muted-foreground leading-relaxed">
-        Dùng <code>GOOGLE_DRIVE_CLIENT_ID/SECRET</code>, <b>tự fallback</b> sang <code>GOOGLE_CLIENT_ID/SECRET</code> nếu chưa đặt riêng — <b>không cần tạo lại</b>. Bấm <b>Kết nối Google Drive</b> để cấp quyền <b>chỉ đọc</b> (<code>drive.readonly</code>); refresh token lưu an toàn, không hiển thị.
+        Dùng OAuth client riêng <code>GOOGLE_DRIVE_CLIENT_ID/SECRET</code>. Bấm <b>Kết nối Google Drive</b> để cấp quyền <b>chỉ đọc</b> (<code>drive.readonly</code>); refresh token lưu an toàn, không hiển thị.
       </p>
       <div className="flex items-center gap-2 flex-wrap">
         <Button onClick={onConnect} disabled={!hasClient} title={hasClient ? "" : "Chưa có Client ID/Secret trong môi trường"}>
@@ -1698,7 +1696,7 @@ function DriveConfigSection({ notify }: { notify: Notify }) {
         )}
       </div>
       {!hasClient && (
-        <p className="text-[11px] text-red-600">Chưa có Client ID/Secret: đặt <code>GOOGLE_DRIVE_CLIENT_ID/SECRET</code> hoặc <code>GOOGLE_CLIENT_ID/SECRET</code> trong môi trường.</p>
+        <p className="text-[11px] text-red-600">Chưa có Client ID/Secret: đặt riêng <code>GOOGLE_DRIVE_CLIENT_ID</code> và <code>GOOGLE_DRIVE_CLIENT_SECRET</code> trong môi trường.</p>
       )}
       <p className="text-[11px] text-muted-foreground">
         Thêm URL này vào <b>Authorized redirect URIs</b> của OAuth client (Google Cloud Console): <code className="break-all">{callbackUri}</code>

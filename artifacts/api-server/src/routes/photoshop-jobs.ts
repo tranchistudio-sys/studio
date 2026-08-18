@@ -1029,8 +1029,7 @@ router.get("/photoshop-jobs/my-stats", async (req, res) => {
     const callerId = verifyToken(req.headers.authorization);
     if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
 
-    const staffRow = await pool.query(`SELECT role FROM staff WHERE id = $1`, [callerId]);
-    const isAdmin = staffRow.rows[0]?.role === "admin";
+    const isAdmin = await getCallerRole(req.headers.authorization) === "admin";
 
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();

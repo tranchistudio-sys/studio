@@ -75,7 +75,7 @@ export function CmsImageField({
       }
       const { blob, mimeType } = await convertToWebP(file);
       const name = file.name.replace(/\.[^.]+$/, "") + ".webp";
-      const path = await uploadFileViaPresign(blob, name, mimeType);
+      const path = await uploadFileViaPresign(blob, name, mimeType, "cms-public");
       onChange(path);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Upload thất bại");

@@ -37,6 +37,12 @@ Nếu bình luận báo ❌ hoặc ⛔ thì chưa có link — nghĩa là code c
 | Người lạ mở link | Basic Auth phủ toàn site (`preview-basic-auth.ts`), kèm `X-Robots-Tag: noindex`. |
 | Tốn tiền server | Máy tự ngủ khi không ai dùng; đóng PR là app bị **xoá hẳn**. |
 
+Dynamic PR preview **không kiểm tra Google login hoặc trang platform**. Workflow
+fail-closed bằng cách xóa và kiểm chứng không còn các Fly secret platform,
+Google và bootstrap từ lần deploy trước. Chỉ local login được bật. Google login
+thật cần staging hostname cố định cùng platform DB và tenant DB test tách biệt;
+xem [google-auth.md](google-auth.md#preview-trên-điện-thoại).
+
 Mật khẩu đăng nhập *bên trong* app xem thử được script seed đặt lại — **mật khẩu
 production không dùng trên hạ tầng xem thử**.
 

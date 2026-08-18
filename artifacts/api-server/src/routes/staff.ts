@@ -3,6 +3,11 @@ import { db } from "@workspace/db";
 import { staffTable, staffJobEarningsTable } from "@workspace/db/schema";
 import { eq, sql } from "drizzle-orm";
 import { verifyToken } from "./auth";
+import { readLegacyToken } from "../lib/legacy-auth-token";
+import {
+  findTenantStaffMembership,
+  platformContextFromResponse,
+} from "../platform/tenant-authorization";
 
 const PALETTE_KEYS = ["sky", "indigo", "violet", "emerald", "amber", "rose", "orange", "slate", "teal", "pink"] as const;
 
@@ -25,7 +30,9 @@ const fmt = (s: {
 };
 
 // Helper: get caller role from DB
-async function getCallerRole(callerId: number): Promise<string | null> {
+async function getCallerRole(callerId: number, authorization?: string): Promise<string | null> {
+  const tenantRole = readLegacyToken(authorization)?.tenantRole;
+  if (tenantRole) return tenantRole === "STAFF" ? "staff" : "admin";
   const r = await db.select({ role: staffTable.role }).from(staffTable).where(eq(staffTable.id, callerId));
   return r[0]?.role ?? null;
 }
@@ -79,7 +86,7 @@ router.get("/staff/lite", async (req, res) => {
 router.get("/staff", async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
-  const callerRole = await getCallerRole(callerId);
+  const callerRole = await getCallerRole(callerId, req.headers.authorization);
   const isAdmin = callerRole === "admin";
   res.set("Cache-Control", "no-store");
   if (!isAdmin) {
@@ -96,7 +103,7 @@ router.get("/staff/:id", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
 
   const id = parseInt(req.params.id);
-  const callerRole = await getCallerRole(callerId);
+  const callerRole = await getCallerRole(callerId, req.headers.authorization);
   const isAdmin = callerRole === "admin";
   if (!isAdmin && callerId !== id) {
     return res.status(403).json({ error: "Không có quyền xem hồ sơ này" });
@@ -130,10 +137,15 @@ router.get("/staff/:id", async (req, res) => {
 router.post("/staff", async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
-  const callerRole = await getCallerRole(callerId);
+  const callerRole = await getCallerRole(callerId, req.headers.authorization);
   if (callerRole !== "admin") return res.status(403).json({ error: "Chỉ admin mới có thể thêm nhân viên" });
 
   const { name, phone, role, roles, email, salary, baseSalaryAmount, joinDate, isActive, status, staffType, attendanceEnabled, notes, salaryNotes, avatar, banner, color } = req.body;
+  const platformContext = platformContextFromResponse(res);
+  const requestsLegacyAdmin = role === "admin" || (Array.isArray(roles) && roles.includes("admin"));
+  if (platformContext?.tenantRole === "ADMIN" && requestsLegacyAdmin) {
+    return res.status(403).json({ error: "Chỉ OWNER được cấp quyền quản trị" });
+  }
   const statusVal = status || "active";
   const activeVal = isActive !== undefined ? (isActive ? 1 : 0) : (statusVal === "inactive" || statusVal === "probation" ? 0 : 1);
   const notesVal = [notes, salaryNotes].filter(Boolean).join(" | ") || null;
@@ -174,7 +186,7 @@ router.put("/staff/:id", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
 
   const id = parseInt(req.params.id);
-  const callerRole = await getCallerRole(callerId);
+  const callerRole = await getCallerRole(callerId, req.headers.authorization);
   const isAdmin = callerRole === "admin";
 
   // Admin-only: nhân viên thường tự sửa hồ sơ qua PATCH /staff/me
@@ -183,6 +195,27 @@ router.put("/staff/:id", async (req, res) => {
   }
 
   const { name, phone, role, roles, email, salary, baseSalaryAmount, joinDate, isActive, status, staffType, attendanceEnabled, notes, salaryNotes, avatar, banner, coverImageUrl, color } = req.body;
+  const platformContext = platformContextFromResponse(res);
+  const targetMembership = platformContext
+    ? await findTenantStaffMembership(platformContext, id)
+    : null;
+  const requestsLegacyAdmin = role === "admin" || (Array.isArray(roles) && roles.includes("admin"));
+  if (platformContext?.tenantRole === "ADMIN" && requestsLegacyAdmin) {
+    return res.status(403).json({ error: "Chỉ OWNER được cấp quyền quản trị" });
+  }
+  if (
+    platformContext?.tenantRole === "ADMIN" &&
+    targetMembership &&
+    targetMembership.role !== "STAFF"
+  ) {
+    return res.status(403).json({ error: "ADMIN không được chỉnh hồ sơ OWNER hoặc ADMIN khác" });
+  }
+  const deactivating = status === "inactive" || status === "probation" || isActive === false;
+  if (targetMembership && deactivating) {
+    return res.status(409).json({
+      error: "Hồ sơ đã liên kết tài khoản. Hãy khóa thành viên tại trang Tài khoản & phân quyền.",
+    });
+  }
   const update: Record<string, unknown> = {};
 
   if (name !== undefined) update.name = name;
@@ -224,10 +257,26 @@ router.put("/staff/:id", async (req, res) => {
 router.delete("/staff/:id", async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
-  const callerRole = await getCallerRole(callerId);
+  const callerRole = await getCallerRole(callerId, req.headers.authorization);
   if (callerRole !== "admin") return res.status(403).json({ error: "Chỉ admin mới có thể xóa nhân viên" });
 
   const id = parseInt(req.params.id);
+  const platformContext = platformContextFromResponse(res);
+  const targetMembership = platformContext
+    ? await findTenantStaffMembership(platformContext, id)
+    : null;
+  if (
+    platformContext?.tenantRole === "ADMIN" &&
+    targetMembership &&
+    targetMembership.role !== "STAFF"
+  ) {
+    return res.status(403).json({ error: "ADMIN không được xóa hồ sơ OWNER hoặc ADMIN khác" });
+  }
+  if (targetMembership) {
+    return res.status(409).json({
+      error: "Không thể xóa hồ sơ đang liên kết tài khoản. Hãy xử lý membership trước.",
+    });
+  }
   // Null-out non-cascade FK references first
   await db.execute(`UPDATE tasks SET assignee_id = NULL WHERE assignee_id = ${id}`);
   await db.execute(`DELETE FROM payrolls WHERE staff_id = ${id}`);

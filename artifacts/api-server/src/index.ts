@@ -1,6 +1,8 @@
 // PHẢI là import ĐẦU TIÊN: chốt an toàn cho bản preview theo PR phải chạy trước
 // khi ./app (và các route đọc env lúc import) được nạp. No-op khi không phải preview.
 import "./preview-boot";
+// Must be evaluated before ./app and its legacy routes/schedulers.
+import "./lib/install-runtime-log-redaction";
 import app from "./app";
 import { logger } from "./lib/logger";
 import runMigrations from "./migrations";

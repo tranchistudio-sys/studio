@@ -76,12 +76,9 @@ withStartupDdlLock(ensureCustomerPhoneUnique).catch(console.error);
  * trả false (caller chỉ cần `if (!(await ensureAdmin(...))) return;`).
  */
 async function ensureAdmin(req: Request, res: Response, forbiddenMsg = "Không có quyền thực hiện thao tác này"): Promise<boolean> {
-  const callerId = verifyToken(req.headers.authorization);
-  if (!callerId) { res.status(401).json({ error: "Chưa đăng nhập hoặc phiên hết hạn" }); return false; }
-  const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1 AND is_active = 1`, [callerId]);
-  const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
-  if (!isAdmin) { res.status(403).json({ error: forbiddenMsg }); return false; }
+  const role = await getCallerRole(req.headers.authorization);
+  if (!role) { res.status(401).json({ error: "Chưa đăng nhập hoặc phiên hết hạn" }); return false; }
+  if (role !== "admin") { res.status(403).json({ error: forbiddenMsg }); return false; }
   return true;
 }
 

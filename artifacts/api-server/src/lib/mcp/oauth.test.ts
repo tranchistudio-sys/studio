@@ -3,6 +3,10 @@ import bcrypt from "bcryptjs";
 
 const query = vi.fn();
 vi.mock("@workspace/db", () => ({ db: {}, pool: { query: (...a: unknown[]) => query(...a) } }));
+vi.mock("@workspace/platform-db", () => ({
+  isPlatformDatabaseConfigured: () => false,
+  getPlatformPool: vi.fn(),
+}));
 
 import { mcpOAuthProvider, issueTestAccessToken, authenticateStaff, _verifyJwtForTest, redirectUrisAllowed, renderLoginPage } from "./oauth.js";
 

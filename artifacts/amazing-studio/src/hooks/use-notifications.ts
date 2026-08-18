@@ -131,12 +131,11 @@ export function useNotifications() {
   }, []);
 
   const connectSSE = useCallback(() => {
-    const token = localStorage.getItem("amazingStudioToken_v2");
-    if (!token || !mountedRef.current) return;
+    if (!mountedRef.current) return;
     if (document.hidden) return;
     if (eventSourceRef.current) return;
 
-    const es = new EventSource(`${BASE}/api/notifications/stream?token=${encodeURIComponent(token)}`);
+    const es = new EventSource(`${BASE}/api/notifications/stream`, { withCredentials: true });
     eventSourceRef.current = es;
 
     es.onopen = () => {

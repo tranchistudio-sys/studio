@@ -3,6 +3,8 @@ import { db } from "@workspace/db";
 import { notificationsTable, staffTable } from "@workspace/db/schema";
 import { eq, and, desc, sql, isNull, or } from "drizzle-orm";
 import { verifyToken } from "./auth";
+import { readLegacyToken } from "../lib/legacy-auth-token";
+import { watchPlatformSessionValidity } from "../platform/session";
 import { sendPushToStaff } from "./web-push";
 
 const router = Router();
@@ -138,17 +140,15 @@ export function emitNotification(notification: {
 }
 
 async function resolveAuth(req: Request): Promise<{ staffId: number; isAdmin: boolean } | null> {
-  let header = req.headers.authorization;
-  if (!header) {
-    const tokenQ = req.query.token as string | undefined;
-    if (tokenQ) header = `Bearer ${tokenQ}`;
-  }
-  const sid = verifyToken(header);
+  const bridged = readLegacyToken(req.headers.authorization);
+  const sid = bridged?.id ?? verifyToken(req.headers.authorization);
   if (!sid) return null;
   const rows = await db.select().from(staffTable).where(eq(staffTable.id, sid));
   const user = rows[0];
   if (!user || (user as any).isActive === false) return null;
-  const isAdmin = (user as any).role === "admin" || (Array.isArray((user as any).roles) && (user as any).roles.includes("admin"));
+  const isAdmin = bridged?.tenantRole
+    ? bridged.tenantRole === "OWNER" || bridged.tenantRole === "ADMIN"
+    : (user as any).role === "admin" || (Array.isArray((user as any).roles) && (user as any).roles.includes("admin"));
   return { staffId: sid, isAdmin };
 }
 
@@ -168,9 +168,15 @@ router.get("/notifications/stream", async (req: Request, res: Response) => {
   clients.push(client);
 
   const keepAlive = setInterval(() => { res.write(":\n\n"); }, 30000);
+  const stopSessionWatch = watchPlatformSessionValidity(res, () => {
+    const idx = clients.indexOf(client);
+    if (idx >= 0) clients.splice(idx, 1);
+    try { res.end(); } catch {}
+  });
 
   req.on("close", () => {
     clearInterval(keepAlive);
+    stopSessionWatch();
     const idx = clients.indexOf(client);
     if (idx >= 0) clients.splice(idx, 1);
   });

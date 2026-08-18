@@ -385,17 +385,18 @@ function toResponseItem(it: CatalogItem) {
 
 router.post("/cms/public/visual-advisor", async (req, res) => {
   try {
-    const ip = String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "?").split(",")[0].trim();
-    if (!checkRate(ip)) {
-      return res.status(429).json({ error: "Bạn hỏi hơi nhanh, chờ vài giây nhé." });
-    }
-
     const { query, ideasToken, sourceScope, currentSource } = (req.body ?? {}) as {
       query?: unknown; ideasToken?: unknown; sourceScope?: unknown; currentSource?: unknown;
     };
     const q = typeof query === "string" ? query.trim() : "";
     if (!q || q.length > 500) {
       return res.status(400).json({ error: "Vui lòng nhập câu hỏi (tối đa 500 ký tự)." });
+    }
+    // Express đã được cấu hình số proxy hop rõ ràng; không tin header thô do
+    // client tự gửi để né rate limit của endpoint có phát sinh chi phí AI.
+    const ip = req.ip || req.socket.remoteAddress || "unknown";
+    if (!checkRate(ip)) {
+      return res.status(429).json({ error: "Bạn hỏi hơi nhanh, chờ vài giây nhé." });
     }
 
     // Phạm vi nguồn: "current" chỉ hợp lệ khi biết module đang xem; còn lại → all

@@ -138,6 +138,7 @@ describe("neutralizeOutboundEnv — dọn sạch env gây side effect", () => {
       ANTHROPIC_API_KEY: "sk-ant",
       OPENAI_API_KEY: "sk-oai",
       GOOGLE_DRIVE_REFRESH_TOKEN: "rt",
+      GOOGLE_CLIENT_ID: "public-gis-client-id",
       VAPID_PRIVATE_KEY: "vp",
       PRIVATE_OBJECT_DIR: "/buckets/prod",
       TRUTH_API_BASE: "https://tranchistudio.com",
@@ -159,6 +160,9 @@ describe("neutralizeOutboundEnv — dọn sạch env gây side effect", () => {
       ]),
     );
     for (const key of removed) expect(env[key]).toBeUndefined();
+    // GIS Web client ID là public và tách khỏi Drive OAuth; giữ lại để staging
+    // có origin ổn định có thể test login mà không mở Drive credential.
+    expect(env.GOOGLE_CLIENT_ID).toBe("public-gis-client-id");
 
     // AUTOPOST_DRY_RUN="true" khoá cứng chạy khô, ENV thắng cả cấu hình trong DB.
     expect(env.AUTOPOST_DRY_RUN).toBe("true");

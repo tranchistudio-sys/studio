@@ -1,6 +1,7 @@
 import { API_BASE } from "@/lib/api-base";
 
 export interface UploadedImage { objectPath: string; mimeType: string; name: string }
+export type UploadStorageScope = "private" | "cms-public";
 
 function authHeaders(): HeadersInit {
   const token = localStorage.getItem("amazingStudioToken_v2");
@@ -40,8 +41,16 @@ export async function convertToWebP(
 }
 
 // ─── Upload qua presigned URL ───────────────────────────────────────────────
-export async function uploadFileViaPresign(blob: Blob, name: string, mimeType: string): Promise<string> {
-  const r1 = await fetch(`${API_BASE}/api/storage/uploads/request-url`, {
+export async function uploadFileViaPresign(
+  blob: Blob,
+  name: string,
+  mimeType: string,
+  scope: UploadStorageScope = "private",
+): Promise<string> {
+  const requestPath = scope === "cms-public"
+    ? "/api/storage/cms-public/uploads/request-url"
+    : "/api/storage/uploads/request-url";
+  const r1 = await fetch(`${API_BASE}${requestPath}`, {
     method: "POST", headers: authHeaders(),
     body: JSON.stringify({ name, size: blob.size, contentType: mimeType }),
   });
@@ -50,8 +59,18 @@ export async function uploadFileViaPresign(blob: Blob, name: string, mimeType: s
     throw new Error(errBody.error ?? `Không tạo được link upload (${r1.status})`);
   }
   const { uploadURL, objectPath } = await r1.json() as { uploadURL: string; objectPath: string };
-  const r2 = await fetch(uploadURL, { method: "PUT", body: blob, headers: { "Content-Type": mimeType } });
+  const token = localStorage.getItem("amazingStudioToken_v2");
+  const sameOriginUpload = uploadURL.startsWith("/");
+  const r2 = await fetch(uploadURL, {
+    method: "PUT",
+    body: blob,
+    credentials: sameOriginUpload ? "same-origin" : "omit",
+    headers: {
+      "Content-Type": mimeType,
+      ...(sameOriginUpload ? { "X-Upload-Name": name } : {}),
+      ...(sameOriginUpload && token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
   if (!r2.ok) throw new Error(`Upload thất bại (${r2.status})`);
   return objectPath;
 }
-

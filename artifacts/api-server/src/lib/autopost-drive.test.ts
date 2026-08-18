@@ -76,7 +76,7 @@ describe("classifyMime", () => {
   });
 });
 
-describe("driveClientSource — fallback GOOGLE_DRIVE_* → GOOGLE_*", () => {
+describe("driveClientSource — tách biệt GIS login và Google Drive", () => {
   const ORIGINAL = { ...process.env };
   beforeEach(() => {
     process.env = { ...ORIGINAL };
@@ -91,16 +91,16 @@ describe("driveClientSource — fallback GOOGLE_DRIVE_* → GOOGLE_*", () => {
     expect(driveClientSource()).toEqual({ clientId: "", clientSecret: "", idVar: null, secretVar: null });
   });
 
-  it("chỉ có GOOGLE_CLIENT_ID/SECRET → fallback đọc được + báo đúng tên biến", () => {
+  it("không dùng GOOGLE_CLIENT_ID/SECRET của GIS làm OAuth Drive", () => {
     process.env.GOOGLE_CLIENT_ID = "gid";
     process.env.GOOGLE_CLIENT_SECRET = "gsecret";
     expect(driveClientSource()).toEqual({
-      clientId: "gid", clientSecret: "gsecret",
-      idVar: "GOOGLE_CLIENT_ID", secretVar: "GOOGLE_CLIENT_SECRET",
+      clientId: "", clientSecret: "",
+      idVar: null, secretVar: null,
     });
   });
 
-  it("GOOGLE_DRIVE_* được ưu tiên hơn GOOGLE_*", () => {
+  it("chỉ đọc GOOGLE_DRIVE_* chuyên dụng", () => {
     process.env.GOOGLE_CLIENT_ID = "gid";
     process.env.GOOGLE_CLIENT_SECRET = "gsecret";
     process.env.GOOGLE_DRIVE_CLIENT_ID = "did";
@@ -124,22 +124,26 @@ describe("readDriveEnv", () => {
   });
   afterEach(() => { process.env = { ...ORIGINAL }; });
 
-  it("thiếu hết → liệt kê đủ 3 biến (kèm fallback)", () => {
+  it("thiếu hết → liệt kê đủ 3 biến chuyên dụng", () => {
     const { creds, missing } = readDriveEnv();
     expect(creds).toBeNull();
     expect(missing).toEqual([
-      "GOOGLE_DRIVE_CLIENT_ID (hoặc GOOGLE_CLIENT_ID)",
-      "GOOGLE_DRIVE_CLIENT_SECRET (hoặc GOOGLE_CLIENT_SECRET)",
+      "GOOGLE_DRIVE_CLIENT_ID",
+      "GOOGLE_DRIVE_CLIENT_SECRET",
       "GOOGLE_DRIVE_REFRESH_TOKEN",
     ]);
   });
 
-  it("client từ fallback GOOGLE_* + thiếu refresh → chỉ thiếu refresh token", () => {
+  it("client GIS không làm biến Drive hết thiếu", () => {
     process.env.GOOGLE_CLIENT_ID = "gid";
     process.env.GOOGLE_CLIENT_SECRET = "gsecret";
     const { creds, missing } = readDriveEnv();
     expect(creds).toBeNull();
-    expect(missing).toEqual(["GOOGLE_DRIVE_REFRESH_TOKEN"]);
+    expect(missing).toEqual([
+      "GOOGLE_DRIVE_CLIENT_ID",
+      "GOOGLE_DRIVE_CLIENT_SECRET",
+      "GOOGLE_DRIVE_REFRESH_TOKEN",
+    ]);
   });
 
   it("đủ 3 biến (GOOGLE_DRIVE_*) → trả creds", () => {

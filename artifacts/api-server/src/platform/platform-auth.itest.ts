@@ -195,7 +195,10 @@ beforeEach(async () => {
       tenant_database_registry, tenants, platform_users
     RESTART IDENTITY CASCADE
   `);
-  await tenantPool.query("TRUNCATE TABLE staff");
+  // Production composition may create tenant tables that reference staff during
+  // startup. This is an isolated CI database, so reset the complete FK graph
+  // instead of letting a startup-created table make every auth test fail.
+  await tenantPool.query("TRUNCATE TABLE staff RESTART IDENTITY CASCADE");
   await tenantPool.query(
     `INSERT INTO staff (id, name, role, roles, phone, email, username, is_active)
      VALUES

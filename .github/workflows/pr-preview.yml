@@ -301,6 +301,21 @@ jobs:
           fi
           echo "Đăng nhập Google đã sẵn sàng trên bản xem thử."
 
+      - name: Xác nhận trang mở được trên iPhone
+        if: github.event.number == 163
+        run: |
+          page=$(curl -fsS --max-time 15 \
+            -H 'Accept: text/html,application/xhtml+xml' \
+            -A 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1' \
+            "$PREVIEW_URL/?iphone-check=${{ github.sha }}")
+          case "$page" in
+            *'<meta name="viewport"'*'name="password"'*'Vào xem app'*)
+              echo "Trang mật khẩu preview đã trả đủ giao diện cho iPhone.";;
+            *)
+              echo "::error::iPhone không nhận được giao diện mở preview."
+              exit 1;;
+          esac
+
       # Khi BẤT KỲ bước nào phía trên hỏng (deploy hoặc xác nhận sống): in trạng
       # thái + log máy để thấy NGAY nguyên nhân trong CI, không phải mò dashboard.
       # Phải đặt SAU bước xác nhận — if:failure() chỉ nhìn các bước TRƯỚC nó.

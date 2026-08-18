@@ -50,4 +50,25 @@ describe("upload storage scope", () => {
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe("/api/storage/uploads/request-url");
   });
+
+  it("binds queued upload requests to the expected tenant and abort signal", async () => {
+    const objectPath = "/objects/cms-public/tenant-bound";
+    const uploadURL = "/api/storage/cms-public/uploads/local/tenant-bound";
+    const fetchMock = stubUpload(objectPath, uploadURL);
+    const controller = new AbortController();
+
+    await uploadFileViaPresign(
+      new Blob(["image"], { type: "image/webp" }),
+      "tenant-cover.webp",
+      "image/webp",
+      "cms-public",
+      { tenantId: "tenant-a", signal: controller.signal },
+    );
+
+    const request = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    expect(new Headers(request.headers).get("X-Tenant-Id")).toBe("tenant-a");
+    expect(request.credentials).toBe("include");
+    expect(request.signal).toBe(controller.signal);
+    expect((fetchMock.mock.calls[1]?.[1] as RequestInit).signal).toBe(controller.signal);
+  });
 });

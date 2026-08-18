@@ -12,6 +12,7 @@
 import { pool } from "@workspace/db";
 import { getTableColumns } from "drizzle-orm";
 import { bookingsTable } from "@workspace/db/schema";
+import { currentTenantScope } from "./tenant-scope";
 
 export type SchemaFlags = {
   /** Bảng booking_occurrences (PR #79 — ngày thực hiện phụ). */
@@ -24,13 +25,15 @@ export type SchemaFlags = {
   lifecycleCols: boolean;
 };
 
-let cached: SchemaFlags | null = null;
+const cache = new Map<string, SchemaFlags>();
 
 function allOn(f: SchemaFlags): boolean {
   return f.occurrences && f.dressWarnCols && f.warnToggleCol && f.lifecycleCols;
 }
 
 export async function getSchemaFlags(): Promise<SchemaFlags> {
+  const tenantScope = currentTenantScope();
+  const cached = cache.get(tenantScope);
   if (cached && allOn(cached)) return cached;
   const r = await pool.query(`
     SELECT
@@ -46,18 +49,19 @@ export async function getSchemaFlags(): Promise<SchemaFlags> {
                 AND column_name='actual_return_date') AS lc
   `);
   const row = r.rows[0] ?? {};
-  cached = {
+  const flags = {
     occurrences: row.occ === true,
     dressWarnCols: row.dw === true,
     warnToggleCol: row.wt === true,
     lifecycleCols: row.lc === true,
   };
-  return cached;
+  cache.set(tenantScope, flags);
+  return flags;
 }
 
 /** Reset cache — chỉ dùng cho test. */
 export function _resetSchemaFlagsCache(): void {
-  cached = null;
+  cache.delete(currentTenantScope());
 }
 
 /**

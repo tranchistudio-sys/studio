@@ -1,5 +1,12 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { RequestHandler, Response } from "express";
+import { getTenantDatabaseIdentity } from "@workspace/db";
+import {
+  AMAZING_STUDIO_TENANT_SLUG,
+  authorizeTenantMediaObjectPath,
+  canonicalTenantMediaScope,
+  type TenantMediaScope,
+} from "./tenant-media-path";
 
 const PUBLIC_MEDIA_TTL_SECONDS = 60 * 60;
 const CMS_PUBLIC_OBJECT_PATTERN = /^cms-public\/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -13,6 +20,20 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
  */
 const legacyCmsPublicObjectRegistry = new Set<string>();
 let registryInitialization: Promise<void> | null = null;
+const tenantLegacyCmsPublicObjectRegistries = new Map<string, Set<string>>();
+const tenantRegistryInitializations = new Map<string, Promise<void>>();
+
+function currentTenantMediaScopeOrLegacy(): TenantMediaScope | null {
+  try {
+    const { tenantId, tenantSlug } = getTenantDatabaseIdentity();
+    return canonicalTenantMediaScope({ tenantId, tenantSlug });
+  } catch (error) {
+    // Standalone legacy mode intentionally keeps the pre-PR2 behavior. Once
+    // platform mode is configured, losing ALS context must fail closed.
+    if (process.env.PLATFORM_DATABASE_URL?.trim()) throw error;
+    return null;
+  }
+}
 
 function mediaSecret(): string {
   const secret = process.env.SESSION_SECRET;
@@ -53,18 +74,22 @@ export function isCmsPublicObjectPathAllowed(rawPath: string): boolean {
   );
 }
 
-function registerLegacyValue(value: unknown, depth = 0): void {
+function registerLegacyValue(
+  value: unknown,
+  depth = 0,
+  registry: Set<string> = legacyCmsPublicObjectRegistry,
+): void {
   if (depth > 12 || value == null) return;
   if (typeof value === "string") {
     const path = objectPathFromValue(value);
     if (path && !CMS_PUBLIC_OBJECT_PATTERN.test(path)) {
-      legacyCmsPublicObjectRegistry.add(path);
+      registry.add(path);
       return;
     }
     const trimmed = value.trim();
     if ((trimmed.startsWith("[") && trimmed.endsWith("]")) || (trimmed.startsWith("{") && trimmed.endsWith("}"))) {
       try {
-        registerLegacyValue(JSON.parse(trimmed), depth + 1);
+        registerLegacyValue(JSON.parse(trimmed), depth + 1, registry);
       } catch {
         // Legacy text columns are not guaranteed to contain valid JSON.
       }
@@ -72,12 +97,12 @@ function registerLegacyValue(value: unknown, depth = 0): void {
     return;
   }
   if (Array.isArray(value)) {
-    for (const entry of value) registerLegacyValue(entry, depth + 1);
+    for (const entry of value) registerLegacyValue(entry, depth + 1, registry);
     return;
   }
   if (typeof value === "object") {
     for (const entry of Object.values(value as Record<string, unknown>)) {
-      registerLegacyValue(entry, depth + 1);
+      registerLegacyValue(entry, depth + 1, registry);
     }
   }
 }
@@ -95,7 +120,9 @@ function isMissingLegacyTable(error: unknown): boolean {
   return code === "42P01" || code === "42703";
 }
 
-async function loadLegacyCmsPublicObjectRegistry(): Promise<void> {
+async function loadLegacyCmsPublicObjectRegistry(
+  registry: Set<string> = legacyCmsPublicObjectRegistry,
+): Promise<void> {
   const { pool } = await import("@workspace/db");
   // Keep both table and field allowlists explicit. In particular, never scan
   // descriptions/notes: a private path pasted into ordinary text must not be
@@ -133,7 +160,9 @@ async function loadLegacyCmsPublicObjectRegistry(): Promise<void> {
       const result = await pool.query(
         `SELECT jsonb_build_array(${selectedFields}) AS data FROM ${source.table} AS source_row`,
       );
-      for (const row of result.rows as Array<{ data?: unknown }>) registerLegacyValue(row.data);
+      for (const row of result.rows as Array<{ data?: unknown }>) {
+        registerLegacyValue(row.data, 0, registry);
+      }
     } catch (error) {
       // Fresh/test databases may not have every optional CMS module yet.
       if (!isMissingLegacyTable(error)) throw error;
@@ -151,16 +180,210 @@ export async function ensureCmsPublicMediaRegistryInitialized(): Promise<void> {
   await registryInitialization;
 }
 
+export async function ensureTenantCmsPublicMediaRegistryInitialized(
+  scope: TenantMediaScope,
+): Promise<void> {
+  const canonicalScope = canonicalTenantMediaScope(scope);
+  // Only Amazing owns the pre-tenant-prefix object tree. New tenants must not
+  // scan their database and accidentally bless an arbitrary legacy path.
+  if (canonicalScope.tenantSlug !== AMAZING_STUDIO_TENANT_SLUG) return;
+  let initialization = tenantRegistryInitializations.get(canonicalScope.tenantId);
+  if (!initialization) {
+    const registry = tenantLegacyCmsPublicObjectRegistries.get(canonicalScope.tenantId) ?? new Set<string>();
+    tenantLegacyCmsPublicObjectRegistries.set(canonicalScope.tenantId, registry);
+    initialization = loadLegacyCmsPublicObjectRegistry(registry).catch((error) => {
+      tenantRegistryInitializations.delete(canonicalScope.tenantId);
+      throw error;
+    });
+    tenantRegistryInitializations.set(canonicalScope.tenantId, initialization);
+  }
+  await initialization;
+}
+
 /** Test isolation only. The production registry is immutable after startup. */
 export function resetCmsPublicMediaRegistryForTests(): void {
   legacyCmsPublicObjectRegistry.clear();
   registryInitialization = null;
+  tenantLegacyCmsPublicObjectRegistries.clear();
+  tenantRegistryInitializations.clear();
 }
 
 function signatureFor(path: string, expires: number): string {
   return createHmac("sha256", mediaSecret())
     .update(`cms-public:${path}:${expires}`)
     .digest("base64url");
+}
+
+function tenantSignatureFor(
+  scope: TenantMediaScope,
+  path: string,
+  expires: number,
+): string {
+  const canonicalScope = canonicalTenantMediaScope(scope);
+  return createHmac("sha256", mediaSecret())
+    .update(`cms-public:${canonicalScope.tenantId}:${path}:${expires}`)
+    .digest("base64url");
+}
+
+export function isTenantCmsPublicObjectPathAllowed(
+  scope: TenantMediaScope,
+  rawPath: string,
+): boolean {
+  const canonicalScope = canonicalTenantMediaScope(scope);
+  const path = canonicalCmsObjectPath(rawPath);
+  if (!path) return false;
+  try {
+    const authorized = authorizeTenantMediaObjectPath(
+      canonicalScope,
+      `/objects/${path}`,
+      ["cms-public", "uploads"],
+    );
+    if (!authorized.legacy) return authorized.namespace === "cms-public";
+    if (authorized.namespace === "cms-public") return true;
+    return tenantLegacyCmsPublicObjectRegistries
+      .get(canonicalScope.tenantId)
+      ?.has(path) === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Test/provisioning hook; runtime request payloads must never call this. */
+export function registerTenantLegacyCmsPublicObjectValues(
+  scope: TenantMediaScope,
+  value: unknown,
+): void {
+  const canonicalScope = canonicalTenantMediaScope(scope);
+  if (canonicalScope.tenantSlug !== AMAZING_STUDIO_TENANT_SLUG) return;
+  const registry = tenantLegacyCmsPublicObjectRegistries.get(canonicalScope.tenantId) ?? new Set<string>();
+  tenantLegacyCmsPublicObjectRegistries.set(canonicalScope.tenantId, registry);
+  registerLegacyValue(value, 0, registry);
+}
+
+export function signTenantCmsPublicObjectValue(
+  scope: TenantMediaScope,
+  value: string,
+  nowSeconds = Math.floor(Date.now() / 1000),
+): string {
+  const canonicalScope = canonicalTenantMediaScope(scope);
+  const path = objectPathFromValue(value);
+  if (!path || !isTenantCmsPublicObjectPathAllowed(canonicalScope, path)) return value;
+  const expires = nowSeconds + PUBLIC_MEDIA_TTL_SECONDS;
+  const signature = tenantSignatureFor(canonicalScope, path, expires);
+  return `/api/storage/cms/objects/${path}?exp=${expires}&sig=${signature}`;
+}
+
+export function verifyTenantCmsPublicObjectSignature(
+  scope: TenantMediaScope,
+  rawPath: string,
+  rawExpires: unknown,
+  rawSignature: unknown,
+  nowSeconds = Math.floor(Date.now() / 1000),
+): boolean {
+  const canonicalScope = canonicalTenantMediaScope(scope);
+  const path = canonicalCmsObjectPath(rawPath);
+  const expires = typeof rawExpires === "string" && /^\d{10}$/.test(rawExpires)
+    ? Number(rawExpires)
+    : NaN;
+  if (
+    !path ||
+    !isTenantCmsPublicObjectPathAllowed(canonicalScope, path) ||
+    !Number.isSafeInteger(expires) ||
+    expires < nowSeconds ||
+    expires > nowSeconds + PUBLIC_MEDIA_TTL_SECONDS + 60 ||
+    typeof rawSignature !== "string"
+  ) {
+    return false;
+  }
+  const actual = Buffer.from(rawSignature);
+  const scopedExpected = Buffer.from(tenantSignatureFor(canonicalScope, path, expires));
+  if (actual.length === scopedExpected.length && timingSafeEqual(actual, scopedExpected)) return true;
+
+  // Keep already-rendered legacy Amazing URLs alive for their short TTL. The
+  // old signature is never accepted for a prefixed/new-tenant object.
+  try {
+    const authorized = authorizeTenantMediaObjectPath(canonicalScope, `/objects/${path}`);
+    if (!authorized.legacy) return false;
+    const oldExpected = Buffer.from(signatureFor(path, expires));
+    return actual.length === oldExpected.length && timingSafeEqual(actual, oldExpected);
+  } catch {
+    return false;
+  }
+}
+
+export function normalizeTenantCmsPublicMediaReference(
+  scope: TenantMediaScope,
+  value: string,
+): string | null {
+  const canonicalScope = canonicalTenantMediaScope(scope);
+  const trimmed = value.trim();
+  const objectPath = objectPathFromValue(trimmed);
+  if (objectPath) {
+    return isTenantCmsPublicObjectPathAllowed(canonicalScope, objectPath)
+      ? `/objects/${objectPath}`
+      : null;
+  }
+  try {
+    const parsed = new URL(trimmed, "https://cms-media.invalid");
+    const prefix = "/api/storage/cms/objects/";
+    if (!parsed.pathname.startsWith(prefix)) return trimmed;
+    const rawPath = parsed.pathname.slice(prefix.length);
+    const canonicalPath = canonicalCmsObjectPath(rawPath);
+    if (!canonicalPath || !verifyTenantCmsPublicObjectSignature(
+      canonicalScope,
+      canonicalPath,
+      parsed.searchParams.get("exp"),
+      parsed.searchParams.get("sig"),
+    )) return null;
+    return `/objects/${canonicalPath}`;
+  } catch {
+    return trimmed;
+  }
+}
+
+export function findDisallowedTenantCmsObjectReference(
+  scope: TenantMediaScope,
+  value: unknown,
+  depth = 0,
+): string | null {
+  if (depth > 12 || value == null) return null;
+  if (typeof value === "string") {
+    const path = objectPathFromValue(value);
+    return path && !isTenantCmsPublicObjectPathAllowed(scope, path) ? value : null;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const found = findDisallowedTenantCmsObjectReference(scope, entry, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (typeof value === "object") {
+    for (const entry of Object.values(value as Record<string, unknown>)) {
+      const found = findDisallowedTenantCmsObjectReference(scope, entry, depth + 1);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+export function rewriteTenantCmsPublicMediaForResponse(
+  scope: TenantMediaScope,
+  value: unknown,
+  depth = 0,
+): unknown {
+  if (depth > 12) return value;
+  if (typeof value === "string") return signTenantCmsPublicObjectValue(scope, value);
+  if (Array.isArray(value)) {
+    return value.map((entry) => rewriteTenantCmsPublicMediaForResponse(scope, entry, depth + 1));
+  }
+  if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .map(([key, entry]) => [key, rewriteTenantCmsPublicMediaForResponse(scope, entry, depth + 1)]),
+    );
+  }
+  return value;
 }
 
 export function signCmsPublicObjectValue(value: string, nowSeconds = Math.floor(Date.now() / 1000)): string {
@@ -184,6 +407,8 @@ export function isPrivateObjectReference(value: unknown): boolean {
  * reference before persisting it. Other public URL schemes are left intact.
  */
 export function normalizeCmsPublicMediaReference(value: string): string | null {
+  const scope = currentTenantMediaScopeOrLegacy();
+  if (scope) return normalizeTenantCmsPublicMediaReference(scope, value);
   const trimmed = value.trim();
   const objectPath = objectPathFromValue(trimmed);
   if (objectPath) {
@@ -262,13 +487,19 @@ export const validateCmsPublicMediaWrite: RequestHandler = async (req, res, next
     next();
     return;
   }
+  let scope: TenantMediaScope | null;
   try {
-    await ensureCmsPublicMediaRegistryInitialized();
+    scope = currentTenantMediaScopeOrLegacy();
+    if (scope) await ensureTenantCmsPublicMediaRegistryInitialized(scope);
+    else await ensureCmsPublicMediaRegistryInitialized();
   } catch {
     res.status(503).json({ error: "Kho media công khai tạm thời chưa sẵn sàng" });
     return;
   }
-  if (findDisallowedCmsObjectReference(req.body)) {
+  const disallowed = scope
+    ? findDisallowedTenantCmsObjectReference(scope, req.body)
+    : findDisallowedCmsObjectReference(req.body);
+  if (disallowed) {
     res.status(400).json({
       code: "CMS_PRIVATE_OBJECT_REFERENCE",
       error: "Nội dung công khai không được tham chiếu object nội bộ",
@@ -312,13 +543,20 @@ export const signCmsPublicMediaResponses: RequestHandler = async (req, res, next
     next();
     return;
   }
+  let scope: TenantMediaScope | null;
   try {
-    await ensureCmsPublicMediaRegistryInitialized();
+    scope = currentTenantMediaScopeOrLegacy();
+    if (scope) await ensureTenantCmsPublicMediaRegistryInitialized(scope);
+    else await ensureCmsPublicMediaRegistryInitialized();
   } catch {
     res.status(503).json({ error: "Kho media công khai tạm thời chưa sẵn sàng" });
     return;
   }
   const originalJson = res.json.bind(res);
-  res.json = ((body: unknown) => originalJson(rewriteCmsPublicMediaForResponse(body))) as Response["json"];
+  res.json = ((body: unknown) => originalJson(
+    scope
+      ? rewriteTenantCmsPublicMediaForResponse(scope, body)
+      : rewriteCmsPublicMediaForResponse(body),
+  )) as Response["json"];
   next();
 };

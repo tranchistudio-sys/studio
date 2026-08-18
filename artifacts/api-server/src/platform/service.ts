@@ -30,6 +30,10 @@ import {
   resolveAmazingTenantDatabaseReference,
   type TenantDatabaseRegistryRow,
 } from "./tenant-database-reference";
+import {
+  assertTenantDatabaseAvailable,
+  withTenantDatabase,
+} from "./tenant-database-router";
 
 export const GOOGLE_NOT_INVITED_MESSAGE =
   "Tài khoản Google này chưa được cấp quyền sử dụng Amazing Studio. Vui lòng liên hệ quản trị viên.";
@@ -265,17 +269,10 @@ async function revokePriorRequestSession(req: Request): Promise<void> {
 }
 
 async function assertMembershipUsesCurrentDatabase(
-  queryable: PlatformQueryable,
+  _queryable: PlatformQueryable,
   membership: MembershipRow,
 ): Promise<void> {
-  const registry = await queryable.query<TenantDatabaseRegistryRow>(
-    `SELECT database_ref, host_ref, database_name, role_name, secret_ref
-     FROM tenant_database_registry WHERE tenant_id = $1 LIMIT 1`,
-    [membership.tenant_id],
-  );
-  if (!registryMatchesAmazingRuntime(registry.rows[0])) {
-    throw new Error("Database của studio chưa sẵn sàng trong phiên bản PR 1");
-  }
+  await assertTenantDatabaseAvailable(membership.tenant_id);
 }
 
 async function buildResponse(
@@ -308,8 +305,12 @@ async function buildResponse(
     csrfToken: session.csrfToken,
   };
 
-  if (activeTenant?.tenantStaffId) {
-    const staff = await loadLegacyStaff(activeTenant.tenantStaffId);
+  const activeTenantStaffId = activeTenant?.tenantStaffId;
+  if (activeTenantStaffId) {
+    const staff = await withTenantDatabase(
+      activeRow!.tenant_id,
+      () => loadLegacyStaff(activeTenantStaffId),
+    );
     if (!staff) throw new Error("Tài khoản nhân sự được liên kết đã bị khóa hoặc không tồn tại");
     const roles = Array.isArray(staff.roles)
       ? staff.roles.filter((role): role is string => typeof role === "string")
@@ -553,6 +554,9 @@ export async function authenticateGoogle(
   const isBootstrapCandidate = bootstrapEmail === profile.email;
   let bootstrapStaffIdCandidate: number | null = null;
   if (isBootstrapCandidate) {
+    // The legacy Amazing tenant must be registered before its business DB can
+    // be touched. This is an explicit bootstrap mapping, never a fallback.
+    const bootstrapTenantId = await withPlatformTransaction(ensureAmazingTenant);
     const bootstrapState = await getPlatformPool().query<{
       bootstrap_completed_at: Date | null;
       active_owner_count: string;
@@ -570,7 +574,10 @@ export async function authenticateGoogle(
     if (!state?.bootstrap_completed_at && Number(state?.active_owner_count ?? 0) === 0) {
       // Resolve the tenant-side actor before opening/locking a platform
       // transaction. A slow tenant database must not hold platform locks.
-      bootstrapStaffIdCandidate = await findLegacyAdminStaffId();
+      bootstrapStaffIdCandidate = await withTenantDatabase(
+        bootstrapTenantId,
+        findLegacyAdminStaffId,
+      );
     }
   }
 
@@ -873,6 +880,8 @@ export async function responseForSession(
 }
 
 export async function selectTenantForSession(
+  req: Request,
+  res: Response,
   context: PlatformSessionContext,
   tenantId: string,
 ): Promise<PlatformAuthResponse> {
@@ -888,15 +897,28 @@ export async function selectTenantForSession(
   }
   if (selected.tenant_staff_id === null) throw new Error("Studio chưa liên kết hồ sơ nhân sự");
   await assertMembershipUsesCurrentDatabase(platformPool, selected);
-  await platformPool.query(
-    `UPDATE sessions
-     SET active_tenant_id = $2,
-         tenant_membership_id = $3,
-         legacy_staff_id = $4,
-         last_seen_at = now()
-     WHERE id = $1 AND revoked_at IS NULL`,
-    [context.sessionId, selected.tenant_id, selected.membership_id, selected.tenant_staff_id],
+  // Validate the selected tenant-side staff before rotating the session.
+  const selectedStaff = await withTenantDatabase(
+    selected.tenant_id,
+    () => loadLegacyStaff(Number(selected.tenant_staff_id)),
   );
+  if (!selectedStaff) throw new Error("Hồ sơ nhân sự của studio không còn hoạt động");
+
+  const created = await withPlatformTransaction(async (client) => {
+    const revoked = await client.query(
+      `UPDATE sessions
+          SET revoked_at = now(), revoked_reason = 'tenant_switched'
+        WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL
+        RETURNING id`,
+      [context.sessionId, context.userId],
+    );
+    if (!revoked.rows[0]) throw new Error("Phiên đăng nhập đã thay đổi. Vui lòng thử lại");
+    return createPlatformSession(client, req, context.userId, {
+      tenantId: selected.tenant_id,
+      membershipId: selected.membership_id,
+      tenantStaffId: Number(selected.tenant_staff_id),
+    });
+  });
   await writeAudit(platformPool, {
     actorUserId: context.userId,
     tenantId: selected.tenant_id,
@@ -904,11 +926,17 @@ export async function selectTenantForSession(
     targetType: "tenant",
     targetId: selected.tenant_id,
   });
-  const csrfToken = await getSessionCsrfToken(context.sessionId);
-  return buildResponse({
-    sessionId: context.sessionId,
-    csrfToken,
-    userId: context.userId,
-    activeMembership: selected,
-  });
+  try {
+    const payload = await buildResponse({
+      sessionId: created.sessionId,
+      csrfToken: created.csrfToken,
+      userId: context.userId,
+      activeMembership: selected,
+    });
+    setPlatformSessionCookie(res, created.cookieToken, created.expiresAt);
+    return payload;
+  } catch (error) {
+    await revokeSession(created.sessionId, "tenant_switch_response_failed").catch(() => undefined);
+    throw error;
+  }
 }

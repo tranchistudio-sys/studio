@@ -20,12 +20,14 @@ router.get("/readyz", async (_req, res) => {
       const result = await getPlatformPool().query<{
         foundation_migration_applied: boolean;
         membership_revocation_migration_applied: boolean;
+        registry_isolation_migration_applied: boolean;
         membership_auth_version: string | null;
         membership_sessions_revoked_at: string | null;
         platform_users: string | null;
         tenants: string | null;
         sessions: string | null;
         database_registry: string | null;
+        database_registry_unique_index: string | null;
       }>(
         `SELECT
            EXISTS (
@@ -38,6 +40,11 @@ router.get("/readyz", async (_req, res) => {
              WHERE filename = '0002_membership_session_revocation.sql'
                AND checksum_sha256 IS NOT NULL
            ) AS membership_revocation_migration_applied,
+           EXISTS (
+             SELECT 1 FROM platform_schema_migrations
+             WHERE filename = '0003_tenant_database_registry_isolation.sql'
+               AND checksum_sha256 IS NOT NULL
+           ) AS registry_isolation_migration_applied,
            (
              SELECT column_name FROM information_schema.columns
              WHERE table_schema = 'public'
@@ -53,18 +60,22 @@ router.get("/readyz", async (_req, res) => {
            to_regclass('public.platform_users')::text AS platform_users,
            to_regclass('public.tenants')::text AS tenants,
            to_regclass('public.sessions')::text AS sessions,
-           to_regclass('public.tenant_database_registry')::text AS database_registry`,
+           to_regclass('public.tenant_database_registry')::text AS database_registry,
+           to_regclass('public.tenant_database_registry_physical_database_unique')::text
+             AS database_registry_unique_index`,
       );
       const schema = result.rows[0];
       if (
         !schema?.foundation_migration_applied ||
         !schema.membership_revocation_migration_applied ||
+        !schema.registry_isolation_migration_applied ||
         !schema.membership_auth_version ||
         !schema.membership_sessions_revoked_at ||
         !schema.platform_users ||
         !schema.tenants ||
         !schema.sessions ||
-        !schema.database_registry
+        !schema.database_registry ||
+        !schema.database_registry_unique_index
       ) throw new Error("platform schema is not migrated");
     }
     res.set("Cache-Control", "no-store");

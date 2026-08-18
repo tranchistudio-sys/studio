@@ -1,9 +1,13 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type RequestHandler } from "express";
 import { pool } from "@workspace/db";
 import bcrypt from "bcryptjs";
 import { isPlatformDatabaseConfigured } from "@workspace/platform-db";
 import { createLoginRateLimit } from "../lib/login-rate-limit";
-import { businessAuthGuard, requestIsSameOrigin } from "../middlewares/platform-auth";
+import {
+  bindTenantDatabaseBySlugForRequest,
+  businessAuthGuard,
+  requestIsSameOrigin,
+} from "../middlewares/platform-auth";
 import {
   readLegacyToken,
   signLegacyToken,
@@ -19,6 +23,15 @@ import {
 
 const router: IRouter = Router();
 const loginRateLimit = createLoginRateLimit();
+
+const bindLegacyLoginTenant: RequestHandler = async (_req, res, next) => {
+  if (!isPlatformDatabaseConfigured()) {
+    next();
+    return;
+  }
+  const slug = process.env.LEGACY_LOGIN_TENANT_SLUG?.trim().toLowerCase() || "amazing-studio";
+  await bindTenantDatabaseBySlugForRequest(slug, res, next);
+};
 
 export async function getCallerRole(header: string | undefined): Promise<"admin" | "staff" | null> {
   const token = readLegacyToken(header);
@@ -72,7 +85,7 @@ router.post("/auth/login", (req, res, next) => {
     return res.status(403).json({ error: "Phiên trang đăng nhập không hợp lệ. Vui lòng tải lại trang.", code: "LOGIN_CSRF_INVALID" });
   }
   next();
-}, loginRateLimit, async (req, res) => {
+}, bindLegacyLoginTenant, loginRateLimit, async (req, res) => {
   const { phone, password } = req.body as { phone?: string; password?: string };
   if (!phone || !password) return res.status(400).json({ error: "Vui lòng nhập tên đăng nhập và mật khẩu" });
 

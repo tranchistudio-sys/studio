@@ -1,6 +1,7 @@
 import { pool } from "@workspace/db";
 import { detectDateSlot, botAsksDate, type DateStatus } from "./sale-slots";
 import { detectServiceIntentFromText } from "./sale-samples";
+import { currentTenantScope } from "./tenant-scope";
 
 /**
  * sale-thread-state.ts — TRÍ NHỚ CÓ CẤU TRÚC theo từng khách (Đợt 2 — nền móng).
@@ -74,9 +75,10 @@ const MAX_SAMPLE_URLS = 100;
 
 // ─── Bảng (lazy + được migrations.ts gọi lúc startup) ─────────────────────────
 
-let createdTable = false;
+const createdTables = new Set<string>();
 export async function ensureThreadStateTable(): Promise<void> {
-  if (createdTable) return;
+  const tenantScope = currentTenantScope();
+  if (createdTables.has(tenantScope)) return;
   await pool.query(`
     CREATE TABLE IF NOT EXISTS lulu_thread_state (
       id                    SERIAL PRIMARY KEY,
@@ -108,7 +110,7 @@ export async function ensureThreadStateTable(): Promise<void> {
   await pool.query(
     `CREATE INDEX IF NOT EXISTS idx_lulu_thread_state_updated ON lulu_thread_state (updated_at DESC)`,
   );
-  createdTable = true;
+  createdTables.add(tenantScope);
 }
 
 // ─── Đọc ──────────────────────────────────────────────────────────────────────

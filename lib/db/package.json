@@ -5,6 +5,7 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
+    "./tenant-context": "./src/tenant-context.ts",
     "./schema": "./src/schema/index.ts",
     "./additional-services": "./src/additional-services.ts"
   },

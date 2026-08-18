@@ -55,6 +55,7 @@ jobs:
       PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
       DEFAULT_TENANT_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
+      TENANT_B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_b_test
       SESSION_SECRET: ci-only-session-secret-at-least-32-bytes
       BOOTSTRAP_OWNER_EMAIL: owner@gmail.com
       BOOTSTRAP_TENANT_STAFF_ID: "1"
@@ -82,10 +83,12 @@ jobs:
       - name: Cài phụ thuộc đúng lockfile
         run: pnpm install --frozen-lockfile
 
-      - name: Tạo tenant database cô lập cho integration test
+      - name: Tạo hai tenant database cô lập cho integration test
         env:
           PGPASSWORD: postgres
-        run: psql -h 127.0.0.1 -U postgres -d amazing_platform_test -v ON_ERROR_STOP=1 -c 'CREATE DATABASE tenant_amazing_test'
+        run: |
+          psql -h 127.0.0.1 -U postgres -d amazing_platform_test -v ON_ERROR_STOP=1 -c 'CREATE DATABASE tenant_amazing_test'
+          psql -h 127.0.0.1 -U postgres -d amazing_platform_test -v ON_ERROR_STOP=1 -c 'CREATE DATABASE tenant_b_test'
 
       - name: Migration platform test (không chạm production)
         run: |

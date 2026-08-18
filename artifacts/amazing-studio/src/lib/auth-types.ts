@@ -56,6 +56,85 @@ export interface AuthClientState {
   requiresTenantSelection: boolean;
 }
 
+/**
+ * Browser-side scope for tenant-owned state that can outlive a React render
+ * (upload queues, IndexedDB blobs, local drafts, etc.).  This is deliberately
+ * made from opaque ids only; it must never contain an email, token or session
+ * secret.
+ */
+export interface AuthClientScope {
+  key: string;
+  tenantId: string;
+  membershipId: string;
+  userId: string;
+}
+
+function encodeScopePart(value: string | number): string {
+  return encodeURIComponent(String(value));
+}
+
+/**
+ * Platform users may only own tenant state after selecting a tenant. Legacy
+ * users keep a compatibility scope so existing single-studio login continues
+ * to work while the platform migration is in progress.
+ */
+export function resolveAuthClientScope(input: {
+  platformUser?: PlatformUser | null;
+  viewer?: LegacyViewerUser | null;
+  activeTenant?: TenantMembershipSummary | null;
+}): AuthClientScope | null {
+  if (input.activeTenant) {
+    const userId = input.platformUser
+      ? `platform:${encodeScopePart(input.platformUser.id)}`
+      : input.viewer
+        ? `legacy:${encodeScopePart(input.viewer.id)}`
+        : null;
+    if (!userId) return null;
+    const tenantId = String(input.activeTenant.id);
+    const membershipId = String(input.activeTenant.membershipId);
+    return {
+      tenantId,
+      membershipId,
+      userId,
+      key: [
+        "tenant", encodeScopePart(tenantId),
+        "membership", encodeScopePart(membershipId),
+        "user", userId,
+      ].join(":"),
+    };
+  }
+
+  if (input.viewer && !input.platformUser) {
+    const staffId = encodeScopePart(input.viewer.id);
+    return {
+      tenantId: "legacy-default",
+      membershipId: `legacy-staff:${staffId}`,
+      userId: `legacy:${staffId}`,
+      key: `tenant:legacy-default:membership:legacy-staff:${staffId}:user:legacy:${staffId}`,
+    };
+  }
+  return null;
+}
+
+/**
+ * Keying the authenticated runtime by this value forces local component state,
+ * SSE connections and polling loops to remount when identity, tenant or role
+ * changes. QueryClient is cleared by StaffAuthProvider at the same boundary.
+ */
+export function authRuntimeScopeKey(input: {
+  platformUser?: PlatformUser | null;
+  viewer?: LegacyViewerUser | null;
+  activeTenant?: TenantMembershipSummary | null;
+}): string {
+  const scope = resolveAuthClientScope(input);
+  if (scope && input.activeTenant) {
+    return `${scope.key}:role:${encodeScopePart(input.activeTenant.role)}:status:${encodeScopePart(input.activeTenant.status)}`;
+  }
+  if (scope) return scope.key;
+  if (input.platformUser) return `platform:${encodeScopePart(input.platformUser.id)}:tenant:none`;
+  return "anonymous";
+}
+
 export function isLegacyViewerUser(value: unknown): value is LegacyViewerUser {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<LegacyViewerUser>;

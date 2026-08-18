@@ -4,6 +4,7 @@ import { pool } from "@workspace/db";
 import { getCallerRole } from "./auth";
 import { withStartupDdlLock } from "../lib/startup-ddl";
 import { normalizeCmsPublicMediaReference, validateCmsPublicMediaWrite } from "../lib/cms-public-media";
+import { tenantScopedKey } from "../lib/tenant-scope";
 
 const router: IRouter = Router();
 
@@ -435,7 +436,7 @@ router.post("/wedding-cards/public/:slug/guest-entries", async (req, res) => {
       ? Math.min(50, Math.floor(guestCountRaw))
       : 1;
     const idempotencyKey = str(req.headers["idempotency-key"] ?? b.idempotencyKey)?.slice(0, 120) ?? createHash("sha256").update(`${card.id}:${ip}:${guestName}:${message}:${attendance}:${guestCount}`).digest("hex");
-    const dedupeKey = `${card.id}:${idempotencyKey}`;
+    const dedupeKey = tenantScopedKey("wedding-guest-idempotency", card.id, idempotencyKey);
     const previous = guestIdempotency.get(dedupeKey);
     if (previous && Date.now() - previous < 10 * 60_000) return res.status(200).json({ sent: true, duplicate: true });
     await sendWeddingWishEmail({ recipient: card.notificationEmail, groomName: card.groomName, brideName: card.brideName, guestName, message, attendance, guestCount });

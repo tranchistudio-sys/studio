@@ -22,6 +22,7 @@ import {
   verifyLoginCsrf,
 } from "../platform/session";
 import type { PlatformSessionContext } from "../platform/types";
+import { TenantDatabaseUnavailableError } from "../platform/tenant-database-router";
 
 const router: IRouter = Router();
 const loginRateLimit = createLoginRateLimit();
@@ -29,6 +30,13 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 
 function contextFrom(res: Parameters<typeof requirePlatformSession>[1]): PlatformSessionContext {
   return res.locals.platformAuth as PlatformSessionContext;
+}
+
+function sendTenantDatabaseUnavailable(res: Parameters<typeof requirePlatformSession>[1]): void {
+  res.status(503).json({
+    error: "Database của studio chưa sẵn sàng",
+    code: "TENANT_DATABASE_UNAVAILABLE",
+  });
 }
 
 router.get("/auth/config", (req, res) => {
@@ -66,6 +74,10 @@ router.post("/auth/google", (req, res, next) => {
     res.set("Cache-Control", "no-store");
     res.json(response);
   } catch (error) {
+    if (error instanceof TenantDatabaseUnavailableError) {
+      sendTenantDatabaseUnavailable(res);
+      return;
+    }
     if (error instanceof GoogleAuthenticationError) {
       const status = error.code === "GOOGLE_NOT_INVITED" ? 403
         : error.code === "ACCOUNT_SUSPENDED" ? 403
@@ -94,16 +106,28 @@ router.get("/auth/me", async (req, res, next) => {
     }
     res.set("Cache-Control", "no-store");
     res.json(await responseForSession(context));
-  } catch {
+  } catch (error) {
+    if (error instanceof TenantDatabaseUnavailableError) {
+      sendTenantDatabaseUnavailable(res);
+      return;
+    }
     res.status(503).json({ error: "Dịch vụ xác thực nền tảng tạm thời không khả dụng" });
   }
 });
 
 router.get("/auth/tenants", requirePlatformSession, async (_req, res) => {
-  const context = contextFrom(res);
-  const payload = await responseForSession(context);
-  res.set("Cache-Control", "no-store");
-  res.json({ memberships: payload.memberships, activeTenant: payload.activeTenant, csrfToken: payload.csrfToken });
+  try {
+    const context = contextFrom(res);
+    const payload = await responseForSession(context);
+    res.set("Cache-Control", "no-store");
+    res.json({ memberships: payload.memberships, activeTenant: payload.activeTenant, csrfToken: payload.csrfToken });
+  } catch (error) {
+    if (error instanceof TenantDatabaseUnavailableError) {
+      sendTenantDatabaseUnavailable(res);
+      return;
+    }
+    res.status(503).json({ error: "Dịch vụ xác thực nền tảng tạm thời không khả dụng" });
+  }
 });
 
 router.post(
@@ -118,8 +142,12 @@ router.post(
     }
     try {
       res.set("Cache-Control", "no-store");
-      res.json(await selectTenantForSession(contextFrom(res), tenantId));
+      res.json(await selectTenantForSession(req, res, contextFrom(res), tenantId));
     } catch (error) {
+      if (error instanceof TenantDatabaseUnavailableError) {
+        sendTenantDatabaseUnavailable(res);
+        return;
+      }
       res.status(403).json({ error: error instanceof Error ? error.message : "Không thể chọn studio" });
     }
   },

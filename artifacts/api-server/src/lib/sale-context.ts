@@ -1,6 +1,7 @@
 import { pool } from "@workspace/db";
 import { getPublicBaseUrl } from "./publicUrl";
 import { resolveDiscount, discountWindowStatus, type DiscountConfig } from "./pricing-discount";
+import { currentTenantScope } from "./tenant-scope";
 
 /**
  * Context cho bộ não sale Claude (Giai đoạn 1).
@@ -50,7 +51,7 @@ export type PkgRow = {
 };
 export type AuditRow = PkgRow & { kept: boolean; reason: string };
 
-let cache: { text: string; at: number } | null = null;
+const cache = new Map<string, { text: string; at: number }>();
 const TTL_MS = 5 * 60 * 1000;
 
 /**
@@ -59,8 +60,9 @@ const TTL_MS = 5 * 60 * 1000;
  * phải chờ hết TTL 5 phút. Đồng thời xoá cache "Ý tưởng" cho chắc.
  */
 export function clearSaleContextCache(): void {
-  cache = null;
-  ideasCache = null;
+  const tenantScope = currentTenantScope();
+  cache.delete(tenantScope);
+  ideasCache.delete(tenantScope);
 }
 
 function formatVnd(price: string | number): string {
@@ -153,7 +155,9 @@ export async function getSaleContextInfo(): Promise<{ context: string; packageCo
 }
 
 export async function getSaleContext(): Promise<string> {
-  if (cache && Date.now() - cache.at < TTL_MS) return cache.text;
+  const tenantScope = currentTenantScope();
+  const cached = cache.get(tenantScope);
+  if (cached && Date.now() - cached.at < TTL_MS) return cached.text;
   try {
     const settingsRes = await pool.query(
       `SELECT key, value FROM settings WHERE key IN ('fb_active_page_name', 'email')`,
@@ -245,7 +249,7 @@ CHÍNH SÁCH:
 - Gói/nhóm KHÔNG ghi "ĐANG GIẢM" = hiện KHÔNG có ưu đãi → em báo giá gốc, KHÔNG tự tạo khuyến mãi. Có thể nói: "Dạ hiện nhóm/gói này em chưa thấy chương trình giảm đang bật trong bảng giá ạ, em gửi anh giá hiện tại trước nha."
 - Khách XIN GIẢM THÊM → KHÔNG tự deal: "Dạ phần ưu đãi hiện em đang áp dụng đúng theo bảng giá ạ. Nếu anh muốn giữ lịch hoặc cần hỗ trợ thêm, em gửi bên tiệm kiểm tra giúp anh nha."`;
 
-    cache = { text, at: Date.now() };
+    cache.set(tenantScope, { text, at: Date.now() });
     return text;
   } catch (err) {
     console.error("[Claude] getSaleContext — dùng fallback:", String(err).slice(0, 200));
@@ -264,7 +268,7 @@ export function wantsNewConcept(message: string): boolean {
   return NEW_CONCEPT_RE.test((message ?? "").toLowerCase());
 }
 
-let ideasCache: { text: string; at: number } | null = null;
+const ideasCache = new Map<string, { text: string; at: number }>();
 
 /**
  * Khối "Ý TƯỞNG CHỤP" (photo_ideas) — NGUỒN PHỤ, chỉ append vào context khi
@@ -272,7 +276,9 @@ let ideasCache: { text: string; at: number } | null = null;
  * mô tả bằng lời. "" nếu không có ý tưởng nào / lỗi. KHÔNG bao giờ throw.
  */
 export async function getPhotoIdeasBlock(): Promise<string> {
-  if (ideasCache && Date.now() - ideasCache.at < TTL_MS) return ideasCache.text;
+  const tenantScope = currentTenantScope();
+  const cached = ideasCache.get(tenantScope);
+  if (cached && Date.now() - cached.at < TTL_MS) return cached.text;
   try {
     const res = await pool.query(
       `SELECT name, description, tags_text FROM photo_ideas
@@ -280,7 +286,7 @@ export async function getPhotoIdeasBlock(): Promise<string> {
         ORDER BY sort_order, id LIMIT 18`,
     );
     const rows = res.rows as Array<{ name: string; description: string | null; tags_text: string | null }>;
-    if (rows.length === 0) { ideasCache = { text: "", at: Date.now() }; return ""; }
+    if (rows.length === 0) { ideasCache.set(tenantScope, { text: "", at: Date.now() }); return ""; }
     const lines = rows.map((r) => {
       const desc = cleanDesc(r.description).slice(0, 120);
       const tags = (r.tags_text ?? "").trim();
@@ -290,7 +296,7 @@ export async function getPhotoIdeasBlock(): Promise<string> {
     const text = `Ý TƯỞNG CHỤP (CONCEPT GỢI Ý — KHÔNG phải sản phẩm/dịch vụ có sẵn của studio):
 Chỉ dùng khi khách muốn concept mới/lạ hoặc chưa ưng mẫu có sẵn. Khi gợi ý PHẢI nói rõ đây là Ý TƯỞNG tham khảo; nếu khách thích thì studio sẽ kiểm tra trang phục/đạo cụ có sẵn hay cần đầu tư thêm. KHÔNG có link công khai nên mô tả bằng lời, TUYỆT ĐỐI không bịa link.
 ${lines.join("\n")}`;
-    ideasCache = { text, at: Date.now() };
+    ideasCache.set(tenantScope, { text, at: Date.now() });
     return text;
   } catch (err) {
     console.error("[Claude] getPhotoIdeasBlock lỗi:", String(err).slice(0, 160));

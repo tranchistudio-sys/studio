@@ -30,6 +30,7 @@ import { persistImageBuffer } from "../lib/autopost-storage";
 import { getBrandFooter, buildFooterText } from "../lib/autopost-brand";
 import { listSignatures, getDefaultSignatureContent } from "../lib/autopost-signature";
 import { withStartupDdlLock } from "../lib/startup-ddl";
+import { retainCurrentTenantDatabaseLease } from "../platform/tenant-database-router";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AutoPost Facebook (Amazing Studio) — admin router (Task 5).
@@ -431,6 +432,15 @@ async function runCaptionJob(postId: number, o: CaptionJobOpts): Promise<void> {
   }
 }
 
+function startCaptionJob(postId: number, options: CaptionJobOpts): void {
+  const retainedLease = process.env.PLATFORM_DATABASE_URL?.trim()
+    ? retainCurrentTenantDatabaseLease()
+    : null;
+  void runCaptionJob(postId, options).finally(async () => {
+    await retainedLease?.release();
+  });
+}
+
 // POST /autopost/posts/generate — sinh caption AI cho 1 item pool → bài chờ duyệt.
 router.post("/autopost/posts/generate", async (req: Request, res: Response) => {
   if (!(await requireAdmin(req, res))) return;
@@ -606,7 +616,7 @@ router.post("/autopost/posts/generate-async", async (req: Request, res: Response
     res.json(out.rows[0]);
 
     // (6) Viết caption ở NỀN (fire-and-forget; tự đổi trạng thái khi xong/lỗi).
-    void runCaptionJob(newId, {
+    startCaptionJob(newId, {
       item, tone, bannedWords, wantCaptions,
       maxVisionImages: opcfg.maxVisionImagesPerPost,
       style: typeof style === "string" ? style : undefined,
@@ -662,7 +672,7 @@ router.post("/autopost/posts/:id/retry-caption", async (req: Request, res: Respo
     const out = await pool.query(`${POST_SELECT} WHERE p.id = $1`, [id]);
     res.json(out.rows[0]);
 
-    void runCaptionJob(id, {
+    startCaptionJob(id, {
       item, tone, bannedWords, wantCaptions,
       maxVisionImages: opcfg.maxVisionImagesPerPost,
     });

@@ -9,9 +9,9 @@ import {
 } from "../middlewares/platform-auth";
 import type { PlatformSessionContext, TenantRole } from "../platform/types";
 import {
-  registryMatchesAmazingRuntime,
-  type TenantDatabaseRegistryRow,
-} from "../platform/tenant-database-reference";
+  TenantDatabaseUnavailableError,
+  withTenantDatabase,
+} from "../platform/tenant-database-router";
 
 const router: IRouter = Router();
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -19,17 +19,6 @@ const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function contextFrom(res: Parameters<typeof requirePlatformSession>[1]): PlatformSessionContext {
   return res.locals.platformAuth as PlatformSessionContext;
-}
-
-async function ensureCurrentTenantDatabase(context: PlatformSessionContext): Promise<void> {
-  const result = await getPlatformPool().query<TenantDatabaseRegistryRow>(
-    `SELECT database_ref, host_ref, database_name, role_name, secret_ref
-     FROM tenant_database_registry WHERE tenant_id = $1 LIMIT 1`,
-    [context.activeTenantId],
-  );
-  if (!registryMatchesAmazingRuntime(result.rows[0])) {
-    throw new Error("Tenant database chưa được hỗ trợ trong PR 1");
-  }
 }
 
 async function canManageTarget(
@@ -106,48 +95,48 @@ router.get(
   async (_req, res) => {
     const context = contextFrom(res);
     try {
-      await ensureCurrentTenantDatabase(context);
+      if (!context.activeTenantId) throw new TenantDatabaseUnavailableError();
+      const result = await withTenantDatabase(context.activeTenantId, () => pool.query(
+        `SELECT id, name, email, (is_active = 1) AS "isActive"
+         FROM staff
+         WHERE is_active = 1
+         ORDER BY name`,
+      ));
+      const linked = await getPlatformPool().query<{
+        tenant_staff_id: string | number;
+        user_id: string;
+        google_linked: boolean;
+        tenant_role: TenantRole;
+      }>(
+        `SELECT m.tenant_staff_id, m.user_id, m.tenant_role,
+                EXISTS (
+                  SELECT 1 FROM auth_identities i
+                  WHERE i.user_id = m.user_id AND i.provider = 'google'
+                ) AS google_linked
+         FROM tenant_memberships m
+         WHERE m.tenant_id = $1 AND m.tenant_staff_id IS NOT NULL`,
+        [context.activeTenantId],
+      );
+      const linkedByStaff = new Map(
+        linked.rows.map((row) => [Number(row.tenant_staff_id), row] as const),
+      );
+      res.set("Cache-Control", "no-store");
+      res.json({
+        staff: result.rows
+          .filter((row) => {
+            const linkedMembership = linkedByStaff.get(Number(row.id));
+            if (linkedMembership?.google_linked) return false;
+            return context.tenantRole !== "ADMIN" || !linkedMembership || linkedMembership.tenant_role === "STAFF";
+          })
+          .map((row) => ({
+            ...row,
+            platformLinked: linkedByStaff.has(Number(row.id)),
+          })),
+      });
     } catch (error) {
-      res.status(503).json({ error: error instanceof Error ? error.message : "Database chưa sẵn sàng" });
+      res.status(503).json({ error: "Database chưa sẵn sàng", code: "TENANT_DATABASE_UNAVAILABLE" });
       return;
     }
-    const linked = await getPlatformPool().query<{
-      tenant_staff_id: string | number;
-      user_id: string;
-      google_linked: boolean;
-      tenant_role: TenantRole;
-    }>(
-      `SELECT m.tenant_staff_id, m.user_id, m.tenant_role,
-              EXISTS (
-                SELECT 1 FROM auth_identities i
-                WHERE i.user_id = m.user_id AND i.provider = 'google'
-              ) AS google_linked
-       FROM tenant_memberships m
-       WHERE m.tenant_id = $1 AND m.tenant_staff_id IS NOT NULL`,
-      [context.activeTenantId],
-    );
-    const linkedByStaff = new Map(
-      linked.rows.map((row) => [Number(row.tenant_staff_id), row] as const),
-    );
-    const result = await pool.query(
-      `SELECT id, name, email, (is_active = 1) AS "isActive"
-       FROM staff
-       WHERE is_active = 1
-       ORDER BY name`,
-    );
-    res.set("Cache-Control", "no-store");
-    res.json({
-      staff: result.rows
-        .filter((row) => {
-          const linkedMembership = linkedByStaff.get(Number(row.id));
-          if (linkedMembership?.google_linked) return false;
-          return context.tenantRole !== "ADMIN" || !linkedMembership || linkedMembership.tenant_role === "STAFF";
-        })
-        .map((row) => ({
-          ...row,
-          platformLinked: linkedByStaff.has(Number(row.id)),
-        })),
-    });
   },
 );
 
@@ -179,11 +168,11 @@ router.post(
     }
 
     try {
-      await ensureCurrentTenantDatabase(context);
-      const staff = await pool.query<{ id: number }>(
+      if (!context.activeTenantId) throw new TenantDatabaseUnavailableError();
+      const staff = await withTenantDatabase(context.activeTenantId, () => pool.query<{ id: number }>(
         "SELECT id FROM staff WHERE id = $1 AND is_active = 1 LIMIT 1",
         [tenantStaffId],
-      );
+      ));
       if (!staff.rows[0]) {
         res.status(400).json({ error: "Hồ sơ nhân sự không tồn tại hoặc đã khóa" });
         return;
@@ -285,6 +274,10 @@ router.post(
       });
       res.status(201).json({ success: true, invitation });
     } catch (error) {
+      if (error instanceof TenantDatabaseUnavailableError) {
+        res.status(503).json({ error: "Database chưa sẵn sàng", code: error.code });
+        return;
+      }
       res.status(400).json({ error: error instanceof Error ? error.message : "Không thể tạo lời mời" });
     }
   },

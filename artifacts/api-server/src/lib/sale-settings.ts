@@ -1,4 +1,5 @@
 import { pool } from "@workspace/db";
+import { currentTenantScope } from "./tenant-scope";
 
 /**
  * Cài đặt Claude Sale — NGUỒN CẤU HÌNH DUY NHẤT cho cả Claude Sale Test lẫn
@@ -262,9 +263,10 @@ export function normalizeClaudeSaleSettings(raw: unknown): ClaudeSaleSettings {
 
 // ─── Bảng + đọc/ghi (singleton id=1) ──────────────────────────────────────────
 
-let createdTable = false;
+const createdTables = new Set<string>();
 export async function ensureClaudeSaleSettingsTable(): Promise<void> {
-  if (createdTable) return;
+  const tenantScope = currentTenantScope();
+  if (createdTables.has(tenantScope)) return;
   await pool.query(`
     CREATE TABLE IF NOT EXISTS claude_sale_settings (
       id          INTEGER PRIMARY KEY DEFAULT 1,
@@ -274,28 +276,30 @@ export async function ensureClaudeSaleSettingsTable(): Promise<void> {
       CONSTRAINT claude_sale_settings_singleton CHECK (id = 1)
     )
   `);
-  createdTable = true;
+  createdTables.add(tenantScope);
 }
 
-let cache: { value: ClaudeSaleSettings; at: number } | null = null;
+const cache = new Map<string, { value: ClaudeSaleSettings; at: number }>();
 const TTL_MS = 30 * 1000;
 
 export function clearClaudeSaleSettingsCache(): void {
-  cache = null;
+  cache.delete(currentTenantScope());
 }
 
 /**
  * Cấu hình hiện tại (mặc định nếu chưa lưu). KHÔNG bao giờ throw — lỗi DB → mặc định.
  */
 export async function getClaudeSaleSettings(): Promise<ClaudeSaleSettings> {
-  if (cache && Date.now() - cache.at < TTL_MS) return cache.value;
+  const tenantScope = currentTenantScope();
+  const cached = cache.get(tenantScope);
+  if (cached && Date.now() - cached.at < TTL_MS) return cached.value;
   try {
     await ensureClaudeSaleSettingsTable();
     const r = await pool.query(`SELECT config FROM claude_sale_settings WHERE id = 1`);
     const value = r.rows.length > 0
       ? normalizeClaudeSaleSettings(r.rows[0].config)
       : defaultClaudeSaleSettings();
-    cache = { value, at: Date.now() };
+    cache.set(tenantScope, { value, at: Date.now() });
     return value;
   } catch (err) {
     console.error("[ClaudeSale] getClaudeSaleSettings — dùng mặc định:", String(err).slice(0, 200));

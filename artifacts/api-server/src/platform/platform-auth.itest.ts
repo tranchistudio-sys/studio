@@ -16,17 +16,108 @@ let service: ServiceModule;
 let session: SessionModule;
 let platformDb: PlatformDbModule;
 let tenantPool: pg.Pool;
+let tenantBPool: pg.Pool;
 let server: Server;
 let baseUrl: string;
 
 const platformUrl = process.env.PLATFORM_DATABASE_URL ?? "";
 const tenantUrl = process.env.DATABASE_URL ?? "";
+const tenantBUrl = process.env.TENANT_B_DATABASE_URL ?? "";
 
 function assertDisposableTestDatabase(raw: string, label: string): void {
   const database = new URL(raw).pathname.replace(/^\//, "");
   if (!database.endsWith("_test")) {
     throw new Error(`${label} phải trỏ tới database có hậu tố _test`);
   }
+}
+
+function databaseReference(raw: string): { hostRef: string; databaseName: string; roleName: string } {
+  const parsed = new URL(raw);
+  return {
+    hostRef: parsed.host.toLowerCase(),
+    databaseName: decodeURIComponent(parsed.pathname.replace(/^\//, "")),
+    roleName: decodeURIComponent(parsed.username),
+  };
+}
+
+async function createTenantIsolationTables(target: pg.Pool): Promise<void> {
+  await target.query(`
+    CREATE TABLE IF NOT EXISTS staff (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      role TEXT NOT NULL,
+      roles JSONB NOT NULL DEFAULT '[]'::jsonb,
+      phone TEXT NOT NULL,
+      email TEXT,
+      avatar TEXT,
+      username TEXT,
+      password_hash TEXT,
+      is_active INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS services (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      code TEXT,
+      category TEXT NOT NULL DEFAULT 'other',
+      description TEXT,
+      type TEXT NOT NULL DEFAULT 'package',
+      price NUMERIC(12,2) NOT NULL,
+      cost_price NUMERIC(12,2) NOT NULL DEFAULT 0,
+      duration TEXT,
+      includes JSONB NOT NULL DEFAULT '[]'::jsonb,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      is_active INTEGER NOT NULL DEFAULT 1,
+      created_at TIMESTAMP NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS service_job_splits (
+      id SERIAL PRIMARY KEY,
+      service_id INTEGER NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+      role TEXT NOT NULL,
+      amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+      rate_type TEXT NOT NULL DEFAULT 'fixed',
+      notes TEXT
+    );
+    CREATE TABLE IF NOT EXISTS golden_hour_campaigns (
+      id SERIAL PRIMARY KEY,
+      scope TEXT NOT NULL,
+      ref_id INTEGER NOT NULL,
+      name TEXT NOT NULL DEFAULT 'Giờ vàng',
+      percent NUMERIC(5,2) NOT NULL DEFAULT 0,
+      starts_at TIMESTAMPTZ,
+      ends_at TIMESTAMPTZ,
+      is_active BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE (scope, ref_id)
+    );
+    CREATE TABLE IF NOT EXISTS tenant_isolation_canary (
+      marker TEXT PRIMARY KEY
+    );
+    CREATE TABLE IF NOT EXISTS tenant_job_probe (
+      id SERIAL PRIMARY KEY,
+      observed_tenant_slug TEXT NOT NULL
+    )
+  `);
+}
+
+async function resetTenantIsolationTables(
+  target: pg.Pool,
+  ownerName: string,
+  canary: string,
+): Promise<void> {
+  await target.query(
+    `TRUNCATE TABLE
+       staff, services, golden_hour_campaigns, tenant_isolation_canary, tenant_job_probe
+     RESTART IDENTITY CASCADE`,
+  );
+  await target.query(
+    `INSERT INTO staff (id, name, role, roles, phone, email, username, is_active)
+     VALUES
+       (1, $1, 'admin', '["admin"]'::jsonb, '0900000001', 'owner@gmail.com', 'owner', 1),
+       (2, 'Invited Staff', 'sale', '["sale"]'::jsonb, '0900000002', 'staff@gmail.com', 'staff', 1)`,
+    [ownerName],
+  );
+  await target.query("INSERT INTO tenant_isolation_canary (marker) VALUES ($1)", [canary]);
 }
 
 function request(cookies: Record<string, string> = {}) {
@@ -64,6 +155,112 @@ async function bootstrapOwner() {
     picture: "https://example.test/owner.png",
   });
   return { payload, res };
+}
+
+interface AdditionalTenantOptions {
+  slug: string;
+  name: string;
+  databaseUrl?: string;
+  secretEnv?: string;
+  registerDatabase?: boolean;
+}
+
+async function addTenantForOwner(
+  owner: Awaited<ReturnType<typeof bootstrapOwner>>,
+  options: AdditionalTenantOptions,
+) {
+  const platformPool = platformDb.getPlatformPool();
+  const tenantId = randomUUID();
+  const membershipId = randomUUID();
+  await platformPool.query(
+    `INSERT INTO tenants
+       (id, name, slug, status, plan_id, bootstrap_completed_at, bootstrap_owner_user_id)
+     VALUES ($1, $2, $3, 'trial', 'legacy', now(), $4)`,
+    [tenantId, options.name, options.slug, owner.payload.platformUser.id],
+  );
+  await platformPool.query(
+    `INSERT INTO tenant_memberships
+       (id, tenant_id, user_id, tenant_role, status, tenant_staff_id)
+     VALUES ($1, $2, $3, 'OWNER', 'active', 1)`,
+    [membershipId, tenantId, owner.payload.platformUser.id],
+  );
+
+  if (options.registerDatabase !== false) {
+    const reference = options.databaseUrl
+      ? databaseReference(options.databaseUrl)
+      : {
+          hostRef: `${options.slug}.invalid:5432`,
+          databaseName: `${options.slug.replace(/-/g, "_")}_test`,
+          roleName: "missing_secret_role",
+        };
+    await platformPool.query(
+      `INSERT INTO tenant_database_registry
+         (tenant_id, database_ref, host_ref, database_name, role_name, secret_ref)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        tenantId,
+        `${options.slug}-integration-${tenantId}`,
+        reference.hostRef,
+        reference.databaseName,
+        reference.roleName,
+        `env:${options.secretEnv ?? "TENANT_B_DATABASE_URL"}`,
+      ],
+    );
+  }
+
+  const createdSession = await session.createPlatformSession(
+    platformPool,
+    request(),
+    owner.payload.platformUser.id,
+    { tenantId, membershipId, tenantStaffId: 1 },
+  );
+  return {
+    tenantId,
+    membershipId,
+    cookie: `${session.PLATFORM_SESSION_COOKIE}=${createdSession.cookieToken}`,
+    csrfToken: createdSession.csrfToken,
+  };
+}
+
+async function addTenantB(owner: Awaited<ReturnType<typeof bootstrapOwner>>) {
+  return addTenantForOwner(owner, {
+    slug: "studio-b",
+    name: "Studio B",
+    databaseUrl: tenantBUrl,
+    secretEnv: "TENANT_B_DATABASE_URL",
+  });
+}
+
+async function registerAmazingTenantMappingWithoutOwner(): Promise<void> {
+  const tenantId = randomUUID();
+  const reference = databaseReference(tenantUrl);
+  const platformPool = platformDb.getPlatformPool();
+  await platformPool.query(
+    `INSERT INTO tenants (id, name, slug, status, plan_id)
+     VALUES ($1, 'Amazing Studio', 'amazing-studio', 'active', 'legacy')`,
+    [tenantId],
+  );
+  await platformPool.query(
+    `INSERT INTO tenant_database_registry
+       (tenant_id, database_ref, host_ref, database_name, role_name, secret_ref)
+     VALUES ($1, 'amazing-studio-current-production', $2, $3, $4,
+             'env:DEFAULT_TENANT_DATABASE_URL')`,
+    [tenantId, reference.hostRef, reference.databaseName, reference.roleName],
+  );
+}
+
+function authenticatedHeaders(
+  cookie: string,
+  csrfToken?: string,
+  expectedTenantId?: string,
+): Record<string, string> {
+  return {
+    cookie,
+    ...(csrfToken ? { "x-csrf-token": csrfToken, origin: baseUrl } : {}),
+    ...(expectedTenantId ? {
+      "x-tenant-id": expectedTenantId,
+    } : {}),
+  };
 }
 
 async function inviteStaff(email = "staff@gmail.com") {
@@ -106,12 +303,22 @@ async function loginConfig(): Promise<{ csrfToken: string; cookie: string }> {
 }
 
 beforeAll(async () => {
-  if (!platformUrl || !tenantUrl) {
-    throw new Error("Platform integration test cần PLATFORM_DATABASE_URL và DATABASE_URL");
+  if (!platformUrl || !tenantUrl || !tenantBUrl) {
+    throw new Error(
+      "Platform integration test cần PLATFORM_DATABASE_URL, DATABASE_URL và TENANT_B_DATABASE_URL",
+    );
   }
   assertDisposableTestDatabase(platformUrl, "PLATFORM_DATABASE_URL");
   assertDisposableTestDatabase(tenantUrl, "DATABASE_URL");
-  if (platformUrl === tenantUrl) throw new Error("Platform test DB phải tách tenant test DB");
+  assertDisposableTestDatabase(tenantBUrl, "TENANT_B_DATABASE_URL");
+  const databaseIdentities = [platformUrl, tenantUrl, tenantBUrl]
+    .map((raw) => {
+      const reference = databaseReference(raw);
+      return `${reference.hostRef}/${reference.databaseName}`;
+    });
+  if (new Set(databaseIdentities).size !== databaseIdentities.length) {
+    throw new Error("Platform, tenant A và tenant B phải là ba database test vật lý tách biệt");
+  }
 
   process.env.DEFAULT_TENANT_DATABASE_URL = tenantUrl;
   process.env.BOOTSTRAP_OWNER_EMAIL = "owner@gmail.com";
@@ -119,6 +326,7 @@ beforeAll(async () => {
   process.env.SESSION_SECRET = process.env.SESSION_SECRET || "integration-only-session-secret-32-bytes";
   process.env.GOOGLE_CLIENT_ID = "test-google-client.apps.googleusercontent.com";
   process.env.FACEBOOK_APP_SECRET = "test-facebook-app-secret";
+  process.env.PUBLIC_TENANT_SLUG = "amazing-studio";
   process.env.NODE_ENV = "test";
 
   const migrationDirectory = path.resolve(
@@ -129,26 +337,16 @@ beforeAll(async () => {
   for (const migration of [
     "0001_platform_foundation.sql",
     "0002_membership_session_revocation.sql",
+    "0003_tenant_database_registry_isolation.sql",
   ]) {
     await setupPool.query(await readFile(path.join(migrationDirectory, migration), "utf8"));
   }
   await setupPool.end();
 
   tenantPool = new Pool({ connectionString: tenantUrl });
-  await tenantPool.query(`
-    CREATE TABLE IF NOT EXISTS staff (
-      id INTEGER PRIMARY KEY,
-      name TEXT NOT NULL,
-      role TEXT NOT NULL,
-      roles JSONB NOT NULL DEFAULT '[]'::jsonb,
-      phone TEXT NOT NULL,
-      email TEXT,
-      avatar TEXT,
-      username TEXT,
-      password_hash TEXT,
-      is_active INTEGER NOT NULL DEFAULT 1
-    )
-  `);
+  tenantBPool = new Pool({ connectionString: tenantBUrl });
+  await createTenantIsolationTables(tenantPool);
+  await createTenantIsolationTables(tenantBPool);
 
   platformDb = await import("@workspace/platform-db");
   service = await import("./service");
@@ -188,6 +386,10 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  // A test gets a fresh router/cache lifecycle so stale registry entries from a
+  // prior fixture can never make an isolation assertion pass accidentally.
+  const routerModule = await import("./tenant-database-router");
+  await routerModule.closeTenantDatabaseRouter();
   await platformDb.getPlatformPool().query(`
     TRUNCATE TABLE
       platform_audit_logs, sessions, tenant_invitations, tenant_memberships,
@@ -196,15 +398,9 @@ beforeEach(async () => {
     RESTART IDENTITY CASCADE
   `);
   // Production composition may create tenant tables that reference staff during
-  // startup. This is an isolated CI database, so reset the complete FK graph
-  // instead of letting a startup-created table make every auth test fail.
-  await tenantPool.query("TRUNCATE TABLE staff RESTART IDENTITY CASCADE");
-  await tenantPool.query(
-    `INSERT INTO staff (id, name, role, roles, phone, email, username, is_active)
-     VALUES
-       (1, 'Amazing Owner', 'admin', '["admin"]'::jsonb, '0900000001', 'owner@gmail.com', 'owner', 1),
-       (2, 'Invited Staff', 'sale', '["sale"]'::jsonb, '0900000002', 'staff@gmail.com', 'staff', 1)`,
-  );
+  // startup. These are isolated CI databases, so reset the complete FK graph.
+  await resetTenantIsolationTables(tenantPool, "Amazing Owner", "TENANT_A_CANARY");
+  await resetTenantIsolationTables(tenantBPool, "Studio B Owner", "TENANT_B_CANARY");
   const limiter = await import("../lib/login-rate-limit");
   limiter.clearLoginRateLimitForTests();
 });
@@ -213,8 +409,11 @@ afterAll(async () => {
   if (server) await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   vi.restoreAllMocks();
   if (tenantPool) await tenantPool.end();
+  if (tenantBPool) await tenantBPool.end();
+  const routerModule = await import("./tenant-database-router");
+  await routerModule.closeTenantDatabaseRouter();
   const dbModule = await import("@workspace/db");
-  await dbModule.pool.end();
+  await dbModule.closeLegacyDatabasePool();
   if (platformDb) await platformDb.closePlatformPool();
 });
 
@@ -499,6 +698,8 @@ describe.sequential("platform auth PostgreSQL integration", () => {
     expect(revoke.status).toBe(200);
     expect(await session.loadSessionFromRequest(otherRequest)).not.toBeNull();
     await expect(service.selectTenantForSession(
+      request(),
+      response().value,
       otherContext!,
       invited.payload.activeTenant!.id,
     )).rejects.toThrow(/đã bị thu hồi/i);
@@ -550,16 +751,297 @@ describe.sequential("platform auth PostgreSQL integration", () => {
     const context = await session.loadSessionFromRequest(request({
       [session.PLATFORM_SESSION_COOKIE]: secondResponse.state.sessionCookie!,
     }));
-    await expect(service.selectTenantForSession(context!, randomUUID())).rejects.toThrow(
+    await expect(service.selectTenantForSession(request(), response().value, context!, randomUUID())).rejects.toThrow(
       /không có quyền truy cập studio/i,
     );
-    await expect(service.selectTenantForSession(context!, secondTenantId)).rejects.toThrow(
-      /database.*chưa sẵn sàng/i,
+    await expect(service.selectTenantForSession(request(), response().value, context!, secondTenantId)).rejects.toThrow(
+      /database.*(?:unavailable|chưa sẵn sàng)/i,
     );
+  });
+
+  it("cô lập đồng thời tenant A/B qua HTTP thật cho cả Drizzle và raw pool", async () => {
+    const owner = await bootstrapOwner();
+    const tenantAId = owner.payload.activeTenant!.id;
+    const tenantB = await addTenantB(owner);
+    const tenantACookie = `${session.PLATFORM_SESSION_COOKIE}=${owner.res.state.sessionCookie!}`;
+
+    const createService = (
+      cookie: string,
+      csrfToken: string,
+      marker: string,
+      expectedTenantId: string,
+      spoofedTenantId: string,
+    ) => fetch(`${baseUrl}/api/services?tenantId=${encodeURIComponent(spoofedTenantId)}`, {
+        method: "POST",
+        headers: {
+          ...authenticatedHeaders(cookie, csrfToken, expectedTenantId),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          name: marker,
+          price: marker.endsWith("A") ? 111 : 222,
+          tenantId: spoofedTenantId,
+          splits: [{ role: "photographer", amount: marker.endsWith("A") ? 11 : 22 }],
+        }),
+      });
+
+    const [serviceAResponse, serviceBResponse] = await Promise.all([
+      createService(
+        tenantACookie,
+        owner.payload.csrfToken,
+        "DRIZZLE_TENANT_A",
+        tenantAId,
+        tenantB.tenantId,
+      ),
+      createService(
+        tenantB.cookie,
+        tenantB.csrfToken,
+        "DRIZZLE_TENANT_B",
+        tenantB.tenantId,
+        tenantAId,
+      ),
+    ]);
+    expect(serviceAResponse.status).toBe(201);
+    expect(serviceBResponse.status).toBe(201);
+    expect((await serviceAResponse.json() as any).name).toBe("DRIZZLE_TENANT_A");
+    expect((await serviceBResponse.json() as any).name).toBe("DRIZZLE_TENANT_B");
+
+    // X-Tenant-Id is a stale-work assertion, never a database selector. A
+    // mismatch must fail before either tenant receives the attempted write.
+    const mismatchedHeader = await fetch(`${baseUrl}/api/services?tenantId=${tenantB.tenantId}`, {
+      method: "POST",
+      headers: {
+        ...authenticatedHeaders(tenantACookie, owner.payload.csrfToken, tenantB.tenantId),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ name: "MUST_NOT_BE_WRITTEN", price: 999, tenantId: tenantB.tenantId }),
+    });
+    expect(mismatchedHeader.status).toBe(409);
+    expect(await mismatchedHeader.json()).toMatchObject({ code: "TENANT_CONTEXT_MISMATCH" });
+    expect((await tenantPool.query(
+      "SELECT count(*)::int AS count FROM services WHERE name = 'MUST_NOT_BE_WRITTEN'",
+    )).rows[0]?.count).toBe(0);
+    expect((await tenantBPool.query(
+      "SELECT count(*)::int AS count FROM services WHERE name = 'MUST_NOT_BE_WRITTEN'",
+    )).rows[0]?.count).toBe(0);
+
+    const [servicesAResponse, servicesBResponse] = await Promise.all([
+      fetch(`${baseUrl}/api/services?tenantId=${tenantB.tenantId}`, {
+        headers: authenticatedHeaders(tenantACookie, undefined, tenantAId),
+      }),
+      fetch(`${baseUrl}/api/services?tenantId=${tenantAId}`, {
+        headers: authenticatedHeaders(tenantB.cookie, undefined, tenantB.tenantId),
+      }),
+    ]);
+    expect(servicesAResponse.status).toBe(200);
+    expect(servicesBResponse.status).toBe(200);
+    expect((await servicesAResponse.json() as any[]).map((row) => row.name)).toEqual(["DRIZZLE_TENANT_A"]);
+    expect((await servicesBResponse.json() as any[]).map((row) => row.name)).toEqual(["DRIZZLE_TENANT_B"]);
+
+    const createCampaign = (
+      cookie: string,
+      csrfToken: string,
+      marker: string,
+      expectedTenantId: string,
+      spoofedTenantId: string,
+    ) => fetch(`${baseUrl}/api/golden-hour?tenantId=${encodeURIComponent(spoofedTenantId)}`, {
+      method: "POST",
+      headers: {
+        ...authenticatedHeaders(cookie, csrfToken, expectedTenantId),
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        scope: "dress",
+        refId: 733,
+        name: marker,
+        percent: marker.endsWith("A") ? 10 : 20,
+        tenantId: spoofedTenantId,
+      }),
+    });
+    const [campaignAResponse, campaignBResponse] = await Promise.all([
+      createCampaign(
+        tenantACookie,
+        owner.payload.csrfToken,
+        "RAW_TENANT_A",
+        tenantAId,
+        tenantB.tenantId,
+      ),
+      createCampaign(
+        tenantB.cookie,
+        tenantB.csrfToken,
+        "RAW_TENANT_B",
+        tenantB.tenantId,
+        tenantAId,
+      ),
+    ]);
+    expect(campaignAResponse.status).toBe(200);
+    expect(campaignBResponse.status).toBe(200);
+
+    const [campaignsAResponse, campaignsBResponse] = await Promise.all([
+      fetch(`${baseUrl}/api/golden-hour?tenantId=${tenantB.tenantId}`, {
+        headers: authenticatedHeaders(tenantACookie, undefined, tenantAId),
+      }),
+      fetch(`${baseUrl}/api/golden-hour?tenantId=${tenantAId}`, {
+        headers: authenticatedHeaders(tenantB.cookie, undefined, tenantB.tenantId),
+      }),
+    ]);
+    expect(campaignsAResponse.status).toBe(200);
+    expect(campaignsBResponse.status).toBe(200);
+    expect((await campaignsAResponse.json() as any[]).map((row) => row.name)).toEqual(["RAW_TENANT_A"]);
+    expect((await campaignsBResponse.json() as any[]).map((row) => row.name)).toEqual(["RAW_TENANT_B"]);
+
+    expect((await tenantPool.query("SELECT name FROM services ORDER BY id")).rows).toEqual([
+      { name: "DRIZZLE_TENANT_A" },
+    ]);
+    expect((await tenantBPool.query("SELECT name FROM services ORDER BY id")).rows).toEqual([
+      { name: "DRIZZLE_TENANT_B" },
+    ]);
+    expect((await tenantPool.query("SELECT name FROM golden_hour_campaigns")).rows).toEqual([
+      { name: "RAW_TENANT_A" },
+    ]);
+    expect((await tenantBPool.query("SELECT name FROM golden_hour_campaigns")).rows).toEqual([
+      { name: "RAW_TENANT_B" },
+    ]);
+  });
+
+  it("thiếu registry hoặc secret trả 503, không fallback và không rò cấu hình", async () => {
+    const owner = await bootstrapOwner();
+    const tenantAId = owner.payload.activeTenant!.id;
+    const tenantACookie = `${session.PLATFORM_SESSION_COOKIE}=${owner.res.state.sessionCookie!}`;
+    const missingRegistry = await addTenantForOwner(owner, {
+      slug: "missing-registry",
+      name: "Missing Registry",
+      registerDatabase: false,
+    });
+    delete process.env.TENANT_MISSING_DATABASE_URL;
+    const missingSecret = await addTenantForOwner(owner, {
+      slug: "missing-secret",
+      name: "Missing Secret",
+      secretEnv: "TENANT_MISSING_DATABASE_URL",
+    });
+
+    for (const fixture of [missingRegistry, missingSecret]) {
+      const denied = await fetch(`${baseUrl}/api/services?tenantId=${tenantAId}`, {
+        headers: authenticatedHeaders(fixture.cookie, undefined, fixture.tenantId),
+      });
+      expect(denied.status).toBe(503);
+      const rawBody = await denied.text();
+      expect(JSON.parse(rawBody)).toMatchObject({ code: "TENANT_DATABASE_UNAVAILABLE" });
+      expect(rawBody).not.toContain(tenantUrl);
+      expect(rawBody).not.toContain(tenantBUrl);
+      expect(rawBody).not.toContain("missing_secret_role");
+      expect(rawBody).not.toContain("missing-secret.invalid");
+    }
+
+    const tenantAStillHealthy = await fetch(`${baseUrl}/api/services`, {
+      headers: authenticatedHeaders(tenantACookie, undefined, tenantAId),
+    });
+    expect(tenantAStillHealthy.status).toBe(200);
+  });
+
+  it("đổi studio xoay cookie; request A đang chạy giữ context A và cookie cũ bị thu hồi", async () => {
+    const owner = await bootstrapOwner();
+    const tenantAId = owner.payload.activeTenant!.id;
+    const tenantB = await addTenantB(owner);
+    const tenantACookie = `${session.PLATFORM_SESSION_COOKIE}=${owner.res.state.sessionCookie!}`;
+    await tenantPool.query(
+      "INSERT INTO services (name, price, cost_price) VALUES ('INFLIGHT_TENANT_A', 100, 0)",
+    );
+    await tenantBPool.query(
+      "INSERT INTO services (name, price, cost_price) VALUES ('AFTER_SWITCH_TENANT_B', 200, 0)",
+    );
+
+    const lockClient = await tenantPool.connect();
+    await lockClient.query("BEGIN");
+    await lockClient.query("LOCK TABLE services IN ACCESS EXCLUSIVE MODE");
+    const inFlightA = fetch(`${baseUrl}/api/services`, {
+      headers: authenticatedHeaders(tenantACookie, undefined, tenantAId),
+    });
+
+    const router = await import("./tenant-database-router");
+    let leaseObserved = false;
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (router.tenantDatabaseRouterStats().activeLeases > 0) {
+        leaseObserved = true;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(leaseObserved).toBe(true);
+
+    let switchedCookie = "";
+    try {
+      const switched = await fetch(`${baseUrl}/api/auth/select-tenant`, {
+        method: "POST",
+        headers: {
+          ...authenticatedHeaders(tenantACookie, owner.payload.csrfToken),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ tenantId: tenantB.tenantId }),
+      });
+      expect(switched.status).toBe(200);
+      expect((await switched.clone().json() as any).activeTenant.slug).toBe("studio-b");
+      switchedCookie = cookieFrom(switched.headers, session.PLATFORM_SESSION_COOKIE);
+    } finally {
+      await lockClient.query("COMMIT");
+      lockClient.release();
+    }
+
+    const inFlightResponse = await inFlightA;
+    expect(inFlightResponse.status).toBe(200);
+    expect((await inFlightResponse.json() as any[]).map((row) => row.name)).toEqual([
+      "INFLIGHT_TENANT_A",
+    ]);
+
+    const oldCookieResponse = await fetch(`${baseUrl}/api/services`, {
+      headers: authenticatedHeaders(tenantACookie),
+    });
+    expect(oldCookieResponse.status).toBe(401);
+    const switchedResponse = await fetch(`${baseUrl}/api/services`, {
+      headers: authenticatedHeaders(switchedCookie, undefined, tenantB.tenantId),
+    });
+    expect(switchedResponse.status).toBe(200);
+    expect((await switchedResponse.json() as any[]).map((row) => row.name)).toEqual([
+      "AFTER_SWITCH_TENANT_B",
+    ]);
+  });
+
+  it("background runner chạy canary và ghi dữ liệu trong đúng context từng tenant", async () => {
+    const owner = await bootstrapOwner();
+    await addTenantB(owner);
+    const { runBusinessJob } = await import("../lib/tenant-job-runner");
+    const { getTenantDatabaseIdentity, pool: routedPool } = await import("@workspace/db");
+    const observed: Array<{ slug: string; marker: string }> = [];
+
+    await runBusinessJob(async () => {
+      const identity = getTenantDatabaseIdentity();
+      const canary = await routedPool.query<{ marker: string }>(
+        "SELECT marker FROM tenant_isolation_canary",
+      );
+      observed.push({ slug: identity.tenantSlug, marker: canary.rows[0]!.marker });
+      await routedPool.query(
+        "INSERT INTO tenant_job_probe (observed_tenant_slug) VALUES ($1)",
+        [identity.tenantSlug],
+      );
+    });
+
+    expect(observed.sort((left, right) => left.slug.localeCompare(right.slug))).toEqual([
+      { slug: "amazing-studio", marker: "TENANT_A_CANARY" },
+      { slug: "studio-b", marker: "TENANT_B_CANARY" },
+    ]);
+    expect((await tenantPool.query("SELECT observed_tenant_slug FROM tenant_job_probe")).rows).toEqual([
+      { observed_tenant_slug: "amazing-studio" },
+    ]);
+    expect((await tenantBPool.query("SELECT observed_tenant_slug FROM tenant_job_probe")).rows).toEqual([
+      { observed_tenant_slug: "studio-b" },
+    ]);
   });
 
   it("E2E HTTP: local fallback, Google bootstrap, unknown/unverified rejection và logout", async () => {
     const bcrypt = (await import("bcryptjs")).default;
+    // Public routes need an explicit server-owned Amazing mapping even before
+    // the first owner authenticates; this does not create or copy tenant data.
+    await registerAmazingTenantMappingWithoutOwner();
     await tenantPool.query(
       "UPDATE staff SET password_hash = $2 WHERE id = $1",
       [1, await bcrypt.hash("safe-local-password", 4)],

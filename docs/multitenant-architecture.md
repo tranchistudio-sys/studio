@@ -29,13 +29,14 @@ luôn nằm trong tenant database.
 
 Tenant có `name=Amazing Studio`, `slug=amazing-studio`, `status=active`.
 Registry lưu metadata không nhạy cảm và `secret_ref=env:DEFAULT_TENANT_DATABASE_URL`.
-Database production hiện tại được giữ nguyên; PR1 không copy, migrate nghiệp vụ,
+Database production hiện tại được giữ nguyên; không copy, migrate nghiệp vụ,
 seed hay tạo database trắng thay thế.
 
-PR1 chỉ cho phép business request khi registry xác nhận active tenant là reference
-`amazing-studio-current-production`. Tenant database khác trả 503, không fallback
-sang Amazing. Pool router database-per-tenant và cross-tenant repository refactor
-thuộc PR2.
+PR2 dùng router database-per-tenant: active tenant lấy duy nhất từ server session,
+registry trỏ tới secret env allowlist, rồi metadata host/database/role được đối
+chiếu trước khi mở pool. Thiếu/sai registry, secret, metadata hoặc kết nối đều trả
+503; tuyệt đối không fallback sang Amazing. Unique index `(host_ref,
+database_name)` ngăn hai tenant đăng ký cùng database vật lý.
 
 ## Identity và quyền
 
@@ -68,18 +69,32 @@ chặn trong transaction có advisory lock.
 - Mỗi request kiểm tra lại session, platform user, tenant, membership và tenant
   staff còn active.
 - Tenant lấy từ server session; body/query/header client không được dùng để chọn DB.
+- `X-Tenant-Id` của upload queue chỉ là assertion chống request cũ sau khi switch;
+  mismatch trả `TENANT_CONTEXT_MISMATCH`, không bao giờ dùng header để route.
 - Unsafe business request được bảo vệ bằng SameSite + exact same-origin check;
   auth/member mutation còn yêu cầu CSRF token riêng.
 - API nghiệp vụ mặc định-deny; public routes được allowlist theo method + exact path.
 - Platform DB hoặc tenant DB lỗi trả lỗi rõ ràng và fail closed.
 
-PR1 tạo legacy JWT bridge 60 giây chỉ bên trong request để route cũ tiếp tục dùng
+Legacy JWT bridge 60 giây chỉ tồn tại bên trong request để route cũ tiếp tục dùng
 `verifyToken`; token không trả frontend, không lưu localStorage và không log.
-Tenant role trong bridge là trần quyền cho các helper đã refactor. PR2 sẽ bỏ bridge
-khi repository/service nhận tenant context trực tiếp.
+Mọi truy vấn `pool`/Drizzle của request được dispatch qua immutable
+`AsyncLocalStorage` tenant context. Platform mode mà thiếu context sẽ throw thay
+vì dùng `DATABASE_URL` mặc định.
 
 ## Frontend cache isolation
 
 React Query cache được xóa trước khi render user/tenant mới ở login, logout và
-studio switch. PR2 sẽ namespace query keys bằng `activeTenantId`; xóa cache trong
-PR1 ngăn dữ liệu tenant/user trước lóe sang phiên tiếp theo.
+studio switch; cây runtime remount theo user/tenant/membership/role/status. Upload
+queue, localStorage và IndexedDB được namespace theo cùng scope; queue cũ bị abort
+và callback cũ không được apply sau khi đổi studio.
+
+## Background job, cache và media
+
+- Scheduler liệt kê tenant `active`/`trial`, acquire lease riêng cho từng lượt và
+  bỏ qua tenant lỗi mà không chuyển job sang database khác.
+- Cache dữ liệu nghiệp vụ, SSE và idempotency key phải chứa tenant scope; staff ID
+  hoặc object ID không được xem là duy nhất toàn nền tảng.
+- Object mới nằm dưới `tenants/<tenant-id>/...`. Path legacy không prefix chỉ được
+  Amazing Studio đọc trong giai đoạn chuyển tiếp; path traversal và tenant mismatch
+  bị từ chối.

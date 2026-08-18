@@ -1,9 +1,13 @@
 import { API_BASE } from "@/lib/api-base";
-import type { UploadAttachTarget, UploadJob } from "./types";
+import type { UploadAttachTarget, UploadJob, UploadQueueScope } from "./types";
 
-function authHeaders(): HeadersInit {
+function authHeaders(scope: UploadQueueScope): HeadersInit {
   const token = localStorage.getItem("amazingStudioToken_v2");
-  return { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  return {
+    "Content-Type": "application/json",
+    ...(scope.tenantId !== "legacy-default" ? { "X-Tenant-Id": scope.tenantId } : {}),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
 }
 
 function albumPaths(dress: {
@@ -21,12 +25,16 @@ function albumPaths(dress: {
 }
 
 /** Apply uploaded objectPath to dress in DB. Idempotent — skips paths already present. */
-export async function applyDressUpload(job: UploadJob): Promise<boolean> {
+export async function applyDressUpload(job: UploadJob, signal?: AbortSignal): Promise<boolean> {
   const dressId = job.attach?.dressId;
   const p = job.objectPath;
   if (!dressId || !p || job.attach?.entity !== "dress") return false;
 
-  const r = await fetch(`${API_BASE}/api/dresses/${dressId}`, { headers: authHeaders() });
+  const r = await fetch(`${API_BASE}/api/dresses/${dressId}`, {
+    headers: authHeaders(job.scope),
+    credentials: "include",
+    signal,
+  });
   if (!r.ok) throw new Error("Không tải được sản phẩm để gắn ảnh");
   const dress = await r.json() as {
     imageUrl?: string | null;
@@ -60,7 +68,9 @@ export async function applyDressUpload(job: UploadJob): Promise<boolean> {
 
   const put = await fetch(`${API_BASE}/api/dresses/${dressId}`, {
     method: "PUT",
-    headers: authHeaders(),
+    headers: authHeaders(job.scope),
+    credentials: "include",
+    signal,
     body: JSON.stringify({
       imageUrl,
       publicImageUrl: imageUrl,
@@ -75,9 +85,9 @@ export async function applyDressUpload(job: UploadJob): Promise<boolean> {
   return true;
 }
 
-export async function applyUploadJob(job: UploadJob): Promise<boolean> {
+export async function applyUploadJob(job: UploadJob, signal?: AbortSignal): Promise<boolean> {
   if (!job.attach || !job.objectPath) return false;
-  if (job.attach.entity === "dress") return applyDressUpload(job);
+  if (job.attach.entity === "dress") return applyDressUpload(job, signal);
   return false;
 }
 

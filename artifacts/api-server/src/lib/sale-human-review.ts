@@ -1,4 +1,5 @@
 import { pool } from "@workspace/db";
+import { currentTenantScope } from "./tenant-scope";
 
 /**
  * Lulu Human Review — "Câu hỏi lạ cần xử lý".
@@ -18,9 +19,10 @@ export const HOLD_MESSAGE = "Dạ để em kiểm tra kỹ lại phần này cho
 export type HumanReviewStatus = "open" | "sent" | "ignored";
 export type HumanReviewPriority = "normal" | "high" | "urgent";
 
-let createdTable = false;
+const createdTables = new Set<string>();
 export async function ensureHumanReviewTable(): Promise<void> {
-  if (createdTable) return;
+  const tenantScope = currentTenantScope();
+  if (createdTables.has(tenantScope)) return;
   await pool.query(`
     CREATE TABLE IF NOT EXISTS lulu_human_reviews (
       id                    SERIAL PRIMARY KEY,
@@ -54,7 +56,7 @@ export async function ensureHumanReviewTable(): Promise<void> {
     `CREATE INDEX IF NOT EXISTS idx_lulu_hr_status_created
      ON lulu_human_reviews (status, created_at DESC)`,
   ).catch(() => {});
-  createdTable = true;
+  createdTables.add(tenantScope);
 }
 
 /**

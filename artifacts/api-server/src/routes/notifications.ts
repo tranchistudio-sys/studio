@@ -1,10 +1,13 @@
 import { Router, type Request, type Response } from "express";
 import { db } from "@workspace/db";
+import type { BusinessJobRunner } from "../lib/tenant-job-runner";
+import { currentTenantScope } from "../lib/tenant-scope";
 import { notificationsTable, staffTable } from "@workspace/db/schema";
 import { eq, and, desc, sql, isNull, or } from "drizzle-orm";
 import { verifyToken } from "./auth";
 import { readLegacyToken } from "../lib/legacy-auth-token";
 import { watchPlatformSessionValidity } from "../platform/session";
+import { retainCurrentTenantDatabaseLease } from "../platform/tenant-database-router";
 import { sendPushToStaff } from "./web-push";
 
 const router = Router();
@@ -33,8 +36,12 @@ function formatDeadlineDigestLine(items: DeadlineDigestItem[], max = 4): string 
 
 
 
-type SSEClient = { res: Response; staffId: number; isAdmin: boolean };
+type SSEClient = { res: Response; staffId: number; isAdmin: boolean; tenantId: string };
 const clients: SSEClient[] = [];
+
+function currentNotificationTenantId(): string {
+  return currentTenantScope();
+}
 
 export function emitNotification(notification: {
   staffId: number | null;
@@ -48,6 +55,12 @@ export function emitNotification(notification: {
   bookingId?: number;
   dedupeKey?: string;
 }) {
+  // Capture before crossing the async boundary. Staff ids are only unique
+  // inside one tenant, so neither SSE nor push fan-out may use them globally.
+  const tenantId = currentNotificationTenantId();
+  const retainedLease = process.env.PLATFORM_DATABASE_URL?.trim()
+    ? retainCurrentTenantDatabaseLease()
+    : null;
   (async () => {
     try {
       // Atomic dedupe via INSERT ... ON CONFLICT DO NOTHING on dedupe_key.
@@ -110,6 +123,7 @@ export function emitNotification(notification: {
       // Prune dead clients on write failure to prevent memory leak
       const dead: SSEClient[] = [];
       for (const client of clients) {
+        if (client.tenantId !== tenantId) continue;
         const isTarget = notification.staffId === null || client.isAdmin || client.staffId === notification.staffId;
         if (!isTarget) continue;
         try {
@@ -125,7 +139,7 @@ export function emitNotification(notification: {
         try { d.res.end(); } catch {}
       }
 
-      sendPushToStaff({
+      await sendPushToStaff({
         staffId: notification.staffId,
         title: notification.title,
         message: notification.message,
@@ -135,6 +149,8 @@ export function emitNotification(notification: {
       });
     } catch (e) {
       console.error("[notifications] emit error:", e);
+    } finally {
+      await retainedLease?.release();
     }
   })();
 }
@@ -164,7 +180,12 @@ router.get("/notifications/stream", async (req: Request, res: Response) => {
   });
   res.write(":\n\n");
 
-  const client: SSEClient = { res, staffId: auth.staffId, isAdmin: auth.isAdmin };
+  const client: SSEClient = {
+    res,
+    staffId: auth.staffId,
+    isAdmin: auth.isAdmin,
+    tenantId: currentNotificationTenantId(),
+  };
   clients.push(client);
 
   const keepAlive = setInterval(() => { res.write(":\n\n"); }, 30000);
@@ -264,7 +285,7 @@ router.post("/notifications/mark-all-read", async (req: Request, res: Response) 
   res.json({ ok: true });
 });
 
-export function startDeadlineChecker() {
+export function startDeadlineChecker(runJob: BusinessJobRunner = async (work) => work()) {
   const CHECK_INTERVAL = 60 * 60 * 1000;
 
   async function check() {
@@ -373,8 +394,9 @@ export function startDeadlineChecker() {
     }
   }
 
-  setTimeout(check, 15000);
-  setInterval(check, CHECK_INTERVAL);
+  const run = () => { void runJob(check); };
+  setTimeout(run, 15000);
+  setInterval(run, CHECK_INTERVAL);
 }
 
 // ─── Bước 4: Reminder chuẩn bị đồ cho Combo ngày cưới ────────────────────────
@@ -386,7 +408,7 @@ export function startDeadlineChecker() {
 // - dedupeKey theo (booking_id, shoot_date) → mỗi booking chỉ nhắc 1 lần
 //   khi bước vào cửa sổ N ngày.
 // - Không gửi push/email (chỉ in-app), không sửa deadline hậu kỳ ảnh.
-export function startWeddingPrepReminder() {
+export function startWeddingPrepReminder(runJob: BusinessJobRunner = async (work) => work()) {
   const CHECK_INTERVAL = 60 * 60 * 1000; // 1h
   const DEFAULT_LEAD_DAYS = 3;
 
@@ -437,8 +459,9 @@ export function startWeddingPrepReminder() {
     }
   }
 
-  setTimeout(check, 20000);
-  setInterval(check, CHECK_INTERVAL);
+  const run = () => { void runJob(check); };
+  setTimeout(run, 20000);
+  setInterval(run, CHECK_INTERVAL);
 }
 
 export default router;

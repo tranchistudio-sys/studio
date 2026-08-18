@@ -5,6 +5,10 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: "@workspace/db/tenant-context",
+        replacement: path.resolve(__dirname, "../../lib/db/src/tenant-context.ts"),
+      },
+      {
         find: "@workspace/db/schema",
         replacement: path.resolve(__dirname, "../../lib/db/src/schema/index.ts"),
       },

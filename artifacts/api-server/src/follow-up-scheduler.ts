@@ -1,4 +1,5 @@
 import { pool } from "@workspace/db";
+import type { BusinessJobRunner } from "./lib/tenant-job-runner";
 import { getMasterEnabled } from "./lib/sale-master";
 
 const DEFAULT_FOLLOW_UP_MSG = "Dạ bạn ơi, mình có thể hỗ trợ thêm gì không ạ? Amazing Studio luôn sẵn sàng giúp bạn ạ 😊";
@@ -414,7 +415,7 @@ async function processLegacyCandidate(
   );
 }
 
-export function startFollowUpScheduler(): void {
+export function startFollowUpScheduler(runJob: BusinessJobRunner = async (work) => work()): void {
   const enabled = (process.env.ENABLE_AI_FOLLOWUP ?? "").toLowerCase();
   if (enabled !== "true" && enabled !== "1" && enabled !== "yes") {
     console.log("[FollowUp] Scheduler tắt (ENABLE_AI_FOLLOWUP không được bật) — set ENABLE_AI_FOLLOWUP=true để kích hoạt");
@@ -428,7 +429,7 @@ export function startFollowUpScheduler(): void {
   console.log(`[FollowUp] Scheduler khởi động — poll mỗi ${Math.round(intervalSec / 60)}min`);
 
   const run = () => {
-    runFollowUpCheck().catch((err) => console.error("[FollowUp] Lỗi scheduler:", err));
+    runJob(runFollowUpCheck).catch((err) => console.error("[FollowUp] Lỗi scheduler:", err));
   };
 
   setTimeout(() => {

@@ -137,7 +137,7 @@ beforeAll(async () => {
   tenantPool = new Pool({ connectionString: tenantUrl });
   await tenantPool.query(`
     CREATE TABLE IF NOT EXISTS staff (
-      id BIGINT PRIMARY KEY,
+      id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
       role TEXT NOT NULL,
       roles JSONB NOT NULL DEFAULT '[]'::jsonb,

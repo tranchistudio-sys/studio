@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Bộ triển khai CODE-ONLY cho Amazing Studio.
-# Cấu hình VPS nằm ngoài Git: /opt/amazing-studio/deploy.conf
-# Script không chạy migration, db push, seed hoặc bất kỳ câu SQL nào.
+# Triển khai CODE-ONLY cho Amazing Studio theo mô hình release + Docker image.
+# Script chỉ build/recreate dịch vụ web; không chạy migration, db push, seed,
+# câu SQL, không restart API và không tác động container database.
 
 CONFIG_FILE="${AMAZING_DEPLOY_CONFIG:-/opt/amazing-studio/deploy.conf}"
 LOCK_FILE="${AMAZING_DEPLOY_LOCK:-/tmp/amazing-studio-deploy.lock}"
@@ -21,72 +21,44 @@ DEPLOY_SHA="$1"
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
 
+: "${DEPLOY_REPO_DIR:?Thiếu DEPLOY_REPO_DIR trong $CONFIG_FILE}"
+: "${DEPLOY_REPO_USER:?Thiếu DEPLOY_REPO_USER trong $CONFIG_FILE}"
 : "${DEPLOY_APP_DIR:?Thiếu DEPLOY_APP_DIR trong $CONFIG_FILE}"
-: "${DEPLOY_DRIVER:?Thiếu DEPLOY_DRIVER trong $CONFIG_FILE}"
-: "${DEPLOY_SERVICE:?Thiếu DEPLOY_SERVICE trong $CONFIG_FILE}"
+: "${DEPLOY_RELEASES_DIR:?Thiếu DEPLOY_RELEASES_DIR trong $CONFIG_FILE}"
+: "${DEPLOY_COMPOSE_FILE:?Thiếu DEPLOY_COMPOSE_FILE trong $CONFIG_FILE}"
+: "${DEPLOY_WEB_SERVICE:?Thiếu DEPLOY_WEB_SERVICE trong $CONFIG_FILE}"
+: "${DEPLOY_WEB_IMAGE:?Thiếu DEPLOY_WEB_IMAGE trong $CONFIG_FILE}"
+: "${DEPLOY_ROLLBACK_IMAGE:?Thiếu DEPLOY_ROLLBACK_IMAGE trong $CONFIG_FILE}"
 : "${DEPLOY_HEALTH_URL:?Thiếu DEPLOY_HEALTH_URL trong $CONFIG_FILE}"
+: "${DEPLOY_WEB_URL:?Thiếu DEPLOY_WEB_URL trong $CONFIG_FILE}"
 
-command -v git >/dev/null || die "VPS chưa có git."
-command -v pnpm >/dev/null || die "VPS chưa có pnpm."
-command -v curl >/dev/null || die "VPS chưa có curl."
-command -v flock >/dev/null || die "VPS chưa có flock."
-git -C "$DEPLOY_APP_DIR" rev-parse --is-inside-work-tree 2>/dev/null | grep -qx true || \
-  die "$DEPLOY_APP_DIR không phải Git working tree."
+for tool in git docker curl flock tar sudo; do
+  command -v "$tool" >/dev/null || die "VPS chưa có $tool."
+done
 
-exec 9>"$LOCK_FILE"
-flock -n 9 || die "Đang có một lượt deploy khác chạy."
+sudo -n true >/dev/null || die "User deploy chưa có sudo không cần mật khẩu."
+[ -d "$DEPLOY_REPO_DIR/.git" ] || die "$DEPLOY_REPO_DIR không phải Git repository."
+[ -r "$DEPLOY_APP_DIR/06_vps_deployment/Dockerfile.web" ] || die "Thiếu Dockerfile.web production."
+[ -r "$DEPLOY_APP_DIR/06_vps_deployment/docker-compose.yml" ] || die "Thiếu docker-compose.yml production."
 
-restart_app() {
-  case "$DEPLOY_DRIVER" in
-    systemd)
-      sudo -n systemctl restart "$DEPLOY_SERVICE"
-      ;;
-    systemd-user)
-      systemctl --user restart "$DEPLOY_SERVICE"
-      ;;
-    pm2)
-      pm2 restart "$DEPLOY_SERVICE" --update-env
-      ;;
-    docker-compose)
-      : "${DEPLOY_COMPOSE_FILE:?Thiếu DEPLOY_COMPOSE_FILE}"
-      docker compose -f "$DEPLOY_COMPOSE_FILE" up -d --no-deps --force-recreate "$DEPLOY_SERVICE"
-      ;;
-    *)
-      die "DEPLOY_DRIVER phải là systemd, systemd-user, pm2 hoặc docker-compose."
-      ;;
-  esac
-}
-
-preflight_service() {
-  case "$DEPLOY_DRIVER" in
-    systemd)
-      sudo -n systemctl show "$DEPLOY_SERVICE" -p LoadState --value | grep -qx loaded
-      ;;
-    systemd-user)
-      systemctl --user show "$DEPLOY_SERVICE" -p LoadState --value | grep -qx loaded
-      ;;
-    pm2)
-      command -v pm2 >/dev/null && pm2 describe "$DEPLOY_SERVICE" >/dev/null
-      ;;
-    docker-compose)
-      : "${DEPLOY_COMPOSE_FILE:?Thiếu DEPLOY_COMPOSE_FILE}"
-      docker compose -f "$DEPLOY_COMPOSE_FILE" config --services | grep -Fxq "$DEPLOY_SERVICE"
-      ;;
-    *) return 1 ;;
-  esac
+repo_git() {
+  sudo -n -u "$DEPLOY_REPO_USER" git \
+    -c safe.directory="$DEPLOY_REPO_DIR" \
+    -C "$DEPLOY_REPO_DIR" "$@"
 }
 
 health_ok() {
   local body
   body=$(curl -fsS --max-time 15 "$DEPLOY_HEALTH_URL" 2>/dev/null || true)
-  [[ "$body" == *'"status":"ok"'* ]]
+  [[ "$body" == *'"status":"ok"'* ]] || return 1
+  curl -fsS --max-time 15 "$DEPLOY_WEB_URL/" >/dev/null 2>&1
 }
 
 wait_for_health() {
   local attempt
   for attempt in $(seq 1 18); do
     if health_ok; then
-      echo "[deploy] Health check OK."
+      echo "[deploy] API và website đều healthy."
       return 0
     fi
     echo "[deploy] Health check $attempt/18 chưa đạt; chờ 5 giây..."
@@ -95,35 +67,50 @@ wait_for_health() {
   return 1
 }
 
-preflight_service || die "Không xác nhận được dịch vụ $DEPLOY_SERVICE; chưa thay đổi code."
+exec 9>"$LOCK_FILE"
+flock -n 9 || die "Đang có một lượt deploy khác chạy."
 
-cd "$DEPLOY_APP_DIR"
-[ -z "$(git status --porcelain --untracked-files=no)" ] || die "Production có file tracked đang sửa tay; dừng để không ghi đè."
-PREVIOUS_SHA=$(git rev-parse HEAD)
+[ -z "$(repo_git status --porcelain --untracked-files=no)" ] || \
+  die "Repository nguồn có file tracked đang sửa tay; dừng để không ghi đè."
+
+echo "[deploy] Fetch đúng commit $DEPLOY_SHA"
+repo_git fetch --no-tags origin "$DEPLOY_SHA"
+repo_git cat-file -e "$DEPLOY_SHA^{commit}"
+
+RELEASE_DIR="$DEPLOY_RELEASES_DIR/$DEPLOY_SHA"
+[ ! -e "$RELEASE_DIR" ] || die "Release $DEPLOY_SHA đã tồn tại; dừng để không ghi đè."
+
+sudo -n install -d -m 755 -o root -g root "$RELEASE_DIR"
+repo_git archive "$DEPLOY_SHA" | sudo -n tar -x -C "$RELEASE_DIR"
+sudo -n cp -a "$DEPLOY_APP_DIR/06_vps_deployment" "$RELEASE_DIR/"
+
+RELEASE_COMPOSE="$RELEASE_DIR/06_vps_deployment/docker-compose.yml"
+docker compose -f "$RELEASE_COMPOSE" config --services | grep -Fxq "$DEPLOY_WEB_SERVICE" || \
+  die "Không tìm thấy service $DEPLOY_WEB_SERVICE trong release."
+docker compose -f "$DEPLOY_COMPOSE_FILE" config --services | grep -Fxq "$DEPLOY_WEB_SERVICE" || \
+  die "Không tìm thấy service $DEPLOY_WEB_SERVICE trong production."
+
+PREVIOUS_IMAGE_ID=$(docker image inspect "$DEPLOY_WEB_IMAGE" --format '{{.Id}}')
+docker tag "$PREVIOUS_IMAGE_ID" "$DEPLOY_ROLLBACK_IMAGE"
 
 rollback() {
   local status=$?
   trap - ERR
-  echo "[deploy] Deploy hỏng; rollback về $PREVIOUS_SHA" >&2
-  git checkout --detach "$PREVIOUS_SHA"
-  pnpm install --frozen-lockfile
-  pnpm deploy:guard
-  pnpm run build:deploy
-  restart_app
+  echo "[deploy] Deploy web hỏng; rollback image cũ $PREVIOUS_IMAGE_ID" >&2
+  docker tag "$DEPLOY_ROLLBACK_IMAGE" "$DEPLOY_WEB_IMAGE" || true
+  docker compose -f "$DEPLOY_COMPOSE_FILE" up -d --no-deps --force-recreate "$DEPLOY_WEB_SERVICE" || true
   wait_for_health || true
   exit "$status"
 }
 trap rollback ERR
 
-echo "[deploy] $PREVIOUS_SHA -> $DEPLOY_SHA"
-git fetch --no-tags origin "$DEPLOY_SHA"
-git checkout --detach "$DEPLOY_SHA"
+echo "[deploy] Build image web từ release $RELEASE_DIR"
+docker compose -f "$RELEASE_COMPOSE" build "$DEPLOY_WEB_SERVICE"
 
-pnpm install --frozen-lockfile
-pnpm deploy:guard
-pnpm run build:deploy
-restart_app
+echo "[deploy] Chỉ thay container $DEPLOY_WEB_SERVICE; API và database giữ nguyên."
+docker compose -f "$DEPLOY_COMPOSE_FILE" up -d --no-deps --force-recreate "$DEPLOY_WEB_SERVICE"
 wait_for_health
 
+printf '%s\n' "$DEPLOY_SHA" | sudo -n tee /opt/amazing-studio/DEPLOYED_SHA >/dev/null
 trap - ERR
-echo "[deploy] SUCCESS: $DEPLOY_SHA"
+echo "[deploy] SUCCESS: web đang chạy commit $DEPLOY_SHA"

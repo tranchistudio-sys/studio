@@ -1,4 +1,4 @@
-import { pgTable, serial, text, timestamp, integer, numeric, date, jsonb, boolean } from "drizzle-orm/pg-core";
+import { pgTable, serial, text, timestamp, integer, numeric, date, jsonb, boolean, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 import { customersTable } from "./customers";
@@ -107,7 +107,13 @@ export const bookingOccurrencesTable = pgTable("booking_occurrences", {
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at"),
-});
+}, (t) => ({
+  // Khai báo ĐỦ 2 index (đã tồn tại trên DB qua migrations.ts) để schema code
+  // khớp 100% database — mọi công cụ diff schema (drizzle-kit/Replit DB
+  // migration) không còn thấy lệch mà đề xuất DROP bậy (sự cố 2026-07-13).
+  byBooking: index("idx_booking_occurrences_booking").on(t.bookingId),
+  byDate: index("idx_booking_occurrences_date").on(t.shootDate),
+}));
 
 export const insertBookingOccurrenceSchema = createInsertSchema(bookingOccurrencesTable).omit({ id: true, createdAt: true });
 export type InsertBookingOccurrence = z.infer<typeof insertBookingOccurrenceSchema>;

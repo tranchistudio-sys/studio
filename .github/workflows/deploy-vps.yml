@@ -106,13 +106,18 @@ jobs:
           ssh-keyscan -H -p "$VPS_PORT" "$VPS_HOST" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/known_hosts"
 
+      - name: Đóng gói đúng commit đã kiểm thử
+        shell: bash
+        run: |
+          git archive --format=tar.gz \
+            --output="$RUNNER_TEMP/amazing-studio-source-$GITHUB_RUN_ID.tar.gz" \
+            "$DEPLOY_SHA"
+
       - name: Tự cấu hình bộ deploy trên VPS
         shell: bash
         run: |
           config="$RUNNER_TEMP/amazing-studio-deploy.conf"
           cat > "$config" <<'EOF'
-          DEPLOY_REPO_DIR=/opt/amazing-studio/codex-repository
-          DEPLOY_REPO_USER=codex
           DEPLOY_APP_DIR=/opt/amazing-studio/app
           DEPLOY_RELEASES_DIR=/opt/amazing-studio/releases
           DEPLOY_COMPOSE_FILE=/opt/amazing-studio/app/06_vps_deployment/docker-compose.yml
@@ -130,13 +135,17 @@ jobs:
             "$VPS_USER@$VPS_HOST" \
             "sudo -n install -m 644 -o root -g root /tmp/amazing-studio-deploy.conf /opt/amazing-studio/deploy.conf && rm -f /tmp/amazing-studio-deploy.conf"
 
-      - name: Chép bộ điều khiển code-only lên VPS
+      - name: Chép source và bộ điều khiển code-only lên VPS
         shell: bash
         run: |
           scp -P "$VPS_PORT" -i "$HOME/.ssh/deploy_key" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
             scripts/vps-deploy-code-only.sh \
             "$VPS_USER@$VPS_HOST:/tmp/amazing-vps-deploy-$GITHUB_RUN_ID.sh"
+          scp -P "$VPS_PORT" -i "$HOME/.ssh/deploy_key" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$RUNNER_TEMP/amazing-studio-source-$GITHUB_RUN_ID.tar.gz" \
+            "$VPS_USER@$VPS_HOST:/tmp/amazing-studio-source-$GITHUB_RUN_ID.tar.gz"
 
       - name: Deploy và tự rollback nếu health check hỏng
         shell: bash
@@ -144,7 +153,7 @@ jobs:
           ssh -p "$VPS_PORT" -i "$HOME/.ssh/deploy_key" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$VPS_USER@$VPS_HOST" \
-            "bash /tmp/amazing-vps-deploy-$GITHUB_RUN_ID.sh '$DEPLOY_SHA'; status=\$?; rm -f /tmp/amazing-vps-deploy-$GITHUB_RUN_ID.sh; exit \$status"
+            "bash /tmp/amazing-vps-deploy-$GITHUB_RUN_ID.sh '$DEPLOY_SHA' '/tmp/amazing-studio-source-$GITHUB_RUN_ID.tar.gz'; status=\$?; rm -f /tmp/amazing-vps-deploy-$GITHUB_RUN_ID.sh /tmp/amazing-studio-source-$GITHUB_RUN_ID.tar.gz; exit \$status"
 
       - name: Xác nhận website thật đã sống
         shell: bash

@@ -284,6 +284,23 @@ jobs:
           echo "::error::Bản xem thử không phản hồi /api/healthz sau ~200 giây."
           exit 1
 
+      - name: Xác nhận đăng nhập Google đã bật
+        if: github.event.number == 163
+        env:
+          PREVIEW_BASIC_AUTH_USER: ${{ vars.PREVIEW_BASIC_AUTH_USER || 'amazing' }}
+          PREVIEW_BASIC_AUTH_PASS: ${{ secrets.PREVIEW_BASIC_AUTH_PASS }}
+        run: |
+          config=$(curl -fsS --max-time 15 \
+            -u "$PREVIEW_BASIC_AUTH_USER:$PREVIEW_BASIC_AUTH_PASS" \
+            "$PREVIEW_URL/api/auth/config")
+          if ! jq -e \
+            '.platformEnabled == true and .googleEnabled == true and (.googleClientId | length > 0)' \
+            >/dev/null <<<"$config"; then
+            echo "::error::Bản xem thử chưa công bố cấu hình đăng nhập Google."
+            exit 1
+          fi
+          echo "Đăng nhập Google đã sẵn sàng trên bản xem thử."
+
       # Khi BẤT KỲ bước nào phía trên hỏng (deploy hoặc xác nhận sống): in trạng
       # thái + log máy để thấy NGAY nguyên nhân trong CI, không phải mò dashboard.
       # Phải đặt SAU bước xác nhận — if:failure() chỉ nhìn các bước TRƯỚC nó.

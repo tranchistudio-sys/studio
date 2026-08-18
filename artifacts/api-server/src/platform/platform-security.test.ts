@@ -176,11 +176,11 @@ describe("sensitive logging policy", () => {
     expect(source).not.toMatch(/console\.(?:log|warn|error)\([^\n]*(?:credential|password|cookie|DATABASE_URL)/i);
   });
 
-  it("cài runtime console redaction trước khi import app và legacy routes", async () => {
+  it("cài runtime console redaction trước khi nạp app và legacy routes", async () => {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const indexSource = await readFile(path.resolve(here, "../index.ts"), "utf8");
     const redactionImport = indexSource.indexOf('import "./lib/install-runtime-log-redaction"');
-    const appImport = indexSource.indexOf('import app from "./app"');
+    const appImport = indexSource.indexOf('await import("./app")');
     expect(redactionImport).toBeGreaterThanOrEqual(0);
     expect(appImport).toBeGreaterThan(redactionImport);
   });

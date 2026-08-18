@@ -142,6 +142,15 @@ async function ensureAmazingTenant(queryable: PlatformQueryable): Promise<string
   return resolvedId;
 }
 
+/**
+ * Registers the legacy Amazing Studio tenant before the tenant router is used
+ * during process startup. This is intentionally platform-only: the database
+ * URL remains resolved by the registry and never falls back in the router.
+ */
+export async function ensureAmazingTenantRegistered(): Promise<string> {
+  return withPlatformTransaction(ensureAmazingTenant);
+}
+
 async function findLegacyAdminStaffId(): Promise<number> {
   const configuredId = Number(process.env.BOOTSTRAP_TENANT_STAFF_ID);
   if (Number.isInteger(configuredId) && configuredId > 0) {

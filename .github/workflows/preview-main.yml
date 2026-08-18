@@ -1,0 +1,90 @@
+# BẢN XEM THỬ CỐ ĐỊNH — luôn chạy code mới nhất của nhánh main.
+#
+# Khác với bản xem thử theo PR (pr-preview.yml): app này KHÔNG bị xoá, địa chỉ
+# KHÔNG đổi → chủ studio lưu đúng MỘT link vào Safari, mở lúc nào cũng có.
+#   https://amazing-studio-preview.fly.dev
+#
+# Tự dựng lại mỗi khi main có commit mới; cũng chạy tay được (nút "Run workflow").
+# Vẫn dùng CHUNG database xem thử đã che dữ liệu khách — KHÔNG đụng production.
+
+name: Bản xem thử cố định
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: preview-co-dinh
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FLY_APP: amazing-studio-preview
+  PREVIEW_URL: https://amazing-studio-preview.fly.dev
+
+jobs:
+  deploy:
+    name: Dựng bản xem thử cố định
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Kiểm tra đã có đủ secret chưa
+        run: |
+          missing=""
+          if [ -z "${{ secrets.FLY_API_TOKEN }}" ];             then missing="$missing FLY_API_TOKEN"; fi
+          if [ -z "${{ secrets.PREVIEW_DATABASE_URL }}" ];      then missing="$missing PREVIEW_DATABASE_URL"; fi
+          if [ -z "${{ secrets.PREVIEW_DB_HOST_ALLOWLIST }}" ]; then missing="$missing PREVIEW_DB_HOST_ALLOWLIST"; fi
+          if [ -z "${{ secrets.PREVIEW_SESSION_SECRET }}" ];    then missing="$missing PREVIEW_SESSION_SECRET"; fi
+          if [ -z "${{ secrets.PREVIEW_BASIC_AUTH_PASS }}" ];   then missing="$missing PREVIEW_BASIC_AUTH_PASS"; fi
+          if [ -n "$missing" ]; then
+            echo "::error::Thiếu GitHub Secret:$missing — xem docs/PREVIEW-PR.md."
+            exit 1
+          fi
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Tạo app nếu chưa có
+        run: |
+          if flyctl status --app "$FLY_APP" >/dev/null 2>&1; then
+            echo "App $FLY_APP đã có — deploy đè."
+          else
+            flyctl apps create "$FLY_APP" --org "${{ vars.FLY_ORG || 'personal' }}"
+          fi
+
+      - name: Nạp cấu hình bí mật
+        run: |
+          flyctl secrets set --app "$FLY_APP" --stage \
+            DATABASE_URL="${{ secrets.PREVIEW_DATABASE_URL }}" \
+            PREVIEW_DB_HOST_ALLOWLIST="${{ secrets.PREVIEW_DB_HOST_ALLOWLIST }}" \
+            SESSION_SECRET="${{ secrets.PREVIEW_SESSION_SECRET }}" \
+            PREVIEW_BASIC_AUTH_USER="${{ vars.PREVIEW_BASIC_AUTH_USER || 'amazing' }}" \
+            PREVIEW_BASIC_AUTH_PASS="${{ secrets.PREVIEW_BASIC_AUTH_PASS }}"
+
+      - name: Deploy
+        run: |
+          deploy() { flyctl deploy --app "$FLY_APP" --config fly.toml --remote-only --ha=false --wait-timeout 300; }
+          deploy || { echo "::warning::deploy lỗi lần 1 — thử lại sau 20 giây"; sleep 20; deploy; }
+
+      - name: Xác nhận đã sống
+        run: |
+          for i in $(seq 1 20); do
+            body=$(curl -sS --max-time 15 "$PREVIEW_URL/api/healthz" || true)
+            echo "lần $i: $body"
+            case "$body" in *'"status":"ok"'*) echo "✅ Bản xem thử cố định sẵn sàng: $PREVIEW_URL"; exit 0;; esac
+            sleep 10
+          done
+          echo "::error::Không phản hồi /api/healthz sau ~200 giây."
+          exit 1
+
+      - name: Log máy khi hỏng
+        if: failure()
+        run: |
+          flyctl status --app "$FLY_APP" || true
+          flyctl logs --app "$FLY_APP" --no-tail 2>/dev/null | tail -120 || true

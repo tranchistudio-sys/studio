@@ -60,10 +60,22 @@ export async function assertPreviewDatabaseMarker(): Promise<void> {
 export async function terminateGhostSessions(): Promise<void> {
   if (!isPreviewMode()) return;
   try {
+    // CHỈ ngắt đúng hai loại phiên gây kẹt, KHÔNG ngắt bừa:
+    //  1. phiên đang giữ ADVISORY LOCK — chính là khoá của migration khởi động
+    //     (withStartupDdlLock); xác chết của boot trước ôm khoá này làm boot sau
+    //     treo vô hạn (sự cố 31/07).
+    //  2. phiên 'idle in transaction' — ôm khoá bảng, cũng chặn ALTER TABLE.
+    // Phiên 'idle' bình thường của app khác (bản xem thử cố định ↔ bản theo PR
+    // dùng chung database này) KHÔNG bị đụng → hai app sống chung hoà bình.
     const res = await pool.query(
-      `SELECT pg_terminate_backend(pid)
-         FROM pg_stat_activity
-        WHERE datname = current_database() AND pid <> pg_backend_pid()`,
+      `SELECT pg_terminate_backend(a.pid)
+         FROM pg_stat_activity a
+        WHERE a.datname = current_database()
+          AND a.pid <> pg_backend_pid()
+          AND (
+            a.state = 'idle in transaction'
+            OR EXISTS (SELECT 1 FROM pg_locks l WHERE l.pid = a.pid AND l.locktype = 'advisory')
+          )`,
     );
     if (res.rowCount) {
       console.warn(`[preview-boot] Đã ngắt ${res.rowCount} phiên ma của boot trước (chống kẹt khoá migration).`);

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Triển khai CODE-ONLY cho Amazing Studio theo mô hình release + Docker image.
-# Script chỉ build/recreate dịch vụ web; không chạy migration, db push, seed,
-# câu SQL, không restart API và không tác động container database.
+# Triển khai CODE-ONLY cho Amazing Studio từ gói source của GitHub Actions.
+# Chỉ build/recreate dịch vụ web; không migration, db push, seed, câu SQL,
+# không restart API và không tác động container database.
 
 CONFIG_FILE="${AMAZING_DEPLOY_CONFIG:-/opt/amazing-studio/deploy.conf}"
 LOCK_FILE="${AMAZING_DEPLOY_LOCK:-/tmp/amazing-studio-deploy.lock}"
@@ -13,16 +13,20 @@ die() {
   exit 1
 }
 
-[ "$#" -eq 1 ] || die "Cần đúng một commit SHA."
+[ "$#" -eq 2 ] || die "Cần commit SHA và đường dẫn gói source."
 DEPLOY_SHA="$1"
+SOURCE_ARCHIVE="$2"
 [[ "$DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]] || die "Commit SHA không hợp lệ: $DEPLOY_SHA"
+case "$SOURCE_ARCHIVE" in
+  /tmp/amazing-studio-source-*.tar.gz) ;;
+  *) die "Đường dẫn gói source không hợp lệ." ;;
+esac
+[ -r "$SOURCE_ARCHIVE" ] || die "Không đọc được gói source $SOURCE_ARCHIVE."
 [ -r "$CONFIG_FILE" ] || die "Thiếu $CONFIG_FILE; chưa được phép đoán cấu hình production."
 
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
 
-: "${DEPLOY_REPO_DIR:?Thiếu DEPLOY_REPO_DIR trong $CONFIG_FILE}"
-: "${DEPLOY_REPO_USER:?Thiếu DEPLOY_REPO_USER trong $CONFIG_FILE}"
 : "${DEPLOY_APP_DIR:?Thiếu DEPLOY_APP_DIR trong $CONFIG_FILE}"
 : "${DEPLOY_RELEASES_DIR:?Thiếu DEPLOY_RELEASES_DIR trong $CONFIG_FILE}"
 : "${DEPLOY_COMPOSE_FILE:?Thiếu DEPLOY_COMPOSE_FILE trong $CONFIG_FILE}"
@@ -32,20 +36,13 @@ source "$CONFIG_FILE"
 : "${DEPLOY_HEALTH_URL:?Thiếu DEPLOY_HEALTH_URL trong $CONFIG_FILE}"
 : "${DEPLOY_WEB_URL:?Thiếu DEPLOY_WEB_URL trong $CONFIG_FILE}"
 
-for tool in git docker curl flock tar sudo; do
+for tool in docker curl flock tar sudo; do
   command -v "$tool" >/dev/null || die "VPS chưa có $tool."
 done
 
 sudo -n true >/dev/null || die "User deploy chưa có sudo không cần mật khẩu."
-[ -d "$DEPLOY_REPO_DIR/.git" ] || die "$DEPLOY_REPO_DIR không phải Git repository."
 [ -r "$DEPLOY_APP_DIR/06_vps_deployment/Dockerfile.web" ] || die "Thiếu Dockerfile.web production."
 [ -r "$DEPLOY_APP_DIR/06_vps_deployment/docker-compose.yml" ] || die "Thiếu docker-compose.yml production."
-
-repo_git() {
-  sudo -n -u "$DEPLOY_REPO_USER" git \
-    -c safe.directory="$DEPLOY_REPO_DIR" \
-    -C "$DEPLOY_REPO_DIR" "$@"
-}
 
 health_ok() {
   local body
@@ -70,18 +67,15 @@ wait_for_health() {
 exec 9>"$LOCK_FILE"
 flock -n 9 || die "Đang có một lượt deploy khác chạy."
 
-[ -z "$(repo_git status --porcelain --untracked-files=no)" ] || \
-  die "Repository nguồn có file tracked đang sửa tay; dừng để không ghi đè."
-
-echo "[deploy] Fetch đúng commit $DEPLOY_SHA"
-repo_git fetch --no-tags origin "$DEPLOY_SHA"
-repo_git cat-file -e "$DEPLOY_SHA^{commit}"
-
 RELEASE_DIR="$DEPLOY_RELEASES_DIR/$DEPLOY_SHA"
 [ ! -e "$RELEASE_DIR" ] || die "Release $DEPLOY_SHA đã tồn tại; dừng để không ghi đè."
 
+echo "[deploy] Giải nén đúng commit $DEPLOY_SHA"
 sudo -n install -d -m 755 -o root -g root "$RELEASE_DIR"
-repo_git archive "$DEPLOY_SHA" | sudo -n tar -x -C "$RELEASE_DIR"
+sudo -n tar --no-same-owner -xzf "$SOURCE_ARCHIVE" -C "$RELEASE_DIR"
+[ -r "$RELEASE_DIR/package.json" ] || die "Gói source thiếu package.json."
+
+# Giữ đúng cấu hình Docker đã chạy ổn định trên production.
 sudo -n cp -a "$DEPLOY_APP_DIR/06_vps_deployment" "$RELEASE_DIR/"
 
 RELEASE_COMPOSE="$RELEASE_DIR/06_vps_deployment/docker-compose.yml"

@@ -339,6 +339,47 @@ jobs:
           rm -f /tmp/amazing-preview-bundle.js
           echo "Trang /cho-thue-do và JavaScript bundle đều tải được sau lớp mật khẩu."
 
+      - name: Chụp bằng chứng trang Cho thuê đồ đã render
+        if: github.event.number == 163
+        env:
+          PREVIEW_BASIC_AUTH_USER: ${{ vars.PREVIEW_BASIC_AUTH_USER || 'amazing' }}
+          PREVIEW_BASIC_AUTH_PASS: ${{ secrets.PREVIEW_BASIC_AUTH_PASS }}
+        run: |
+          set -euo pipefail
+          chrome=$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)
+          if [ -z "$chrome" ]; then
+            echo "::error::Runner không có Chrome để chụp bằng chứng."
+            exit 1
+          fi
+
+          auth_url=$(PREVIEW_URL="$PREVIEW_URL/cho-thue-do?proof=${{ github.sha }}" \
+            USERNAME="$PREVIEW_BASIC_AUTH_USER" PASSWORD="$PREVIEW_BASIC_AUTH_PASS" node -e '
+              const url = new URL(process.env.PREVIEW_URL);
+              url.username = process.env.USERNAME;
+              url.password = process.env.PASSWORD;
+              process.stdout.write(url.toString());
+            ')
+          echo "::add-mask::$auth_url"
+
+          "$chrome" --headless --no-sandbox --disable-gpu --hide-scrollbars \
+            --window-size=390,844 --virtual-time-budget=15000 \
+            --dump-dom "$auth_url" > "$RUNNER_TEMP/cho-thue-do.html"
+          grep -q 'Cho thuê đồ' "$RUNNER_TEMP/cho-thue-do.html"
+
+          "$chrome" --headless --no-sandbox --disable-gpu --hide-scrollbars \
+            --window-size=390,844 --virtual-time-budget=15000 \
+            --screenshot="$RUNNER_TEMP/cho-thue-do.png" "$auth_url"
+          test -s "$RUNNER_TEMP/cho-thue-do.png"
+
+      - name: Lưu ảnh bằng chứng Cho thuê đồ
+        if: github.event.number == 163
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-163-cho-thue-do-proof
+          path: ${{ runner.temp }}/cho-thue-do.png
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Xác nhận trang mở được trên iPhone
         if: github.event.number == 163
         run: |

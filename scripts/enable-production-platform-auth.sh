@@ -70,7 +70,7 @@ ADMIN_DATABASE_URL=$(url_for_database postgres)
 PLATFORM_DATABASE_URL=$(url_for_database "$PLATFORM_DB_NAME")
 [ "$PLATFORM_DATABASE_URL" != "$DATABASE_URL" ] || die "Platform DB trùng tenant DB"
 
-PG_IMAGE="postgres:16-alpine"
+PG_IMAGE="postgres:17-alpine"
 docker image inspect "$PG_IMAGE" >/dev/null 2>&1 || docker pull "$PG_IMAGE" >/dev/null
 
 sudo -n install -d -m 750 -o root -g root "$BACKUP_DIR"

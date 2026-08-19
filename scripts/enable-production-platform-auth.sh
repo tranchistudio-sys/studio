@@ -161,9 +161,35 @@ sudo -n install -m 600 -o root -g root "$ENV_TMP" "$PLATFORM_ENV_FILE"
 sudo -n install -m 644 -o root -g root "$OVERRIDE_TMP" "$PLATFORM_OVERRIDE_FILE"
 rm -f "$ENV_TMP" "$OVERRIDE_TMP"
 
+DEPLOYED_SHA=$(sudo -n sed -n '1p' /opt/amazing-studio/DEPLOYED_SHA)
+[[ "$DEPLOYED_SHA" =~ ^[0-9a-f]{40}$ ]] || die "Không đọc được DEPLOYED_SHA production"
+RELEASE_COMPOSE="${DEPLOY_RELEASES_DIR:?Thiếu DEPLOY_RELEASES_DIR}/$DEPLOYED_SHA/06_vps_deployment/docker-compose.yml"
+[ -r "$RELEASE_COMPOSE" ] || die "Không tìm thấy compose của release đang deploy"
+sudo -n docker compose -f "$RELEASE_COMPOSE" config --services | grep -Fxq "$API_SERVICE" || \
+  die "Release hiện tại không có service API"
+
+PREVIOUS_API_IMAGE_ID=$(docker inspect "$API_CID" --format '{{.Image}}')
+API_IMAGE_NAME=$(docker inspect "$API_CID" --format '{{.Config.Image}}')
+[ -n "$PREVIOUS_API_IMAGE_ID" ] && [ -n "$API_IMAGE_NAME" ] || die "Không xác định được image API"
+ROLLBACK_API_IMAGE="amazing-studio-api:platform-auth-rollback"
+docker tag "$PREVIOUS_API_IMAGE_ID" "$ROLLBACK_API_IMAGE"
+
+rollback_api() {
+  echo "[platform-auth] API mới không đạt; khôi phục image cũ" >&2
+  docker tag "$ROLLBACK_API_IMAGE" "$API_IMAGE_NAME" || true
+  sudo -n docker compose -f "$DEPLOY_COMPOSE_FILE" -f "$PLATFORM_OVERRIDE_FILE" \
+    up -d --no-deps --force-recreate "$API_SERVICE" || true
+}
+
+echo "[platform-auth] Build API từ đúng release $DEPLOYED_SHA"
+sudo -n docker compose -f "$RELEASE_COMPOSE" build "$API_SERVICE"
+
 echo "[platform-auth] Recreate duy nhất API với platform override"
-sudo -n docker compose -f "$DEPLOY_COMPOSE_FILE" -f "$PLATFORM_OVERRIDE_FILE" \
-  up -d --no-deps --force-recreate "$API_SERVICE"
+if ! sudo -n docker compose -f "$DEPLOY_COMPOSE_FILE" -f "$PLATFORM_OVERRIDE_FILE" \
+  up -d --no-deps --force-recreate "$API_SERVICE"; then
+  rollback_api
+  die "Không thể khởi động API mới"
+fi
 
 for attempt in $(seq 1 24); do
   health=$(curl -fsS --max-time 15 "$DEPLOY_HEALTH_URL" 2>/dev/null || true)
@@ -180,4 +206,5 @@ for attempt in $(seq 1 24); do
   sleep 5
 done
 
+rollback_api
 die "Web chưa xác nhận đủ platformEnabled/googleEnabled/registrationEnabled"

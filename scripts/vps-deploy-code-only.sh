@@ -43,9 +43,9 @@ DEPLOY_COMPOSE_OVERRIDE_FILE="${DEPLOY_COMPOSE_OVERRIDE_FILE:-}"
 
 compose_production() {
   if [ -n "$DEPLOY_COMPOSE_OVERRIDE_FILE" ] && [ -r "$DEPLOY_COMPOSE_OVERRIDE_FILE" ]; then
-    docker compose -f "$DEPLOY_COMPOSE_FILE" -f "$DEPLOY_COMPOSE_OVERRIDE_FILE" "$@"
+    sudo -n docker compose -f "$DEPLOY_COMPOSE_FILE" -f "$DEPLOY_COMPOSE_OVERRIDE_FILE" "$@"
   else
-    docker compose -f "$DEPLOY_COMPOSE_FILE" "$@"
+    sudo -n docker compose -f "$DEPLOY_COMPOSE_FILE" "$@"
   fi
 }
 

@@ -52,7 +52,6 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
       DEFAULT_TENANT_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
       TENANT_B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_b_test
@@ -91,6 +90,8 @@ jobs:
           psql -h 127.0.0.1 -U postgres -d amazing_platform_test -v ON_ERROR_STOP=1 -c 'CREATE DATABASE tenant_b_test'
 
       - name: Migration platform test (không chạm production)
+        env:
+          PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
         run: |
           if [ -f lib/platform-db/package.json ]; then
             pnpm --filter @workspace/platform-db migrate
@@ -100,6 +101,8 @@ jobs:
           fi
 
       - name: Test platform auth integration + HTTP E2E
+        env:
+          PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
         run: |
           if [ -f artifacts/api-server/vitest.platform.config.ts ]; then
             pnpm --filter @workspace/api-server test:platform

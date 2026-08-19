@@ -301,6 +301,44 @@ jobs:
           fi
           echo "Đăng nhập Google đã sẵn sàng trên bản xem thử."
 
+      - name: Xác nhận trang Cho thuê đồ không còn trắng
+        if: github.event.number == 163
+        env:
+          PREVIEW_BASIC_AUTH_USER: ${{ vars.PREVIEW_BASIC_AUTH_USER || 'amazing' }}
+          PREVIEW_BASIC_AUTH_PASS: ${{ secrets.PREVIEW_BASIC_AUTH_PASS }}
+        run: |
+          set -euo pipefail
+          cookie_jar=$(mktemp)
+          page=$(mktemp)
+          trap 'rm -f "$cookie_jar" "$page"' EXIT
+
+          curl -fsS --max-time 30 --retry 2 \
+            -u "$PREVIEW_BASIC_AUTH_USER:$PREVIEW_BASIC_AUTH_PASS" \
+            -c "$cookie_jar" \
+            -H 'Accept: text/html,application/xhtml+xml' \
+            "$PREVIEW_URL/cho-thue-do?smoke=${{ github.sha }}" > "$page"
+
+          grep -q 'id="root"' "$page"
+          grep -q 'id="app-boot-fallback"' "$page"
+          grep -q 'Đang mở giao diện' "$page"
+
+          script_path=$(grep -oE 'src="/assets/[^"]+\.js"' "$page" | head -1 | cut -d'"' -f2)
+          if [ -z "$script_path" ]; then
+            echo "::error::Trang Cho thuê đồ không tham chiếu JavaScript bundle."
+            exit 1
+          fi
+
+          content_type=$(curl -fsS --max-time 30 --retry 2 \
+            -b "$cookie_jar" -o /tmp/amazing-preview-bundle.js -w '%{content_type}' \
+            "$PREVIEW_URL$script_path")
+          case "$content_type" in
+            *javascript*) ;;
+            *) echo "::error::Bundle trả sai content-type: $content_type"; exit 1;;
+          esac
+          test -s /tmp/amazing-preview-bundle.js
+          rm -f /tmp/amazing-preview-bundle.js
+          echo "Trang /cho-thue-do và JavaScript bundle đều tải được sau lớp mật khẩu."
+
       - name: Xác nhận trang mở được trên iPhone
         if: github.event.number == 163
         run: |

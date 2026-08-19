@@ -122,6 +122,22 @@ router.post(
       res.status(400).json({ error: "Yêu cầu hoặc quyết định không hợp lệ" });
       return;
     }
+    const allowedStaffRoles = new Set(["admin", "photographer", "makeup", "sale", "photoshop", "assistant", "marketing"]);
+    const requestedRoles = Array.isArray(req.body?.roles)
+      ? [...new Set(req.body.roles.filter((role: unknown): role is string => typeof role === "string" && allowedStaffRoles.has(role)))]
+      : [];
+    const tenantRole = req.body?.tenantRole === "ADMIN" ? "ADMIN" : "STAFF";
+    const staffStatus = req.body?.status === "probation" ? "probation" : "active";
+    const staffType = req.body?.staffType === "freelancer" ? "freelancer" : "official";
+    const attendanceEnabled = staffType === "official" && req.body?.attendanceEnabled !== false;
+    if (decision === "approved" && requestedRoles.length === 0) {
+      res.status(400).json({ error: "Vui lòng chọn ít nhất một vai trò công việc" });
+      return;
+    }
+    if (decision === "approved" && !(await canManageTarget(context, tenantRole))) {
+      res.status(403).json({ error: "Bạn không có quyền cấp vai trò này" });
+      return;
+    }
     try {
       const requestResult = await getPlatformPool().query<{
         id: string; full_name: string; phone: string; email: string; requested_position: string; status: string;
@@ -159,8 +175,12 @@ router.post(
         }
         if (matches.rows[0]) {
           await pool.query(
-            `UPDATE staff SET email = COALESCE(NULLIF(email, ''), $2) WHERE id = $1`,
-            [matches.rows[0].id, normalizeEmail(accessRequest.email)],
+            `UPDATE staff SET email = COALESCE(NULLIF(email, ''), $2), role = $3,
+                    roles = $4::jsonb, is_active = 1, status = $5, staff_type = $6,
+                    attendance_enabled = $7
+             WHERE id = $1`,
+            [matches.rows[0].id, normalizeEmail(accessRequest.email), requestedRoles[0],
+             JSON.stringify(requestedRoles), staffStatus, staffType, attendanceEnabled],
           );
           return Number(matches.rows[0].id);
         }
@@ -168,10 +188,10 @@ router.post(
           `INSERT INTO staff
              (name, phone, email, role, roles, is_active, status, staff_type,
               attendance_enabled, notes, join_date)
-           VALUES ($1, $2, $3, 'assistant', '["assistant"]'::jsonb, 1,
-                   'probation', 'official', true, $4, CURRENT_DATE)
+           VALUES ($1, $2, $3, $4, $5::jsonb, 1, $6, $7, $8, $9, CURRENT_DATE)
            RETURNING id`,
-          [accessRequest.full_name, accessRequest.phone, normalizeEmail(accessRequest.email),
+          [accessRequest.full_name, accessRequest.phone, normalizeEmail(accessRequest.email), requestedRoles[0],
+           JSON.stringify(requestedRoles), staffStatus, staffType, attendanceEnabled,
            `Tự đăng ký vị trí: ${accessRequest.requested_position}`],
         );
         return Number(inserted.rows[0].id);
@@ -194,13 +214,13 @@ router.post(
           `INSERT INTO tenant_invitations
              (id, tenant_id, invited_email, invited_role, tenant_staff_id,
               target_user_id, expires_at, invited_by, status)
-           VALUES ($1, $2, $3, 'STAFF', $4, $5, now() + interval '7 days', $6, 'pending')
+           VALUES ($1, $2, $3, $4, $5, $6, now() + interval '7 days', $7, 'pending')
            ON CONFLICT (tenant_id, lower(invited_email)) WHERE status = 'pending'
            DO UPDATE SET tenant_staff_id = EXCLUDED.tenant_staff_id,
                          target_user_id = EXCLUDED.target_user_id,
                          expires_at = EXCLUDED.expires_at,
                          invited_by = EXCLUDED.invited_by`,
-          [invitationId, context.activeTenantId, normalizeEmail(accessRequest.email), staffId,
+          [invitationId, context.activeTenantId, normalizeEmail(accessRequest.email), tenantRole, staffId,
            membership.rows[0]?.user_id ?? null, context.userId],
         );
         await client.query(
@@ -214,7 +234,8 @@ router.post(
              (id, actor_user_id, tenant_id, action, target_type, target_id, metadata)
            VALUES ($1, $2, $3, 'access_request.approved', 'tenant_access_request', $4, $5::jsonb)`,
           [randomUUID(), context.userId, context.activeTenantId, requestId,
-           JSON.stringify({ staffId, email: normalizeEmail(accessRequest.email) })],
+           JSON.stringify({ staffId, email: normalizeEmail(accessRequest.email), tenantRole,
+             roles: requestedRoles, status: staffStatus, staffType, attendanceEnabled })],
         );
       });
       res.json({ success: true, staffId });

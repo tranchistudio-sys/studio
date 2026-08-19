@@ -23,7 +23,7 @@ jobs:
   enable:
     name: Backup + platform DB + Google auth
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     environment: production
     env:
       VPS_HOST: 160.250.128.162
@@ -32,7 +32,7 @@ jobs:
       VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
       GOOGLE_CLIENT_ID: 65788959851-t8edpkk8kql5ttpaln4nah5vjb4dumfb.apps.googleusercontent.com
       BOOTSTRAP_OWNER_EMAIL: tranchistudio@gmail.com
-      SETUP_REVISION: "5"
+      SETUP_REVISION: "6"
     steps:
       - name: Xác nhận thao tác một lần
         shell: bash

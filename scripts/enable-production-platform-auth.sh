@@ -90,7 +90,7 @@ echo "[platform-auth] Baseline customers,bookings,payments: $COUNTS"
 
 DB_EXISTS=$(docker run --rm --network "$API_NETWORK" \
   -e TARGET_URL="$ADMIN_DATABASE_URL" -e TARGET_DB="$PLATFORM_DB_NAME" "$PG_IMAGE" sh -c \
-  'psql "$TARGET_URL" -v ON_ERROR_STOP=1 -v db_name="$TARGET_DB" -Atqc "SELECT 1 FROM pg_database WHERE datname = :'\''db_name'\''"')
+  'psql "$TARGET_URL" -v ON_ERROR_STOP=1 -Atqc "SELECT 1 FROM pg_database WHERE datname = '\''$TARGET_DB'\''"')
 if [ "$DB_EXISTS" != "1" ]; then
   echo "[platform-auth] Tạo database riêng $PLATFORM_DB_NAME"
   docker run --rm --network "$API_NETWORK" \
@@ -116,10 +116,11 @@ docker run --rm --network "$API_NETWORK" \
   'psql "$TARGET_URL" -v ON_ERROR_STOP=1 -c "CREATE TABLE IF NOT EXISTS platform_schema_migrations (filename TEXT PRIMARY KEY, checksum_sha256 TEXT, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"' >/dev/null
 
 for migration in "${MIGRATIONS[@]}"; do
+  [[ "$migration" =~ ^[0-9]+_[a-z0-9_-]+\.sql$ ]] || die "Tên migration không hợp lệ"
   checksum=$(sha256sum "$MIGRATIONS_DIR/$migration" | awk '{print $1}')
   recorded=$(docker run --rm --network "$API_NETWORK" \
     -e TARGET_URL="$PLATFORM_DATABASE_URL" -e FILE_NAME="$migration" "$PG_IMAGE" sh -c \
-    'psql "$TARGET_URL" -v ON_ERROR_STOP=1 -v file_name="$FILE_NAME" -Atqc "SELECT coalesce(checksum_sha256, '\'''\'') FROM platform_schema_migrations WHERE filename = :'\''file_name'\''"')
+    'psql "$TARGET_URL" -v ON_ERROR_STOP=1 -Atqc "SELECT coalesce(checksum_sha256, '\'''\'') FROM platform_schema_migrations WHERE filename = '\''$FILE_NAME'\''"')
   if [ -n "$recorded" ]; then
     [ "$recorded" = "$checksum" ] || die "Checksum migration đã đổi: $migration"
     echo "[platform-auth] Đã có $migration"
@@ -129,7 +130,7 @@ for migration in "${MIGRATIONS[@]}"; do
   docker run --rm --network "$API_NETWORK" \
     -e TARGET_URL="$PLATFORM_DATABASE_URL" -e FILE_NAME="$migration" -e CHECKSUM="$checksum" \
     -v "$MIGRATIONS_DIR:/migrations:ro" "$PG_IMAGE" sh -c \
-    'psql "$TARGET_URL" -v ON_ERROR_STOP=1 -1 -f "/migrations/$FILE_NAME" && psql "$TARGET_URL" -v ON_ERROR_STOP=1 -v file_name="$FILE_NAME" -v checksum="$CHECKSUM" -c "INSERT INTO platform_schema_migrations(filename, checksum_sha256) VALUES (:'\''file_name'\'', :'\''checksum'\'')"' >/dev/null
+    'psql "$TARGET_URL" -v ON_ERROR_STOP=1 -1 -f "/migrations/$FILE_NAME" && psql "$TARGET_URL" -v ON_ERROR_STOP=1 -c "INSERT INTO platform_schema_migrations(filename, checksum_sha256) VALUES ('\''$FILE_NAME'\'', '\''$CHECKSUM'\'')"' >/dev/null
 done
 
 ADMIN_STAFF_ID=$(docker run --rm --network "$API_NETWORK" \

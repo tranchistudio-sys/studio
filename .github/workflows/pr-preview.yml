@@ -353,22 +353,24 @@ jobs:
           fi
 
           auth_url=$(PREVIEW_URL="$PREVIEW_URL/cho-thue-do?proof=${{ github.sha }}" \
-            USERNAME="$PREVIEW_BASIC_AUTH_USER" PASSWORD="$PREVIEW_BASIC_AUTH_PASS" node -e '
+            PASSWORD="$PREVIEW_BASIC_AUTH_PASS" node -e '
               const url = new URL(process.env.PREVIEW_URL);
-              url.username = process.env.USERNAME;
-              url.password = process.env.PASSWORD;
+              url.searchParams.set("xem", process.env.PASSWORD);
               process.stdout.write(url.toString());
             ')
           echo "::add-mask::$auth_url"
 
           "$chrome" --headless --no-sandbox --disable-gpu --hide-scrollbars \
+            --user-data-dir="$RUNNER_TEMP/amazing-chrome-profile" \
             --window-size=390,844 --virtual-time-budget=15000 \
             --dump-dom "$auth_url" > "$RUNNER_TEMP/cho-thue-do.html"
           grep -q 'Cho thuê đồ' "$RUNNER_TEMP/cho-thue-do.html"
 
           "$chrome" --headless --no-sandbox --disable-gpu --hide-scrollbars \
+            --user-data-dir="$RUNNER_TEMP/amazing-chrome-profile" \
             --window-size=390,844 --virtual-time-budget=15000 \
-            --screenshot="$RUNNER_TEMP/cho-thue-do.png" "$auth_url"
+            --screenshot="$RUNNER_TEMP/cho-thue-do.png" \
+            "$PREVIEW_URL/cho-thue-do?proof=${{ github.sha }}"
           test -s "$RUNNER_TEMP/cho-thue-do.png"
 
       - name: Lưu ảnh bằng chứng Cho thuê đồ

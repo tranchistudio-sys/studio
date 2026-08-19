@@ -1,11 +1,6 @@
 name: Enable production Google auth
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/enable-production-google-auth.yml
   workflow_dispatch:
     inputs:
       confirm:
@@ -37,7 +32,7 @@ jobs:
       - name: Xác nhận thao tác một lần
         shell: bash
         run: |
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "${{ inputs.confirm }}" != "ENABLE_GOOGLE" ]; then
+          if [ "${{ inputs.confirm }}" != "ENABLE_GOOGLE" ]; then
             echo "::error::Phải gõ đúng ENABLE_GOOGLE"
             exit 1
           fi

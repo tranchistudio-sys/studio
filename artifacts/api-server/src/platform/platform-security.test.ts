@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -120,11 +120,18 @@ describe("platform migration safety", () => {
   it("chỉ tạo platform tables và không chứa DDL phá dữ liệu", async () => {
     const here = path.dirname(fileURLToPath(import.meta.url));
     const migrationDirectory = path.resolve(here, "../../../../lib/platform-db/migrations");
-    const [foundation, revocation] = await Promise.all([
-      readFile(path.join(migrationDirectory, "0001_platform_foundation.sql"), "utf8"),
-      readFile(path.join(migrationDirectory, "0002_membership_session_revocation.sql"), "utf8"),
-    ]);
-    const statements = `${foundation}\n${revocation}`.replace(/--.*$/gm, "");
+    const filenames = (await readdir(migrationDirectory))
+      .filter((filename) => /^\d+_[a-z0-9_-]+\.sql$/i.test(filename))
+      .sort();
+    const migrationEntries = await Promise.all(filenames.map(async (filename) => [
+      filename,
+      await readFile(path.join(migrationDirectory, filename), "utf8"),
+    ] as const));
+    const migrations = new Map(migrationEntries);
+    const foundation = migrations.get("0001_platform_foundation.sql") ?? "";
+    const revocation = migrations.get("0002_membership_session_revocation.sql") ?? "";
+    const isolation = migrations.get("0003_tenant_database_registry_isolation.sql") ?? "";
+    const statements = migrationEntries.map(([, sql]) => sql).join("\n").replace(/--.*$/gm, "");
     expect(statements).not.toMatch(/\b(?:DROP|TRUNCATE)\b/i);
     expect(statements).not.toMatch(/CREATE TABLE IF NOT EXISTS (?:customers|bookings|payments)\b/i);
     for (const table of [
@@ -139,6 +146,8 @@ describe("platform migration safety", () => {
     }
     expect(revocation).toContain("ADD COLUMN IF NOT EXISTS auth_version");
     expect(revocation).toContain("ADD COLUMN IF NOT EXISTS sessions_revoked_at");
+    expect(isolation).toContain("tenant_database_registry_physical_database_unique");
+    expect(isolation).toMatch(/ON tenant_database_registry \(host_ref, database_name\)/);
   });
 });
 

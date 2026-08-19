@@ -65,11 +65,13 @@ const router: IRouter = Router();
 router.use(platformAuthRouter);
 router.use(authRouter);
 router.use(tenantMembersRouter);
-router.use(signCmsPublicMediaResponses);
 
 // Mọi API nghiệp vụ phía dưới mặc định cần phiên hợp lệ, trừ allowlist public
 // theo đúng method/path trong middleware. Chặn các route cũ từng để hở.
 router.use(businessAuthGuard);
+// Response signer có truy vấn CMS registry nên chỉ được cài sau khi tenant DB
+// context đã được business guard bind (kể cả các route public).
+router.use(signCmsPublicMediaResponses);
 router.use(healthRouter);
 router.use(customersRouter);
 router.use(bookingsRouter);

@@ -2,6 +2,17 @@ import { mkdir, writeFile, readFile, access } from "fs/promises";
 import path from "path";
 import { createHmac, randomUUID, timingSafeEqual } from "crypto";
 import { fileURLToPath } from "url";
+import {
+  authorizeTenantMediaObjectPath,
+  buildTenantLocalUploadUrl,
+  buildTenantMediaObjectPath,
+  buildTenantMediaStorageKey,
+  buildTenantWeddingPublicUrl,
+  canonicalTenantMediaObjectName,
+  canonicalTenantMediaScope,
+  type TenantMediaNamespace,
+  type TenantMediaScope,
+} from "./tenant-media-path";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -39,6 +50,31 @@ async function weddingPublicDir(): Promise<string> {
 function safeObjectId(objectId: string): string | null {
   if (!/^[0-9a-f-]{36}$/i.test(objectId)) return null;
   return objectId;
+}
+
+function safePathBelowStorageRoot(storageKey: string): string {
+  const root = getLocalObjectStorageRoot();
+  const resolved = path.resolve(root, ...storageKey.split("/"));
+  if (resolved === root || !resolved.startsWith(`${root}${path.sep}`)) {
+    throw new Error("Tenant object path escaped the local storage root");
+  }
+  return resolved;
+}
+
+export function tenantLocalObjectFsPath(
+  scope: TenantMediaScope,
+  namespace: TenantMediaNamespace,
+  objectName: string,
+): string {
+  return safePathBelowStorageRoot(buildTenantMediaStorageKey(scope, namespace, objectName));
+}
+
+export function tenantLocalObjectMetaPath(
+  scope: TenantMediaScope,
+  namespace: TenantMediaNamespace,
+  objectName: string,
+): string {
+  return `${tenantLocalObjectFsPath(scope, namespace, objectName)}.meta.json`;
 }
 
 export function localObjectFsPath(objectId: string): string {
@@ -100,6 +136,66 @@ export function createLocalWeddingPublicUploadTarget() {
     objectPath: `/api/storage/wedding-public/${objectId}`,
     objectId,
   };
+}
+
+export function createTenantLocalUploadTarget(
+  scope: TenantMediaScope,
+  namespace: "uploads" | "cms-public",
+) {
+  const canonicalScope = canonicalTenantMediaScope(scope);
+  const objectId = randomUUID();
+  return {
+    uploadURL: buildTenantLocalUploadUrl(canonicalScope, namespace, objectId),
+    objectPath: buildTenantMediaObjectPath(canonicalScope, namespace, objectId),
+    objectId,
+  };
+}
+
+function tenantWeddingUploadSignature(
+  scope: TenantMediaScope,
+  objectId: string,
+  expires: number,
+): string {
+  const canonicalScope = canonicalTenantMediaScope(scope);
+  const canonicalId = canonicalTenantMediaObjectName("wedding-public", objectId);
+  const secret = process.env.SESSION_SECRET || "development-wedding-upload-secret";
+  return createHmac("sha256", secret)
+    .update(`wedding-public-upload:${canonicalScope.tenantId}:${canonicalId}:${expires}`)
+    .digest("base64url");
+}
+
+export function createTenantLocalWeddingPublicUploadTarget(scope: TenantMediaScope) {
+  const canonicalScope = canonicalTenantMediaScope(scope);
+  const objectId = randomUUID();
+  const expires = Math.floor(Date.now() / 1000) + 15 * 60;
+  const signature = tenantWeddingUploadSignature(canonicalScope, objectId, expires);
+  return {
+    uploadURL: `${buildTenantLocalUploadUrl(canonicalScope, "wedding-public", objectId)}?exp=${expires}&sig=${signature}`,
+    objectPath: buildTenantWeddingPublicUrl(canonicalScope, objectId),
+    objectId,
+  };
+}
+
+export function verifyTenantLocalWeddingPublicUpload(
+  scope: TenantMediaScope,
+  objectId: string,
+  rawExpires: unknown,
+  rawSignature: unknown,
+): boolean {
+  try {
+    canonicalTenantMediaObjectName("wedding-public", objectId);
+    canonicalTenantMediaScope(scope);
+  } catch {
+    return false;
+  }
+  if (typeof rawExpires !== "string" || !/^\d{10}$/.test(rawExpires)) return false;
+  const expires = Number(rawExpires);
+  const now = Math.floor(Date.now() / 1000);
+  if (!Number.isSafeInteger(expires) || expires < now || expires > now + 16 * 60) return false;
+  if (typeof rawSignature !== "string") return false;
+  const actual = Buffer.from(rawSignature);
+  const expected = Buffer.from(tenantWeddingUploadSignature(scope, objectId, expires));
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
 export function verifyLocalWeddingPublicUpload(
@@ -168,6 +264,25 @@ export async function saveLocalWeddingPublicUpload(
   );
 }
 
+export async function saveTenantLocalObject(
+  scope: TenantMediaScope,
+  namespace: TenantMediaNamespace,
+  objectName: string,
+  body: Buffer,
+  contentType: string,
+  name: string,
+): Promise<void> {
+  const filePath = tenantLocalObjectFsPath(scope, namespace, objectName);
+  const metaPath = tenantLocalObjectMetaPath(scope, namespace, objectName);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, body);
+  await writeFile(
+    metaPath,
+    JSON.stringify({ contentType, name, savedAt: new Date().toISOString() }),
+    "utf8",
+  );
+}
+
 export async function readLocalWeddingPublicObject(
   objectId: string,
 ): Promise<{ body: Buffer; contentType: string } | null> {
@@ -204,5 +319,40 @@ export async function readLocalObject(objectPath: string): Promise<{ body: Buffe
     return { body, contentType };
   } catch {
     return null;
+  }
+}
+
+export async function readTenantLocalObject(
+  scope: TenantMediaScope,
+  objectPath: string,
+  allowedNamespaces?: readonly TenantMediaNamespace[],
+): Promise<{ body: Buffer; contentType: string } | null> {
+  const authorized = authorizeTenantMediaObjectPath(scope, objectPath, allowedNamespaces);
+  const filePath = safePathBelowStorageRoot(authorized.storageKey);
+  const metaPath = `${filePath}.meta.json`;
+  try {
+    const body = await readFile(filePath);
+    let contentType = "application/octet-stream";
+    try {
+      const meta = JSON.parse(await readFile(metaPath, "utf8")) as { contentType?: string };
+      if (meta.contentType) contentType = meta.contentType;
+    } catch { /* no meta */ }
+    return { body, contentType };
+  } catch {
+    return null;
+  }
+}
+
+export async function tenantLocalObjectExists(
+  scope: TenantMediaScope,
+  objectPath: string,
+  allowedNamespaces?: readonly TenantMediaNamespace[],
+): Promise<boolean> {
+  const authorized = authorizeTenantMediaObjectPath(scope, objectPath, allowedNamespaces);
+  try {
+    await access(safePathBelowStorageRoot(authorized.storageKey));
+    return true;
+  } catch {
+    return false;
   }
 }

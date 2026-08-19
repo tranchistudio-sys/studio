@@ -95,6 +95,7 @@ describe("previewBasicAuth — chặn/cho qua", () => {
     // 200 chứ không phải 401: webview nhúng nào cũng render chắc chắn.
     expect(res.statusCode).toBe(200);
     expect(res.headers["WWW-Authenticate"]).toBeUndefined();
+    expect(res.headers["Cache-Control"]).toContain("no-store");
     expect(String(res.body)).toContain(`action="${PREVIEW_LOGIN_PATH}"`);
     expect(String(res.body)).toContain('name="password"');
     // Quay về đúng trang đang mở sau khi nhập mật khẩu.
@@ -273,5 +274,7 @@ describe("hàm phụ trợ", () => {
     expect(bad).toContain("&quot;"); // đã escape dấu nháy
     expect(bad).not.toContain('"/x" onmouseover'); // không chèn được attribute
     expect(bad).toContain("chưa đúng");
+    expect(ok).toContain("-webkit-text-size-adjust:100%");
+    expect(ok).toContain("<body><main>");
   });
 });

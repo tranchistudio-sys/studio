@@ -1,4 +1,5 @@
 import { pool } from "@workspace/db";
+import { currentTenantScope } from "./tenant-scope";
 
 /**
  * ĐỌC LỊCH cho Claude Sale — CHỈ ĐỌC (read-only).
@@ -24,7 +25,7 @@ type ScheduleRow = {
   status: string | null;
 };
 
-let cache: { text: string; days: number; at: number } | null = null;
+const cache = new Map<string, { text: string; days: number; at: number }>();
 const TTL_MS = 3 * 60 * 1000;
 
 function fmtDate(d: string): string {
@@ -39,7 +40,9 @@ function fmtDate(d: string): string {
  */
 export async function getScheduleContext(windowDays = 21): Promise<string> {
   const days = Math.min(60, Math.max(1, Math.round(windowDays)));
-  if (cache && cache.days === days && Date.now() - cache.at < TTL_MS) return cache.text;
+  const tenantScope = currentTenantScope();
+  const cached = cache.get(tenantScope);
+  if (cached && cached.days === days && Date.now() - cached.at < TTL_MS) return cached.text;
   try {
     const res = await pool.query(
       `SELECT shoot_date::text AS shoot_date,
@@ -56,7 +59,7 @@ export async function getScheduleContext(windowDays = 21): Promise<string> {
     const rows = res.rows as ScheduleRow[];
     if (rows.length === 0) {
       const text = `LỊCH SẮP TỚI (${days} ngày): hiện CHƯA có buổi chụp nào được đặt trong dữ liệu. Vẫn áp dụng quy tắc cuối tuần & escalation khi cần.`;
-      cache = { text, days, at: Date.now() };
+      cache.set(tenantScope, { text, days, at: Date.now() });
       return text;
     }
 
@@ -83,7 +86,7 @@ export async function getScheduleContext(windowDays = 21): Promise<string> {
     const text = `LỊCH SẮP TỚI (${days} ngày, đã có buổi chụp — dùng để phán đoán còn trống/đụng giờ, KHÔNG phải để tự xác nhận):
 ${lines.join("\n")}
 (Ngày không xuất hiện ở trên = chưa có buổi nào trong dữ liệu. Cuối tuần luôn phải kiểm tra kỹ, không khẳng định chắc.)`;
-    cache = { text, days, at: Date.now() };
+    cache.set(tenantScope, { text, days, at: Date.now() });
     return text;
   } catch (err) {
     console.error("[ClaudeSale] getScheduleContext lỗi — bỏ qua:", String(err).slice(0, 200));
@@ -92,5 +95,5 @@ ${lines.join("\n")}
 }
 
 export function clearScheduleCache(): void {
-  cache = null;
+  cache.delete(currentTenantScope());
 }

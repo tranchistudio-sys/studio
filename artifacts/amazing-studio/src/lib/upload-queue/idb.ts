@@ -1,4 +1,6 @@
-const DB_NAME = "amazing-upload-queue";
+// v2 intentionally does not open the old unscoped blob database. Old blobs are
+// inert instead of ever being resumed under the wrong tenant.
+const DB_NAME = "amazing-upload-queue-v2";
 const STORE = "blobs";
 const DB_VERSION = 1;
 
@@ -14,22 +16,26 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-export async function idbSaveBlob(jobId: string, blob: Blob): Promise<void> {
+export function uploadBlobKey(scopeKey: string, jobId: string): string {
+  return `${scopeKey}::${jobId}`;
+}
+
+export async function idbSaveBlob(scopeKey: string, jobId: string, blob: Blob): Promise<void> {
   const db = await openDb();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).put(blob, jobId);
+    tx.objectStore(STORE).put(blob, uploadBlobKey(scopeKey, jobId));
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });
   db.close();
 }
 
-export async function idbLoadBlob(jobId: string): Promise<Blob | null> {
+export async function idbLoadBlob(scopeKey: string, jobId: string): Promise<Blob | null> {
   const db = await openDb();
   const blob = await new Promise<Blob | null>((resolve, reject) => {
     const tx = db.transaction(STORE, "readonly");
-    const req = tx.objectStore(STORE).get(jobId);
+    const req = tx.objectStore(STORE).get(uploadBlobKey(scopeKey, jobId));
     req.onsuccess = () => resolve((req.result as Blob) ?? null);
     req.onerror = () => reject(req.error);
   });
@@ -37,11 +43,11 @@ export async function idbLoadBlob(jobId: string): Promise<Blob | null> {
   return blob;
 }
 
-export async function idbDeleteBlob(jobId: string): Promise<void> {
+export async function idbDeleteBlob(scopeKey: string, jobId: string): Promise<void> {
   const db = await openDb();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE, "readwrite");
-    tx.objectStore(STORE).delete(jobId);
+    tx.objectStore(STORE).delete(uploadBlobKey(scopeKey, jobId));
     tx.oncomplete = () => resolve();
     tx.onerror = () => reject(tx.error);
   });

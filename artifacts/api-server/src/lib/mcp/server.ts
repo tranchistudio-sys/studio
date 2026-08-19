@@ -6,6 +6,7 @@
  * Stateless transport (không giữ session in-memory) — hợp Replit autoscale.
  */
 import type { Express, Request, Response, NextFunction } from "express";
+import { isPlatformDatabaseConfigured } from "@workspace/platform-db";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { mcpAuthRouter, getOAuthProtectedResourceMetadataUrl } from "@modelcontextprotocol/sdk/server/auth/router.js";
@@ -21,6 +22,7 @@ import {
   LOGIN_PATH,
   SCOPE,
 } from "./oauth.js";
+import { bindTenantDatabaseBySlugForRequest } from "../../middlewares/platform-auth.js";
 
 function createMcpServer(): McpServer {
   const server = new McpServer(
@@ -152,6 +154,26 @@ export function mountMcp(app: Express): void {
   const base = publicBaseUrl();
   const issuerUrl = new URL(base);
   const resourceServerUrl = new URL(base + MCP_PATH);
+
+  // MCP is currently an Amazing Studio connector. Every OAuth-store, login and
+  // tool DB call is explicitly bound; platform mode never falls back to the
+  // process DATABASE_URL. A future tenant connector can configure another slug.
+  app.use(async (req, res, next) => {
+    const isMcpPath = req.path === MCP_PATH ||
+      req.path.startsWith(`${MCP_PATH}/`) ||
+      req.path === LOGIN_PATH ||
+      req.path === "/authorize" ||
+      req.path === "/token" ||
+      req.path === "/register" ||
+      req.path === "/revoke" ||
+      req.path.startsWith("/.well-known/");
+    if (!isMcpPath || !isPlatformDatabaseConfigured()) {
+      next();
+      return;
+    }
+    const slug = process.env.MCP_TENANT_SLUG?.trim().toLowerCase() || "amazing-studio";
+    await bindTenantDatabaseBySlugForRequest(slug, res, next);
+  });
 
   // OAuth 2.1 AS: metadata + DCR + /authorize + /token + revoke (SDK lo PKCE/spec).
   app.use(

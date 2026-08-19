@@ -1,4 +1,5 @@
 import { pool } from "@workspace/db";
+import type { BusinessJobRunner } from "./lib/tenant-job-runner";
 import { emitTestSessionEvent } from "./lib/test-sse";
 
 type FollowUpSlot = { delayHours: number; delayMinutes?: number; messages: string[] };
@@ -220,7 +221,7 @@ async function processTestSession(
   });
 }
 
-export function startTestFollowUpScheduler(): void {
+export function startTestFollowUpScheduler(runJob: BusinessJobRunner = async (work) => work()): void {
   const enabled = (process.env.ENABLE_AI_TEST_FOLLOWUP ?? "").toLowerCase();
   if (enabled !== "true" && enabled !== "1" && enabled !== "yes") {
     console.log("[TestFollowUp] Scheduler tắt (ENABLE_AI_TEST_FOLLOWUP không được bật)");
@@ -234,7 +235,7 @@ export function startTestFollowUpScheduler(): void {
   console.log(`[TestFollowUp] Scheduler khởi động — poll mỗi ${intervalSec}s`);
 
   const run = () => {
-    runTestFollowUpCheck().catch((err) => console.error("[TestFollowUp] Lỗi scheduler:", err));
+    runJob(runTestFollowUpCheck).catch((err) => console.error("[TestFollowUp] Lỗi scheduler:", err));
   };
 
   // Small delay before first run

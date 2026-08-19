@@ -1,4 +1,5 @@
-import { pool } from "@workspace/db";
+import { maybeTenantDatabaseContext, pool } from "@workspace/db";
+import { isPlatformDatabaseConfigured } from "@workspace/platform-db";
 
 // ── Guard + khoá chung cho MỌI DDL lúc khởi động ─────────────────────────────
 // Gồm: runMigrations (migrations.ts) và các ensure*Schema chạy lúc import trong
@@ -18,6 +19,7 @@ import { pool } from "@workspace/db";
 const STARTUP_DDL_LOCK_KEY = 88442201;
 
 let loggedSkip = false;
+const deferredTenantDdl = new Set<() => Promise<unknown>>();
 
 export function skipStartupDdl(): boolean {
   if (process.env.SKIP_STARTUP_MIGRATIONS === "1") {
@@ -54,6 +56,13 @@ export function skipStartupDdl(): boolean {
 // → yêu cầu pool.max >= 2 (lib/db hiện để mặc định max=10).
 export async function withStartupDdlLock<T>(fn: () => Promise<T>): Promise<T | undefined> {
   if (skipStartupDdl()) return undefined;
+  if (isPlatformDatabaseConfigured() && !maybeTenantDatabaseContext()) {
+    // Route modules are evaluated before index.ts can resolve the registered
+    // Amazing tenant. Queue their idempotent ensure functions instead of ever
+    // touching an implicit DATABASE_URL.
+    deferredTenantDdl.add(fn as () => Promise<unknown>);
+    return undefined;
+  }
   const lock = await pool.connect();
   let unlockFailed = false;
   try {
@@ -69,4 +78,13 @@ export async function withStartupDdlLock<T>(fn: () => Promise<T>): Promise<T | u
     }
     lock.release(unlockFailed);
   }
+}
+
+export async function runDeferredTenantStartupDdl(): Promise<void> {
+  if (isPlatformDatabaseConfigured() && !maybeTenantDatabaseContext()) {
+    throw new Error("Deferred tenant DDL requires an explicit tenant context");
+  }
+  const queued = [...deferredTenantDdl];
+  deferredTenantDdl.clear();
+  for (const work of queued) await withStartupDdlLock(work);
 }

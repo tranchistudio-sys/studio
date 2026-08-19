@@ -2,10 +2,19 @@ import { API_BASE } from "@/lib/api-base";
 
 export interface UploadedImage { objectPath: string; mimeType: string; name: string }
 export type UploadStorageScope = "private" | "cms-public";
+export type UploadRequestContext = {
+  signal?: AbortSignal;
+  /** Expected tenant for race-safe server validation during a studio switch. */
+  tenantId?: string;
+};
 
-function authHeaders(): HeadersInit {
+function authHeaders(tenantId?: string): HeadersInit {
   const token = localStorage.getItem("amazingStudioToken_v2");
-  return { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) };
+  return {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(tenantId ? { "X-Tenant-Id": tenantId } : {}),
+  };
 }
 
 // ─── Convert + resize ảnh sang WebP ngay trên client ────────────────────────
@@ -46,12 +55,16 @@ export async function uploadFileViaPresign(
   name: string,
   mimeType: string,
   scope: UploadStorageScope = "private",
+  context: UploadRequestContext = {},
 ): Promise<string> {
   const requestPath = scope === "cms-public"
     ? "/api/storage/cms-public/uploads/request-url"
     : "/api/storage/uploads/request-url";
   const r1 = await fetch(`${API_BASE}${requestPath}`, {
-    method: "POST", headers: authHeaders(),
+    method: "POST",
+    headers: authHeaders(context.tenantId),
+    credentials: "include",
+    signal: context.signal,
     body: JSON.stringify({ name, size: blob.size, contentType: mimeType }),
   });
   if (!r1.ok) {
@@ -64,6 +77,7 @@ export async function uploadFileViaPresign(
   const r2 = await fetch(uploadURL, {
     method: "PUT",
     body: blob,
+    signal: context.signal,
     credentials: sameOriginUpload ? "same-origin" : "omit",
     headers: {
       "Content-Type": mimeType,

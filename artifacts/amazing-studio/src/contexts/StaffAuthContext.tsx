@@ -1,13 +1,17 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { API_BASE } from "@/lib/api-base";
+import { resetClientCacheForScope } from "@/lib/client-runtime";
 import {
   canManageTenantMembers,
+  authRuntimeScopeKey,
   legacyViewerCanAdmin,
   normalizeAuthResponse,
+  resolveAuthClientScope,
   resolveAuthClientState,
   resolveTenantAdmin,
   type AuthResponse,
+  type AuthClientScope,
   type LegacyViewerUser,
   type PlatformUser,
   type TenantMembershipSummary,
@@ -29,6 +33,7 @@ interface StaffAuthContextValue {
   authenticated: boolean;
   csrfToken: string | null;
   token: string | null;
+  clientScope: AuthClientScope | null;
   authChecked: boolean;
   completeLogin: (response: AuthResponse) => void;
   refreshAuth: () => Promise<boolean>;
@@ -54,6 +59,7 @@ const StaffAuthContext = createContext<StaffAuthContextValue>({
   authenticated: false,
   csrfToken: null,
   token: null,
+  clientScope: null,
   authChecked: false,
   completeLogin: () => {},
   refreshAuth: async () => false,
@@ -124,12 +130,14 @@ export function StaffAuthProvider({ children }: { children: React.ReactNode }) {
   const [authChecked, setAuthChecked] = useState(false);
   const [viewMode, setViewModeState] = useState<ViewMode>(loadViewMode);
   const [simulateRole, setSimulateRoleState] = useState<SimulateRole>(null);
+  const runtimeScopeRef = useRef("anonymous");
 
   const clearLocalAuth = useCallback((clearQueries = true) => {
     try {
       localStorage.removeItem(TOKEN_KEY);
     } catch { /* localStorage may be unavailable */ }
-    if (clearQueries) queryClient.clear();
+    resetClientCacheForScope(queryClient, runtimeScopeRef.current, "anonymous", clearQueries);
+    runtimeScopeRef.current = "anonymous";
     setViewer(null);
     setPlatformUser(null);
     setActiveTenant(null);
@@ -145,8 +153,6 @@ export function StaffAuthProvider({ children }: { children: React.ReactNode }) {
     clearQueries?: boolean;
     fallbackToken?: string | null;
   }) => {
-    if (options?.clearQueries) queryClient.clear();
-
     const resolved = resolveAuthClientState(response, options?.fallbackToken ?? null);
     const nextToken = resolved.token;
     try {
@@ -158,6 +164,18 @@ export function StaffAuthProvider({ children }: { children: React.ReactNode }) {
     const nextViewer = response.user ? makeViewer(response.user, nextTenant?.role) : null;
     const nextMemberships = resolved.memberships;
     const needsSelection = resolved.requiresTenantSelection;
+    const nextRuntimeScope = authRuntimeScopeKey({
+      platformUser: response.platformUser ?? null,
+      viewer: nextViewer,
+      activeTenant: nextTenant,
+    });
+    resetClientCacheForScope(
+      queryClient,
+      runtimeScopeRef.current,
+      nextRuntimeScope,
+      options?.clearQueries === true,
+    );
+    runtimeScopeRef.current = nextRuntimeScope;
 
     setToken(nextToken);
     setViewer(nextViewer);
@@ -284,6 +302,12 @@ export function StaffAuthProvider({ children }: { children: React.ReactNode }) {
   }, [clearLocalAuth, csrfToken, platformUser, token]);
 
   const authenticated = Boolean(viewer || platformUser);
+  const clientScope = useMemo(() => resolveAuthClientScope({
+    platformUser,
+    viewer,
+    activeTenant,
+  }), [activeTenant, platformUser, viewer]);
+  const runtimeScopeKey = authRuntimeScopeKey({ platformUser, viewer, activeTenant });
   const tenantManager = canManageTenantMembers(activeTenant?.role);
   const isAdmin = resolveTenantAdmin(activeTenant, viewer);
   const effectiveIsAdmin = isAdmin && viewMode === "admin" && !simulateRole;
@@ -309,6 +333,7 @@ export function StaffAuthProvider({ children }: { children: React.ReactNode }) {
     authenticated,
     csrfToken,
     token,
+    clientScope,
     authChecked,
     completeLogin,
     refreshAuth,
@@ -324,12 +349,16 @@ export function StaffAuthProvider({ children }: { children: React.ReactNode }) {
     setSimulateRole,
     effectiveIsAdmin,
   }), [
-    activeTenant, authChecked, authenticated, completeLogin, csrfToken, effectiveIsAdmin,
+    activeTenant, authChecked, authenticated, clientScope, completeLogin, csrfToken, effectiveIsAdmin,
     endSession, isAdmin, memberships, platformUser, refreshAuth, requiresTenantSelection,
     selectTenant, simulateRole, tenantManager, token, viewer, viewMode,
   ]);
 
-  return <StaffAuthContext.Provider value={value}>{children}</StaffAuthContext.Provider>;
+  return (
+    <StaffAuthContext.Provider value={value}>
+      <React.Fragment key={runtimeScopeKey}>{children}</React.Fragment>
+    </StaffAuthContext.Provider>
+  );
 }
 
 export const useStaffAuth = () => useContext(StaffAuthContext);

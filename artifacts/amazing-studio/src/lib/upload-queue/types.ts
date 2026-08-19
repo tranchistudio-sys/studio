@@ -1,5 +1,13 @@
 export type UploadJobStatus = "pending" | "uploading" | "uploaded" | "failed";
 
+/** Opaque browser scope. It contains ids only, never a token or email. */
+export type UploadQueueScope = {
+  key: string;
+  tenantId: string;
+  membershipId: string;
+  userId: string;
+};
+
 /** Entity attach — dressId optional until form saved (save-first flow). */
 export type UploadAttachTarget = {
   entity: "dress";
@@ -9,6 +17,7 @@ export type UploadAttachTarget = {
 
 export type UploadJob = {
   id: string;
+  scope: UploadQueueScope;
   status: UploadJobStatus;
   fileName: string;
   previewUrl: string;

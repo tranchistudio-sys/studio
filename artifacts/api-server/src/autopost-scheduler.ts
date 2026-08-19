@@ -22,6 +22,7 @@
  *  - AUTOPOST_DRY_RUN: xem facebook-page-publish.ts (mặc định true).
  */
 import { pool } from "@workspace/db";
+import type { BusinessJobRunner } from "./lib/tenant-job-runner";
 import { publishToPage, isDryRun } from "./lib/facebook-page-publish";
 import { generateCaptions } from "./lib/autopost-caption";
 import { emitNotification } from "./routes/notifications";
@@ -504,7 +505,7 @@ export async function runAutoPostTick(nowMs: number = Date.now()): Promise<void>
 }
 
 /** Khởi động scheduler (gọi 1 lần ở app.ts). Tắt mặc định cho tới khi bật env. */
-export function startAutoPostScheduler(): void {
+export function startAutoPostScheduler(runJob: BusinessJobRunner = async (work) => work()): void {
   const on = (process.env.ENABLE_AUTO_POST_FACEBOOK ?? "").toLowerCase();
   if (!["true", "1", "yes"].includes(on)) {
     console.log(`${TAG} scheduler TẮT (đặt ENABLE_AUTO_POST_FACEBOOK=true để bật)`);
@@ -513,7 +514,7 @@ export function startAutoPostScheduler(): void {
   const raw = parseInt(process.env.AUTO_POST_CHECK_INTERVAL_SEC ?? "", 10);
   const sec = Number.isNaN(raw) || raw < 60 ? 120 : raw;
   const run = () => {
-    runAutoPostTick().catch((e) => console.error(`${TAG} tick lỗi:`, e));
+    runJob(runAutoPostTick).catch((e) => console.error(`${TAG} tick lỗi:`, e));
   };
   // Trễ 30s đầu để app khởi động xong (giống follow-up-scheduler).
   setTimeout(() => {

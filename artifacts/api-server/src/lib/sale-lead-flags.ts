@@ -1,4 +1,5 @@
 import { pool } from "@workspace/db";
+import { currentTenantScope } from "./tenant-scope";
 
 /**
  * Cờ AI tự ghi cho TỪNG lead — bảng RIÊNG của module Claude Sale.
@@ -13,9 +14,10 @@ import { pool } from "@workspace/db";
  * nhưng KHÔNG ràng buộc FK để không phụ thuộc/đụng vào bảng CRM.
  */
 
-let createdTable = false;
+const createdTables = new Set<string>();
 export async function ensureLeadFlagsTable(): Promise<void> {
-  if (createdTable) return;
+  const tenantScope = currentTenantScope();
+  if (createdTables.has(tenantScope)) return;
   await pool.query(`
     CREATE TABLE IF NOT EXISTS claude_sale_lead_flags (
       facebook_user_id     TEXT PRIMARY KEY,
@@ -33,7 +35,7 @@ export async function ensureLeadFlagsTable(): Promise<void> {
   `);
   await pool.query(`ALTER TABLE claude_sale_lead_flags ADD COLUMN IF NOT EXISTS profile_sync_status TEXT`).catch(() => {});
   await pool.query(`ALTER TABLE claude_sale_lead_flags ADD COLUMN IF NOT EXISTS profile_synced_at TIMESTAMP`).catch(() => {});
-  createdTable = true;
+  createdTables.add(tenantScope);
 }
 
 /** Trạng thái đồng bộ profile FB: 'synced' (có tên/avatar) | 'unavailable' (FB trống) | 'failed' (lỗi). */

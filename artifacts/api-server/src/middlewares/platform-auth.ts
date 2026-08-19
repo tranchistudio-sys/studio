@@ -1,5 +1,5 @@
 import type { NextFunction, Request, RequestHandler, Response } from "express";
-import { pool } from "@workspace/db";
+import { pool, runWithTenantDatabase } from "@workspace/db";
 import { getPlatformPool, isPlatformDatabaseConfigured } from "@workspace/platform-db";
 import { readLegacyToken, signLegacyToken } from "../lib/legacy-auth-token";
 import {
@@ -11,9 +11,11 @@ import {
 } from "../platform/session";
 import type { PlatformSessionContext } from "../platform/types";
 import {
-  registryMatchesAmazingRuntime,
-  type TenantDatabaseRegistryRow,
-} from "../platform/tenant-database-reference";
+  acquireTenantDatabase,
+  acquireTenantDatabaseBySlug,
+  TenantDatabaseUnavailableError,
+  type TenantDatabaseLease,
+} from "../platform/tenant-database-router";
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
@@ -77,9 +79,23 @@ export function isPublicBusinessRoute(method: string, path: string): boolean {
   if (normalizedMethod === "GET" && normalizedPath === "/cms/public/home") return true;
   if (normalizedMethod === "GET" && normalizedPath.startsWith("/storage/public-objects/")) return true;
   if (normalizedMethod === "GET" && normalizedPath.startsWith("/storage/cms/objects/")) return true;
+  if (
+    normalizedMethod === "GET" &&
+    /^\/storage\/objects\/tenants\/[0-9a-f-]{36}\/fb-inbox-images\/[0-9a-f-]{36}\.(?:jpg|png|gif|webp)$/.test(normalizedPath)
+  ) return true;
   if (normalizedMethod === "POST" && normalizedPath === "/storage/wedding-public/uploads/request-url") return true;
+  // Standalone legacy mode still serves its existing signed wedding upload
+  // URL. In platform mode the storage handler returns 404 before any write.
   if (normalizedMethod === "PUT" && /^\/storage\/wedding-public\/uploads\/local\/[0-9a-f-]{36}$/.test(normalizedPath)) return true;
+  if (
+    normalizedMethod === "PUT" &&
+    /^\/storage\/wedding-public\/uploads\/local\/tenants\/[0-9a-f-]{36}\/[0-9a-f-]{36}$/.test(normalizedPath)
+  ) return true;
   if (normalizedMethod === "GET" && /^\/storage\/wedding-public\/[0-9a-f-]{36}$/.test(normalizedPath)) return true;
+  if (
+    normalizedMethod === "GET" &&
+    /^\/storage\/wedding-public\/tenants\/[0-9a-f-]{36}\/[0-9a-f-]{36}$/.test(normalizedPath)
+  ) return true;
   if ((normalizedMethod === "GET" || normalizedMethod === "POST") && normalizedPath === "/webhook/facebook") return true;
   if (normalizedMethod === "GET" && normalizedPath === "/push/vapid-key") return true;
   if (normalizedMethod === "GET" && normalizedPath === "/attendance/studio-info") return true;
@@ -108,15 +124,6 @@ export function requestIsSameOrigin(req: Request): boolean {
   return fetchSite === "same-origin" || (!fetchSite && process.env.NODE_ENV !== "production");
 }
 
-async function tenantUsesCurrentDatabase(tenantId: string): Promise<boolean> {
-  const result = await getPlatformPool().query<TenantDatabaseRegistryRow>(
-    `SELECT database_ref, host_ref, database_name, role_name, secret_ref
-     FROM tenant_database_registry WHERE tenant_id = $1 LIMIT 1`,
-    [tenantId],
-  );
-  return registryMatchesAmazingRuntime(result.rows[0]);
-}
-
 async function tenantStaffIsActive(staffId: number): Promise<boolean> {
   const result = await pool.query<{ id: number }>(
     "SELECT id FROM staff WHERE id = $1 AND is_active = 1 LIMIT 1",
@@ -125,9 +132,90 @@ async function tenantStaffIsActive(staffId: number): Promise<boolean> {
   return Boolean(result.rows[0]);
 }
 
+function tenantUnavailable(res: Response): void {
+  res.status(503).json({
+    error: "Database của studio chưa sẵn sàng",
+    code: "TENANT_DATABASE_UNAVAILABLE",
+  });
+}
+
+async function handOffTenantLease(
+  lease: TenantDatabaseLease,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  const release = () => { void lease.release(); };
+  res.once("finish", release);
+  res.once("close", release);
+  try {
+    runWithTenantDatabase(lease.context, () => next());
+  } catch (error) {
+    res.off("finish", release);
+    res.off("close", release);
+    await lease.release();
+    throw error;
+  }
+}
+
+function normalizedPublicHost(req: Request): string | null {
+  const raw = req.get("x-forwarded-host") || req.get("host");
+  if (!raw || raw.includes(",")) return null;
+  try {
+    return new URL(`http://${raw}`).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+export function configuredPublicTenantSlug(req: Request): string | null {
+  const hostMap = process.env.PUBLIC_TENANT_HOST_MAP?.trim();
+  if (hostMap) {
+    const host = normalizedPublicHost(req);
+    if (!host) return null;
+    for (const pair of hostMap.split(",")) {
+      const separator = pair.indexOf("=");
+      if (separator <= 0) continue;
+      const configuredHost = pair.slice(0, separator).trim().toLowerCase();
+      const configuredSlug = pair.slice(separator + 1).trim().toLowerCase();
+      if (host === configuredHost && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(configuredSlug)) {
+        return configuredSlug;
+      }
+    }
+    return null;
+  }
+  const slug = process.env.PUBLIC_TENANT_SLUG?.trim().toLowerCase();
+  return slug && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) ? slug : null;
+}
+
+export async function bindTenantDatabaseBySlugForRequest(
+  slug: string,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
+  try {
+    await handOffTenantLease(await acquireTenantDatabaseBySlug(slug), res, next);
+  } catch {
+    tenantUnavailable(res);
+  }
+}
+
 export const businessAuthGuard: RequestHandler = async (req, res, next) => {
   if (isPublicBusinessRoute(req.method, req.path)) {
-    next();
+    // Health liveness is process-scoped and intentionally does not touch a DB.
+    if (req.method.toUpperCase() === "GET" && req.path.toLowerCase() === "/healthz") {
+      next();
+      return;
+    }
+    if (!isPlatformDatabaseConfigured()) {
+      next();
+      return;
+    }
+    const slug = configuredPublicTenantSlug(req);
+    if (!slug) {
+      tenantUnavailable(res);
+      return;
+    }
+    await bindTenantDatabaseBySlugForRequest(slug, res, next);
     return;
   }
 
@@ -142,21 +230,23 @@ export const businessAuthGuard: RequestHandler = async (req, res, next) => {
           });
           return;
         }
-        if (!tenantRoleCanAccessBusiness(context.tenantRole, req.method, req.path)) {
-          res.status(403).json({ error: "Role trong studio không có quyền sử dụng chức năng này" });
-          return;
-        }
-        if (!(await tenantUsesCurrentDatabase(context.activeTenantId))) {
-          res.status(503).json({
-            error: "Database của studio chưa sẵn sàng",
-            code: "TENANT_DATABASE_UNAVAILABLE",
+        // Browser work that can outlive a render (notably the offline upload
+        // queue) declares which already-authenticated tenant it was created
+        // for. This header is only an assertion: the server session remains the
+        // sole authority that selects the database.
+        const expectedTenantId = req.get("x-tenant-id")?.trim();
+        if (
+          expectedTenantId &&
+          expectedTenantId.toLowerCase() !== context.activeTenantId.toLowerCase()
+        ) {
+          res.status(409).json({
+            error: "Studio của yêu cầu không còn khớp với phiên đăng nhập",
+            code: "TENANT_CONTEXT_MISMATCH",
           });
           return;
         }
-        if (!(await tenantStaffIsActive(context.tenantStaffId))) {
-          await revokeSession(context.sessionId, "tenant_staff_inactive");
-          clearPlatformSessionCookie(res);
-          res.status(401).json({ error: "Tài khoản nhân viên đã bị khóa" });
+        if (!tenantRoleCanAccessBusiness(context.tenantRole, req.method, req.path)) {
+          res.status(403).json({ error: "Role trong studio không có quyền sử dụng chức năng này" });
           return;
         }
         if (!SAFE_METHODS.has(req.method) && !requestIsSameOrigin(req)) {
@@ -166,14 +256,46 @@ export const businessAuthGuard: RequestHandler = async (req, res, next) => {
 
         // Bridge nội bộ 60 giây cho các route legacy đang gọi verifyToken().
         // Token này chỉ tồn tại trong request server, không trả về client hay log.
-        req.headers.authorization = `Bearer ${signLegacyToken(
-          context.tenantStaffId,
-          context.sessionId,
-          60,
-          context.tenantRole ?? "STAFF",
-        )}`;
-        res.locals.platformAuth = context;
-        next();
+        let lease: TenantDatabaseLease;
+        try {
+          lease = await acquireTenantDatabase(context.activeTenantId);
+        } catch (error) {
+          if (error instanceof TenantDatabaseUnavailableError) {
+            tenantUnavailable(res);
+            return;
+          }
+          throw error;
+        }
+        let handedOff = false;
+        try {
+          let active: boolean;
+          try {
+            active = await runWithTenantDatabase(
+              lease.context,
+              () => tenantStaffIsActive(context.tenantStaffId!),
+            );
+          } catch {
+            tenantUnavailable(res);
+            return;
+          }
+          if (!active) {
+            await revokeSession(context.sessionId, "tenant_staff_inactive");
+            clearPlatformSessionCookie(res);
+            res.status(401).json({ error: "Tài khoản nhân viên đã bị khóa" });
+            return;
+          }
+          req.headers.authorization = `Bearer ${signLegacyToken(
+            context.tenantStaffId,
+            context.sessionId,
+            60,
+            context.tenantRole ?? "STAFF",
+          )}`;
+          res.locals.platformAuth = context;
+          handedOff = true;
+          await handOffTenantLease(lease, res, next);
+        } finally {
+          if (!handedOff) await lease.release();
+        }
         return;
       }
       if (req.cookies?.[PLATFORM_SESSION_COOKIE]) {

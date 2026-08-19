@@ -20,6 +20,7 @@
  */
 import { isPreviewMode, type EnvLike } from "./preview-guard";
 import { readLocalObject, saveLocalUpload } from "./localObjectStorage";
+import { tenantScopedKey } from "./tenant-scope";
 
 /** Giới hạn dung lượng một ảnh tải về (ảnh studio thường 1-3MB). */
 const MAX_BYTES = 25 * 1024 * 1024;
@@ -62,8 +63,9 @@ export async function previewFetchMissingObject(
   if (!isPreviewMode(env)) return null;
   const url = buildFallbackUrl(objectPath, env);
   if (!url) return null;
+  const inflightKey = tenantScopedKey("preview-object", url);
 
-  const existing = inflight.get(url);
+  const existing = inflight.get(inflightKey);
   if (existing) return existing;
 
   const job = (async () => {
@@ -100,11 +102,11 @@ export async function previewFetchMissingObject(
       console.warn(`[preview-object] Lỗi tải ảnh fallback: ${(err as Error).message}`);
       return null;
     } finally {
-      inflight.delete(url);
+      inflight.delete(inflightKey);
     }
   })();
 
-  inflight.set(url, job);
+  inflight.set(inflightKey, job);
   return job;
 }
 

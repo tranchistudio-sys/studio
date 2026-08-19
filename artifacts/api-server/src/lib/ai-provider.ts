@@ -1,4 +1,5 @@
 import { pool } from "@workspace/db";
+import { currentTenantScope } from "./tenant-scope";
 
 /**
  * CẤU HÌNH AI PROVIDER — nguồn duy nhất quyết định thứ tự gọi AI cho TOÀN hệ thống
@@ -87,15 +88,17 @@ export function resolveProviderChain(cfg: AiProviderConfig): AiProviderName[] {
 
 // ─── Đọc/ghi cấu hình (cache ngắn) ───────────────────────────────────────────
 
-let cache: { value: AiProviderConfig; at: number } | null = null;
+const cache = new Map<string, { value: AiProviderConfig; at: number }>();
 const TTL_MS = 15 * 1000;
 
 export function clearAiProviderConfigCache(): void {
-  cache = null;
+  cache.delete(currentTenantScope());
 }
 
 export async function getAiProviderConfig(): Promise<AiProviderConfig> {
-  if (cache && Date.now() - cache.at < TTL_MS) return cache.value;
+  const tenantScope = currentTenantScope();
+  const cached = cache.get(tenantScope);
+  if (cached && Date.now() - cached.at < TTL_MS) return cached.value;
   try {
     const r = await pool.query(`SELECT value FROM settings WHERE key = $1 LIMIT 1`, [KEY]);
     let value: AiProviderConfig;
@@ -110,7 +113,7 @@ export async function getAiProviderConfig(): Promise<AiProviderConfig> {
       }
       value = normalizeAiProviderConfig(parsed);
     }
-    cache = { value, at: Date.now() };
+    cache.set(tenantScope, { value, at: Date.now() });
     return value;
   } catch (err) {
     console.error("[AI] getAiProviderConfig lỗi → dùng mặc định:", String(err).slice(0, 150));

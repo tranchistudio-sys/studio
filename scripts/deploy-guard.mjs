@@ -65,6 +65,8 @@ const PLATFORM_MIGRATIONS_DIR = "lib/platform-db/migrations";
 const PLATFORM_MIGRATION_ALLOWLIST = new Set([
   "0001_platform_foundation.sql",
   "0002_membership_session_revocation.sql",
+  "0003_tenant_database_registry_isolation.sql",
+  "0004_staff_access_requests.sql",
 ]);
 if (exists(PLATFORM_MIGRATIONS_DIR)) {
   const entries = fs.readdirSync(path.join(ROOT, PLATFORM_MIGRATIONS_DIR));

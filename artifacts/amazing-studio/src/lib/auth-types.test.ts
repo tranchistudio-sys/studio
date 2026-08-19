@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  authRuntimeScopeKey,
   authNeedsStudioSelection,
   canManageTenantMembers,
   legacyViewerCanAdmin,
   normalizeAuthResponse,
+  resolveAuthClientScope,
   resolveAuthClientState,
   resolveTenantAdmin,
   tenantCanRunApp,
@@ -91,5 +93,47 @@ describe("auth types", () => {
     expect(tenantCanRunApp(tenant("trial"))).toBe(true);
     expect(tenantCanRunApp(tenant("suspended"))).toBe(false);
     expect(tenantCanRunApp(tenant("provisioning_failed"))).toBe(false);
+  });
+
+  it("scopes durable browser state by tenant, membership and user", () => {
+    const first = resolveAuthClientScope({
+      platformUser,
+      activeTenant: tenant("active", "OWNER"),
+    });
+    const otherTenant = resolveAuthClientScope({
+      platformUser,
+      activeTenant: { ...tenant("active", "OWNER"), id: "tenant-2", membershipId: "membership-2" },
+    });
+    const otherUser = resolveAuthClientScope({
+      platformUser: { ...platformUser, id: "user-2" },
+      activeTenant: tenant("active", "OWNER"),
+    });
+
+    expect(first).toMatchObject({
+      tenantId: "tenant-1",
+      membershipId: "membership-1",
+      userId: "platform:user-1",
+    });
+    expect(first?.key).not.toBe(otherTenant?.key);
+    expect(first?.key).not.toBe(otherUser?.key);
+  });
+
+  it("pauses tenant-owned browser state until a platform tenant is selected", () => {
+    expect(resolveAuthClientScope({ platformUser })).toBeNull();
+    expect(resolveAuthClientScope({})).toBeNull();
+    expect(resolveAuthClientScope({ viewer: legacyAdmin })).toMatchObject({
+      tenantId: "legacy-default",
+      userId: "legacy:7",
+    });
+  });
+
+  it("changes the runtime boundary when tenant role or status changes", () => {
+    const owner = authRuntimeScopeKey({ platformUser, activeTenant: tenant("active", "OWNER") });
+    const staff = authRuntimeScopeKey({ platformUser, activeTenant: tenant("active", "STAFF") });
+    const suspended = authRuntimeScopeKey({ platformUser, activeTenant: tenant("suspended", "OWNER") });
+
+    expect(owner).not.toBe(staff);
+    expect(owner).not.toBe(suspended);
+    expect(authRuntimeScopeKey({ platformUser })).toBe("platform:user-1:tenant:none");
   });
 });

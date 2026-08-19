@@ -9,6 +9,7 @@ import {
   secureStringEqual,
   verifyFacebookWebhookSignature,
 } from "../lib/facebook-webhook-signature";
+import { tenantScopedKey } from "../lib/tenant-scope";
 
 const router: IRouter = Router();
 
@@ -17,7 +18,7 @@ function ts(): string {
 }
 
 // Cache: tránh gọi Facebook API lặp lại cho PSID đã thất bại
-// Key: psid, Value: { result, failedAt (ms) }
+// Key: tenant + psid, Value: { result, failedAt (ms) }
 const profileCache = new Map<string, { name: string; avatarUrl: string | null }>();
 const profileFailCache = new Map<string, number>(); // psid → timestamp của lần fail
 const FAIL_CACHE_TTL_MS = 30 * 60 * 1000; // 30 phút
@@ -33,13 +34,14 @@ async function getPageAccessToken(): Promise<string | null> {
 
 async function fetchFacebookProfile(psid: string, pageAccessToken: string): Promise<{ name: string; avatarUrl: string | null }> {
   const fallback = { name: "Khách Facebook " + psid.slice(-4), avatarUrl: null };
+  const cacheKey = tenantScopedKey("facebook-profile", psid);
 
   // Trả về từ cache nếu đã thành công
-  const cached = profileCache.get(psid);
+  const cached = profileCache.get(cacheKey);
   if (cached) return cached;
 
   // Bỏ qua nếu đã fail gần đây (tránh spam API)
-  const failedAt = profileFailCache.get(psid);
+  const failedAt = profileFailCache.get(cacheKey);
   if (failedAt && Date.now() - failedAt < FAIL_CACHE_TTL_MS) {
     return fallback;
   }
@@ -53,7 +55,7 @@ async function fetchFacebookProfile(psid: string, pageAccessToken: string): Prom
     };
     if (!res.ok || data.error) {
       console.warn(`[FBProfile] ❌ psid=${psid}: ${data.error?.message ?? res.status} (sẽ bỏ qua 30 phút)`);
-      profileFailCache.set(psid, Date.now());
+      profileFailCache.set(cacheKey, Date.now());
       return fallback;
     }
     const fullName = (`${data.first_name ?? ""} ${data.last_name ?? ""}`).trim();
@@ -61,12 +63,12 @@ async function fetchFacebookProfile(psid: string, pageAccessToken: string): Prom
     const avatarUrl = data.profile_pic ?? null;
     const result = { name: displayName || fallback.name, avatarUrl };
     if (displayName) {
-      profileCache.set(psid, result); // cache thành công
+      profileCache.set(cacheKey, result); // cache thành công
     }
     console.log(`[FBProfile] ✓ psid=${psid} → name="${displayName}"`);
     return result;
   } catch (err) {
-    profileFailCache.set(psid, Date.now());
+    profileFailCache.set(cacheKey, Date.now());
     return fallback;
   }
 }

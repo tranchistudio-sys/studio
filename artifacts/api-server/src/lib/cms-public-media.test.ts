@@ -6,12 +6,16 @@ import {
   isCmsPublicNamespacePath,
   isPrivateObjectReference,
   registerLegacyCmsPublicObjectValues,
+  registerTenantLegacyCmsPublicObjectValues,
   resetCmsPublicMediaRegistryForTests,
   rewriteCmsPublicMediaForResponse,
   signCmsPublicObjectValue,
   validateCmsPublicMediaWrite,
   verifyCmsPublicObjectSignature,
+  signTenantCmsPublicObjectValue,
+  verifyTenantCmsPublicObjectSignature,
 } from "./cms-public-media";
+import type { TenantMediaScope } from "./tenant-media-path";
 
 const { registryQuery } = vi.hoisted(() => ({
   registryQuery: vi.fn(async () => ({ rows: [] as Array<{ data?: unknown }> })),
@@ -20,6 +24,14 @@ vi.mock("@workspace/db", () => ({ pool: { query: registryQuery } }));
 
 const PUBLIC_OBJECT_ID = "a4aa87a1-a083-4a8b-a28f-e14ff866feba";
 const PRIVATE_PROOF_ID = "87c04d41-8990-469b-af84-37ac57a73ca0";
+const AMAZING: TenantMediaScope = {
+  tenantId: "90d5fd42-6e03-4f7c-81af-51fbb25e8f41",
+  tenantSlug: "amazing-studio",
+};
+const OTHER: TenantMediaScope = {
+  tenantId: "1292b99a-3e59-4261-a5e7-6f9ea01e6f10",
+  tenantSlug: "other-studio",
+};
 
 describe("signed CMS public media", () => {
   beforeEach(() => {
@@ -142,5 +154,42 @@ describe("signed CMS public media", () => {
     expect(isPrivateObjectReference(`/api/storage/objects/uploads/${PRIVATE_PROOF_ID}`)).toBe(true);
     expect(isPrivateObjectReference(`/objects/cms-public/${PUBLIC_OBJECT_ID}`)).toBe(false);
     expect(isPrivateObjectReference("/storage/public-objects/site/cover.jpg")).toBe(false);
+  });
+
+  it("ký CMS path mới cùng tenant và không dùng lại chữ ký ở tenant khác", () => {
+    const now = 1_700_000_000;
+    const path = `tenants/${OTHER.tenantId}/cms-public/${PUBLIC_OBJECT_ID}`;
+    const signed = signTenantCmsPublicObjectValue(OTHER, `/objects/${path}`, now);
+    const parsed = new URL(signed, "https://example.test");
+
+    expect(verifyTenantCmsPublicObjectSignature(
+      OTHER,
+      path,
+      parsed.searchParams.get("exp"),
+      parsed.searchParams.get("sig"),
+      now,
+    )).toBe(true);
+    expect(verifyTenantCmsPublicObjectSignature(
+      AMAZING,
+      path,
+      parsed.searchParams.get("exp"),
+      parsed.searchParams.get("sig"),
+      now,
+    )).toBe(false);
+  });
+
+  it("không ký path CMS có prefix tenant khác", () => {
+    const otherPath = `/objects/tenants/${AMAZING.tenantId}/cms-public/${PUBLIC_OBJECT_ID}`;
+    expect(signTenantCmsPublicObjectValue(OTHER, otherPath, 1_700_000_000)).toBe(otherPath);
+  });
+
+  it("CMS legacy uploads chỉ được grandfather cho Amazing tenant", () => {
+    const now = 1_700_000_000;
+    const legacyPath = `/objects/uploads/${PUBLIC_OBJECT_ID}`;
+    registerTenantLegacyCmsPublicObjectValues(AMAZING, { coverImageUrl: legacyPath });
+    registerTenantLegacyCmsPublicObjectValues(OTHER, { coverImageUrl: legacyPath });
+
+    expect(signTenantCmsPublicObjectValue(AMAZING, legacyPath, now)).not.toBe(legacyPath);
+    expect(signTenantCmsPublicObjectValue(OTHER, legacyPath, now)).toBe(legacyPath);
   });
 });

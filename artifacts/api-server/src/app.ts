@@ -12,6 +12,7 @@ import { startFollowUpScheduler } from "./follow-up-scheduler";
 import { startTestFollowUpScheduler } from "./test-follow-up-scheduler";
 import { startDeadlineChecker, startWeddingPrepReminder } from "./routes/notifications";
 import { startAutoPostScheduler } from "./autopost-scheduler";
+import { runBusinessJob } from "./lib/tenant-job-runner";
 
 export interface CreateAppOptions {
   startSchedulers?: boolean;
@@ -119,11 +120,11 @@ if (!frontendMounted && process.env.NODE_ENV !== "production") {
 
 
 if (options.startSchedulers !== false) {
-  startFollowUpScheduler();
-  startTestFollowUpScheduler();
-  startDeadlineChecker();
-  startWeddingPrepReminder();
-  startAutoPostScheduler();
+  startFollowUpScheduler(runBusinessJob);
+  startTestFollowUpScheduler(runBusinessJob);
+  startDeadlineChecker(runBusinessJob);
+  startWeddingPrepReminder(runBusinessJob);
+  startAutoPostScheduler(runBusinessJob);
 }
 
 return application;

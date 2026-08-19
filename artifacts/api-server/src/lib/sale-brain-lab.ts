@@ -6,6 +6,7 @@ import {
 import {
   type ImageOverride, parseImageOverrides, withImageOverrides,
 } from "./sale-image-overrides";
+import { currentTenantScope } from "./tenant-scope";
 
 /**
  * Lulu Brain Lab — quản lý / sửa / test / lưu version cho "não Sale AI Lulu".
@@ -136,9 +137,10 @@ export type BrainTestResult = {
 
 // ─── Tạo bảng (lazy) + seed Version 1 + bộ test case mặc định ──────────────────
 
-let ensured = false;
+const ensuredTenants = new Set<string>();
 export async function ensureBrainLabTables(): Promise<void> {
-  if (ensured) return;
+  const tenantScope = currentTenantScope();
+  if (ensuredTenants.has(tenantScope)) return;
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS lulu_brain_versions (
@@ -223,7 +225,7 @@ export async function ensureBrainLabTables(): Promise<void> {
      ON lulu_brain_test_results (brain_version_id, created_at DESC)`,
   ).catch(() => {});
 
-  ensured = true;
+  ensuredTenants.add(tenantScope);
 
   // Seed Version 1 = prompt/luật hiện tại (chỉ khi chưa có version nào) — PHẦN 9.
   await seedInitialVersion();
@@ -348,11 +350,11 @@ async function seedDefaultTestCases(): Promise<void> {
 
 // ─── Cache "bộ luật active" cho luồng trả lời sống ────────────────────────────
 
-let activeRulesCache: { value: string | null; at: number } | null = null;
+const activeRulesCache = new Map<string, { value: string | null; at: number }>();
 const TTL_MS = 30 * 1000;
 
 export function clearActiveRulesCache(): void {
-  activeRulesCache = null;
+  activeRulesCache.delete(currentTenantScope());
 }
 
 /**
@@ -361,7 +363,9 @@ export function clearActiveRulesCache(): void {
  * KHÔNG bao giờ throw (giống getClaudeSaleSettings).
  */
 export async function getActiveBrainRules(): Promise<string | null> {
-  if (activeRulesCache && Date.now() - activeRulesCache.at < TTL_MS) return activeRulesCache.value;
+  const tenantScope = currentTenantScope();
+  const cached = activeRulesCache.get(tenantScope);
+  if (cached && Date.now() - cached.at < TTL_MS) return cached.value;
   try {
     await ensureBrainLabTables();
     const r = await pool.query(
@@ -377,7 +381,7 @@ export async function getActiveBrainRules(): Promise<string | null> {
     } else {
       console.log(`[SaleBrain] loadedBrainVersion activeVersionId=none (dùng DEFAULT_BRAIN_RULES)`);
     }
-    activeRulesCache = { value, at: Date.now() };
+    activeRulesCache.set(tenantScope, { value, at: Date.now() });
     return value;
   } catch (err) {
     console.error("[BrainLab] getActiveBrainRules — dùng mặc định:", String(err).slice(0, 200));
@@ -390,20 +394,22 @@ export async function getActiveBrainRules(): Promise<string | null> {
 // Lưu trong rulesJson của version → đi theo version: nháp test riêng, áp dụng thì active dùng.
 // getActiveImageOverrides() nằm trên luồng SỐNG (Messenger) → KHÔNG bao giờ throw (lỗi → []).
 
-let activeOverridesCache: { value: ImageOverride[]; at: number } | null = null;
+const activeOverridesCache = new Map<string, { value: ImageOverride[]; at: number }>();
 
 export function clearActiveOverridesCache(): void {
-  activeOverridesCache = null;
+  activeOverridesCache.delete(currentTenantScope());
 }
 
 /** Override ảnh của version ĐANG ÁP DỤNG (active). [] nếu chưa có / lỗi DB. */
 export async function getActiveImageOverrides(): Promise<ImageOverride[]> {
-  if (activeOverridesCache && Date.now() - activeOverridesCache.at < TTL_MS) return activeOverridesCache.value;
+  const tenantScope = currentTenantScope();
+  const cached = activeOverridesCache.get(tenantScope);
+  if (cached && Date.now() - cached.at < TTL_MS) return cached.value;
   try {
     await ensureBrainLabTables();
     const r = await pool.query(`SELECT rules_json FROM lulu_brain_versions WHERE status = 'active' LIMIT 1`);
     const value = r.rows.length > 0 ? parseImageOverrides(r.rows[0].rules_json) : [];
-    activeOverridesCache = { value, at: Date.now() };
+    activeOverridesCache.set(tenantScope, { value, at: Date.now() });
     return value;
   } catch (err) {
     console.error("[BrainLab] getActiveImageOverrides — bỏ qua override:", String(err).slice(0, 200));

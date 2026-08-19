@@ -58,6 +58,34 @@ if (exists(MIGRATIONS_DIR)) {
   if (!errors.length) ok.push(`migrations folder: ${entries.length} file, đúng allowlist, không destructive`);
 }
 
+// Platform DB có migration riêng, nhưng chỉ được chạy bằng lệnh explicit
+// `pnpm --filter @workspace/platform-db migrate`. Build/start production tuyệt
+// đối không được tự gọi. Guard vẫn review allowlist + SQL additive ở đây.
+const PLATFORM_MIGRATIONS_DIR = "lib/platform-db/migrations";
+const PLATFORM_MIGRATION_ALLOWLIST = new Set([
+  "0001_platform_foundation.sql",
+  "0002_membership_session_revocation.sql",
+  "0003_tenant_database_registry_isolation.sql",
+  "0004_staff_access_requests.sql",
+]);
+if (exists(PLATFORM_MIGRATIONS_DIR)) {
+  const entries = fs.readdirSync(path.join(ROOT, PLATFORM_MIGRATIONS_DIR));
+  for (const entry of entries) {
+    if (!PLATFORM_MIGRATION_ALLOWLIST.has(entry)) {
+      errors.push(`${PLATFORM_MIGRATIONS_DIR}/${entry}: platform migration ngoài allowlist.`);
+      continue;
+    }
+    const statementsOnly = read(`${PLATFORM_MIGRATIONS_DIR}/${entry}`).replace(/--.*$/gm, "");
+    const destructive = statementsOnly.match(DESTRUCTIVE_SQL);
+    if (destructive) {
+      errors.push(
+        `${PLATFORM_MIGRATIONS_DIR}/${entry}: chứa SQL destructive ("${destructive[0]}").`,
+      );
+    }
+  }
+  if (!errors.length) ok.push(`platform migrations: ${entries.length} file additive, chạy explicit-only`);
+}
+
 // ── 3. Config deploy + build script: không được gọi push/migrate ─────────────
 const PUSH_CMD = /(drizzle[-\s]?kit|--filter\s+db\s+push|\bdb\s+push\b|push-force|\bdrizzle\s+push\b)/i;
 
@@ -78,6 +106,7 @@ const BUILD_SCRIPTS = [
   ["package.json", ["build", "build:deploy", "build:ci", "postinstall"]],
   ["artifacts/api-server/package.json", ["build", "start"]],
   ["artifacts/amazing-studio/package.json", ["build"]],
+  ["lib/platform-db/package.json", ["build", "start", "postinstall"]],
 ];
 for (const [f, keys] of BUILD_SCRIPTS) {
   if (!exists(f)) continue;
@@ -89,6 +118,16 @@ for (const [f, keys] of BUILD_SCRIPTS) {
     }
   }
   ok.push(`${f}: build scripts sạch`);
+}
+
+const API_ENTRYPOINT = "artifacts/api-server/src/index.ts";
+if (exists(API_ENTRYPOINT)) {
+  const entrypoint = read(API_ENTRYPOINT);
+  if (/platform-db\/src\/migrate|@workspace\/platform-db[^\n]*migrate/i.test(entrypoint)) {
+    errors.push(`${API_ENTRYPOINT}: không được import platform migration vào startup.`);
+  } else {
+    ok.push(`${API_ENTRYPOINT}: không auto-run platform migration`);
+  }
 }
 
 // ── 4. post-merge.sh phải giữ guard opt-in ───────────────────────────────────

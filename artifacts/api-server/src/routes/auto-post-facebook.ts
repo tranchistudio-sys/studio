@@ -30,6 +30,7 @@ import { persistImageBuffer } from "../lib/autopost-storage";
 import { getBrandFooter, buildFooterText } from "../lib/autopost-brand";
 import { listSignatures, getDefaultSignatureContent } from "../lib/autopost-signature";
 import { withStartupDdlLock } from "../lib/startup-ddl";
+import { retainCurrentTenantDatabaseLease } from "../platform/tenant-database-router";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AutoPost Facebook (Amazing Studio) — admin router (Task 5).
@@ -431,6 +432,15 @@ async function runCaptionJob(postId: number, o: CaptionJobOpts): Promise<void> {
   }
 }
 
+function startCaptionJob(postId: number, options: CaptionJobOpts): void {
+  const retainedLease = process.env.PLATFORM_DATABASE_URL?.trim()
+    ? retainCurrentTenantDatabaseLease()
+    : null;
+  void runCaptionJob(postId, options).finally(async () => {
+    await retainedLease?.release();
+  });
+}
+
 // POST /autopost/posts/generate — sinh caption AI cho 1 item pool → bài chờ duyệt.
 router.post("/autopost/posts/generate", async (req: Request, res: Response) => {
   if (!(await requireAdmin(req, res))) return;
@@ -606,7 +616,7 @@ router.post("/autopost/posts/generate-async", async (req: Request, res: Response
     res.json(out.rows[0]);
 
     // (6) Viết caption ở NỀN (fire-and-forget; tự đổi trạng thái khi xong/lỗi).
-    void runCaptionJob(newId, {
+    startCaptionJob(newId, {
       item, tone, bannedWords, wantCaptions,
       maxVisionImages: opcfg.maxVisionImagesPerPost,
       style: typeof style === "string" ? style : undefined,
@@ -662,7 +672,7 @@ router.post("/autopost/posts/:id/retry-caption", async (req: Request, res: Respo
     const out = await pool.query(`${POST_SELECT} WHERE p.id = $1`, [id]);
     res.json(out.rows[0]);
 
-    void runCaptionJob(id, {
+    startCaptionJob(id, {
       item, tone, bannedWords, wantCaptions,
       maxVisionImages: opcfg.maxVisionImagesPerPost,
     });
@@ -1425,21 +1435,29 @@ function safeDriveRedirectUri(raw: unknown): string | null {
   const s = String(raw || "");
   return /^https?:\/\/[^\s"']+\/api\/autopost\/drive\/callback$/.test(s) ? s : null;
 }
+export function escapeDriveHtml(value: unknown): string {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
 function drivePage(message: string, ok = false): string {
-  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  const safeMessage = escapeDriveHtml(message);
+  return `<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'">
 <body style="font-family:system-ui,-apple-system,sans-serif;max-width:560px;margin:60px auto;padding:0 20px;text-align:center;color:#222">
 <div style="font-size:42px">${ok ? "✅" : "⚠️"}</div>
-<p style="font-size:16px;line-height:1.6">${message}</p>
+<p style="font-size:16px;line-height:1.6">${safeMessage}</p>
 <p><a href="/auto-post-facebook" style="display:inline-block;margin-top:12px;padding:10px 18px;background:#e11d63;color:#fff;border-radius:10px;text-decoration:none;font-weight:600">Quay lại AutoPost</a></p>
 </body>`;
 }
 
-// GET /autopost/drive/connect?token=<jwt>&redirectUri=<...> — bắt đầu OAuth (browser nav).
+// Server session cookie is sent on same-origin navigation; never put auth tokens in URLs.
 router.get("/autopost/drive/connect", async (req: Request, res: Response) => {
-  const role = await getCallerRole(`Bearer ${String(req.query.token ?? "")}`);
-  if (!role) { res.status(403).send(drivePage("Vui lòng đăng nhập để kết nối Google Drive.")); return; }
+  if (!(await requireAdmin(req, res))) return;
   if (!getOAuthClientEnv()) {
-    res.status(400).send(drivePage("Thiếu Client ID/Secret: đặt GOOGLE_DRIVE_CLIENT_ID/SECRET hoặc GOOGLE_CLIENT_ID/SECRET trong môi trường."));
+    res.status(400).send(drivePage("Thiếu Client ID/Secret: đặt GOOGLE_DRIVE_CLIENT_ID/SECRET trong môi trường."));
     return;
   }
   const redirectUri = safeDriveRedirectUri(req.query.redirectUri);
@@ -1454,6 +1472,7 @@ router.get("/autopost/drive/connect", async (req: Request, res: Response) => {
 
 // GET /autopost/drive/callback?code=&state= — Google redirect về; đổi code → refresh_token.
 router.get("/autopost/drive/callback", async (req: Request, res: Response) => {
+  if (!(await requireAdmin(req, res))) return;
   if (req.query.error) { res.status(400).send(drivePage(`Google từ chối: ${String(req.query.error)}`)); return; }
   const state = verifyDriveState(String(req.query.state ?? ""));
   if (!state) { res.status(400).send(drivePage("State không hợp lệ hoặc đã hết hạn — bấm Kết nối lại.")); return; }
@@ -1463,7 +1482,7 @@ router.get("/autopost/drive/callback", async (req: Request, res: Response) => {
   try {
     const refreshToken = await exchangeCodeForRefreshToken(code, redirectUri);
     await saveDriveRefreshToken(refreshToken); // không log token
-    res.send(drivePage("Đã kết nối Google Drive thành công! Quay lại trang AutoPost → bấm <b>Test kết nối</b> rồi <b>Đồng bộ Google Drive</b>.", true));
+    res.send(drivePage("Đã kết nối Google Drive thành công! Quay lại trang AutoPost, bấm Test kết nối rồi Đồng bộ Google Drive.", true));
   } catch (e) {
     res.status(500).send(drivePage(`Đổi token lỗi: ${String(e instanceof Error ? e.message : e)}`));
   }

@@ -1,4 +1,5 @@
 import { pool } from "@workspace/db";
+import { currentTenantScope } from "./tenant-scope";
 
 /**
  * CẤU HÌNH AUTOPOST (toàn cục) — nguồn đọc/chuẩn hoá duy nhất cho phần nâng cấp.
@@ -84,16 +85,18 @@ export function normalizeAutopostConfig(raw: unknown): AutopostConfig {
 
 // ─── Đọc raw config (cache ngắn) ──────────────────────────────────────────────
 
-let cache: { raw: Record<string, unknown>; at: number } | null = null;
+const cache = new Map<string, { raw: Record<string, unknown>; at: number }>();
 const TTL_MS = 10 * 1000;
 
 export function clearAutopostConfigCache(): void {
-  cache = null;
+  cache.delete(currentTenantScope());
 }
 
 /** Đọc RAW config jsonb (gồm cả tone/bannedWords/drive…). Không throw. */
 export async function getAutopostConfigRaw(): Promise<Record<string, unknown>> {
-  if (cache && Date.now() - cache.at < TTL_MS) return cache.raw;
+  const tenantScope = currentTenantScope();
+  const cached = cache.get(tenantScope);
+  if (cached && Date.now() - cached.at < TTL_MS) return cached.raw;
   try {
     const r = await pool.query(`SELECT config FROM autopost_settings WHERE id = 1`);
     let raw = r.rows[0]?.config as unknown;
@@ -101,7 +104,7 @@ export async function getAutopostConfigRaw(): Promise<Record<string, unknown>> {
       try { raw = JSON.parse(raw); } catch { raw = {}; }
     }
     const obj = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
-    cache = { raw: obj, at: Date.now() };
+    cache.set(tenantScope, { raw: obj, at: Date.now() });
     return obj;
   } catch (err) {
     console.error("[AutoPost] getAutopostConfigRaw lỗi → dùng mặc định:", String(err).slice(0, 150));

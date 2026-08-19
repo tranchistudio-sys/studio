@@ -24,6 +24,11 @@ import { isPreviewMode, type EnvLike } from "./preview-guard";
 
 /** Host nội bộ luôn được phép (chính container gọi chính nó). */
 const ALWAYS_ALLOWED = new Set(["localhost", "127.0.0.1", "::1", "0.0.0.0"]);
+const GOOGLE_IDENTITY_CERT_HOST = "www.googleapis.com";
+const GOOGLE_IDENTITY_CERT_PATHS = new Set([
+  "/oauth2/v1/certs",
+  "/oauth2/v3/certs",
+]);
 
 let blockedCount = 0;
 let installed = false;
@@ -78,6 +83,31 @@ export function extractHost(target: unknown, options?: unknown): string | null {
   return null;
 }
 
+/** Path is checked separately for the only outbound Google Identity calls
+ * allowed in preview. This deliberately does not open Drive/API paths on the
+ * same www.googleapis.com host. */
+export function extractPath(target: unknown, options?: unknown): string | null {
+  const fromUrl = (value: string): string | null => {
+    try {
+      return new URL(value).pathname;
+    } catch {
+      return null;
+    }
+  };
+  if (typeof target === "string") return fromUrl(target);
+  if (target instanceof URL) return target.pathname;
+  if (target && typeof target === "object" && typeof (target as { url?: unknown }).url === "string") {
+    return fromUrl((target as { url: string }).url);
+  }
+  const opts = (target && typeof target === "object" ? target : options) as { path?: unknown } | undefined;
+  if (typeof opts?.path !== "string") return null;
+  return opts.path.split("?", 1)[0] || "/";
+}
+
+export function isGoogleIdentityCertRequest(host: string | null, path: string | null): boolean {
+  return host === GOOGLE_IDENTITY_CERT_HOST && path !== null && GOOGLE_IDENTITY_CERT_PATHS.has(path);
+}
+
 export function isOutboundAllowed(host: string | null, allowlist: Set<string>): boolean {
   if (!host) return false; // fail-closed: không biết đi đâu → cấm.
   return allowlist.has(host);
@@ -105,13 +135,20 @@ export function installPreviewNetGuard(env: EnvLike = process.env): boolean {
   installed = true;
 
   const allowlist = parseNetAllowlist(env.PREVIEW_NET_ALLOW);
+  const allowGoogleIdentityCerts = Boolean(env.GOOGLE_CLIENT_ID?.trim());
+
+  const targetAllowed = (target: unknown, options?: unknown): boolean => {
+    const host = extractHost(target, options);
+    if (isOutboundAllowed(host, allowlist)) return true;
+    return allowGoogleIdentityCerts && isGoogleIdentityCertRequest(host, extractPath(target, options));
+  };
 
   // ── fetch (Anthropic SDK, OpenAI SDK, mọi lệnh gọi Graph API viết bằng fetch) ─
   const originalFetch = globalThis.fetch;
   if (typeof originalFetch === "function") {
     globalThis.fetch = ((input: unknown, init?: unknown) => {
       const host = extractHost(input);
-      if (!isOutboundAllowed(host, allowlist)) {
+      if (!targetAllowed(input)) {
         return Promise.reject(blockedError(host, "fetch"));
       }
       return (originalFetch as (...a: unknown[]) => Promise<Response>)(input, init);
@@ -128,7 +165,7 @@ export function installPreviewNetGuard(env: EnvLike = process.env): boolean {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (mod as any)[method] = (...args: unknown[]) => {
         const host = extractHost(args[0], args[1]);
-        if (!isOutboundAllowed(host, allowlist)) {
+        if (!targetAllowed(args[0], args[1])) {
           throw blockedError(host, `${name}.${method}`);
         }
         return original(...args);
@@ -137,7 +174,8 @@ export function installPreviewNetGuard(env: EnvLike = process.env): boolean {
   }
 
   console.warn(
-    `[preview-net-guard] Đã bật chặn gọi ra ngoài (mặc định CẤM). Host được phép: ${[...allowlist].join(", ")}`,
+    `[preview-net-guard] Đã bật chặn gọi ra ngoài (mặc định CẤM). Host được phép: ${[...allowlist].join(", ")}. ` +
+      `Google Identity certs: ${allowGoogleIdentityCerts ? "bật" : "tắt"}`,
   );
   return true;
 }

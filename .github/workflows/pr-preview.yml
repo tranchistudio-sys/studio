@@ -3,8 +3,8 @@
 # Mỗi PR: BUILD + TEST → dựng một app riêng trên Fly.io → dán link vào PR.
 # Đóng PR: xoá hẳn app đó.
 #
-# KHÔNG đụng gì tới production: production vẫn ở Replit và chỉ được Republish
-# bằng tay theo docs/DEPLOY-CODE-ONLY.md.
+# KHÔNG đụng gì tới production: production trên VPS chỉ được deploy bằng workflow
+# thủ công `Deploy VPS (code-only)` theo đúng commit SHA.
 
 name: PR Preview
 
@@ -34,6 +34,28 @@ jobs:
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: amazing_platform_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d amazing_platform_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
+      DEFAULT_TENANT_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
+      TENANT_B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_b_test
+      SESSION_SECRET: ci-only-session-secret-at-least-32-bytes
+      BOOTSTRAP_OWNER_EMAIL: owner@gmail.com
+      BOOTSTRAP_TENANT_STAFF_ID: "1"
+      GOOGLE_CLIENT_ID: test-google-client.apps.googleusercontent.com
     outputs:
       api_tests: ${{ steps.test_api.outputs.count }}
       web_tests: ${{ steps.test_web.outputs.count }}
@@ -53,6 +75,23 @@ jobs:
       - name: Cài đặt phụ thuộc (đúng y hệt pnpm-lock.yaml)
         run: pnpm install --frozen-lockfile
 
+      - name: Tạo hai tenant database cô lập cho integration test
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h 127.0.0.1 -U postgres -d amazing_platform_test -v ON_ERROR_STOP=1 -c 'CREATE DATABASE tenant_amazing_test'
+          psql -h 127.0.0.1 -U postgres -d amazing_platform_test -v ON_ERROR_STOP=1 -c 'CREATE DATABASE tenant_b_test'
+
+      - name: Migration platform test (không chạm production)
+        env:
+          PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
+        run: |
+          pnpm --filter @workspace/platform-db migrate
+          pnpm --filter @workspace/platform-db migrate
+
+      - name: Typecheck platform database package
+        run: pnpm --filter @workspace/platform-db typecheck
+
       - name: TEST — API (vitest)
         id: test_api
         run: |
@@ -60,6 +99,11 @@ jobs:
           pnpm --filter @workspace/api-server test 2>&1 | tee api-test.log
           # vitest in kèm mã màu ANSI → gỡ màu rồi mới bóc số.
           echo "count=$(sed 's/\x1b\[[0-9;]*m//g' api-test.log | grep -oE 'Tests +[0-9]+ passed' | grep -oE '[0-9]+' | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: TEST — Platform auth integration + HTTP E2E
+        env:
+          PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
+        run: pnpm --filter @workspace/api-server test:platform
 
       - name: TEST — Giao diện (vitest)
         id: test_web
@@ -124,10 +168,95 @@ jobs:
             flyctl apps create "$FLY_APP" --org "${{ vars.FLY_ORG || 'personal' }}"
           fi
 
+      # PR #163 là staging review được chủ app đăng ký origin chính xác trong
+      # Google Cloud. Tạo một platform database tách biệt ngay trên cụm preview;
+      # tenant database vẫn là PREVIEW_DATABASE_URL hiện hữu.
+      - name: Chuẩn bị platform database cho Google preview
+        id: platform_db
+        if: github.event.pull_request.number == 163
+        env:
+          PREVIEW_DATABASE_URL: ${{ secrets.PREVIEW_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          platform_db="amazing_platform_pr_${{ github.event.pull_request.number }}"
+          exists=$(psql "$PREVIEW_DATABASE_URL" -Atqc "SELECT 1 FROM pg_database WHERE datname = '$platform_db'" || true)
+          if [ "$exists" != "1" ]; then
+            psql "$PREVIEW_DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$platform_db\""
+          fi
+
+          platform_url=$(PLATFORM_DB="$platform_db" node -e '
+            const u = new URL(process.env.PREVIEW_DATABASE_URL);
+            u.pathname = `/${process.env.PLATFORM_DB}`;
+            console.log(u.toString());
+          ')
+          echo "::add-mask::$platform_url"
+
+          for migration in lib/platform-db/migrations/*.sql; do
+            psql "$platform_url" -v ON_ERROR_STOP=1 -f "$migration" >/dev/null
+          done
+
+          bootstrap_staff_id=$(psql "$PREVIEW_DATABASE_URL" -Atqc \
+            "SELECT id FROM staff WHERE is_active = 1 AND (role = 'admin' OR roles::text LIKE '%admin%') ORDER BY id LIMIT 1")
+          if ! [[ "$bootstrap_staff_id" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Không tìm thấy admin nghiệp vụ hợp lệ trong tenant database preview."
+            exit 1
+          fi
+
+          echo "url=$platform_url" >> "$GITHUB_OUTPUT"
+          echo "staff_id=$bootstrap_staff_id" >> "$GITHUB_OUTPUT"
+
+      # Dynamic pr-N origins không thể được đăng ký trước một cách an toàn trong
+      # Google Cloud. Preview hiện cũng chỉ có tenant DB ẩn danh, chưa có platform
+      # DB riêng với marker/allowlist độc lập. Fly secrets tồn tại qua nhiều lần
+      # deploy nên phải chủ động xóa cấu hình cũ và kiểm chứng lại (fail-closed).
+      - name: Fail-closed Google và platform auth trên dynamic preview
+        if: github.event.pull_request.number != 163
+        run: |
+          platform_names='^(PLATFORM_DATABASE_URL|DEFAULT_TENANT_DATABASE_URL|GOOGLE_CLIENT_ID|BOOTSTRAP_OWNER_EMAIL|BOOTSTRAP_TENANT_STAFF_ID)$'
+          existing=$(flyctl secrets list --app "$FLY_APP" --json | jq -r '.[] | (.Name // .name)' | awk -v pattern="$platform_names" '$0 ~ pattern')
+          if [ -n "$existing" ]; then
+            mapfile -t names <<< "$existing"
+            flyctl secrets unset --app "$FLY_APP" --stage "${names[@]}"
+          fi
+          remaining=$(flyctl secrets list --app "$FLY_APP" --json | jq -r '.[] | (.Name // .name)' | awk -v pattern="$platform_names" '$0 ~ pattern')
+          if [ -n "$remaining" ]; then
+            echo "::error::Không xóa được cấu hình platform/Google cũ khỏi dynamic preview. Từ chối deploy."
+            exit 1
+          fi
+
       - name: Nạp cấu hình bí mật cho bản xem thử
+        if: github.event.pull_request.number != 163
         run: |
           flyctl secrets set --app "$FLY_APP" --stage \
             DATABASE_URL="${{ secrets.PREVIEW_DATABASE_URL }}" \
+            PREVIEW_DB_HOST_ALLOWLIST="${{ secrets.PREVIEW_DB_HOST_ALLOWLIST }}" \
+            SESSION_SECRET="${{ secrets.PREVIEW_SESSION_SECRET }}" \
+            PREVIEW_BASIC_AUTH_USER="${{ vars.PREVIEW_BASIC_AUTH_USER || 'amazing' }}" \
+            PREVIEW_BASIC_AUTH_PASS="${{ secrets.PREVIEW_BASIC_AUTH_PASS }}"
+
+      - name: Bật Google login thật cho PR 163
+        if: github.event.pull_request.number == 163
+        env:
+          GOOGLE_CLIENT_ID: 65788959851-t8edpkk8kql5ttpaln4nah5vjb4dumfb.apps.googleusercontent.com
+          PLATFORM_DATABASE_URL: ${{ steps.platform_db.outputs.url }}
+          BOOTSTRAP_TENANT_STAFF_ID: ${{ steps.platform_db.outputs.staff_id }}
+        run: |
+          set -euo pipefail
+          bootstrap_owner_email=$(git log -1 --format='%ae' | tr '[:upper:]' '[:lower:]')
+          case "$bootstrap_owner_email" in
+            *@gmail.com) ;;
+            *) echo "::error::Commit author email không phải Gmail hợp lệ để bootstrap OWNER."; exit 1 ;;
+          esac
+
+          flyctl secrets set --app "$FLY_APP" --stage \
+            DATABASE_URL="${{ secrets.PREVIEW_DATABASE_URL }}" \
+            PLATFORM_DATABASE_URL="$PLATFORM_DATABASE_URL" \
+            DEFAULT_TENANT_DATABASE_URL="${{ secrets.PREVIEW_DATABASE_URL }}" \
+            PUBLIC_TENANT_SLUG="amazing-studio" \
+            GOOGLE_CLIENT_ID="$GOOGLE_CLIENT_ID" \
+            BOOTSTRAP_OWNER_EMAIL="$bootstrap_owner_email" \
+            BOOTSTRAP_TENANT_STAFF_ID="$BOOTSTRAP_TENANT_STAFF_ID" \
+            PLATFORM_DB_POOL_MAX="2" \
             PREVIEW_DB_HOST_ALLOWLIST="${{ secrets.PREVIEW_DB_HOST_ALLOWLIST }}" \
             SESSION_SECRET="${{ secrets.PREVIEW_SESSION_SECRET }}" \
             PREVIEW_BASIC_AUTH_USER="${{ vars.PREVIEW_BASIC_AUTH_USER || 'amazing' }}" \
@@ -155,6 +284,119 @@ jobs:
           done
           echo "::error::Bản xem thử không phản hồi /api/healthz sau ~200 giây."
           exit 1
+
+      - name: Xác nhận đăng nhập Google đã bật
+        if: github.event.number == 163
+        env:
+          PREVIEW_BASIC_AUTH_USER: ${{ vars.PREVIEW_BASIC_AUTH_USER || 'amazing' }}
+          PREVIEW_BASIC_AUTH_PASS: ${{ secrets.PREVIEW_BASIC_AUTH_PASS }}
+        run: |
+          config=$(curl -fsS --max-time 15 \
+            -u "$PREVIEW_BASIC_AUTH_USER:$PREVIEW_BASIC_AUTH_PASS" \
+            "$PREVIEW_URL/api/auth/config")
+          if ! jq -e \
+            '.platformEnabled == true and .googleEnabled == true and (.googleClientId | length > 0)' \
+            >/dev/null <<<"$config"; then
+            echo "::error::Bản xem thử chưa công bố cấu hình đăng nhập Google."
+            exit 1
+          fi
+          echo "Đăng nhập Google đã sẵn sàng trên bản xem thử."
+
+      - name: Xác nhận trang Cho thuê đồ không còn trắng
+        if: github.event.number == 163
+        env:
+          PREVIEW_BASIC_AUTH_USER: ${{ vars.PREVIEW_BASIC_AUTH_USER || 'amazing' }}
+          PREVIEW_BASIC_AUTH_PASS: ${{ secrets.PREVIEW_BASIC_AUTH_PASS }}
+        run: |
+          set -euo pipefail
+          cookie_jar=$(mktemp)
+          page=$(mktemp)
+          trap 'rm -f "$cookie_jar" "$page"' EXIT
+
+          curl -fsS --max-time 30 --retry 2 \
+            -u "$PREVIEW_BASIC_AUTH_USER:$PREVIEW_BASIC_AUTH_PASS" \
+            -c "$cookie_jar" \
+            -H 'Accept: text/html,application/xhtml+xml' \
+            "$PREVIEW_URL/cho-thue-do?smoke=${{ github.sha }}" > "$page"
+
+          grep -q 'id="root"' "$page"
+          grep -q 'id="app-boot-fallback"' "$page"
+          grep -q 'Đang mở giao diện' "$page"
+
+          script_path=$(grep -oE 'src="/assets/[^"]+\.js"' "$page" | head -1 | cut -d'"' -f2)
+          if [ -z "$script_path" ]; then
+            echo "::error::Trang Cho thuê đồ không tham chiếu JavaScript bundle."
+            exit 1
+          fi
+
+          content_type=$(curl -fsS --max-time 30 --retry 2 \
+            -b "$cookie_jar" -o /tmp/amazing-preview-bundle.js -w '%{content_type}' \
+            "$PREVIEW_URL$script_path")
+          case "$content_type" in
+            *javascript*) ;;
+            *) echo "::error::Bundle trả sai content-type: $content_type"; exit 1;;
+          esac
+          test -s /tmp/amazing-preview-bundle.js
+          rm -f /tmp/amazing-preview-bundle.js
+          echo "Trang /cho-thue-do và JavaScript bundle đều tải được sau lớp mật khẩu."
+
+      - name: Chụp bằng chứng trang Cho thuê đồ đã render
+        if: github.event.number == 163
+        env:
+          PREVIEW_BASIC_AUTH_USER: ${{ vars.PREVIEW_BASIC_AUTH_USER || 'amazing' }}
+          PREVIEW_BASIC_AUTH_PASS: ${{ secrets.PREVIEW_BASIC_AUTH_PASS }}
+        run: |
+          set -euo pipefail
+          chrome=$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)
+          if [ -z "$chrome" ]; then
+            echo "::error::Runner không có Chrome để chụp bằng chứng."
+            exit 1
+          fi
+
+          auth_url=$(PREVIEW_URL="$PREVIEW_URL/cho-thue-do?proof=${{ github.sha }}" \
+            PASSWORD="$PREVIEW_BASIC_AUTH_PASS" node -e '
+              const url = new URL(process.env.PREVIEW_URL);
+              url.searchParams.set("xem", process.env.PASSWORD);
+              process.stdout.write(url.toString());
+            ')
+          echo "::add-mask::$auth_url"
+
+          "$chrome" --headless --no-sandbox --disable-gpu --hide-scrollbars \
+            --user-data-dir="$RUNNER_TEMP/amazing-chrome-profile" \
+            --window-size=390,844 --virtual-time-budget=15000 \
+            --dump-dom "$auth_url" > "$RUNNER_TEMP/cho-thue-do.html"
+          grep -q 'Cho thuê đồ' "$RUNNER_TEMP/cho-thue-do.html"
+
+          "$chrome" --headless --no-sandbox --disable-gpu --hide-scrollbars \
+            --user-data-dir="$RUNNER_TEMP/amazing-chrome-profile" \
+            --window-size=390,844 --virtual-time-budget=15000 \
+            --screenshot="$RUNNER_TEMP/cho-thue-do.png" \
+            "$PREVIEW_URL/cho-thue-do?proof=${{ github.sha }}"
+          test -s "$RUNNER_TEMP/cho-thue-do.png"
+
+      - name: Lưu ảnh bằng chứng Cho thuê đồ
+        if: github.event.number == 163
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-163-cho-thue-do-proof
+          path: ${{ runner.temp }}/cho-thue-do.png
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Xác nhận trang mở được trên iPhone
+        if: github.event.number == 163
+        run: |
+          page=$(curl -fsS --max-time 15 \
+            -H 'Accept: text/html,application/xhtml+xml' \
+            -A 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1' \
+            "$PREVIEW_URL/?iphone-check=${{ github.sha }}")
+          case "$page" in
+            *'<meta name="viewport"'*'name="password"'*'Vào xem app'*)
+              echo "Trang mật khẩu preview đã trả đủ giao diện cho iPhone.";;
+            *)
+              echo "::error::iPhone không nhận được giao diện mở preview."
+              exit 1;;
+          esac
 
       # Khi BẤT KỲ bước nào phía trên hỏng (deploy hoặc xác nhận sống): in trạng
       # thái + log máy để thấy NGAY nguyên nhân trong CI, không phải mò dashboard.
@@ -209,6 +451,7 @@ jobs:
               lines.push('');
               lines.push('> Mở link bằng iPhone. Trang sẽ hỏi mật khẩu xem thử một lần (mở bằng trình duyệt nào cũng được).');
               lines.push('> Dữ liệu trong bản xem thử **đã che tên/SĐT/email khách** và **không nối vào database production**.');
+              lines.push('> Google/platform auth được **cố ý tắt** trên hostname PR động; preview này chỉ kiểm tra local login. Google thật chỉ kiểm tra trên staging cố định, DB test riêng.');
             } else if (PREVIEW === 'skipped') {
               lines.push('⛔ **CHƯA DỰNG ĐƯỢC BẢN XEM THỬ** — vì BUILD/TEST chưa xanh.');
               lines.push('');

@@ -7,6 +7,7 @@ import { verifyToken, getCallerRole } from "./auth";
 import { liveBookingSql, revenueCountableSql } from "../lib/booking-money";
 import { notEmptyParentSql } from "../lib/parent-contract";
 import { engineAllocationSnapshot, type AllocationSnapshot } from "../lib/finance/financial-engine";
+import { capLegacyAdmin } from "../lib/legacy-auth-token";
 
 const router: IRouter = Router();
 
@@ -665,7 +666,7 @@ router.post("/payments/:id/void", async (req, res) => {
 
   const [caller] = await db.select({ id: staffTable.id, name: staffTable.name, role: staffTable.role })
     .from(staffTable).where(eq(staffTable.id, callerId));
-  const isAdmin = caller?.role === "admin";
+  const isAdmin = capLegacyAdmin(req.headers.authorization, caller?.role === "admin");
   if (!isAdmin) return res.status(403).json({ error: "Chỉ admin mới có thể huỷ phiếu thu" });
 
   const { reason } = req.body;

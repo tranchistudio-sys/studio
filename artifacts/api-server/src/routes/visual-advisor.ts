@@ -1,5 +1,6 @@
 import { Router, type IRouter } from "express";
 import { pool } from "@workspace/db";
+import { currentTenantScope } from "../lib/tenant-scope";
 import { verifyViewToken, getIdeasPasswordConfig } from "./photo-ideas";
 import { isLlmConfigured } from "../lib/studio-copilot";
 import { callChat } from "../lib/ai-orchestrator";
@@ -385,17 +386,18 @@ function toResponseItem(it: CatalogItem) {
 
 router.post("/cms/public/visual-advisor", async (req, res) => {
   try {
-    const ip = String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "?").split(",")[0].trim();
-    if (!checkRate(ip)) {
-      return res.status(429).json({ error: "Bạn hỏi hơi nhanh, chờ vài giây nhé." });
-    }
-
     const { query, ideasToken, sourceScope, currentSource } = (req.body ?? {}) as {
       query?: unknown; ideasToken?: unknown; sourceScope?: unknown; currentSource?: unknown;
     };
     const q = typeof query === "string" ? query.trim() : "";
     if (!q || q.length > 500) {
       return res.status(400).json({ error: "Vui lòng nhập câu hỏi (tối đa 500 ký tự)." });
+    }
+    // Express đã được cấu hình số proxy hop rõ ràng; không tin header thô do
+    // client tự gửi để né rate limit của endpoint có phát sinh chi phí AI.
+    const ip = req.ip || req.socket.remoteAddress || "unknown";
+    if (!checkRate(ip)) {
+      return res.status(429).json({ error: "Bạn hỏi hơi nhanh, chờ vài giây nhé." });
     }
 
     // Phạm vi nguồn: "current" chỉ hợp lệ khi biết module đang xem; còn lại → all
@@ -502,11 +504,13 @@ function splitCsvCell(v: unknown): string[] {
 const isWeightToken = (s: string) => /kg\s*$/i.test(s);
 const weightSortKey = (s: string) => { const m = s.match(/(\d+)/); return m ? parseInt(m[1], 10) : 0; };
 
-let filtersCache: { data: AdvisorFilters; at: number } | null = null;
+const filtersCache = new Map<string, { data: AdvisorFilters; at: number }>();
 const FILTERS_TTL_MS = 60_000;
 
 async function loadAdvisorFilters(): Promise<AdvisorFilters> {
-  if (filtersCache && Date.now() - filtersCache.at < FILTERS_TTL_MS) return filtersCache.data;
+  const tenantScope = currentTenantScope();
+  const cached = filtersCache.get(tenantScope);
+  if (cached && Date.now() - cached.at < FILTERS_TTL_MS) return cached.data;
   const r = await pool.query(
     `SELECT size_text, size, color_text, color, tags_text
        FROM dresses
@@ -527,7 +531,7 @@ async function loadAdvisorFilters(): Promise<AdvisorFilters> {
     colors: [...colors].sort(),
     styles: [...styles].sort(),
   };
-  filtersCache = { data, at: Date.now() };
+  filtersCache.set(tenantScope, { data, at: Date.now() });
   return data;
 }
 

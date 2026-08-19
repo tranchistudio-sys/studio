@@ -9,8 +9,13 @@ import { verifyToken, getCallerRole } from "./auth";
 import { resolveDiscount } from "../lib/pricing-discount";
 import { clearSaleContextCache } from "../lib/sale-context";
 import { withStartupDdlLock } from "../lib/startup-ddl";
+import { validateCmsPublicMediaWrite } from "../lib/cms-public-media";
 
 const router: IRouter = Router();
+
+// Prevent an editor from pasting a private payment/evidence object into any
+// field that is later returned by a public CMS endpoint.
+router.use("/cms", validateCmsPublicMediaWrite);
 
 // ─── Auto-migration: add columns + create tables on startup ──────────────────
 async function ensureCmsSchema() {

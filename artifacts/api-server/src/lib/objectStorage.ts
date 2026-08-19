@@ -8,6 +8,15 @@ import {
   getObjectAclPolicy,
   setObjectAclPolicy,
 } from "./objectAcl";
+import {
+  authorizeTenantMediaObjectPath,
+  buildTenantMediaObjectPath,
+  buildTenantMediaStorageKey,
+  canonicalTenantMediaObjectName,
+  canonicalTenantMediaScope,
+  type TenantMediaNamespace,
+  type TenantMediaScope,
+} from "./tenant-media-path";
 
 const REPLIT_SIDECAR_ENDPOINT = "http://127.0.0.1:1106";
 
@@ -107,6 +116,36 @@ export class ObjectStorageService {
   }
 
   async getObjectEntityUploadURL(): Promise<string> {
+    return this.getUploadURLForNamespace("uploads");
+  }
+
+  async getCmsPublicUploadURL(): Promise<string> {
+    return this.getUploadURLForNamespace("cms-public");
+  }
+
+  async getTenantUploadTarget(
+    scope: TenantMediaScope,
+    namespace: "uploads" | "cms-public",
+  ): Promise<{ uploadURL: string; objectPath: string; objectId: string }> {
+    const canonicalScope = canonicalTenantMediaScope(scope);
+    const objectId = randomUUID();
+    const storageKey = buildTenantMediaStorageKey(canonicalScope, namespace, objectId);
+    const fullPath = `${this.getPrivateObjectDir().replace(/\/$/, "")}/${storageKey}`;
+    const { bucketName, objectName } = parseObjectPath(fullPath);
+    const uploadURL = await signObjectURL({
+      bucketName,
+      objectName,
+      method: "PUT",
+      ttlSec: 900,
+    });
+    return {
+      uploadURL,
+      objectPath: buildTenantMediaObjectPath(canonicalScope, namespace, objectId),
+      objectId,
+    };
+  }
+
+  private async getUploadURLForNamespace(namespace: "uploads" | "cms-public"): Promise<string> {
     const privateObjectDir = this.getPrivateObjectDir();
     if (!privateObjectDir) {
       throw new Error(
@@ -116,7 +155,7 @@ export class ObjectStorageService {
     }
 
     const objectId = randomUUID();
-    const fullPath = `${privateObjectDir}/uploads/${objectId}`;
+    const fullPath = `${privateObjectDir.replace(/\/$/, "")}/${namespace}/${objectId}`;
 
     const { bucketName, objectName } = parseObjectPath(fullPath);
 
@@ -126,6 +165,92 @@ export class ObjectStorageService {
       method: "PUT",
       ttlSec: 900,
     });
+  }
+
+  async getWeddingPublicFile(objectId: string): Promise<File> {
+    if (!/^[0-9a-f-]{36}$/i.test(objectId)) throw new ObjectNotFoundError();
+    const fullPath = `${this.getPrivateObjectDir().replace(/\/$/, "")}/wedding-public/${objectId}`;
+    const { bucketName, objectName } = parseObjectPath(fullPath);
+    const file = objectStorageClient.bucket(bucketName).file(objectName);
+    const [exists] = await file.exists();
+    if (!exists) throw new ObjectNotFoundError();
+    return file;
+  }
+
+  async saveWeddingPublicObject(objectId: string, body: Buffer, contentType: string): Promise<void> {
+    if (!/^[0-9a-f-]{36}$/i.test(objectId)) throw new Error("Invalid wedding object id");
+    const fullPath = `${this.getPrivateObjectDir().replace(/\/$/, "")}/wedding-public/${objectId}`;
+    const { bucketName, objectName } = parseObjectPath(fullPath);
+    await objectStorageClient.bucket(bucketName).file(objectName).save(body, {
+      resumable: false,
+      metadata: {
+        contentType,
+        cacheControl: "public, max-age=31536000, immutable",
+      },
+    });
+  }
+
+  private tenantFileFromStorageKey(storageKey: string): File {
+    const fullPath = `${this.getPrivateObjectDir().replace(/\/$/, "")}/${storageKey}`;
+    const { bucketName, objectName } = parseObjectPath(fullPath);
+    return objectStorageClient.bucket(bucketName).file(objectName);
+  }
+
+  async saveTenantObject(
+    scope: TenantMediaScope,
+    namespace: TenantMediaNamespace,
+    objectName: string,
+    body: Buffer,
+    contentType: string,
+    cacheControl?: string,
+  ): Promise<string> {
+    const canonicalScope = canonicalTenantMediaScope(scope);
+    const canonicalName = canonicalTenantMediaObjectName(namespace, objectName);
+    const storageKey = buildTenantMediaStorageKey(canonicalScope, namespace, canonicalName);
+    await this.tenantFileFromStorageKey(storageKey).save(body, {
+      resumable: false,
+      metadata: {
+        contentType,
+        ...(cacheControl ? { cacheControl } : {}),
+      },
+    });
+    return buildTenantMediaObjectPath(canonicalScope, namespace, canonicalName);
+  }
+
+  async saveTenantWeddingPublicObject(
+    scope: TenantMediaScope,
+    objectId: string,
+    body: Buffer,
+    contentType: string,
+  ): Promise<void> {
+    await this.saveTenantObject(
+      scope,
+      "wedding-public",
+      objectId,
+      body,
+      contentType,
+      "public, max-age=31536000, immutable",
+    );
+  }
+
+  async getTenantObjectEntityFile(
+    scope: TenantMediaScope,
+    objectPath: string,
+    allowedNamespaces?: readonly TenantMediaNamespace[],
+  ): Promise<File> {
+    const authorized = authorizeTenantMediaObjectPath(scope, objectPath, allowedNamespaces);
+    const objectFile = this.tenantFileFromStorageKey(authorized.storageKey);
+    const [exists] = await objectFile.exists();
+    if (!exists) throw new ObjectNotFoundError();
+    return objectFile;
+  }
+
+  async getTenantWeddingPublicFile(
+    scope: TenantMediaScope,
+    objectId: string,
+  ): Promise<File> {
+    const objectPath = buildTenantMediaObjectPath(scope, "wedding-public", objectId);
+    return this.getTenantObjectEntityFile(scope, objectPath, ["wedding-public"]);
   }
 
   async getObjectEntityFile(objectPath: string): Promise<File> {
@@ -262,6 +387,10 @@ async function signObjectURL({
     );
   }
 
-  const { signed_url: signedURL } = await response.json();
+  const payload = await response.json() as { signed_url?: unknown };
+  const signedURL = payload.signed_url;
+  if (typeof signedURL !== "string" || !signedURL) {
+    throw new Error("Object storage signer returned an invalid URL");
+  }
   return signedURL;
 }

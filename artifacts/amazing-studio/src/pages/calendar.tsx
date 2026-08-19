@@ -8180,7 +8180,7 @@ function CalendarPageInner() {
         leave={viewingLeave}
         onClose={() => setViewingLeave(null)}
         isAdmin={isAdmin}
-        canDelete={rawIsAdmin || viewer?.role === "owner" || viewer?.role === "admin"}
+        canDelete={rawIsAdmin}
         viewerId={viewer?.id}
         viewerName={viewer?.name}
         onChanged={refreshLeaves}

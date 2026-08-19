@@ -1,7 +1,10 @@
 import { Router, type IRouter } from "express";
 import { pool } from "@workspace/db";
+import { validateCmsPublicMediaWrite } from "../lib/cms-public-media";
 
 const router: IRouter = Router();
+
+router.use("/dresses", validateCmsPublicMediaWrite);
 
 const OUTFIT_TAG_KEYS = new Set([
   "HANG_MOI_100", "HANG_MOI", "SIEU_MOI", "HOT_PICK",

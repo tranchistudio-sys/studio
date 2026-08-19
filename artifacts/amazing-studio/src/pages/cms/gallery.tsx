@@ -1289,7 +1289,7 @@ function VideoUploaderButton({
         if (f.size > maxMb * 1024 * 1024) {
           setErr(`${f.name}: vượt quá ${maxMb}MB`); continue;
         }
-        const path = await uploadFileViaPresign(f, f.name, f.type);
+        const path = await uploadFileViaPresign(f, f.name, f.type, "cms-public");
         results.push({ objectPath: path, mimeType: f.type, name: f.name });
       }
       if (results.length) onUploaded(results);

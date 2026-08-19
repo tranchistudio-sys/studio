@@ -1,6 +1,7 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { pool } from "@workspace/db";
 import { verifyToken } from "./auth";
+import { capLegacyAdmin } from "../lib/legacy-auth-token";
 import { callChat, resolveTestProviderOverride } from "../lib/ai-orchestrator";
 import { DEFAULT_BRAIN_RULES } from "../lib/claude-sale";
 import { simulateReply } from "../lib/sale-brain-runner";
@@ -47,7 +48,10 @@ async function requireStaff(req: Request, res: Response): Promise<Caller | null>
     res.status(401).json({ error: "Tài khoản không hợp lệ" });
     return null;
   }
-  const isAdmin = u.role === "admin" || (Array.isArray(u.roles) && u.roles.includes("admin"));
+  const isAdmin = capLegacyAdmin(
+    req.headers.authorization,
+    u.role === "admin" || (Array.isArray(u.roles) && u.roles.includes("admin")),
+  );
   return { id: u.id, name: u.name ?? null, isAdmin };
 }
 

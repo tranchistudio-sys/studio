@@ -3,6 +3,7 @@ import { db, pool } from "@workspace/db";
 import { expensesTable } from "@workspace/db/schema";
 import { eq, desc } from "drizzle-orm";
 import { verifyToken } from "./auth";
+import { capLegacyAdmin } from "../lib/legacy-auth-token";
 import {
   resolveCostClass,
   isAllowedCostClass,
@@ -105,7 +106,7 @@ router.get("/expenses", async (req, res) => {
   if (callerId) {
     const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
     const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-    callerIsAdmin = !!(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin"))));
+    callerIsAdmin = capLegacyAdmin(req.headers.authorization, !!(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   }
 
   if (!callerId) {
@@ -172,7 +173,7 @@ router.get("/expenses/stats", async (req, res) => {
 
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, !!(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
 
   let allRows = await db.select().from(expensesTable);
   // Nhân viên chỉ thấy thống kê chi phí của mình
@@ -211,7 +212,7 @@ router.get("/expenses/monthly-summary", async (req, res) => {
 
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = !!(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin"))));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, !!(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
 
   const now = new Date();
   const month = parseInt(String(req.query.month ?? "")) || (now.getMonth() + 1);
@@ -282,7 +283,7 @@ router.get("/expenses/:id", async (req, res) => {
 
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, !!(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
 
   const id = parseInt(req.params.id);
   const [e] = await db.select().from(expensesTable).where(eq(expensesTable.id, id));
@@ -316,7 +317,7 @@ router.post("/expenses", async (req, res) => {
   // Nhân viên tự nộp → status LUÔN = "submitted", admin tạo → "approved"
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, !!(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   // Chi phí Cá nhân (personal) chỉ admin/chủ studio được tạo — chặn ở backend, không chỉ ẩn FE.
   if (isPersonalClass(resolvedCostClass) && !isAdmin) {
     return res.status(403).json({ error: "Chỉ admin/chủ studio được tạo chi phí Cá nhân" });
@@ -360,7 +361,7 @@ router.put("/expenses/:id", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, !!(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   if (!isAdmin) {
     // Staff can only edit their own submitted expenses
     const [existing] = await db.select().from(expensesTable).where(eq(expensesTable.id, id));
@@ -417,7 +418,7 @@ router.patch("/expenses/:id/approve", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, !!(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   if (!isAdmin) return res.status(403).json({ error: "Không có quyền duyệt chi phí" });
 
   const id = parseInt(req.params.id);
@@ -440,7 +441,7 @@ router.patch("/expenses/:id/reject", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, !!(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   if (!isAdmin) return res.status(403).json({ error: "Không có quyền từ chối chi phí" });
 
   const id = parseInt(req.params.id);
@@ -458,7 +459,7 @@ router.patch("/expenses/:id/pay", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, !!(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   if (!isAdmin) return res.status(403).json({ error: "Không có quyền xác nhận thanh toán" });
 
   const id = parseInt(req.params.id);
@@ -485,7 +486,7 @@ router.delete("/expenses/:id", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, !!(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   if (!isAdmin) {
     const [existing] = await db.select().from(expensesTable).where(eq(expensesTable.id, id));
     if (!existing) return res.status(404).json({ error: "Không tìm thấy chi phí" });

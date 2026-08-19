@@ -11,6 +11,7 @@
  * một consumer bị kiểm. Lệch 1 đồng so với Engine = FAIL, log rõ consumer nào lệch.
  */
 import { pool } from "@workspace/db";
+import { currentTenantScope } from "../tenant-scope";
 import { computeCustomerAggregate, type AggBooking, type AggPayment } from "../customer-aggregate";
 import { computeBookingMoney } from "../booking-money";
 import { revenueCountableSql } from "../booking-money";
@@ -102,9 +103,11 @@ async function consumerCustomerScreenDebt(
 // gọi đúng tool Copilot dùng rồi map (name, phone) → customerId qua bảng customers
 // để lớp đối chiếu per-khách kiểm tra THẬT đầu ra wiring của tool.
 
-let copilotDebtMap: Map<string, number> | null = null;
+const copilotDebtMaps = new Map<string, Map<string, number>>();
 
 export async function consumerCopilotDebtByCustomer(customerId: number): Promise<number> {
+  const tenantScope = currentTenantScope();
+  let copilotDebtMap = copilotDebtMaps.get(tenantScope);
   if (!copilotDebtMap) {
     copilotDebtMap = new Map();
     const { engineUnpaidCustomers } = await import("./financial-engine");
@@ -118,12 +121,13 @@ export async function consumerCopilotDebtByCustomer(customerId: number): Promise
       const cid = idByKey.get(`${row.name ?? ""}|${row.phone ?? ""}`);
       if (cid) copilotDebtMap.set(cid, (copilotDebtMap.get(cid) ?? 0) + row.debt);
     }
+    copilotDebtMaps.set(tenantScope, copilotDebtMap);
   }
   return copilotDebtMap.get(String(customerId)) ?? 0;
 }
 
 export function _resetTruthCache(): void {
-  copilotDebtMap = null;
+  copilotDebtMaps.delete(currentTenantScope());
 }
 
 // ─── Check: công nợ ────────────────────────────────────────────────────────────

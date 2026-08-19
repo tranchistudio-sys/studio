@@ -1,9 +1,11 @@
 import { Router, type IRouter } from "express";
 import type { Request } from "express";
-import { db, pool } from "@workspace/db";
+import { db, getTenantDatabaseIdentity, pool } from "@workspace/db";
+import { isPlatformDatabaseConfigured } from "@workspace/platform-db";
 import { crmLeadsTable, customersTable, settingsTable } from "@workspace/db/schema";
 import { eq, inArray } from "drizzle-orm";
 import { verifyToken } from "./auth";
+import { capLegacyAdmin } from "../lib/legacy-auth-token";
 import { webhookEvents } from "./webhook-log";
 import {
   splitIntoChunks,
@@ -90,19 +92,29 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 const _objectStorageService = new ObjectStorageService();
 
 async function uploadImageToGcs(buffer: Buffer, mimeType: string, ext: string): Promise<string> {
-  const privateDir = _objectStorageService.getPrivateObjectDir();
-  const entityId = `fb-inbox-images/${randomUUID()}.${ext}`;
-  const fullGcsPath = `${privateDir.replace(/\/$/, "")}/${entityId}`;
+  if (!isPlatformDatabaseConfigured()) {
+    const privateDir = _objectStorageService.getPrivateObjectDir();
+    const entityId = `fb-inbox-images/${randomUUID()}.${ext}`;
+    const fullGcsPath = `${privateDir.replace(/\/$/, "")}/${entityId}`;
+    const parts = fullGcsPath.replace(/^\//, "").split("/");
+    const bucketName = parts[0]!;
+    const objectName = parts.slice(1).join("/");
+    await objectStorageClient.bucket(bucketName).file(objectName).save(buffer, {
+      contentType: mimeType,
+      resumable: false,
+    });
+    return `${getPublicBaseUrl()}/api/storage/objects/${entityId}`;
+  }
 
-  const parts = fullGcsPath.replace(/^\//, "").split("/");
-  const bucketName = parts[0];
-  const objectName = parts.slice(1).join("/");
-
-  const bucket = objectStorageClient.bucket(bucketName);
-  const gcsFile = bucket.file(objectName);
-  await gcsFile.save(buffer, { contentType: mimeType, resumable: false });
-
-  const objectPath = `/objects/${entityId}`;
+  const { tenantId, tenantSlug } = getTenantDatabaseIdentity();
+  const objectName = `${randomUUID()}.${ext}`;
+  const objectPath = await _objectStorageService.saveTenantObject(
+    { tenantId, tenantSlug },
+    "fb-inbox-images",
+    objectName,
+    buffer,
+    mimeType,
+  );
   return `${getPublicBaseUrl()}/api/storage${objectPath}`;
 }
 
@@ -141,9 +153,15 @@ async function getCaller(req: Request) {
   return caller;
 }
 
-function isAdmin(caller: { role?: string; roles?: string[] } | null): boolean {
+function isAdmin(
+  caller: { role?: string; roles?: string[] } | null,
+  authorization?: string,
+): boolean {
   if (!caller) return false;
-  return caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin"));
+  return capLegacyAdmin(
+    authorization,
+    caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")),
+  );
 }
 
 function sleep(ms: number) {
@@ -1098,7 +1116,7 @@ function maskToken(t: string | null): string | null {
 
 router.get("/fb-ai/config", async (req, res) => {
   const caller = await getCaller(req);
-  if (!isAdmin(caller)) return res.status(403).json({ error: "Chỉ admin mới xem cấu hình" });
+  if (!isAdmin(caller, req.headers.authorization)) return res.status(403).json({ error: "Chỉ admin mới xem cấu hình" });
   const cfg = await getConfig();
   res.json({
     hasPageAccessToken: !!cfg.pageAccessToken,
@@ -1113,7 +1131,7 @@ router.get("/fb-ai/config", async (req, res) => {
 
 router.put("/fb-ai/config", async (req, res) => {
   const caller = await getCaller(req);
-  if (!isAdmin(caller)) return res.status(403).json({ error: "Chỉ admin mới sửa cấu hình" });
+  if (!isAdmin(caller, req.headers.authorization)) return res.status(403).json({ error: "Chỉ admin mới sửa cấu hình" });
 
   const {
     pageAccessToken,
@@ -1161,14 +1179,14 @@ router.get("/fb-ai/status", async (req, res) => {
 // GET /fb-ai/webhook-log — xem 50 sự kiện webhook gần nhất (chỉ admin)
 router.get("/fb-ai/webhook-log", async (req, res) => {
   const caller = await getCaller(req);
-  if (!isAdmin(caller)) return res.status(403).json({ error: "Không có quyền" });
+  if (!isAdmin(caller, req.headers.authorization)) return res.status(403).json({ error: "Không có quyền" });
   res.json({ events: webhookEvents, total: webhookEvents.length });
 });
 
 // GET /fb-ai/page-info — lấy thông tin fanpage đang được kết nối (dùng token lưu trong DB)
 router.get("/fb-ai/page-info", async (req, res) => {
   const caller = await getCaller(req);
-  if (!isAdmin(caller)) return res.status(403).json({ error: "Không có quyền" });
+  if (!isAdmin(caller, req.headers.authorization)) return res.status(403).json({ error: "Không có quyền" });
   const cfg = await getConfig();
   if (!cfg.pageAccessToken) return res.status(400).json({ error: "Chưa cấu hình Page Access Token" });
   try {
@@ -1184,7 +1202,7 @@ router.get("/fb-ai/page-info", async (req, res) => {
 // POST /fb-ai/subscribe-webhook — đăng ký webhook cho fanpage (dùng token lưu trong DB)
 router.post("/fb-ai/subscribe-webhook", async (req, res) => {
   const caller = await getCaller(req);
-  if (!isAdmin(caller)) return res.status(403).json({ error: "Không có quyền" });
+  if (!isAdmin(caller, req.headers.authorization)) return res.status(403).json({ error: "Không có quyền" });
   const cfg = await getConfig();
   if (!cfg.pageAccessToken) return res.status(400).json({ error: "Chưa cấu hình Page Access Token" });
   try {

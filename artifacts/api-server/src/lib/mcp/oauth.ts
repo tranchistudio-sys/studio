@@ -13,6 +13,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Response } from "express";
 import bcrypt from "bcryptjs";
 import { pool } from "@workspace/db";
+import { getPlatformPool, isPlatformDatabaseConfigured } from "@workspace/platform-db";
 import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
 import type { OAuthRegisteredClientsStore } from "@modelcontextprotocol/sdk/server/auth/clients.js";
 import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
@@ -76,7 +77,16 @@ export function redirectUrisAllowed(uris: readonly string[] | undefined): boolea
 // ─── JWT tối giản (HS256, base64url) — đồng bộ cách ký của routes/auth.ts ───────
 
 type TokenKind = "access" | "refresh";
-type TokenClaims = { sub: number; role: "admin" | "staff"; scope: string; cid: string; typ: TokenKind; exp: number };
+type TokenClaims = {
+  sub: number;
+  role: "admin" | "staff";
+  scope: string;
+  cid: string;
+  typ: TokenKind;
+  exp: number;
+  av?: number;
+  mv?: number;
+};
 
 function b64url(buf: Buffer | string): string {
   return Buffer.from(buf).toString("base64url");
@@ -108,11 +118,90 @@ function verifyJwt(token: string): TokenClaims | null {
 const ACCESS_TTL = 2 * 3600;        // 2 giờ
 const REFRESH_TTL = 30 * 24 * 3600; // 30 ngày
 
-function issueTokens(staffId: number, role: "admin" | "staff", clientId: string): OAuthTokens {
+function issueTokens(
+  staffId: number,
+  role: "admin" | "staff",
+  clientId: string,
+  userAuthVersion?: number,
+  membershipAuthVersion?: number,
+): OAuthTokens {
   const now = Math.floor(Date.now() / 1000);
-  const access = signJwt({ sub: staffId, role, scope: SCOPE, cid: clientId, typ: "access", exp: now + ACCESS_TTL });
-  const refresh = signJwt({ sub: staffId, role, scope: SCOPE, cid: clientId, typ: "refresh", exp: now + REFRESH_TTL });
+  const versions = {
+    ...(userAuthVersion === undefined ? {} : { av: userAuthVersion }),
+    ...(membershipAuthVersion === undefined ? {} : { mv: membershipAuthVersion }),
+  };
+  const access = signJwt({ sub: staffId, role, scope: SCOPE, cid: clientId, typ: "access", exp: now + ACCESS_TTL, ...versions });
+  const refresh = signJwt({ sub: staffId, role, scope: SCOPE, cid: clientId, typ: "refresh", exp: now + REFRESH_TTL, ...versions });
   return { access_token: access, token_type: "bearer", expires_in: ACCESS_TTL, scope: SCOPE, refresh_token: refresh };
+}
+
+interface CurrentMcpAccess {
+  role: "admin" | "staff";
+  userAuthVersion?: number;
+  membershipAuthVersion?: number;
+}
+
+async function currentMcpAccess(
+  staffId: number,
+  legacyRole?: "admin" | "staff",
+): Promise<CurrentMcpAccess | null> {
+  if (!isPlatformDatabaseConfigured()) {
+    if (legacyRole) return { role: legacyRole };
+    const staff = await pool.query<{ role: string; roles: unknown }>(
+      "SELECT role, roles FROM staff WHERE id = $1 AND is_active = 1 LIMIT 1",
+      [staffId],
+    );
+    const row = staff.rows[0];
+    if (!row) return null;
+    return {
+      role: row.role === "admin" || (Array.isArray(row.roles) && row.roles.includes("admin"))
+        ? "admin"
+        : "staff",
+    };
+  }
+
+  const result = await getPlatformPool().query<{
+    tenant_role: "OWNER" | "ADMIN" | "STAFF";
+    user_auth_version: string | number;
+    membership_auth_version: string | number;
+  }>(
+    `SELECT m.tenant_role,
+            u.auth_version AS user_auth_version,
+            m.auth_version AS membership_auth_version
+     FROM tenant_memberships m
+     JOIN platform_users u ON u.id = m.user_id
+     JOIN tenants t ON t.id = m.tenant_id
+     WHERE t.slug = 'amazing-studio'
+       AND m.tenant_staff_id = $1
+       AND u.status = 'active'
+       AND m.status = 'active'
+       AND t.status IN ('active', 'trial')
+     LIMIT 1`,
+    [staffId],
+  );
+  const row = result.rows[0];
+  if (!row) return null;
+  return {
+    role: row.tenant_role === "OWNER" || row.tenant_role === "ADMIN" ? "admin" : "staff",
+    userAuthVersion: Number(row.user_auth_version),
+    membershipAuthVersion: Number(row.membership_auth_version),
+  };
+}
+
+async function issueCurrentTokens(
+  staffId: number,
+  legacyRole: "admin" | "staff",
+  clientId: string,
+): Promise<OAuthTokens> {
+  const access = await currentMcpAccess(staffId, legacyRole);
+  if (!access) throw new Error("invalid_grant: tài khoản không còn quyền truy cập tenant");
+  return issueTokens(
+    staffId,
+    access.role,
+    clientId,
+    access.userAuthVersion,
+    access.membershipAuthVersion,
+  );
 }
 
 // ─── Xác thực staff (tái dùng bảng staff + bcrypt như routes/auth.ts) ──────────
@@ -135,7 +224,9 @@ export async function authenticateStaff(username: string, password: string): Pro
   const match = await bcrypt.compare(p, row.password_hash);
   if (!match) return { ok: false };
   const isAdmin = row.role === "admin" || (Array.isArray(row.roles) && row.roles.includes("admin"));
-  return { ok: true, staffId: Number(row.id), role: isAdmin ? "admin" : "staff", name: row.name?.trim() || `#${row.id}` };
+  const current = await currentMcpAccess(Number(row.id), isAdmin ? "admin" : "staff");
+  if (!current) return { ok: false };
+  return { ok: true, staffId: Number(row.id), role: current.role, name: row.name?.trim() || `#${row.id}` };
 }
 
 // ─── Trang đăng nhập (HTML tối giản, không JS, không lộ secret) ────────────────
@@ -239,7 +330,7 @@ export const mcpOAuthProvider: OAuthServerProvider = {
     if (!stored) throw new Error("invalid_grant: code không hợp lệ hoặc đã dùng");
     if (stored.clientId !== client.client_id) throw new Error("invalid_grant: client không khớp");
     if (redirectUri && redirectUri !== stored.redirectUri) throw new Error("invalid_grant: redirect_uri không khớp");
-    return issueTokens(stored.staffId, stored.role, client.client_id);
+    return issueCurrentTokens(stored.staffId, stored.role, client.client_id);
   },
 
   async exchangeRefreshToken(
@@ -249,23 +340,36 @@ export const mcpOAuthProvider: OAuthServerProvider = {
     const claims = verifyJwt(refreshToken);
     if (!claims || claims.typ !== "refresh") throw new Error("invalid_grant: refresh token không hợp lệ");
     if (claims.cid !== client.client_id) throw new Error("invalid_grant: client không khớp");
-    // Xác nhận staff còn hoạt động + lấy role mới nhất (thu hồi quyền tức thì nếu bị khoá).
-    const r = await pool.query(`SELECT role, roles FROM staff WHERE id = $1 AND is_active = 1`, [claims.sub]);
-    if (!r.rows.length) throw new Error("invalid_grant: tài khoản không còn hoạt động");
-    const u = r.rows[0] as { role: string; roles: unknown };
-    const role: "admin" | "staff" = u.role === "admin" || (Array.isArray(u.roles) && u.roles.includes("admin")) ? "admin" : "staff";
-    return issueTokens(claims.sub, role, client.client_id);
+    const current = await currentMcpAccess(claims.sub);
+    if (!current || (isPlatformDatabaseConfigured() && (
+      claims.av !== current.userAuthVersion || claims.mv !== current.membershipAuthVersion
+    ))) {
+      throw new Error("invalid_grant: tài khoản hoặc grant đã bị thu hồi");
+    }
+    return issueTokens(
+      claims.sub,
+      current.role,
+      client.client_id,
+      current.userAuthVersion,
+      current.membershipAuthVersion,
+    );
   },
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
     const claims = verifyJwt(token);
     if (!claims || claims.typ !== "access") throw new Error("invalid_token");
+    const current = await currentMcpAccess(claims.sub, claims.role);
+    if (!current || (isPlatformDatabaseConfigured() && (
+      claims.av !== current.userAuthVersion || claims.mv !== current.membershipAuthVersion
+    ))) {
+      throw new Error("invalid_token");
+    }
     return {
       token,
       clientId: claims.cid,
       scopes: (claims.scope ?? "").split(" ").filter(Boolean),
       expiresAt: claims.exp,
-      extra: { staffId: claims.sub, role: claims.role },
+      extra: { staffId: claims.sub, role: current.role },
     };
   },
 };
@@ -289,9 +393,24 @@ export async function createAuthorizationCode(input: {
 }
 
 /** Chỉ để test nội bộ: cấp access token trực tiếp (MCP Inspector/bearer). KHÔNG dùng ở luồng thật. */
-export function issueTestAccessToken(staffId: number, role: "admin" | "staff", clientId = "test-client"): string {
+export function issueTestAccessToken(
+  staffId: number,
+  role: "admin" | "staff",
+  clientId = "test-client",
+  userAuthVersion?: number,
+  membershipAuthVersion?: number,
+): string {
   const now = Math.floor(Date.now() / 1000);
-  return signJwt({ sub: staffId, role, scope: SCOPE, cid: clientId, typ: "access", exp: now + ACCESS_TTL });
+  return signJwt({
+    sub: staffId,
+    role,
+    scope: SCOPE,
+    cid: clientId,
+    typ: "access",
+    exp: now + ACCESS_TTL,
+    ...(userAuthVersion === undefined ? {} : { av: userAuthVersion }),
+    ...(membershipAuthVersion === undefined ? {} : { mv: membershipAuthVersion }),
+  });
 }
 
 export { verifyJwt as _verifyJwtForTest };

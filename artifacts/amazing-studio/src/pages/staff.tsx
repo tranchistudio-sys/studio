@@ -14,8 +14,9 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { Users, Plus, Pencil, Banknote, DollarSign, Briefcase, ClipboardList, ChevronDown, ChevronUp, AlertCircle, UserCircle, LogOut, ChevronRight, KeyRound, Eye, EyeOff, ShieldCheck, BarChart2, Camera } from "lucide-react";
-import { useStaffAuth, type ViewerUser } from "@/contexts/StaffAuthContext";
+import { Users, Plus, Pencil, Banknote, DollarSign, Briefcase, ClipboardList, ChevronDown, ChevronUp, AlertCircle, UserCircle, ChevronRight, KeyRound, Eye, EyeOff, ShieldCheck, BarChart2, Camera, UserCheck, XCircle, Loader2 } from "lucide-react";
+import { useStaffAuth } from "@/contexts/StaffAuthContext";
+import { API_BASE } from "@/lib/api-base";
 import StaffAvatar from "@/components/StaffAvatar";
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -99,6 +100,16 @@ const STATUS_MAP: Record<string, string> = {
   inactive: "Nghỉ",
   probation: "Tạm nghỉ",
 };
+
+interface AccessRequest {
+  id: string;
+  fullName: string;
+  phone: string;
+  email: string;
+  requestedPosition: string;
+  status: "pending" | "approved" | "rejected";
+  createdAt: string;
+}
 
 type PriceEntry = { rate: string; rateType: "fixed" | "percent" };
 type RolePriceMap = Record<string, Record<string, PriceEntry>>;
@@ -931,7 +942,7 @@ function SetPasswordDialog({ staff, onClose }: { staff: Record<string, unknown> 
 
   async function handleSave() {
     if (!staff) return;
-    if (newPw && newPw.length < 4) { setErr("Mật khẩu phải có ít nhất 4 ký tự"); return; }
+    if (newPw && newPw.length < 8) { setErr("Mật khẩu phải có ít nhất 8 ký tự"); return; }
     if (newPw && newPw !== confirm) { setErr("Mật khẩu xác nhận không khớp"); return; }
     if (!username.trim() && !staffPhone) { setErr("Cần có tên đăng nhập hoặc số điện thoại"); return; }
     setSaving(true); setErr("");
@@ -1538,6 +1549,125 @@ function EarningsTab({ staffList }: { staffList: Array<Record<string, unknown>> 
   );
 }
 
+function PendingAccessRequests({ enabled }: { enabled: boolean }) {
+  const queryClient = useQueryClient();
+  const { activeTenant, csrfToken, token } = useStaffAuth();
+  const [selected, setSelected] = useState<AccessRequest | null>(null);
+  const [roles, setRoles] = useState<string[]>([]);
+  const [tenantRole, setTenantRole] = useState<"STAFF" | "ADMIN">("STAFF");
+  const [status, setStatus] = useState<"active" | "probation">("active");
+  const [staffType, setStaffType] = useState<"official" | "freelancer">("official");
+  const [attendanceEnabled, setAttendanceEnabled] = useState(true);
+  const [error, setError] = useState("");
+  const isOwner = activeTenant?.role === "OWNER";
+
+  const platformApi = async <T,>(path: string, options: RequestInit = {}): Promise<T> => {
+    const headers = new Headers(options.headers);
+    if (options.body) headers.set("Content-Type", "application/json");
+    if (token) headers.set("Authorization", `Bearer ${token}`);
+    if (options.method && options.method !== "GET" && csrfToken) headers.set("X-CSRF-Token", csrfToken);
+    const response = await fetch(`${API_BASE}${path}`, { ...options, credentials: "include", headers });
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({})) as { error?: string; message?: string };
+      throw new Error(body.error || body.message || `Lỗi ${response.status}`);
+    }
+    return response.json() as Promise<T>;
+  };
+
+  const requestsQuery = useQuery({
+    queryKey: ["tenant-access-requests", activeTenant?.id],
+    queryFn: () => platformApi<{ requests: AccessRequest[] }>("/api/tenant/access-requests"),
+    enabled: enabled && Boolean(activeTenant),
+  });
+  const requests = (requestsQuery.data?.requests ?? []).filter(request => request.status === "pending");
+
+  const openReview = (request: AccessRequest) => {
+    const guess = ROLES.find(role => request.requestedPosition.toLowerCase().includes(role.label.toLowerCase()))?.key;
+    setSelected(request);
+    setRoles(guess ? [guess] : []);
+    setTenantRole("STAFF");
+    setStatus("active");
+    setStaffType("official");
+    setAttendanceEnabled(true);
+    setError("");
+  };
+
+  const reviewMutation = useMutation({
+    mutationFn: (input: { request: AccessRequest; decision: "approved" | "rejected" }) =>
+      platformApi(`/api/tenant/access-requests/${input.request.id}/review`, {
+        method: "POST",
+        body: JSON.stringify(input.decision === "approved" ? {
+          decision: input.decision, roles, tenantRole, status, staffType,
+          attendanceEnabled: staffType === "official" && attendanceEnabled,
+        } : { decision: input.decision }),
+      }),
+    onSuccess: async () => {
+      setSelected(null);
+      setError("");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["tenant-access-requests", activeTenant?.id] }),
+        queryClient.invalidateQueries({ queryKey: ["staff"] }),
+        queryClient.invalidateQueries({ queryKey: ["tenant-members", activeTenant?.id] }),
+        queryClient.invalidateQueries({ queryKey: ["tenant-invitations", activeTenant?.id] }),
+      ]);
+    },
+    onError: reviewError => setError(reviewError instanceof Error ? reviewError.message : "Không xử lý được yêu cầu"),
+  });
+
+  const approve = () => {
+    if (!selected) return;
+    if (roles.length === 0) { setError("Vui lòng chọn ít nhất một vai trò công việc."); return; }
+    reviewMutation.mutate({ request: selected, decision: "approved" });
+  };
+
+  return (
+    <>
+      {error && <div role="alert" className="mb-4 rounded-lg border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>}
+      {requestsQuery.isLoading ? (
+        <div className="flex items-center justify-center gap-2 py-16 text-muted-foreground"><Loader2 className="h-5 w-5 animate-spin" /> Đang tải hồ sơ…</div>
+      ) : requests.length === 0 ? (
+        <div className="rounded-xl border border-dashed py-16 text-center text-muted-foreground"><UserCheck className="mx-auto mb-3 h-11 w-11 opacity-30" /><p className="font-medium">Không có hồ sơ chờ duyệt</p></div>
+      ) : (
+        <div className="grid gap-3">
+          {requests.map(request => (
+            <div key={request.id} className="flex flex-col gap-3 rounded-xl border bg-card p-4 sm:flex-row sm:items-center">
+              <div className="min-w-0 flex-1">
+                <p className="font-semibold">{request.fullName}</p>
+                <p className="break-all text-sm text-muted-foreground">{request.email} · {request.phone}</p>
+                <p className="mt-1 text-xs">Đăng ký vị trí: <b>{request.requestedPosition}</b></p>
+              </div>
+              <Button onClick={() => openReview(request)}><UserCheck className="mr-2 h-4 w-4" /> Xét duyệt hồ sơ</Button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <Dialog open={Boolean(selected)} onOpenChange={open => { if (!open) setSelected(null); }}>
+        <DialogContent className="max-w-xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>Duyệt thành viên mới</DialogTitle></DialogHeader>
+          {selected && <div className="rounded-lg bg-muted p-3 text-sm"><b>{selected.fullName}</b><br />{selected.email} · {selected.phone}<br />Mong muốn: {selected.requestedPosition}</div>}
+          <div className="space-y-2">
+            <Label>Vai trò công việc *</Label>
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {ROLES.map(role => <button key={role.key} type="button" onClick={() => setRoles(current => current.includes(role.key) ? current.filter(item => item !== role.key) : [...current, role.key])} className={`rounded-lg border px-3 py-2 text-left text-sm ${roles.includes(role.key) ? "border-primary bg-primary/10 font-semibold" : "hover:bg-muted"}`}>{role.icon} {role.label}</button>)}
+            </div>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2"><Label>Quyền sử dụng hệ thống</Label><Select value={tenantRole} onValueChange={value => setTenantRole(value as "STAFF" | "ADMIN")}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="STAFF">Nhân viên</SelectItem>{isOwner && <SelectItem value="ADMIN">Quản trị viên</SelectItem>}</SelectContent></Select></div>
+            <div className="space-y-2"><Label>Trạng thái làm việc</Label><Select value={status} onValueChange={value => setStatus(value as "active" | "probation")}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="active">Đang làm</SelectItem><SelectItem value="probation">Thử việc</SelectItem></SelectContent></Select></div>
+            <div className="space-y-2"><Label>Loại nhân sự</Label><Select value={staffType} onValueChange={value => { const next = value as "official" | "freelancer"; setStaffType(next); if (next === "freelancer") setAttendanceEnabled(false); }}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="official">Nhân viên chính thức</SelectItem><SelectItem value="freelancer">Cộng tác viên</SelectItem></SelectContent></Select></div>
+            <div className="flex items-center justify-between rounded-lg border px-3 py-2"><Label htmlFor="approval-attendance">Chấm công</Label><Switch id="approval-attendance" checked={staffType === "official" && attendanceEnabled} disabled={staffType === "freelancer"} onCheckedChange={setAttendanceEnabled} /></div>
+          </div>
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between">
+            <Button variant="destructive" disabled={reviewMutation.isPending || !selected} onClick={() => selected && reviewMutation.mutate({ request: selected, decision: "rejected" })}><XCircle className="mr-2 h-4 w-4" /> Từ chối</Button>
+            <div className="flex gap-2"><Button variant="outline" onClick={() => setSelected(null)}>Hủy</Button><Button disabled={reviewMutation.isPending} onClick={approve}>{reviewMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />} Duyệt thành viên</Button></div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function StaffPage() {
   const [showForm, setShowForm] = useState(false);
@@ -1547,9 +1677,22 @@ export default function StaffPage() {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<"all" | "official" | "freelancer">("all");
   const [roleFilter, setRoleFilter] = useState("all");
-  const [viewerSheet, setViewerSheet] = useState(false);
   const [activeTab, setActiveTab] = useState("staff");
-  const { viewer, setViewer, logout, isAdmin, effectiveIsAdmin } = useStaffAuth();
+  const { isAdmin, effectiveIsAdmin, activeTenant, csrfToken, token } = useStaffAuth();
+
+  const { data: accessRequestData } = useQuery<{ requests: AccessRequest[] }>({
+    queryKey: ["tenant-access-requests", activeTenant?.id],
+    queryFn: async () => {
+      const headers = new Headers();
+      if (token) headers.set("Authorization", `Bearer ${token}`);
+      if (csrfToken) headers.set("X-CSRF-Token", csrfToken);
+      const response = await fetch(`${API_BASE}/api/tenant/access-requests`, { credentials: "include", headers });
+      if (!response.ok) throw new Error("Không tải được hồ sơ đăng ký");
+      return response.json() as Promise<{ requests: AccessRequest[] }>;
+    },
+    enabled: effectiveIsAdmin && Boolean(activeTenant),
+  });
+  const pendingRequestCount = (accessRequestData?.requests ?? []).filter(request => request.status === "pending").length;
 
   const { data: staffList = [], isLoading: staffListLoading } = useQuery<Array<Record<string, unknown>>>({
     queryKey: ["staff"],
@@ -1609,47 +1752,6 @@ export default function StaffPage() {
         )}
       </div>
 
-      {/* ── Viewer selector ─────────────────────────────────────── */}
-      <div className={`flex items-center gap-3 p-3 rounded-xl border mb-5 ${viewer ? "bg-emerald-50/50 border-emerald-200" : "bg-amber-50 border-amber-200"}`}>
-        {viewer ? (() => {
-          const vs = staffList.find(s => s.id === viewer.id);
-          return (
-            <StaffAvatar
-              name={viewer.name}
-              avatar={(vs as Record<string, unknown> | undefined)?.avatar as string | undefined}
-              role={viewer.role}
-              status="active"
-              size="md"
-            />
-          );
-        })() : (
-          <UserCircle className="w-8 h-8 flex-shrink-0 text-amber-500" />
-        )}
-        <div className="flex-1 min-w-0">
-          {viewer ? (
-            <>
-              <p className="text-sm font-semibold truncate">{viewer.name}</p>
-              <p className="text-xs text-muted-foreground">{viewer.isAdmin ? "👑 Quản lý — xem được tất cả hồ sơ" : "Đang xem hồ sơ của chính mình"}</p>
-            </>
-          ) : (
-            <>
-              <p className="text-sm font-semibold text-amber-700">Bạn là ai?</p>
-              <p className="text-xs text-muted-foreground">Chọn tài khoản để xem hồ sơ cá nhân</p>
-            </>
-          )}
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          <button onClick={() => setViewerSheet(true)} className="text-xs px-3 py-1.5 rounded-lg bg-white border border-border font-medium hover:bg-muted transition-colors">
-            {viewer ? "Đổi" : "Chọn tài khoản"}
-          </button>
-          {viewer && (
-            <button onClick={logout} className="p-1.5 rounded-lg hover:bg-red-50 text-muted-foreground hover:text-red-600 transition-colors" title="Đăng xuất">
-              <LogOut className="w-4 h-4" />
-            </button>
-          )}
-        </div>
-      </div>
-
       {/* Stats row — admin only (chứa tổng thu nhập toàn studio) */}
       {effectiveIsAdmin && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
@@ -1675,6 +1777,12 @@ export default function StaffPage() {
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="mb-4">
           <TabsTrigger value="staff">{effectiveIsAdmin ? "Danh sách nhân viên" : "Hồ sơ của tôi"}</TabsTrigger>
+          {effectiveIsAdmin && (
+            <TabsTrigger value="requests" className="flex items-center gap-1.5">
+              Hồ sơ chờ duyệt
+              {pendingRequestCount > 0 && <Badge className="h-5 min-w-5 justify-center bg-amber-500 px-1.5 text-white hover:bg-amber-500">{pendingRequestCount}</Badge>}
+            </TabsTrigger>
+          )}
           {effectiveIsAdmin && (
             <TabsTrigger value="earnings">Thu nhập theo tháng</TabsTrigger>
           )}
@@ -1745,6 +1853,12 @@ export default function StaffPage() {
           )}
         </TabsContent>
 
+        {effectiveIsAdmin && (
+          <TabsContent value="requests">
+            <PendingAccessRequests enabled={activeTab === "requests"} />
+          </TabsContent>
+        )}
+
         <TabsContent value="earnings">
           <EarningsTab staffList={staffList} />
         </TabsContent>
@@ -1773,60 +1887,6 @@ export default function StaffPage() {
         onClose={() => setPasswordStaff(null)}
       />
 
-      {/* ── Chọn tài khoản ─────────────────────────────────────── */}
-      <Sheet open={viewerSheet} onOpenChange={setViewerSheet}>
-        <SheetContent side="bottom" className="rounded-t-3xl max-h-[80vh] overflow-y-auto">
-          <SheetHeader className="mb-4">
-            <SheetTitle className="flex items-center gap-2">
-              <UserCircle className="w-5 h-5 text-primary" /> Chọn tài khoản của bạn
-            </SheetTitle>
-          </SheetHeader>
-          <p className="text-sm text-muted-foreground mb-4">
-            Chọn tên của bạn để đăng nhập và xem hồ sơ cá nhân. Admin có thể xem tất cả hồ sơ.
-          </p>
-          <div className="space-y-2">
-            {staffList.map(s => {
-              const roles = getRoles(s);
-              const isAdm = roles.includes("admin");
-              const isMe = viewer?.id === (s.id as number);
-              return (
-                <button
-                  key={String(s.id)}
-                  onClick={() => {
-                    const v: ViewerUser = {
-                      id: s.id as number,
-                      name: String(s.name),
-                      role: String(s.role || "assistant"),
-                      roles: getRoles(s),
-                      isAdmin: isAdm,
-                    };
-                    setViewer(v);
-                    setViewerSheet(false);
-                  }}
-                  className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-all ${isMe ? "border-primary bg-primary/5" : "border-border hover:bg-muted/30"}`}
-                >
-                  <StaffAvatar
-                    name={String(s.name || "?")}
-                    avatar={(s as Record<string, unknown>).avatar as string | undefined}
-                    role={String(s.role || "assistant")}
-                    status={String(s.status || "active")}
-                    isActive={Boolean(s.isActive)}
-                    size="md"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-sm truncate">{String(s.name)}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {roles.map(r => ({ admin: "Quản lý", photographer: "Nhiếp ảnh", makeup: "Trang điểm", sale: "Sale", photoshop: "Chỉnh sửa", assistant: "Hỗ trợ", marketing: "Marketing" }[r] || r)).join(", ")}
-                    </p>
-                  </div>
-                  {isMe && <span className="text-xs bg-primary text-primary-foreground px-2 py-0.5 rounded-full">Đang dùng</span>}
-                  {isAdm && !isMe && <span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">Admin</span>}
-                </button>
-              );
-            })}
-          </div>
-        </SheetContent>
-      </Sheet>
     </div>
   );
 }

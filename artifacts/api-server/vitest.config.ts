@@ -5,6 +5,10 @@ export default defineConfig({
   resolve: {
     alias: [
       {
+        find: "@workspace/db/tenant-context",
+        replacement: path.resolve(__dirname, "../../lib/db/src/tenant-context.ts"),
+      },
+      {
         find: "@workspace/db/schema",
         replacement: path.resolve(__dirname, "../../lib/db/src/schema/index.ts"),
       },
@@ -17,6 +21,10 @@ export default defineConfig({
       {
         find: "@workspace/db",
         replacement: path.resolve(__dirname, "../../lib/db/src/index.ts"),
+      },
+      {
+        find: "@workspace/platform-db",
+        replacement: path.resolve(__dirname, "../../lib/platform-db/src/index.ts"),
       },
       {
         find: "@workspace/api-zod",

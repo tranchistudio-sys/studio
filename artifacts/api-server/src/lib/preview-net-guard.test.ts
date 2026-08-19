@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
   extractHost,
+  extractPath,
   installPreviewNetGuard,
+  isGoogleIdentityCertRequest,
   isOutboundAllowed,
   parseNetAllowlist,
 } from "./preview-net-guard.js";
@@ -55,6 +57,17 @@ describe("extractHost — nhận diện host từ mọi kiểu tham số", () =>
     expect(extractHost(undefined)).toBeNull();
     expect(extractHost("khong-phai-url")).toBeNull();
     expect(extractHost({})).toBeNull();
+  });
+});
+
+describe("Google Identity preview allowlist — chỉ mở public cert endpoint", () => {
+  it("cho đúng cert paths, không mở Google Drive cùng host", () => {
+    const certV1 = "https://www.googleapis.com/oauth2/v1/certs";
+    const certV3 = { hostname: "www.googleapis.com", path: "/oauth2/v3/certs?cache=1" };
+    const drive = "https://www.googleapis.com/drive/v3/files";
+    expect(isGoogleIdentityCertRequest(extractHost(certV1), extractPath(certV1))).toBe(true);
+    expect(isGoogleIdentityCertRequest(extractHost(certV3), extractPath(certV3))).toBe(true);
+    expect(isGoogleIdentityCertRequest(extractHost(drive), extractPath(drive))).toBe(false);
   });
 });
 

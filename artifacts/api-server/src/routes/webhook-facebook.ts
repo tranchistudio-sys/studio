@@ -4,6 +4,12 @@ import { crmLeadsTable, settingsTable } from "@workspace/db/schema";
 import { eq, inArray } from "drizzle-orm";
 import { processIncomingFacebookMessage, ensureFbInboxTable } from "./fb-inbox";
 import { logWebhookEvent as logEvent } from "./webhook-log";
+import {
+  facebookAppSecret,
+  secureStringEqual,
+  verifyFacebookWebhookSignature,
+} from "../lib/facebook-webhook-signature";
+import { tenantScopedKey } from "../lib/tenant-scope";
 
 const router: IRouter = Router();
 
@@ -12,7 +18,7 @@ function ts(): string {
 }
 
 // Cache: tránh gọi Facebook API lặp lại cho PSID đã thất bại
-// Key: psid, Value: { result, failedAt (ms) }
+// Key: tenant + psid, Value: { result, failedAt (ms) }
 const profileCache = new Map<string, { name: string; avatarUrl: string | null }>();
 const profileFailCache = new Map<string, number>(); // psid → timestamp của lần fail
 const FAIL_CACHE_TTL_MS = 30 * 60 * 1000; // 30 phút
@@ -28,13 +34,14 @@ async function getPageAccessToken(): Promise<string | null> {
 
 async function fetchFacebookProfile(psid: string, pageAccessToken: string): Promise<{ name: string; avatarUrl: string | null }> {
   const fallback = { name: "Khách Facebook " + psid.slice(-4), avatarUrl: null };
+  const cacheKey = tenantScopedKey("facebook-profile", psid);
 
   // Trả về từ cache nếu đã thành công
-  const cached = profileCache.get(psid);
+  const cached = profileCache.get(cacheKey);
   if (cached) return cached;
 
   // Bỏ qua nếu đã fail gần đây (tránh spam API)
-  const failedAt = profileFailCache.get(psid);
+  const failedAt = profileFailCache.get(cacheKey);
   if (failedAt && Date.now() - failedAt < FAIL_CACHE_TTL_MS) {
     return fallback;
   }
@@ -48,7 +55,7 @@ async function fetchFacebookProfile(psid: string, pageAccessToken: string): Prom
     };
     if (!res.ok || data.error) {
       console.warn(`[FBProfile] ❌ psid=${psid}: ${data.error?.message ?? res.status} (sẽ bỏ qua 30 phút)`);
-      profileFailCache.set(psid, Date.now());
+      profileFailCache.set(cacheKey, Date.now());
       return fallback;
     }
     const fullName = (`${data.first_name ?? ""} ${data.last_name ?? ""}`).trim();
@@ -56,12 +63,12 @@ async function fetchFacebookProfile(psid: string, pageAccessToken: string): Prom
     const avatarUrl = data.profile_pic ?? null;
     const result = { name: displayName || fallback.name, avatarUrl };
     if (displayName) {
-      profileCache.set(psid, result); // cache thành công
+      profileCache.set(cacheKey, result); // cache thành công
     }
     console.log(`[FBProfile] ✓ psid=${psid} → name="${displayName}"`);
     return result;
   } catch (err) {
-    profileFailCache.set(psid, Date.now());
+    profileFailCache.set(cacheKey, Date.now());
     return fallback;
   }
 }
@@ -82,24 +89,45 @@ router.get("/webhook/facebook", async (req, res) => {
     } catch {}
   }
 
-  if (mode === "subscribe" && (!verifyToken || token === verifyToken)) {
+  if (!verifyToken) {
+    logEvent({ at: new Date().toISOString(), type: "error", summary: "Webhook verification chưa được cấu hình" });
+    return res.sendStatus(503);
+  }
+
+  if (mode === "subscribe" && secureStringEqual(token, verifyToken)) {
     logEvent({ at: new Date().toISOString(), type: "verification", summary: `✅ Verification OK — challenge returned` });
     console.log(`[Webhook][${ts()}] ✅ Verification challenge OK`);
     return res.status(200).send(challenge);
   }
 
-  logEvent({ at: new Date().toISOString(), type: "error", summary: `❌ Verification FAILED — token mismatch (got: ${token}, expected: ${verifyToken ?? "(not set)"})` });
+  logEvent({ at: new Date().toISOString(), type: "error", summary: "❌ Verification FAILED — token mismatch" });
   console.warn(`[Webhook][${ts()}] ❌ Verification FAILED — token mismatch`);
   return res.sendStatus(403);
 });
 
 router.post("/webhook/facebook", async (req, res) => {
+  const rawBody = Buffer.isBuffer(req.body) ? req.body : undefined;
+  const appSecret = facebookAppSecret();
+  if (!appSecret) {
+    res.status(503).send("Webhook signing is not configured");
+    return;
+  }
+  if (!verifyFacebookWebhookSignature(rawBody, req.get("x-hub-signature-256"), appSecret)) {
+    res.status(401).send("Invalid signature");
+    return;
+  }
+  let body: Record<string, unknown>;
+  try {
+    body = JSON.parse(rawBody!.toString("utf8")) as Record<string, unknown>;
+  } catch {
+    res.status(400).send("Invalid JSON");
+    return;
+  }
   res.status(200).send("OK");
 
   try {
-    const body = req.body;
     console.log(`[Webhook][${ts()}] POST received — object=${body?.object ?? "unknown"}, entries=${Array.isArray(body?.entry) ? body.entry.length : 0}`);
-    logEvent({ at: new Date().toISOString(), type: "other", summary: `📩 POST received — object=${body?.object ?? "?"}`, raw: body });
+    logEvent({ at: new Date().toISOString(), type: "other", summary: `📩 POST received — object=${body?.object ?? "?"}` });
 
     if (body?.object !== "page") {
       logEvent({ at: new Date().toISOString(), type: "other", summary: `⚠️ Non-page object: ${body?.object}` });

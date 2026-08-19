@@ -8,6 +8,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, and } from "drizzle-orm";
 import { verifyToken } from "./auth";
+import { capLegacyAdmin } from "../lib/legacy-auth-token";
 import { getPublicBaseUrl } from "../lib/publicUrl";
 import { computeOvertimeForMonth, type OvertimeLog } from "../lib/overtime";
 import { withStartupDdlLock } from "../lib/startup-ddl";
@@ -63,10 +64,13 @@ function todayVN(): string {
 
 const ATTENDANCE_ACT_AS_HEADER = "x-attendance-staff-id";
 
-async function isStaffAdmin(staffId: number): Promise<boolean> {
+async function isStaffAdmin(staffId: number, authorization?: string): Promise<boolean> {
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [staffId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  return !!(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin"))));
+  return capLegacyAdmin(
+    authorization,
+    Boolean(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))),
+  );
 }
 
 async function resolveAttendanceStaffId(req: import("express").Request, callerId: number): Promise<number> {
@@ -74,7 +78,7 @@ async function resolveAttendanceStaffId(req: import("express").Request, callerId
   if (!raw) return callerId;
   const targetId = parseInt(String(Array.isArray(raw) ? raw[0] : raw), 10);
   if (!targetId || targetId === callerId) return callerId;
-  if (!(await isStaffAdmin(callerId))) return callerId;
+  if (!(await isStaffAdmin(callerId, req.headers.authorization))) return callerId;
   const targetR = await pool.query(`SELECT id FROM staff WHERE id = $1 AND is_active = 1 LIMIT 1`, [targetId]);
   return targetR.rows.length > 0 ? targetId : callerId;
 }
@@ -339,7 +343,7 @@ async function checkStudioWifi(req: import("express").Request): Promise<WifiChec
 router.get("/attendance/test-staff", async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
-  if (!(await isStaffAdmin(callerId))) return res.status(403).json({ error: "Không có quyền" });
+  if (!(await isStaffAdmin(callerId, req.headers.authorization))) return res.status(403).json({ error: "Không có quyền" });
   const staff = await findAttendanceTestStaff();
   if (!staff) return res.status(404).json({ error: "Chưa cấu hình nhân viên test chấm công" });
   res.json(staff);
@@ -524,7 +528,7 @@ router.get("/attendance/qr-token", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, Boolean(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   if (!isAdmin) return res.status(403).json({ error: "Không có quyền" });
 
   const url = getStaticQrUrl();
@@ -781,7 +785,7 @@ async function requireAdmin(req: import("express").Request): Promise<{ ok: boole
   if (!callerId) return { ok: false, staffId: null };
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, Boolean(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   return { ok: !!isAdmin, staffId: callerId };
 }
 
@@ -1295,7 +1299,7 @@ router.get("/attendance/admin", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, Boolean(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   if (!isAdmin) return res.status(403).json({ error: "Không có quyền" });
 
   const month = String(req.query.month || todayVN().slice(0, 7));
@@ -1378,7 +1382,7 @@ router.get("/attendance/today-summary", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, Boolean(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   if (!isAdmin) return res.status(403).json({ error: "Không có quyền" });
 
   const today = todayVN();
@@ -1494,7 +1498,7 @@ router.get("/attendance/staff-summary", async (req, res) => {
 
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, Boolean(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
 
   const parsed = req.query.staffId ? parseInt(String(req.query.staffId)) : NaN;
   const requested = !isNaN(parsed) && parsed > 0 ? parsed : callerId;
@@ -1690,7 +1694,7 @@ router.get("/attendance/team-extras", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, Boolean(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   if (!isAdmin) return res.status(403).json({ error: "Không có quyền" });
 
   const month = String(req.query.month || todayVN().slice(0, 7));
@@ -1863,7 +1867,7 @@ router.put("/attendance/rules", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, Boolean(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   if (!isAdmin) return res.status(403).json({ error: "Không có quyền" });
 
   const { name, checkInFrom, checkInTo, weeklyOnTimeBonus, overtimeRatePerHour, lateRules } = req.body;
@@ -1918,7 +1922,7 @@ router.get("/attendance/adjustments", async (req, res) => {
 
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const callerIsAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const callerIsAdmin = capLegacyAdmin(req.headers.authorization, Boolean(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
 
   const parsedStaffId = req.query.staffId ? parseInt(String(req.query.staffId)) : NaN;
   const requestedStaffId = (!isNaN(parsedStaffId) && parsedStaffId > 0) ? parsedStaffId : callerId;
@@ -1942,7 +1946,7 @@ router.post("/attendance/logs/:id/override", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, Boolean(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   if (!isAdmin) return res.status(403).json({ error: "Không có quyền" });
 
   const logId = parseInt(String(req.params.id));
@@ -1982,7 +1986,7 @@ router.post("/attendance/penalty-waiver", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, Boolean(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   if (!isAdmin) return res.status(403).json({ error: "Không có quyền" });
 
   const { staffId, date, reason } = req.body || {};
@@ -2056,7 +2060,7 @@ router.post("/attendance/adjustments", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, Boolean(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   if (!isAdmin) return res.status(403).json({ error: "Không có quyền" });
 
   const { staffId, date, type, amount, reason, category } = req.body;
@@ -2084,7 +2088,7 @@ router.post("/attendance/money-edit", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, Boolean(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   if (!isAdmin) return res.status(403).json({ error: "Không có quyền" });
 
   const { staffId, date, action, amount, reason, systemPenalty } = req.body || {};
@@ -2161,7 +2165,7 @@ router.post("/attendance/manual", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, Boolean(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
   if (!isAdmin) return res.status(403).json({ error: "Không có quyền" });
 
   const { staffId, type = "check_in", workType, notes } = req.body;

@@ -152,9 +152,16 @@ export function renderLoginPage(next: string, showError = false): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>Bản xem thử — Amazing Studio</title>
+<style>
+  html,body{margin:0;padding:0;min-height:100%;background:#faf7f2;color:#17130f;-webkit-text-size-adjust:100%}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}
+  main{box-sizing:border-box;width:100%;padding:72px 16px 32px}
+  form{box-sizing:border-box;background:#fff;color:#17130f;border:1px solid #eadfd3;border-radius:16px;padding:28px 24px;width:100%;max-width:360px;margin:0 auto;box-shadow:0 8px 30px rgba(0,0,0,.06)}
+  input,button{display:block;box-sizing:border-box;width:100%;font:inherit;-webkit-appearance:none;appearance:none}
+</style>
 </head>
-<body style="margin:0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;background:#faf7f2;display:flex;min-height:100vh;align-items:center;justify-content:center">
-<form method="post" action="${PREVIEW_LOGIN_PATH}" style="background:#fff;border:1px solid #eadfd3;border-radius:16px;padding:28px 24px;width:min(92vw,360px);box-shadow:0 8px 30px rgba(0,0,0,.06)">
+<body><main>
+<form method="post" action="${PREVIEW_LOGIN_PATH}">
   <h1 style="font-size:20px;margin:0 0 4px">📱 Bản xem thử</h1>
   <p style="color:#6b6257;margin:0 0 16px">Amazing Studio — nhập mật khẩu xem thử để vào app.</p>
   ${err}
@@ -167,7 +174,7 @@ export function renderLoginPage(next: string, showError = false): string {
   </button>
   <p style="color:#a49a8d;font-size:12px;margin:14px 0 0">Dữ liệu trong bản xem thử đã che thông tin khách hàng. Không phải hệ thống thật.</p>
 </form>
-</body></html>`;
+</main></body></html>`;
 }
 
 /** Đọc body của request (form đăng nhập) — middleware này chạy TRƯỚC express.urlencoded. */
@@ -210,6 +217,11 @@ export function previewBasicAuth(env: EnvLike = process.env): RequestHandler | n
   return (req, res, next) => {
     // Không cho công cụ tìm kiếm lập chỉ mục bản preview.
     res.setHeader("X-Robots-Tag", "noindex, nofollow");
+    // iOS WebKit từng cache lại response trắng của preview cũ. Mọi cổng đăng
+    // nhập preview phải luôn lấy nội dung mới, không dùng cache trình duyệt/CDN.
+    res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+    res.setHeader("Pragma", "no-cache");
+    res.setHeader("Expires", "0");
 
     if (isExemptPath(req.path)) return next();
 

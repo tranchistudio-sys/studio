@@ -5,8 +5,8 @@
  * Refresh token nên được tạo với scope `https://www.googleapis.com/auth/drive.readonly`.
  *
  * CREDENTIAL — đọc từ BIẾN MÔI TRƯỜNG (không hardcode, không ghi vào code/DB, không log):
- *   GOOGLE_DRIVE_CLIENT_ID      (FALLBACK: GOOGLE_CLIENT_ID nếu chưa đặt)
- *   GOOGLE_DRIVE_CLIENT_SECRET  (FALLBACK: GOOGLE_CLIENT_SECRET nếu chưa đặt)
+ *   GOOGLE_DRIVE_CLIENT_ID
+ *   GOOGLE_DRIVE_CLIENT_SECRET
  *   GOOGLE_DRIVE_REFRESH_TOKEN  (KHÔNG bắt buộc — bấm "Kết nối Google Drive" sẽ tự lấy &
  *                                  lưu vào autopost_settings.config.drive.refreshToken)
  *   GOOGLE_DRIVE_FOLDER_ID        (folder cha "Amazing Studio AutoPost"; có thể override
@@ -88,10 +88,12 @@ export function classifyMime(mime: string | undefined): "image" | "video" | null
 }
 
 /**
- * Đọc client id/secret cho OAuth, ưu tiên biến chuyên dụng rồi FALLBACK sang biến chung.
+ * Đọc client id/secret dành riêng cho OAuth Drive.
  * Trả kèm TÊN biến đã dùng (để hiển thị nguồn ở /status — KHÔNG trả giá trị).
- *   GOOGLE_DRIVE_CLIENT_ID  →  fallback  GOOGLE_CLIENT_ID
- *   GOOGLE_DRIVE_CLIENT_SECRET  →  fallback  GOOGLE_CLIENT_SECRET
+ *
+ * Không fallback sang GOOGLE_CLIENT_ID: biến chung đó dành riêng cho Google
+ * Identity Services. Tách hai OAuth client giúp login không bao giờ vô tình dùng
+ * scope/refresh-token của Drive.
  */
 export function driveClientSource(): {
   clientId: string;
@@ -99,18 +101,10 @@ export function driveClientSource(): {
   idVar: string | null;
   secretVar: string | null;
 } {
-  let clientId = (process.env.GOOGLE_DRIVE_CLIENT_ID ?? "").trim();
-  let idVar: string | null = clientId ? "GOOGLE_DRIVE_CLIENT_ID" : null;
-  if (!clientId) {
-    clientId = (process.env.GOOGLE_CLIENT_ID ?? "").trim();
-    if (clientId) idVar = "GOOGLE_CLIENT_ID";
-  }
-  let clientSecret = (process.env.GOOGLE_DRIVE_CLIENT_SECRET ?? "").trim();
-  let secretVar: string | null = clientSecret ? "GOOGLE_DRIVE_CLIENT_SECRET" : null;
-  if (!clientSecret) {
-    clientSecret = (process.env.GOOGLE_CLIENT_SECRET ?? "").trim();
-    if (clientSecret) secretVar = "GOOGLE_CLIENT_SECRET";
-  }
+  const clientId = (process.env.GOOGLE_DRIVE_CLIENT_ID ?? "").trim();
+  const idVar: string | null = clientId ? "GOOGLE_DRIVE_CLIENT_ID" : null;
+  const clientSecret = (process.env.GOOGLE_DRIVE_CLIENT_SECRET ?? "").trim();
+  const secretVar: string | null = clientSecret ? "GOOGLE_DRIVE_CLIENT_SECRET" : null;
   return { clientId, clientSecret, idVar, secretVar };
 }
 
@@ -136,8 +130,8 @@ export function readDriveEnv(): { creds: DriveCreds | null; missing: string[] } 
   const { clientId, clientSecret } = driveClientSource();
   const refreshToken = (process.env.GOOGLE_DRIVE_REFRESH_TOKEN ?? "").trim();
   const missing: string[] = [];
-  if (!clientId) missing.push("GOOGLE_DRIVE_CLIENT_ID (hoặc GOOGLE_CLIENT_ID)");
-  if (!clientSecret) missing.push("GOOGLE_DRIVE_CLIENT_SECRET (hoặc GOOGLE_CLIENT_SECRET)");
+  if (!clientId) missing.push("GOOGLE_DRIVE_CLIENT_ID");
+  if (!clientSecret) missing.push("GOOGLE_DRIVE_CLIENT_SECRET");
   if (!refreshToken) missing.push("GOOGLE_DRIVE_REFRESH_TOKEN");
   if (missing.length > 0) return { creds: null, missing };
   return { creds: { clientId, clientSecret, refreshToken }, missing: [] };
@@ -145,7 +139,7 @@ export function readDriveEnv(): { creds: DriveCreds | null; missing: string[] } 
 
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.readonly";
 
-/** clientId/secret cho OAuth (env chuyên dụng hoặc fallback chung). null nếu thiếu. */
+/** clientId/secret chuyên dụng cho OAuth Drive. null nếu thiếu. */
 export function getOAuthClientEnv(): { clientId: string; clientSecret: string } | null {
   const { clientId, clientSecret } = driveClientSource();
   if (!clientId || !clientSecret) return null;
@@ -169,8 +163,8 @@ export async function resolveDriveCreds(): Promise<{ creds: DriveCreds | null; m
     }
   }
   const missing: string[] = [];
-  if (!clientId) missing.push("GOOGLE_DRIVE_CLIENT_ID (hoặc GOOGLE_CLIENT_ID)");
-  if (!clientSecret) missing.push("GOOGLE_DRIVE_CLIENT_SECRET (hoặc GOOGLE_CLIENT_SECRET)");
+  if (!clientId) missing.push("GOOGLE_DRIVE_CLIENT_ID");
+  if (!clientSecret) missing.push("GOOGLE_DRIVE_CLIENT_SECRET");
   if (!refreshToken) missing.push("refresh_token — bấm Kết nối Google Drive");
   if (missing.length > 0) return { creds: null, missing };
   return { creds: { clientId, clientSecret, refreshToken }, missing: [] };

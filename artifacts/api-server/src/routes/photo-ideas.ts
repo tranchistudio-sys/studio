@@ -2,8 +2,11 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { createHmac } from "crypto";
 import { pool } from "@workspace/db";
 import { getCallerRole } from "./auth";
+import { validateCmsPublicMediaWrite } from "../lib/cms-public-media";
 
 const router: IRouter = Router();
+
+router.use("/photo-ideas", validateCmsPublicMediaWrite);
 
 const JWT_SECRET = process.env.SESSION_SECRET ?? "amazing-studio-secret-2025";
 

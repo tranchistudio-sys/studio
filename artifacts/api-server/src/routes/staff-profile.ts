@@ -9,6 +9,7 @@ import { eq, desc, and, lte, gte } from "drizzle-orm";
 import { verifyToken } from "./auth";
 import { computeMonthEstimate } from "../lib/salary-estimate";
 import { computeOvertimeForMonth, type OvertimeLog } from "../lib/overtime";
+import { capLegacyAdmin } from "../lib/legacy-auth-token";
 
 const router: IRouter = Router();
 
@@ -288,7 +289,7 @@ const fmtStaff = (s: Record<string, unknown>) => ({
 router.get("/staff/me", async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
-  const isAdmin = await isCallerAdmin(callerId);
+  const isAdmin = await isCallerAdmin(callerId, req.headers.authorization);
   const data = await buildProfileData(callerId, isAdmin, isAdmin);
   if (!data) return res.status(404).json({ error: "Không tìm thấy hồ sơ" });
   res.json(data);
@@ -298,7 +299,7 @@ router.get("/staff/me", async (req, res) => {
 router.get("/staff/me/profile", async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
-  const isAdmin = await isCallerAdmin(callerId);
+  const isAdmin = await isCallerAdmin(callerId, req.headers.authorization);
   const data = await buildProfileData(callerId, isAdmin, isAdmin);
   if (!data) return res.status(404).json({ error: "Không tìm thấy hồ sơ" });
   res.json(data);
@@ -472,10 +473,10 @@ router.get("/staff/:id/profile", async (req, res) => {
   const staffId = parseInt(req.params.id);
   if (isNaN(staffId)) return res.status(400).json({ error: "ID không hợp lệ" });
 
-  // Check if caller is admin or viewing their own profile
-  const callerR = await pool.query(`SELECT role FROM staff WHERE id = $1`, [callerId]);
-  const callerRole = (callerR.rows[0] as { role?: string })?.role;
-  if (callerRole !== "admin" && callerId !== staffId) {
+  // Check if caller is admin or viewing their own profile.
+  // Platform tenant membership is authoritative when this is a bridged session.
+  const callerIsAdmin = await isCallerAdmin(callerId, req.headers.authorization);
+  if (!callerIsAdmin && callerId !== staffId) {
     return res.status(403).json({ error: "Không có quyền xem hồ sơ này" });
   }
 
@@ -483,15 +484,18 @@ router.get("/staff/:id/profile", async (req, res) => {
   // Forecast cuối tháng CHỈ trả về khi caller là admin (gate ở API).
   const monthQ = req.query.month ? parseInt(String(req.query.month)) : undefined;
   const yearQ = req.query.year ? parseInt(String(req.query.year)) : undefined;
-  const data = await buildProfileData(staffId, callerRole === "admin", callerRole === "admin", monthQ, yearQ);
+  const data = await buildProfileData(staffId, callerIsAdmin, callerIsAdmin, monthQ, yearQ);
   if (!data) return res.status(404).json({ error: "Không tìm thấy nhân viên" });
   res.json({ ...data, selectedMonth: monthQ ?? (new Date().getMonth() + 1), selectedYear: yearQ ?? new Date().getFullYear() });
 });
 
 // ── Helper: check if caller is admin ──────────────────────────────────────────
-async function isCallerAdmin(callerId: number): Promise<boolean> {
+async function isCallerAdmin(callerId: number, authorization?: string): Promise<boolean> {
   const r = await pool.query(`SELECT role FROM staff WHERE id = $1`, [callerId]);
-  return (r.rows[0] as { role?: string })?.role === "admin";
+  return capLegacyAdmin(
+    authorization,
+    (r.rows[0] as { role?: string })?.role === "admin",
+  );
 }
 
 // ── Đơn xin nghỉ ──────────────────────────────────────────────────────────────
@@ -500,7 +504,7 @@ router.get("/staff/:id/leave-requests", async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const staffId = parseInt(req.params.id);
-  if (!(await isCallerAdmin(callerId)) && callerId !== staffId) {
+  if (!(await isCallerAdmin(callerId, req.headers.authorization)) && callerId !== staffId) {
     return res.status(403).json({ error: "Không có quyền xem đơn của người khác" });
   }
   const leaves = await db.select().from(staffLeaveRequestsTable)
@@ -514,7 +518,7 @@ router.post("/staff/:id/leave-requests", async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const staffId = parseInt(req.params.id);
-  if (!(await isCallerAdmin(callerId)) && callerId !== staffId) {
+  if (!(await isCallerAdmin(callerId, req.headers.authorization)) && callerId !== staffId) {
     return res.status(403).json({ error: "Chỉ được nộp đơn xin nghỉ của chính mình" });
   }
   const { startDate, endDate, reason, notes } = req.body;
@@ -539,7 +543,7 @@ router.get("/leave-requests", async (req, res) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
     return res.status(400).json({ error: "Thiếu from/to (YYYY-MM-DD)" });
   }
-  const admin = await isCallerAdmin(callerId);
+  const admin = await isCallerAdmin(callerId, req.headers.authorization);
   // overlap: start_date <= to AND end_date >= from
   const conds = [
     lte(staffLeaveRequestsTable.startDate, to),
@@ -575,7 +579,7 @@ router.get("/leave-requests", async (req, res) => {
 router.post("/leave-requests", async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
-  const admin = await isCallerAdmin(callerId);
+  const admin = await isCallerAdmin(callerId, req.headers.authorization);
   const body = req.body || {};
   const staffId = admin ? (Number(body.staffId) || callerId) : callerId;
   const { startDate, endDate, reason } = body;
@@ -614,7 +618,7 @@ router.put("/leave-requests/:id", async (req, res) => {
     .where(eq(staffLeaveRequestsTable.id, id));
   if (!existing) return res.status(404).json({ error: "Không tìm thấy đơn" });
 
-  const admin = await isCallerAdmin(callerId);
+  const admin = await isCallerAdmin(callerId, req.headers.authorization);
   const { status, approvedByName, notes } = req.body || {};
 
   if (!admin) {
@@ -658,9 +662,11 @@ router.delete("/leave-requests/:id", async (req, res) => {
   const cr = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = cr.rows[0] as { role?: string; roles?: unknown } | undefined;
   const callerRoles = Array.isArray(caller?.roles) ? (caller!.roles as string[]) : [];
-  const privileged =
+  const privileged = capLegacyAdmin(
+    req.headers.authorization,
     caller?.role === "admin" || caller?.role === "owner" ||
-    callerRoles.includes("admin") || callerRoles.includes("owner");
+      callerRoles.includes("admin") || callerRoles.includes("owner"),
+  );
   if (!privileged) return res.status(403).json({ error: "Chỉ Admin/Owner mới có thể xóa đơn xin nghỉ" });
 
   const [existing] = await db.select().from(staffLeaveRequestsTable)
@@ -675,7 +681,7 @@ router.delete("/leave-requests/:id", async (req, res) => {
 router.get("/staff/:id/internal-notes", async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
-  if (!(await isCallerAdmin(callerId))) {
+  if (!(await isCallerAdmin(callerId, req.headers.authorization))) {
     return res.status(403).json({ error: "Chỉ admin mới có thể xem ghi chú nội bộ" });
   }
   const staffId = parseInt(req.params.id);
@@ -687,7 +693,7 @@ router.get("/staff/:id/internal-notes", async (req, res) => {
 router.put("/staff/:id/internal-notes", async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
-  if (!(await isCallerAdmin(callerId))) {
+  if (!(await isCallerAdmin(callerId, req.headers.authorization))) {
     return res.status(403).json({ error: "Chỉ admin mới có thể cập nhật ghi chú nội bộ" });
   }
   const staffId = parseInt(req.params.id);
@@ -720,7 +726,7 @@ router.get("/staff/:id/salary-history", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const staffId = parseInt(req.params.id);
   if (isNaN(staffId)) return res.status(400).json({ error: "ID không hợp lệ" });
-  const admin = await isCallerAdmin(callerId);
+  const admin = await isCallerAdmin(callerId, req.headers.authorization);
   if (!admin && callerId !== staffId) return res.status(403).json({ error: "Không có quyền" });
 
   const limit = Math.min(parseInt(String(req.query.limit ?? "24")) || 24, 36);
@@ -787,7 +793,7 @@ router.get("/staff/:id/salary-trend", async (req, res) => {
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const staffId = parseInt(req.params.id);
   if (isNaN(staffId)) return res.status(400).json({ error: "ID không hợp lệ" });
-  const admin = await isCallerAdmin(callerId);
+  const admin = await isCallerAdmin(callerId, req.headers.authorization);
   if (!admin && callerId !== staffId) return res.status(403).json({ error: "Không có quyền" });
 
   const months = Math.min(parseInt(String(req.query.months ?? "12")) || 12, 24);
@@ -834,7 +840,7 @@ router.get("/staff/:id/salary-snapshot", async (req, res) => {
   const month = parseInt(String(req.query.month));
   const year = parseInt(String(req.query.year));
   if (isNaN(staffId) || !month || !year) return res.status(400).json({ error: "Thiếu tham số" });
-  const admin = await isCallerAdmin(callerId);
+  const admin = await isCallerAdmin(callerId, req.headers.authorization);
   if (!admin && callerId !== staffId) return res.status(403).json({ error: "Không có quyền" });
 
   const [pr] = await db.select().from(payrollsTable).where(and(

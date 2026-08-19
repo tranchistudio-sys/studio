@@ -1,19 +1,15 @@
 import { Router, type IRouter } from "express";
-import { db, pool } from "@workspace/db";
+import { db } from "@workspace/db";
 import { fixedCostsTable } from "@workspace/db/schema";
 import { eq, sql } from "drizzle-orm";
-import { verifyToken } from "./auth";
+import { getCallerRole, verifyToken } from "./auth";
 
 const router: IRouter = Router();
 
 const fmt = (r: { amount: string; [key: string]: unknown }) => ({ ...r, amount: parseFloat(r.amount) });
 
 async function isAdminCaller(authorization: string | undefined): Promise<boolean> {
-  const callerId = verifyToken(authorization);
-  if (!callerId) return false;
-  const r = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
-  const caller = r.rows[0] as Record<string, unknown> | undefined;
-  return !!(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin"))));
+  return await getCallerRole(authorization) === "admin";
 }
 
 router.get("/fixed-costs", async (req, res) => {

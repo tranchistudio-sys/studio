@@ -1,4 +1,5 @@
 import { pool } from "@workspace/db";
+import { currentTenantScope } from "./tenant-scope";
 
 /**
  * Sale Playbook — phong cách tư vấn (học từ chat thật, CÓ KIỂM DUYỆT).
@@ -10,9 +11,10 @@ import { pool } from "@workspace/db";
 
 export type PlaybookStatus = "draft" | "approved" | "rejected" | "active";
 
-let createdTable = false;
+const createdTables = new Set<string>();
 export async function ensureSalePlaybookTable(): Promise<void> {
-  if (createdTable) return;
+  const tenantScope = currentTenantScope();
+  if (createdTables.has(tenantScope)) return;
   await pool.query(`
     CREATE TABLE IF NOT EXISTS sale_playbooks (
       id SERIAL PRIMARY KEY,
@@ -32,27 +34,29 @@ export async function ensureSalePlaybookTable(): Promise<void> {
       activated_at TIMESTAMP
     )
   `);
-  createdTable = true;
+  createdTables.add(tenantScope);
 }
 
 // Cache bản active để Claude đọc nhanh; xóa cache khi admin đổi trạng thái.
-let cache: { content: string | null; at: number } | null = null;
+const cache = new Map<string, { content: string | null; at: number }>();
 const TTL_MS = 60 * 1000;
 
 export function clearPlaybookCache(): void {
-  cache = null;
+  cache.delete(currentTenantScope());
 }
 
 /** Nội dung playbook ĐANG ACTIVE (null nếu chưa có bản nào active). */
 export async function getActivePlaybook(): Promise<string | null> {
-  if (cache && Date.now() - cache.at < TTL_MS) return cache.content;
+  const tenantScope = currentTenantScope();
+  const cached = cache.get(tenantScope);
+  if (cached && Date.now() - cached.at < TTL_MS) return cached.content;
   try {
     await ensureSalePlaybookTable();
     const r = await pool.query(
       `SELECT content FROM sale_playbooks WHERE status = 'active' ORDER BY activated_at DESC NULLS LAST, id DESC LIMIT 1`,
     );
     const content = r.rows[0]?.content?.trim() || null;
-    cache = { content, at: Date.now() };
+    cache.set(tenantScope, { content, at: Date.now() });
     return content;
   } catch (err) {
     console.error("[SaleLearning] getActivePlaybook lỗi:", String(err).slice(0, 150));

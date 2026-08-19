@@ -3,8 +3,12 @@ import { createHash, randomBytes } from "node:crypto";
 import { pool } from "@workspace/db";
 import { getCallerRole } from "./auth";
 import { withStartupDdlLock } from "../lib/startup-ddl";
+import { normalizeCmsPublicMediaReference, validateCmsPublicMediaWrite } from "../lib/cms-public-media";
+import { tenantScopedKey } from "../lib/tenant-scope";
 
 const router: IRouter = Router();
+
+router.use("/wedding-cards/admin/templates", validateCmsPublicMediaWrite);
 
 // ─── Auto-migration: create tables + seed default templates on startup ───────
 async function ensureWeddingSchema() {
@@ -230,12 +234,30 @@ function imageUrls(v: unknown): string[] {
 }
 
 const guestRate = new Map<string, number[]>();
+const cardCreateRate = new Map<string, number[]>();
 const guestIdempotency = new Map<string, number>();
-function allowGuestSubmission(key: string): boolean {
+function allowPublicAction(
+  buckets: Map<string, number[]>,
+  key: string,
+  maxAttempts: number,
+  windowMs: number,
+): boolean {
   const now = Date.now();
-  const recent = (guestRate.get(key) ?? []).filter((time) => now - time < 10 * 60_000);
-  if (recent.length >= 5) return false;
-  recent.push(now); guestRate.set(key, recent); return true;
+  const recent = (buckets.get(key) ?? []).filter((time) => now - time < windowMs);
+  if (recent.length >= maxAttempts) return false;
+  recent.push(now);
+  buckets.set(key, recent);
+  if (buckets.size > 5000) {
+    for (const [bucketKey, timestamps] of buckets) {
+      if (timestamps.every((time) => now - time >= windowMs)) buckets.delete(bucketKey);
+    }
+    while (buckets.size > 5000) {
+      const oldest = buckets.keys().next().value as string | undefined;
+      if (!oldest) break;
+      buckets.delete(oldest);
+    }
+  }
+  return true;
 }
 
 function htmlEscape(value: string): string {
@@ -317,6 +339,15 @@ router.post("/wedding-cards/public", async (req, res) => {
     if (!notificationEmail) {
       return res.status(400).json({ error: "Thiếu email nhận lời chúc hợp lệ" });
     }
+    const requestedCardMedia = [str(b.coverImageUrl), str(b.coupleImageUrl), ...imageUrls(b.albumImageUrls)];
+    const publicCardMedia = requestedCardMedia.map((value) => value ? normalizeCmsPublicMediaReference(value) : null);
+    if (requestedCardMedia.some((value, index) => value && !publicCardMedia[index])) {
+      return res.status(400).json({ error: "Thiệp công khai không được tham chiếu object nội bộ" });
+    }
+    const ip = req.ip || req.socket.remoteAddress || "unknown";
+    if (!allowPublicAction(cardCreateRate, ip, 3, 60 * 60_000)) {
+      return res.status(429).json({ error: "Bạn đã tạo quá nhiều thiệp. Vui lòng thử lại sau." });
+    }
     const t = await pool.query(
       `SELECT id, slug, theme_key AS "themeKey" FROM wedding_templates
        WHERE slug = $1 AND deleted_at IS NULL LIMIT 1`,
@@ -348,7 +379,7 @@ router.post("/wedding-cards/public", async (req, res) => {
         groomName, brideName, str(b.weddingDate), str(b.ceremonyTime), str(b.receptionTime),
         str(b.venueGroom), str(b.venueBride), str(b.venueReception),
         str(b.mapsUrlGroom), str(b.mapsUrlBride), str(b.mapsUrlReception),
-        str(b.invitationMessage), str(b.coverImageUrl), str(b.coupleImageUrl), JSON.stringify(imageUrls(b.albumImageUrls)), str(b.contactPhone), notificationEmail,
+        str(b.invitationMessage), publicCardMedia[0], publicCardMedia[1], JSON.stringify(publicCardMedia.slice(2)), str(b.contactPhone), notificationEmail,
       ]
     );
     const row = r.rows[0] as { id: number; slug: string; status: string; themeKey: string };
@@ -398,18 +429,23 @@ router.post("/wedding-cards/public/:slug/guest-entries", async (req, res) => {
     if (!guestName) return res.status(400).json({ error: "Vui lòng nhập tên khách." });
     if (!b.attendance || !["yes", "no", "unknown"].includes(String(b.attendance))) return res.status(400).json({ error: "Vui lòng chọn trạng thái tham dự." });
     if (message && message.length > 1000) return res.status(400).json({ error: "Lời chúc tối đa 1000 ký tự." });
-    const ip = String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "unknown").split(",")[0].trim();
-    if (!allowGuestSubmission(`${card.id}:${ip}`)) return res.status(429).json({ error: "Bạn gửi quá nhanh. Vui lòng thử lại sau." });
+    const ip = req.ip || req.socket.remoteAddress || "unknown";
+    if (!allowPublicAction(guestRate, `${card.id}:${ip}`, 5, 10 * 60_000)) return res.status(429).json({ error: "Bạn gửi quá nhanh. Vui lòng thử lại sau." });
     const guestCountRaw = Number(b.guestCount);
     const guestCount = attendance === "no" ? 0 : Number.isFinite(guestCountRaw) && guestCountRaw > 0
       ? Math.min(50, Math.floor(guestCountRaw))
       : 1;
     const idempotencyKey = str(req.headers["idempotency-key"] ?? b.idempotencyKey)?.slice(0, 120) ?? createHash("sha256").update(`${card.id}:${ip}:${guestName}:${message}:${attendance}:${guestCount}`).digest("hex");
-    const dedupeKey = `${card.id}:${idempotencyKey}`;
+    const dedupeKey = tenantScopedKey("wedding-guest-idempotency", card.id, idempotencyKey);
     const previous = guestIdempotency.get(dedupeKey);
     if (previous && Date.now() - previous < 10 * 60_000) return res.status(200).json({ sent: true, duplicate: true });
     await sendWeddingWishEmail({ recipient: card.notificationEmail, groomName: card.groomName, brideName: card.brideName, guestName, message, attendance, guestCount });
     guestIdempotency.set(dedupeKey, Date.now());
+    if (guestIdempotency.size > 10_000) {
+      for (const [key, createdAt] of guestIdempotency) {
+        if (Date.now() - createdAt > 10 * 60_000) guestIdempotency.delete(key);
+      }
+    }
     res.status(201).json({ sent: true, createdAt: new Date().toISOString() });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);

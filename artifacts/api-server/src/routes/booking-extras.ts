@@ -6,6 +6,7 @@ import {
 } from "@workspace/db/schema";
 import { eq, desc, and, isNull } from "drizzle-orm";
 import { verifyToken } from "./auth";
+import { capLegacyAdmin } from "../lib/legacy-auth-token";
 
 const router: IRouter = Router();
 
@@ -147,7 +148,7 @@ router.patch("/bookings/:id/reschedule", async (req, res) => {
   // Phân quyền: admin hoặc nhân viên được assigned vào buổi đó
   const callerR = await pool.query(`SELECT role, roles FROM staff WHERE id = $1`, [callerId]);
   const caller = callerR.rows[0] as Record<string, unknown> | undefined;
-  const isAdmin = caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, Boolean(caller && (caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")))));
 
   if (!isAdmin) {
     const assigned = booking.assignedStaff as Record<string, unknown> | number[] | null;

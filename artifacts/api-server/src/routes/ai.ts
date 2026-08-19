@@ -15,10 +15,11 @@ import {
   renderBusinessSummary,
   isBusinessOverviewQuestion,
 } from "../lib/business-snapshot";
+import { tenantScopedKey } from "../lib/tenant-scope";
 
 const router: IRouter = Router();
 
-const rateLimitMap = new Map<number, number>();
+const rateLimitMap = new Map<string, number>();
 const RATE_LIMIT_MS = 3000;
 
 function streamCopilotAnswer(res: import("express").Response, answer: string) {
@@ -33,9 +34,10 @@ function streamCopilotAnswer(res: import("express").Response, answer: string) {
 
 function checkRateLimit(callerId: number): boolean {
   const now = Date.now();
-  const lastCall = rateLimitMap.get(callerId) ?? 0;
+  const key = tenantScopedKey("studio-copilot-rate", callerId);
+  const lastCall = rateLimitMap.get(key) ?? 0;
   if (now - lastCall < RATE_LIMIT_MS) return false;
-  rateLimitMap.set(callerId, now);
+  rateLimitMap.set(key, now);
   return true;
 }
 

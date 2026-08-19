@@ -5,7 +5,7 @@ import { API_BASE } from "@/lib/api-base";
 export async function uploadWeddingCardImage(file: File, kind: string): Promise<string> {
   const { blob, mimeType } = await convertToWebP(file, { maxDim: 1200, quality: 0.8 });
   const name = `wedding-${kind}-${Date.now()}.webp`;
-  const r1 = await fetch(`${API_BASE}/api/storage/uploads/request-url`, {
+  const r1 = await fetch(`${API_BASE}/api/storage/wedding-public/uploads/request-url`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, size: blob.size, contentType: mimeType }),

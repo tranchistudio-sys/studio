@@ -6,6 +6,7 @@ import {
   staffTable, bookingsTable, serviceJobSplitsTable, servicesTable,
 } from "@workspace/db/schema";
 import { eq, and, desc, ne } from "drizzle-orm";
+import { capLegacyAdmin } from "../lib/legacy-auth-token";
 
 const router: IRouter = Router();
 
@@ -344,7 +345,10 @@ router.get("/job-earnings", async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const cr = await pool.query(`SELECT role FROM staff WHERE id=$1`, [callerId]);
-  const isAdmin = (cr.rows[0] as { role?: string })?.role === "admin";
+  const isAdmin = capLegacyAdmin(
+    req.headers.authorization,
+    (cr.rows[0] as { role?: string })?.role === "admin",
+  );
 
   let staffId = req.query.staffId ? parseInt(req.query.staffId as string) : undefined;
   if (!isAdmin) {

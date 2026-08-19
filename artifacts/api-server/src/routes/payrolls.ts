@@ -3,6 +3,7 @@ import { db, pool } from "@workspace/db";
 import { payrollsTable, staffTable, staffJobEarningsTable, staffLeaveRequestsTable } from "@workspace/db/schema";
 import { eq, desc, and, inArray } from "drizzle-orm";
 import { computeOvertimeForMonth, type OvertimeLog } from "../lib/overtime";
+import { capLegacyAdmin } from "../lib/legacy-auth-token";
 
 const router: IRouter = Router();
 
@@ -26,7 +27,7 @@ async function getCaller(req: { headers: { authorization?: string } }): Promise<
   if (!callerId) return null;
   const cr = await pool.query(`SELECT role, roles FROM staff WHERE id=$1`, [callerId]);
   const u = cr.rows[0] as { role?: string; roles?: unknown } | undefined;
-  const isAdmin = !!(u && (u.role === "admin" || (Array.isArray(u.roles) && u.roles.includes("admin"))));
+  const isAdmin = capLegacyAdmin(req.headers.authorization, !!(u && (u.role === "admin" || (Array.isArray(u.roles) && u.roles.includes("admin")))));
   return { id: callerId, isAdmin };
 }
 
@@ -110,7 +111,7 @@ router.get("/payrolls", async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
   const cr = await pool.query(`SELECT role FROM staff WHERE id=$1`, [callerId]);
-  const isAdmin = (cr.rows[0] as { role?: string })?.role === "admin";
+  const isAdmin = capLegacyAdmin(req.headers.authorization, (cr.rows[0] as { role?: string })?.role === "admin");
 
   let staffId = req.query.staffId ? parseInt(req.query.staffId as string) : undefined;
   if (!isAdmin) {
@@ -548,7 +549,9 @@ router.post("/payrolls/finalize-payment", async (req, res) => {
     if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
     const cr = await pool.query(`SELECT role, name FROM staff WHERE id=$1`, [callerId]);
     const caller = cr.rows[0] as { role?: string; name?: string };
-    if (caller?.role !== "admin") return res.status(403).json({ error: "Chỉ admin mới chốt lương" });
+    if (!capLegacyAdmin(req.headers.authorization, caller?.role === "admin")) {
+      return res.status(403).json({ error: "Chỉ admin mới chốt lương" });
+    }
 
     const staffId = parseInt(String(req.body?.staffId));
     let month: number, year: number;

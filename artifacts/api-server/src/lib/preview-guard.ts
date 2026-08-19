@@ -47,6 +47,8 @@ export const PREVIEW_ENV_KILL_LIST: readonly string[] = [
   "FB_PAGE_ID",
   "FB_VERIFY_TOKEN",
   "FACEBOOK_VERIFY_TOKEN",
+  "FB_APP_SECRET",
+  "FACEBOOK_APP_SECRET",
   // ── AI trả phí ─────────────────────────────────────────────────────────────
   "ANTHROPIC_API_KEY",
   "OPENAI_API_KEY",
@@ -56,8 +58,10 @@ export const PREVIEW_ENV_KILL_LIST: readonly string[] = [
   "SHOPAIKEY_API_KEY",
   "SHOPAIKEY_BASE_URL",
   "LULU_TEST_PROVIDER",
-  // ── Google (Drive + OAuth) ─────────────────────────────────────────────────
-  "GOOGLE_CLIENT_ID",
+  // ── Google Drive + secret OAuth ─────────────────────────────────────────────
+  // GOOGLE_CLIENT_ID là public client id dành cho GIS login, được phép giữ lại.
+  // Preview vẫn chỉ xác minh Google thật khi origin ổn định được đăng ký và
+  // PREVIEW_NET_ALLOW cho phép đúng host lấy public cert; xem docs/google-auth.md.
   "GOOGLE_CLIENT_SECRET",
   "GOOGLE_DRIVE_CLIENT_ID",
   "GOOGLE_DRIVE_CLIENT_SECRET",

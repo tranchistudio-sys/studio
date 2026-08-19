@@ -412,8 +412,6 @@ function AiTestRoomInner() {
   // SSE connection for live follow-up push from the server
   useEffect(() => {
     if (!selectedId) return;
-    const token = localStorage.getItem("amazingStudioToken_v2");
-    if (!token) return;
 
     let es: EventSource | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -421,8 +419,8 @@ function AiTestRoomInner() {
 
     const connect = () => {
       if (destroyed) return;
-      const url = `${BASE}/api/ai-test/sessions/${selectedId}/events?token=${encodeURIComponent(token)}`;
-      es = new EventSource(url);
+      const url = `${BASE}/api/ai-test/sessions/${selectedId}/events`;
+      es = new EventSource(url, { withCredentials: true });
 
       es.onopen = () => {
         setSseConnected(true);

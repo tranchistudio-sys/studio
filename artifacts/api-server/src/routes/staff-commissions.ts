@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { pool } from "@workspace/db";
-import { verifyToken } from "./auth";
+import { getCallerRole, verifyToken } from "./auth";
 
 const router: IRouter = Router();
 
@@ -21,9 +21,10 @@ const router: IRouter = Router();
 router.get("/staff-commissions", async (req, res) => {
   const callerId = verifyToken(req.headers.authorization);
   if (!callerId) return res.status(401).json({ error: "Chưa đăng nhập" });
-  const cr = await pool.query(`SELECT role FROM staff WHERE id=$1`, [callerId]);
-  const callerRole = (cr.rows[0] as { role?: string })?.role;
-  const isAdmin = callerRole === "admin";
+  // Tenant membership is authoritative in platform mode. getCallerRole applies
+  // that role as a ceiling, so a downgraded legacy admin cannot read another
+  // employee's commission through the old staff.role value.
+  const isAdmin = (await getCallerRole(req.headers.authorization)) === "admin";
 
   const staffId = parseInt(String(req.query.staffId || ""), 10);
   if (!Number.isFinite(staffId) || staffId <= 0) {

@@ -176,6 +176,7 @@ jobs:
           DEPLOY_ROLLBACK_IMAGE=amazing-studio-web:rollback
           DEPLOY_HEALTH_URL=https://tranchistudio.com/api/healthz
           DEPLOY_WEB_URL=https://tranchistudio.com
+          DEPLOY_COMPOSE_OVERRIDE_FILE=/opt/amazing-studio/platform-auth.override.yml
           EOF
           scp -P "$VPS_PORT" -i "$HOME/.ssh/deploy_key" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \

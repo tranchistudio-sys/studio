@@ -36,6 +36,19 @@ source "$CONFIG_FILE"
 : "${DEPLOY_HEALTH_URL:?Thiếu DEPLOY_HEALTH_URL trong $CONFIG_FILE}"
 : "${DEPLOY_WEB_URL:?Thiếu DEPLOY_WEB_URL trong $CONFIG_FILE}"
 
+# Platform auth được cấu hình ngoài Git bằng một compose override riêng. Nếu file
+# chưa tồn tại thì deploy vẫn chạy y hệt trước đây; nếu đã bật thì mọi lần recreate
+# web phải nạp override để không làm mất GOOGLE/PLATFORM env.
+DEPLOY_COMPOSE_OVERRIDE_FILE="${DEPLOY_COMPOSE_OVERRIDE_FILE:-}"
+
+compose_production() {
+  if [ -n "$DEPLOY_COMPOSE_OVERRIDE_FILE" ] && [ -r "$DEPLOY_COMPOSE_OVERRIDE_FILE" ]; then
+    docker compose -f "$DEPLOY_COMPOSE_FILE" -f "$DEPLOY_COMPOSE_OVERRIDE_FILE" "$@"
+  else
+    docker compose -f "$DEPLOY_COMPOSE_FILE" "$@"
+  fi
+}
+
 for tool in docker curl flock tar sudo; do
   command -v "$tool" >/dev/null || die "VPS chưa có $tool."
 done
@@ -113,7 +126,7 @@ sudo -n cp -a "$DEPLOY_APP_DIR/06_vps_deployment" "$INCOMING_DIR/"
 RELEASE_COMPOSE="$INCOMING_DIR/06_vps_deployment/docker-compose.yml"
 docker compose -f "$RELEASE_COMPOSE" config --services | grep -Fxq "$DEPLOY_WEB_SERVICE" || \
   die "Không tìm thấy service $DEPLOY_WEB_SERVICE trong release."
-docker compose -f "$DEPLOY_COMPOSE_FILE" config --services | grep -Fxq "$DEPLOY_WEB_SERVICE" || \
+compose_production config --services | grep -Fxq "$DEPLOY_WEB_SERVICE" || \
   die "Không tìm thấy service $DEPLOY_WEB_SERVICE trong production."
 
 PREVIOUS_IMAGE_ID=$(docker image inspect "$DEPLOY_WEB_IMAGE" --format '{{.Id}}')
@@ -127,7 +140,7 @@ rollback() {
     docker tag "$DEPLOY_ROLLBACK_IMAGE" "$DEPLOY_WEB_IMAGE" || true
   fi
   if [ "$WEB_REPLACED" -eq 1 ]; then
-    docker compose -f "$DEPLOY_COMPOSE_FILE" up -d --no-deps --force-recreate "$DEPLOY_WEB_SERVICE" || true
+    compose_production up -d --no-deps --force-recreate "$DEPLOY_WEB_SERVICE" || true
     wait_for_health || true
   fi
   exit "$status"
@@ -144,7 +157,7 @@ IMAGE_CHANGED=1
 
 echo "[deploy] Chỉ thay container $DEPLOY_WEB_SERVICE; API và database giữ nguyên."
 WEB_REPLACED=1
-docker compose -f "$DEPLOY_COMPOSE_FILE" up -d --no-deps --force-recreate "$DEPLOY_WEB_SERVICE"
+compose_production up -d --no-deps --force-recreate "$DEPLOY_WEB_SERVICE"
 wait_for_health
 
 sudo -n mv "$INCOMING_DIR" "$FINAL_RELEASE"

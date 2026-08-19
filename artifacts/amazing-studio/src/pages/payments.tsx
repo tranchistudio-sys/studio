@@ -785,6 +785,7 @@ type MonthlyBooking = {
   payments: Array<{
     id: number; amount: number; paidAt: string; note: string | null; paymentType: string;
     proofImageUrl?: string | null; proofImageUrls?: string[] | null;
+    paymentStatus?: string | null;
   }>;
 };
 type MonthlyAdHocPayment = {
@@ -913,6 +914,25 @@ function MonthlyListSection({
     queryFn: () => fetchJson(`/api/payments/monthly-list?month=${month}&viewMode=${viewMode}`),
     staleTime: 30_000,
   });
+
+  const displayedBookings = useMemo(() => {
+    if (!data?.bookings || viewMode !== "collectMonth") return data?.bookings ?? [];
+
+    return [...data.bookings].sort((a, b) => {
+      const latestPaymentTimestamp = (booking: MonthlyBooking) =>
+        new Date(booking.latestPaidAt ?? "").getTime() || Number.NEGATIVE_INFINITY;
+      const timestampDifference = latestPaymentTimestamp(b) - latestPaymentTimestamp(a);
+      if (timestampDifference !== 0) return timestampDifference;
+
+      const latestPaymentId = (booking: MonthlyBooking) => Math.max(
+        ...booking.payments
+          .filter(payment => payment.paymentStatus !== "voided")
+          .map(payment => payment.id),
+        Number.NEGATIVE_INFINITY,
+      );
+      return latestPaymentId(b) - latestPaymentId(a);
+    });
+  }, [data?.bookings, viewMode]);
 
   const months = useMemo(() => buildMonthOptions(defaultMonthKey ?? month), [defaultMonthKey, month]);
 
@@ -1134,7 +1154,7 @@ function MonthlyListSection({
                   })}
                 </div>
               )}
-              {data.bookings.map(b => (
+              {displayedBookings.map(b => (
                 <button
                   key={b.id}
                   type="button"
@@ -1692,6 +1712,7 @@ export default function PaymentsPage() {
       await refetchHistory();
       await refetchRecent();
       await refreshSelectedBooking(selectedBooking);
+      await qc.invalidateQueries({ queryKey: ["payments-monthly-list"] });
       qc.invalidateQueries({ queryKey: ["booking", selectedBooking.id] });
       qc.invalidateQueries({ queryKey: ["booking-full", selectedBooking.id] });
       qc.invalidateQueries({ queryKey: ["bookings"] });

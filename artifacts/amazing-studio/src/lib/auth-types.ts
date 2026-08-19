@@ -46,6 +46,8 @@ export interface AuthConfig {
   googleEnabled: boolean;
   googleClientId?: string;
   loginCsrfToken?: string;
+  registrationEnabled?: boolean;
+  registrationTenantName?: string;
 }
 
 export interface AuthClientState {

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
-import { ArrowLeft, Camera, Eye, EyeOff, Loader2 } from "lucide-react";
+import { ArrowLeft, Camera, CheckCircle2, Eye, EyeOff, Loader2, UserPlus } from "lucide-react";
 import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton";
 import { API_BASE } from "@/lib/api-base";
 import { normalizeAuthResponse, type AuthConfig, type AuthResponse } from "@/lib/auth-types";
@@ -42,6 +42,10 @@ export default function LoginPage({ onLogin }: Props) {
   const [busyMethod, setBusyMethod] = useState<"local" | "google" | null>(null);
   const [config, setConfig] = useState<AuthConfig | null>(null);
   const [configLoaded, setConfigLoaded] = useState(false);
+  const [registerOpen, setRegisterOpen] = useState(false);
+  const [registerBusy, setRegisterBusy] = useState(false);
+  const [registerSuccess, setRegisterSuccess] = useState("");
+  const [registration, setRegistration] = useState({ fullName: "", phone: "", email: "", requestedPosition: "" });
   const submittingRef = useRef(false);
 
   useEffect(() => {
@@ -90,6 +94,41 @@ export default function LoginPage({ onLogin }: Props) {
       return;
     }
     void submitAuth("local", "/api/auth/login", { phone: phone.trim(), password });
+  };
+
+  const handleRegistration = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (registerBusy) return;
+    setRegisterBusy(true);
+    setError("");
+    setRegisterSuccess("");
+    try {
+      let currentConfig = config;
+      if (!currentConfig?.loginCsrfToken) {
+        currentConfig = await fetchAuthConfig();
+        setConfig(currentConfig);
+      }
+      const send = (loginCsrfToken?: string) => fetch(`${API_BASE}/api/auth/access-requests`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...registration, loginCsrfToken }),
+      });
+      let response = await send(currentConfig.loginCsrfToken);
+      if (response.status === 403) {
+        const refreshed = await fetchAuthConfig();
+        setConfig(refreshed);
+        response = await send(refreshed.loginCsrfToken);
+      }
+      const payload = await response.json().catch(() => ({})) as { error?: string; message?: string };
+      if (!response.ok) throw new Error(payload.error || "Không gửi được yêu cầu đăng ký");
+      setRegisterSuccess(payload.message || "Đã gửi yêu cầu đăng ký.");
+      setRegistration({ fullName: "", phone: "", email: "", requestedPosition: "" });
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Không gửi được yêu cầu đăng ký");
+    } finally {
+      setRegisterBusy(false);
+    }
   };
 
   const googleAvailable = Boolean(
@@ -212,6 +251,53 @@ export default function LoginPage({ onLogin }: Props) {
           {error && (
             <div role="alert" className="mt-5 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-center text-sm text-destructive">
               {error}
+            </div>
+          )}
+
+          {config?.registrationEnabled && !registerOpen && (
+            <button
+              type="button"
+              onClick={() => { setRegisterOpen(true); setError(""); setRegisterSuccess(""); }}
+              className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-rose-200 bg-rose-50/70 px-4 py-3 text-sm font-semibold text-rose-700 transition hover:bg-rose-100"
+            >
+              <UserPlus className="h-4 w-4" /> Đăng ký thành viên mới
+            </button>
+          )}
+
+          {config?.registrationEnabled && registerOpen && (
+            <div className="mt-5 rounded-2xl border border-rose-200 bg-rose-50/50 p-4">
+              <div className="mb-4 text-center">
+                <h3 className="font-semibold">Đăng ký vào {config.registrationTenantName || "studio"}</h3>
+                <p className="mt-1 text-xs text-muted-foreground">Gửi yêu cầu để chủ studio duyệt. Chưa được duyệt sẽ không xem được dữ liệu.</p>
+              </div>
+              {registerSuccess ? (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-center text-sm text-emerald-700">
+                  <CheckCircle2 className="mx-auto mb-2 h-6 w-6" />
+                  {registerSuccess}
+                  <button type="button" className="mt-3 block w-full font-semibold underline" onClick={() => setRegisterOpen(false)}>Quay lại đăng nhập</button>
+                </div>
+              ) : (
+                <form onSubmit={handleRegistration} className="space-y-3">
+                  <input aria-label="Họ và tên" placeholder="Họ và tên" required minLength={2} maxLength={100}
+                    value={registration.fullName} onChange={event => setRegistration(value => ({ ...value, fullName: event.target.value }))}
+                    className="h-11 w-full rounded-xl border border-input bg-white px-4 text-sm focus:border-rose-400 focus:outline-none focus:ring-2 focus:ring-rose-400/40" />
+                  <input aria-label="Số điện thoại" placeholder="Số điện thoại" required inputMode="tel" maxLength={20}
+                    value={registration.phone} onChange={event => setRegistration(value => ({ ...value, phone: event.target.value }))}
+                    className="h-11 w-full rounded-xl border border-input bg-white px-4 text-sm focus:border-rose-400 focus:outline-none focus:ring-2 focus:ring-rose-400/40" />
+                  <input aria-label="Gmail" placeholder="Gmail dùng để đăng nhập" required type="email" inputMode="email" autoCapitalize="none" maxLength={254}
+                    value={registration.email} onChange={event => setRegistration(value => ({ ...value, email: event.target.value }))}
+                    className="h-11 w-full rounded-xl border border-input bg-white px-4 text-sm focus:border-rose-400 focus:outline-none focus:ring-2 focus:ring-rose-400/40" />
+                  <input aria-label="Vị trí công việc" placeholder="Vị trí: Sale, makeup, chụp ảnh…" required minLength={2} maxLength={80}
+                    value={registration.requestedPosition} onChange={event => setRegistration(value => ({ ...value, requestedPosition: event.target.value }))}
+                    className="h-11 w-full rounded-xl border border-input bg-white px-4 text-sm focus:border-rose-400 focus:outline-none focus:ring-2 focus:ring-rose-400/40" />
+                  <div className="grid grid-cols-2 gap-2 pt-1">
+                    <button type="button" disabled={registerBusy} onClick={() => setRegisterOpen(false)} className="h-10 rounded-xl border bg-white text-sm font-medium">Hủy</button>
+                    <button type="submit" disabled={registerBusy} className="flex h-10 items-center justify-center rounded-xl bg-gradient-to-r from-rose-500 to-purple-600 text-sm font-semibold text-white disabled:opacity-50">
+                      {registerBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : "Gửi yêu cầu"}
+                    </button>
+                  </div>
+                </form>
+              )}
             </div>
           )}
 

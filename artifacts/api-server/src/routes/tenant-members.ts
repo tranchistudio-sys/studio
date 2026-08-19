@@ -89,6 +89,145 @@ router.get(
 );
 
 router.get(
+  "/tenant/access-requests",
+  requirePlatformSession,
+  requireActiveTenantManager,
+  async (_req, res) => {
+    const context = contextFrom(res);
+    const result = await getPlatformPool().query(
+      `SELECT id, full_name AS "fullName", phone, email,
+              requested_position AS "requestedPosition", status,
+              tenant_staff_id AS "tenantStaffId", created_at AS "createdAt"
+       FROM tenant_access_requests
+       WHERE tenant_id = $1
+       ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at DESC
+       LIMIT 100`,
+      [context.activeTenantId],
+    );
+    res.set("Cache-Control", "no-store");
+    res.json({ requests: result.rows });
+  },
+);
+
+router.post(
+  "/tenant/access-requests/:requestId/review",
+  requirePlatformSession,
+  requirePlatformCsrf,
+  requireActiveTenantManager,
+  async (req, res) => {
+    const context = contextFrom(res);
+    const requestId = Array.isArray(req.params.requestId) ? req.params.requestId[0] : req.params.requestId;
+    const decision = req.body?.decision as "approved" | "rejected" | undefined;
+    if (!requestId || !UUID_PATTERN.test(requestId) || (decision !== "approved" && decision !== "rejected")) {
+      res.status(400).json({ error: "Yêu cầu hoặc quyết định không hợp lệ" });
+      return;
+    }
+    try {
+      const requestResult = await getPlatformPool().query<{
+        id: string; full_name: string; phone: string; email: string; requested_position: string; status: string;
+      }>(
+        `SELECT id, full_name, phone, email, requested_position, status
+         FROM tenant_access_requests WHERE id = $1 AND tenant_id = $2 LIMIT 1`,
+        [requestId, context.activeTenantId],
+      );
+      const accessRequest = requestResult.rows[0];
+      if (!accessRequest) throw new Error("Không tìm thấy yêu cầu đăng ký");
+      if (accessRequest.status !== "pending") throw new Error("Yêu cầu này đã được xử lý");
+
+      if (decision === "rejected") {
+        await getPlatformPool().query(
+          `UPDATE tenant_access_requests SET status = 'rejected', reviewed_by = $2,
+                  reviewed_at = now(), updated_at = now()
+           WHERE id = $1 AND status = 'pending'`,
+          [requestId, context.userId],
+        );
+        res.json({ success: true });
+        return;
+      }
+
+      if (!context.activeTenantId) throw new TenantDatabaseUnavailableError();
+      const staffId = await withTenantDatabase(context.activeTenantId, async () => {
+        const matches = await pool.query<{ id: number; email: string | null; phone: string }>(
+          `SELECT id, email, phone FROM staff
+           WHERE is_active = 1 AND (lower(email) = $1 OR phone = $2)
+           ORDER BY CASE WHEN lower(email) = $1 THEN 0 ELSE 1 END`,
+          [normalizeEmail(accessRequest.email), accessRequest.phone],
+        );
+        const uniqueIds = [...new Set(matches.rows.map(row => Number(row.id)))];
+        if (uniqueIds.length > 1) {
+          throw new Error("Gmail và số điện thoại đang thuộc hai hồ sơ khác nhau. Vui lòng chỉnh hồ sơ nhân sự trước.");
+        }
+        if (matches.rows[0]) {
+          await pool.query(
+            `UPDATE staff SET email = COALESCE(NULLIF(email, ''), $2) WHERE id = $1`,
+            [matches.rows[0].id, normalizeEmail(accessRequest.email)],
+          );
+          return Number(matches.rows[0].id);
+        }
+        const inserted = await pool.query<{ id: number }>(
+          `INSERT INTO staff
+             (name, phone, email, role, roles, is_active, status, staff_type,
+              attendance_enabled, notes, join_date)
+           VALUES ($1, $2, $3, 'assistant', '["assistant"]'::jsonb, 1,
+                   'probation', 'official', true, $4, CURRENT_DATE)
+           RETURNING id`,
+          [accessRequest.full_name, accessRequest.phone, normalizeEmail(accessRequest.email),
+           `Tự đăng ký vị trí: ${accessRequest.requested_position}`],
+        );
+        return Number(inserted.rows[0].id);
+      });
+
+      await withPlatformTransaction(async (client) => {
+        await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`approve-access:${requestId}`]);
+        const pending = await client.query<{ status: string }>(
+          `SELECT status FROM tenant_access_requests WHERE id = $1 AND tenant_id = $2 FOR UPDATE`,
+          [requestId, context.activeTenantId],
+        );
+        if (pending.rows[0]?.status !== "pending") throw new Error("Yêu cầu này đã được xử lý");
+        const membership = await client.query<{ id: string; user_id: string }>(
+          `SELECT id, user_id FROM tenant_memberships
+           WHERE tenant_id = $1 AND tenant_staff_id = $2 LIMIT 1`,
+          [context.activeTenantId, staffId],
+        );
+        const invitationId = randomUUID();
+        await client.query(
+          `INSERT INTO tenant_invitations
+             (id, tenant_id, invited_email, invited_role, tenant_staff_id,
+              target_user_id, expires_at, invited_by, status)
+           VALUES ($1, $2, $3, 'STAFF', $4, $5, now() + interval '7 days', $6, 'pending')
+           ON CONFLICT (tenant_id, lower(invited_email)) WHERE status = 'pending'
+           DO UPDATE SET tenant_staff_id = EXCLUDED.tenant_staff_id,
+                         target_user_id = EXCLUDED.target_user_id,
+                         expires_at = EXCLUDED.expires_at,
+                         invited_by = EXCLUDED.invited_by`,
+          [invitationId, context.activeTenantId, normalizeEmail(accessRequest.email), staffId,
+           membership.rows[0]?.user_id ?? null, context.userId],
+        );
+        await client.query(
+          `UPDATE tenant_access_requests SET status = 'approved', reviewed_by = $2,
+                  reviewed_at = now(), tenant_staff_id = $3, updated_at = now()
+           WHERE id = $1`,
+          [requestId, context.userId, staffId],
+        );
+        await client.query(
+          `INSERT INTO platform_audit_logs
+             (id, actor_user_id, tenant_id, action, target_type, target_id, metadata)
+           VALUES ($1, $2, $3, 'access_request.approved', 'tenant_access_request', $4, $5::jsonb)`,
+          [randomUUID(), context.userId, context.activeTenantId, requestId,
+           JSON.stringify({ staffId, email: normalizeEmail(accessRequest.email) })],
+        );
+      });
+      res.json({ success: true, staffId });
+    } catch (error) {
+      if (error instanceof TenantDatabaseUnavailableError) {
+        res.status(503).json({ error: "Database chưa sẵn sàng", code: error.code }); return;
+      }
+      res.status(400).json({ error: error instanceof Error ? error.message : "Không thể xử lý yêu cầu" });
+    }
+  },
+);
+
+router.get(
   "/tenant/staff-candidates",
   requirePlatformSession,
   requireActiveTenantManager,

@@ -7,8 +7,10 @@ import {
   Loader2,
   Mail,
   ShieldCheck,
+  UserCheck,
   UserPlus,
   Users,
+  XCircle,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -70,6 +72,17 @@ interface StaffCandidate {
   name: string;
   email?: string | null;
   isActive: boolean;
+}
+
+interface AccessRequest {
+  id: string;
+  fullName: string;
+  phone: string;
+  email: string;
+  requestedPosition: string;
+  status: "pending" | "approved" | "rejected";
+  createdAt: string;
+  tenantStaffId?: number | null;
 }
 
 type ConfirmAction =
@@ -137,6 +150,11 @@ export default function MembersPage() {
     queryFn: () => api<{ invitations: TenantInvitation[] }>("/api/tenant/invitations"),
     enabled: canManageMembers && Boolean(activeTenant),
   });
+  const accessRequestsQuery = useQuery({
+    queryKey: ["tenant-access-requests", activeTenant?.id],
+    queryFn: () => api<{ requests: AccessRequest[] }>("/api/tenant/access-requests"),
+    enabled: canManageMembers && Boolean(activeTenant),
+  });
   const staffQuery = useQuery({
     queryKey: ["tenant-staff-candidates", activeTenant?.id],
     queryFn: () => api<{ staff: StaffCandidate[] }>("/api/tenant/staff-candidates"),
@@ -145,6 +163,7 @@ export default function MembersPage() {
 
   const members = membersQuery.data?.members ?? [];
   const invitations = (invitationsQuery.data?.invitations ?? []).filter(invitation => invitation.status === "pending");
+  const accessRequests = (accessRequestsQuery.data?.requests ?? []).filter(request => request.status === "pending");
   const staffCandidates = staffQuery.data?.staff ?? [];
   const isOwner = activeTenant?.role === "OWNER";
   const selectedStaff = useMemo(
@@ -157,6 +176,7 @@ export default function MembersPage() {
       queryClient.invalidateQueries({ queryKey: ["tenant-members", activeTenant?.id] }),
       queryClient.invalidateQueries({ queryKey: ["tenant-invitations", activeTenant?.id] }),
       queryClient.invalidateQueries({ queryKey: ["tenant-staff-candidates", activeTenant?.id] }),
+      queryClient.invalidateQueries({ queryKey: ["tenant-access-requests", activeTenant?.id] }),
     ]);
   };
 
@@ -204,6 +224,19 @@ export default function MembersPage() {
       setConfirmAction(null);
       setPageError(error instanceof Error ? error.message : "Không cập nhật được thành viên");
     },
+  });
+
+  const reviewMutation = useMutation({
+    mutationFn: (input: { request: AccessRequest; decision: "approved" | "rejected" }) =>
+      api(`/api/tenant/access-requests/${input.request.id}/review`, {
+        method: "POST",
+        body: JSON.stringify({ decision: input.decision }),
+      }),
+    onSuccess: async () => {
+      setPageError("");
+      await refreshLists();
+    },
+    onError: error => setPageError(error instanceof Error ? error.message : "Không xử lý được yêu cầu"),
   });
 
   const chooseStaff = (rawId: string) => {
@@ -257,6 +290,41 @@ export default function MembersPage() {
           {pageError}
         </div>
       )}
+
+      <div className="rounded-2xl border bg-card shadow-sm">
+        <div className="flex items-center justify-between border-b px-5 py-4">
+          <div>
+            <h2 className="font-semibold">Yêu cầu đăng ký mới</h2>
+            <p className="text-xs text-muted-foreground">Duyệt xong, nhân viên đăng nhập bằng đúng Gmail đã đăng ký.</p>
+          </div>
+          {accessRequests.length > 0 && <Badge className="bg-amber-100 text-amber-700 hover:bg-amber-100">{accessRequests.length} chờ duyệt</Badge>}
+        </div>
+        {accessRequestsQuery.isLoading ? (
+          <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> Đang tải…</div>
+        ) : accessRequests.length === 0 ? (
+          <div className="px-5 py-8 text-center text-sm text-muted-foreground">Chưa có yêu cầu mới.</div>
+        ) : (
+          <div className="divide-y">
+            {accessRequests.map(request => (
+              <div key={request.id} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:px-5">
+                <div className="min-w-0 flex-1">
+                  <p className="font-semibold">{request.fullName}</p>
+                  <p className="break-all text-sm text-muted-foreground">{request.email} · {request.phone}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">Vị trí đăng ký: <span className="font-medium text-foreground">{request.requestedPosition}</span></p>
+                </div>
+                <div className="grid grid-cols-2 gap-2 sm:flex">
+                  <Button variant="outline" disabled={reviewMutation.isPending} onClick={() => reviewMutation.mutate({ request, decision: "rejected" })}>
+                    <XCircle className="mr-2 h-4 w-4" /> Từ chối
+                  </Button>
+                  <Button disabled={reviewMutation.isPending} onClick={() => reviewMutation.mutate({ request, decision: "approved" })}>
+                    {reviewMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <UserCheck className="mr-2 h-4 w-4" />} Duyệt
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       <div className="rounded-2xl border bg-card shadow-sm">
         <div className="border-b px-5 py-4">

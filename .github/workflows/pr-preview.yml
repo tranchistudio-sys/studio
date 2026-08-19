@@ -252,6 +252,7 @@ jobs:
             DATABASE_URL="${{ secrets.PREVIEW_DATABASE_URL }}" \
             PLATFORM_DATABASE_URL="$PLATFORM_DATABASE_URL" \
             DEFAULT_TENANT_DATABASE_URL="${{ secrets.PREVIEW_DATABASE_URL }}" \
+            PUBLIC_TENANT_SLUG="amazing-studio" \
             GOOGLE_CLIENT_ID="$GOOGLE_CLIENT_ID" \
             BOOTSTRAP_OWNER_EMAIL="$bootstrap_owner_email" \
             BOOTSTRAP_TENANT_STAFF_ID="$BOOTSTRAP_TENANT_STAFF_ID" \

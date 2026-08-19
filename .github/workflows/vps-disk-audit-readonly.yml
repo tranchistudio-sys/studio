@@ -78,6 +78,37 @@ jobs:
             fi
           done
 
+          section "PHÂN RÃ VÙNG LỚN CẦN XÁC MINH"
+          for target in \
+            /opt/amazing-studio/migration \
+            /opt/amazing-studio/releases \
+            /opt/amazing-studio/recovery \
+            /opt/amazing-studio/x20-settings-ui-prototype \
+            /opt/amazing-ai-bridge \
+            /srv \
+            /home/deploy \
+            /home/codex; do
+            if sudo -n test -d "$target"; then
+              printf '\n--- %s (max-depth=3) ---\n' "$target"
+              sudo -n du -x -BM --max-depth=3 "$target" 2>/dev/null | sort -n | tail -80 || true
+            fi
+          done
+
+          section "100 FILE LỚN NHẤT TRONG VÙNG KHÔNG PHẢI DATABASE/UPLOAD"
+          for target in /opt/amazing-studio/migration /opt/amazing-studio/releases /opt/amazing-ai-bridge /home/deploy /home/codex; do
+            if sudo -n test -d "$target"; then
+              printf '\n--- %s ---\n' "$target"
+              sudo -n find "$target" -xdev -type f -printf '%s %TY-%Tm-%Td %TH:%TM %p\n' 2>/dev/null \
+                | sort -nr | head -100 || true
+            fi
+          done
+
+          section "HASH BACKUP AMAZING STUDIO - CHỈ ĐỌC"
+          if sudo -n test -d /opt/amazing-studio/backups; then
+            sudo -n find /opt/amazing-studio/backups -xdev -maxdepth 1 -type f -print0 2>/dev/null \
+              | sudo -n xargs -0 -r sha256sum || true
+          fi
+
           section "PRODUCTION CONTAINERS ĐANG CHẠY"
           run_readonly sudo -n docker ps --no-trunc --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
           printf '\n$ Running container image IDs\n'

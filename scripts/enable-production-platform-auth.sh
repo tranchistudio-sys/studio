@@ -157,12 +157,12 @@ services:
       - /opt/amazing-studio/platform-auth.env
 YAML
 
-sudo -n install -m 600 -o "$(id -un)" -g "$(id -gn)" "$ENV_TMP" "$PLATFORM_ENV_FILE"
+sudo -n install -m 600 -o root -g root "$ENV_TMP" "$PLATFORM_ENV_FILE"
 sudo -n install -m 644 -o root -g root "$OVERRIDE_TMP" "$PLATFORM_OVERRIDE_FILE"
 rm -f "$ENV_TMP" "$OVERRIDE_TMP"
 
 echo "[platform-auth] Recreate duy nhất API với platform override"
-docker compose -f "$DEPLOY_COMPOSE_FILE" -f "$PLATFORM_OVERRIDE_FILE" \
+sudo -n docker compose -f "$DEPLOY_COMPOSE_FILE" -f "$PLATFORM_OVERRIDE_FILE" \
   up -d --no-deps --force-recreate "$API_SERVICE"
 
 for attempt in $(seq 1 24); do

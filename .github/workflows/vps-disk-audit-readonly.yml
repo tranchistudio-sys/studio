@@ -190,3 +190,5 @@ jobs:
           run_readonly df -hT
           run_readonly sudo -n docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
           REMOTE_AUDIT
+
+# Re-audit before approved cleanup A-D — 2026-08-20

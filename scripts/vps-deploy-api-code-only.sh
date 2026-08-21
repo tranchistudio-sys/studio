@@ -57,7 +57,7 @@ API_CID=""
 while IFS= read -r service; do
   cid=$(compose_production ps -q "$service")
   [ -n "$cid" ] || continue
-  if docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+  if sudo -n docker inspect "$cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
     | grep -q '^DATABASE_URL='; then
     API_SERVICE="$service"
     API_CID="$cid"
@@ -66,11 +66,11 @@ while IFS= read -r service; do
 done < <(compose_production config --services)
 
 [ -n "$API_SERVICE" ] && [ -n "$API_CID" ] || die "Không xác định được container API."
-docker compose -f "$RELEASE_COMPOSE" config --services | grep -Fxq "$API_SERVICE" || \
+sudo -n docker compose -f "$RELEASE_COMPOSE" config --services | grep -Fxq "$API_SERVICE" || \
   die "Release không có service API $API_SERVICE."
 
-PREVIOUS_API_IMAGE_ID=$(docker inspect "$API_CID" --format '{{.Image}}')
-API_IMAGE_NAME=$(docker inspect "$API_CID" --format '{{.Config.Image}}')
+PREVIOUS_API_IMAGE_ID=$(sudo -n docker inspect "$API_CID" --format '{{.Image}}')
+API_IMAGE_NAME=$(sudo -n docker inspect "$API_CID" --format '{{.Config.Image}}')
 [ -n "$PREVIOUS_API_IMAGE_ID" ] && [ -n "$API_IMAGE_NAME" ] || \
   die "Không xác định được image API hiện tại."
 
@@ -85,14 +85,14 @@ sudo -n cp --preserve=mode,ownership,timestamps "$PLATFORM_ENV_FILE" "$ENV_BACKU
 sudo -n awk '!/^PLATFORM_SESSION_TTL_HOURS=/' "$PLATFORM_ENV_FILE" > "$ENV_CANDIDATE"
 printf 'PLATFORM_SESSION_TTL_HOURS=%s\n' "$SESSION_TTL_HOURS" >> "$ENV_CANDIDATE"
 chmod 600 "$ENV_CANDIDATE"
-docker tag "$PREVIOUS_API_IMAGE_ID" "$ROLLBACK_API_IMAGE"
+sudo -n docker tag "$PREVIOUS_API_IMAGE_ID" "$ROLLBACK_API_IMAGE"
 
 health_ok() {
   local health config new_cid ttl
   health=$(curl -fsS --max-time 15 "$DEPLOY_HEALTH_URL" 2>/dev/null || true)
   config=$(curl -fsS --max-time 15 "$DEPLOY_WEB_URL/api/auth/config" 2>/dev/null || true)
   new_cid=$(compose_production ps -q "$API_SERVICE")
-  ttl=$(docker inspect "$new_cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+  ttl=$(sudo -n docker inspect "$new_cid" --format '{{range .Config.Env}}{{println .}}{{end}}' \
     | sed -n 's/^PLATFORM_SESSION_TTL_HOURS=//p' | head -n 1)
   [[ "$health" == *'"status":"ok"'* ]] &&
     [[ "$config" == *'"platformEnabled":true'* ]] &&
@@ -120,7 +120,7 @@ rollback() {
   if [ "$ENV_CHANGED" -eq 1 ] && sudo -n test -r "$ENV_BACKUP"; then
     sudo -n install -m 600 -o root -g root "$ENV_BACKUP" "$PLATFORM_ENV_FILE" || true
   fi
-  docker tag "$ROLLBACK_API_IMAGE" "$API_IMAGE_NAME" || true
+  sudo -n docker tag "$ROLLBACK_API_IMAGE" "$API_IMAGE_NAME" || true
   if [ "$API_REPLACED" -eq 1 ]; then
     compose_production up -d --no-deps --force-recreate "$API_SERVICE" || true
   fi

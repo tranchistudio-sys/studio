@@ -143,7 +143,7 @@ router.post("/auth/login", (req, res, next) => {
   }
 
   res.json({
-    token: signLegacyToken(Number(u.id), undefined, 12 * 60 * 60),
+    token: signLegacyToken(Number(u.id)),
     user: { id: u.id, name: u.name, role: u.role, roles: u.roles ?? [], phone: u.phone, email: u.email, avatar: u.avatar, username: u.username },
   });
 });

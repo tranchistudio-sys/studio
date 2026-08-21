@@ -9,9 +9,18 @@ vi.mock("@workspace/db", () => ({
 
 import { GoogleAuthenticationError, validateGooglePayload } from "./service";
 import {
+  createPlatformSession,
+  DEFAULT_SESSION_TTL_HOURS,
+  MAX_SESSION_TTL_HOURS,
   platformSessionContextIsActive,
+  platformSessionTtlHours,
   setPlatformSessionCookie,
 } from "./session";
+import {
+  DEFAULT_LEGACY_SESSION_TTL_SECONDS,
+  readLegacyToken,
+  signLegacyToken,
+} from "../lib/legacy-auth-token";
 import type { PlatformSessionContext } from "./types";
 import { LOGGER_REDACT_PATHS } from "../lib/log-redaction";
 import {
@@ -22,6 +31,7 @@ import {
 const originalNodeEnv = process.env.NODE_ENV;
 const originalDatabaseUrl = process.env.DATABASE_URL;
 const originalDefaultTenantUrl = process.env.DEFAULT_TENANT_DATABASE_URL;
+const originalSessionTtlHours = process.env.PLATFORM_SESSION_TTL_HOURS;
 afterEach(() => {
   if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
   else process.env.NODE_ENV = originalNodeEnv;
@@ -29,6 +39,8 @@ afterEach(() => {
   else process.env.DATABASE_URL = originalDatabaseUrl;
   if (originalDefaultTenantUrl === undefined) delete process.env.DEFAULT_TENANT_DATABASE_URL;
   else process.env.DEFAULT_TENANT_DATABASE_URL = originalDefaultTenantUrl;
+  if (originalSessionTtlHours === undefined) delete process.env.PLATFORM_SESSION_TTL_HOURS;
+  else process.env.PLATFORM_SESSION_TTL_HOURS = originalSessionTtlHours;
 });
 
 const activeContext = (): PlatformSessionContext => ({
@@ -71,6 +83,41 @@ describe("Google identity validation", () => {
 });
 
 describe("session policy", () => {
+  it("giữ phiên đăng nhập 180 ngày và không cho cấu hình vượt trần", () => {
+    delete process.env.PLATFORM_SESSION_TTL_HOURS;
+    expect(platformSessionTtlHours()).toBe(24 * 180);
+    expect(DEFAULT_SESSION_TTL_HOURS).toBe(24 * 180);
+
+    process.env.PLATFORM_SESSION_TTL_HOURS = String(24 * 365);
+    expect(platformSessionTtlHours()).toBe(MAX_SESSION_TTL_HOURS);
+
+    process.env.PLATFORM_SESSION_TTL_HOURS = "khong-hop-le";
+    expect(platformSessionTtlHours()).toBe(DEFAULT_SESSION_TTL_HOURS);
+  });
+
+  it("lưu ngày hết hạn 180 ngày ở server cho phiên Google và mật khẩu dùng chung", async () => {
+    delete process.env.PLATFORM_SESSION_TTL_HOURS;
+    const before = Date.now();
+    const query = vi.fn().mockResolvedValue({ rows: [] });
+    const session = await createPlatformSession(
+      { query } as any,
+      { get: vi.fn().mockReturnValue("test-browser"), ip: "127.0.0.1", socket: {} } as any,
+      "user",
+      { tenantId: "tenant", membershipId: null, tenantStaffId: 7 },
+    );
+    const expectedMs = 180 * 24 * 60 * 60_000;
+    expect(session.expiresAt.getTime() - before).toBeGreaterThanOrEqual(expectedMs);
+    expect(session.expiresAt.getTime() - before).toBeLessThan(expectedMs + 2_000);
+    expect(query).toHaveBeenCalled();
+  });
+
+  it("fallback đăng nhập cũ cũng phát hành token 180 ngày", () => {
+    const payload = readLegacyToken(`Bearer ${signLegacyToken(7)}`);
+    expect(payload).not.toBeNull();
+    expect((payload?.exp ?? 0) - (payload?.iat ?? 0)).toBe(DEFAULT_LEGACY_SESSION_TTL_SECONDS);
+    expect(DEFAULT_LEGACY_SESSION_TTL_SECONDS).toBe(180 * 24 * 60 * 60);
+  });
+
   it("kiểm tra lại user, tenant và membership mỗi request", () => {
     expect(platformSessionContextIsActive(activeContext())).toBe(true);
     expect(platformSessionContextIsActive({ ...activeContext(), userStatus: "suspended" })).toBe(false);

@@ -198,6 +198,24 @@ describe("platform migration safety", () => {
   });
 });
 
+
+describe("API code-only deployment safety", () => {
+  it("chỉ thay API, giữ rollback và tuyệt đối không thao tác database", async () => {
+    const here = path.dirname(fileURLToPath(import.meta.url));
+    const script = await readFile(
+      path.resolve(here, "../../../../scripts/vps-deploy-api-code-only.sh"),
+      "utf8",
+    );
+    expect(script).toContain("PLATFORM_SESSION_TTL_HOURS");
+    expect(script).toContain("4320");
+    expect(script).toContain("ROLLBACK_API_IMAGE");
+    expect(script).toMatch(/--no-deps\s+--force-recreate/);
+    expect(script).not.toMatch(/\b(?:psql|pg_dump|createdb|dropdb|drizzle)\b/i);
+    expect(script).not.toMatch(/\bdb\s+push\b/i);
+    expect(script).not.toMatch(/\b(?:migrate|migration|seed)\b/i);
+    expect(script).not.toMatch(/docker\s+(?:compose\s+[^\n]*\s+down|system\s+prune)/i);
+  });
+});
 describe("sensitive logging policy", () => {
   it("redact auth token, cookie, Google credential và password", () => {
     expect(LOGGER_REDACT_PATHS).toEqual(expect.arrayContaining([

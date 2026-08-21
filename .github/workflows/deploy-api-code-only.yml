@@ -55,12 +55,10 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
       DEFAULT_TENANT_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
       TENANT_B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_b_test
-      PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
       PLATFORM_SESSION_TTL_HOURS: "4320"
       SESSION_SECRET: ci-only-session-secret-at-least-32-bytes
       BOOTSTRAP_OWNER_EMAIL: owner@gmail.com
       BOOTSTRAP_TENANT_STAFF_ID: "1"
-      GOOGLE_CLIENT_ID: test-google-client.apps.googleusercontent.com
     outputs:
       sha: ${{ steps.commit.outputs.sha }}
     steps:
@@ -100,11 +98,16 @@ jobs:
           psql -h 127.0.0.1 -U postgres -d amazing_platform_test -v ON_ERROR_STOP=1 -c 'CREATE DATABASE tenant_b_test'
 
       - name: Migration chỉ trên database CI tạm
+        env:
+          PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
         run: |
           pnpm --filter @workspace/platform-db migrate
           pnpm --filter @workspace/platform-db migrate
 
       - name: Test platform auth và HTTP E2E
+        env:
+          PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
+          GOOGLE_CLIENT_ID: test-google-client.apps.googleusercontent.com
         run: pnpm --filter @workspace/api-server test:platform
 
       - name: Test API

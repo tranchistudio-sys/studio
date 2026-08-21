@@ -77,7 +77,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           path: _control
-          sparse-checkout: _control/scripts/vps-deploy-api-code-only.sh
+          sparse-checkout: scripts/vps-deploy-api-code-only.sh
           sparse-checkout-cone-mode: false
 
       - uses: pnpm/action-setup@v4
@@ -116,12 +116,13 @@ jobs:
       - name: Chốt script production không có thao tác database
         shell: bash
         run: |
+          script=_control/scripts/vps-deploy-api-code-only.sh
           forbidden='psql|pg_dump|createdb|dropdb|drizzle|db[[:space:]]+push|pnpm[^\n]*migrat|docker[[:space:]]+compose[^\n]*down|docker[[:space:]]+system[[:space:]]+prune'
-          if grep -Ein "$forbidden" _control/scripts/vps-deploy-api-code-only.sh; then
+          if sed '/^[[:space:]]*#/d' "$script" | grep -Ein "$forbidden"; then
             echo "::error::Script API production chứa lệnh ngoài phạm vi code-only."
             exit 1
           fi
-          bash -n _control/scripts/vps-deploy-api-code-only.sh
+          bash -n "$script"
 
   deploy:
     name: Thay duy nhất container API

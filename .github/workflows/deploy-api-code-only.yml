@@ -1,0 +1,186 @@
+name: Deploy API (code-only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Commit đã deploy web và cần deploy API"
+        required: true
+        default: "03f8c5d0c012a0315f7ba2e1425725a5ee5fbf84"
+      confirm:
+        description: "Gõ DEPLOY_API để xác nhận"
+        required: true
+
+concurrency:
+  group: amazing-studio-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Xác nhận lệnh deploy API
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Bắt buộc gõ đúng DEPLOY_API
+        shell: bash
+        run: |
+          if [ "${{ inputs.confirm }}" != "DEPLOY_API" ]; then
+            echo "::error::Bạn phải gõ đúng DEPLOY_API."
+            exit 1
+          fi
+
+  verify:
+    name: Test API và chốt code-only
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: amazing_platform_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d amazing_platform_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
+      DEFAULT_TENANT_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
+      TENANT_B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_b_test
+      PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
+      PLATFORM_SESSION_TTL_HOURS: "4320"
+      SESSION_SECRET: ci-only-session-secret-at-least-32-bytes
+      BOOTSTRAP_OWNER_EMAIL: owner@gmail.com
+      BOOTSTRAP_TENANT_STAFF_ID: "1"
+      GOOGLE_CLIENT_ID: test-google-client.apps.googleusercontent.com
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - id: commit
+        name: Ghi nhận đúng commit API
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Cài phụ thuộc đúng lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Tạo tenant database cô lập cho integration test
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h 127.0.0.1 -U postgres -d amazing_platform_test -v ON_ERROR_STOP=1 -c 'CREATE DATABASE tenant_amazing_test'
+          psql -h 127.0.0.1 -U postgres -d amazing_platform_test -v ON_ERROR_STOP=1 -c 'CREATE DATABASE tenant_b_test'
+
+      - name: Migration chỉ trên database CI tạm
+        run: |
+          pnpm --filter @workspace/platform-db migrate
+          pnpm --filter @workspace/platform-db migrate
+
+      - name: Test platform auth và HTTP E2E
+        run: pnpm --filter @workspace/api-server test:platform
+
+      - name: Test API
+        run: pnpm --filter @workspace/api-server test
+
+      - name: Build API production
+        run: pnpm --filter @workspace/api-server build
+
+      - name: Chốt script production không có thao tác database
+        shell: bash
+        run: |
+          forbidden='psql|pg_dump|createdb|dropdb|drizzle|db[[:space:]]+push|pnpm[^\n]*migrat|docker[[:space:]]+compose[^\n]*down|docker[[:space:]]+system[[:space:]]+prune'
+          if grep -Ein "$forbidden" scripts/vps-deploy-api-code-only.sh; then
+            echo "::error::Script API production chứa lệnh ngoài phạm vi code-only."
+            exit 1
+          fi
+          bash -n scripts/vps-deploy-api-code-only.sh
+
+  deploy:
+    name: Thay duy nhất container API
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      VPS_HOST: 160.250.128.162
+      VPS_USER: deploy
+      VPS_PORT: 22
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+      DEPLOY_SHA: ${{ needs.verify.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          sparse-checkout: scripts/vps-deploy-api-code-only.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Kiểm tra khóa SSH
+        shell: bash
+        run: |
+          test -n "$VPS_SSH_PRIVATE_KEY" || {
+            echo "::error::Thiếu GitHub Secret VPS_SSH_PRIVATE_KEY"
+            exit 1
+          }
+
+      - name: Chuẩn bị SSH
+        shell: bash
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
+          ssh-keyscan -H -p "$VPS_PORT" "$VPS_HOST" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Chép bộ điều khiển API code-only lên VPS
+        shell: bash
+        run: |
+          scp -P "$VPS_PORT" -i "$HOME/.ssh/deploy_key" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            scripts/vps-deploy-api-code-only.sh \
+            "$VPS_USER@$VPS_HOST:/tmp/amazing-vps-deploy-api-$GITHUB_RUN_ID.sh"
+
+      - name: Deploy API và tự rollback nếu healthcheck hỏng
+        shell: bash
+        run: |
+          ssh -p "$VPS_PORT" -i "$HOME/.ssh/deploy_key" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" \
+            "bash '/tmp/amazing-vps-deploy-api-$GITHUB_RUN_ID.sh' '$DEPLOY_SHA' '$GITHUB_RUN_ID'; status=\$?; rm -f '/tmp/amazing-vps-deploy-api-$GITHUB_RUN_ID.sh'; exit \$status"
+
+      - name: Xác nhận production sau deploy
+        shell: bash
+        run: |
+          for attempt in $(seq 1 12); do
+            health=$(curl -fsS --max-time 15 https://tranchistudio.com/api/healthz || true)
+            config=$(curl -fsS --max-time 15 https://tranchistudio.com/api/auth/config || true)
+            if [[ "$health" == *'"status":"ok"'* ]] &&
+               [[ "$config" == *'"platformEnabled":true'* ]] &&
+               [[ "$config" == *'"googleEnabled":true'* ]]; then
+              echo "Production API healthy tại commit $DEPLOY_SHA."
+              exit 0
+            fi
+            echo "Health check $attempt/12 chưa đạt; chờ 5 giây..."
+            sleep 5
+          done
+          echo "::error::Production API chưa healthy sau deploy."
+          exit 1

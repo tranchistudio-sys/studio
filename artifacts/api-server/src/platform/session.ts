@@ -6,7 +6,8 @@ import type { PlatformRole, PlatformSessionContext, TenantRole, TenantStatus } f
 export const PLATFORM_SESSION_COOKIE = "amazing_session";
 export const LOGIN_CSRF_COOKIE = "amazing_login_csrf";
 
-const DEFAULT_SESSION_TTL_HOURS = 12;
+export const DEFAULT_SESSION_TTL_HOURS = 24 * 180;
+export const MAX_SESSION_TTL_HOURS = 24 * 180;
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("base64url");
@@ -22,10 +23,10 @@ function cookieSecure(): boolean {
   return process.env.NODE_ENV === "production";
 }
 
-function ttlHours(): number {
+export function platformSessionTtlHours(): number {
   const parsed = Number(process.env.PLATFORM_SESSION_TTL_HOURS ?? DEFAULT_SESSION_TTL_HOURS);
   if (!Number.isFinite(parsed) || parsed < 1) return DEFAULT_SESSION_TTL_HOURS;
-  return Math.min(parsed, 24 * 30);
+  return Math.min(parsed, MAX_SESSION_TTL_HOURS);
 }
 
 function ipHash(req: Request): string | null {
@@ -91,7 +92,7 @@ export async function createPlatformSession(
   // Stable per server session: multiple browser tabs do not invalidate one
   // another whenever either tab refreshes /auth/me.
   const csrfToken = sessionCsrfToken(sessionId);
-  const expiresAt = new Date(Date.now() + ttlHours() * 60 * 60_000);
+  const expiresAt = new Date(Date.now() + platformSessionTtlHours() * 60 * 60_000);
   const userAgent = req.get("user-agent")?.slice(0, 500) || null;
 
   await queryable.query(

@@ -206,7 +206,7 @@ describe("API code-only deployment safety", () => {
       path.resolve(here, "../../../../scripts/vps-deploy-api-code-only.sh"),
       "utf8",
     );
-    const commands = script.replace(/^[[:space:]]*#.*$/gm, "");
+    const commands = script.replace(/^\\s*#.*$/gm, "");
     expect(commands).toContain("PLATFORM_SESSION_TTL_HOURS");
     expect(commands).toContain("4320");
     expect(commands).toContain("ROLLBACK_API_IMAGE");

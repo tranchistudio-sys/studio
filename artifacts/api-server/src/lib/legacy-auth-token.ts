@@ -77,10 +77,12 @@ export function capLegacyAdmin(
   return tenantRole ? tenantRole === "OWNER" || tenantRole === "ADMIN" : legacyIsAdmin;
 }
 
+export const DEFAULT_LEGACY_SESSION_TTL_SECONDS = 180 * 24 * 60 * 60;
+
 export function signLegacyToken(
   staffId: number,
   sessionId?: string,
-  ttlSeconds = 12 * 60 * 60,
+  ttlSeconds = DEFAULT_LEGACY_SESSION_TTL_SECONDS,
   tenantRole?: "OWNER" | "ADMIN" | "STAFF",
 ): string {
   const now = Math.floor(Date.now() / 1000);

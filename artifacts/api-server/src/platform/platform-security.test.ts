@@ -210,11 +210,11 @@ describe("API code-only deployment safety", () => {
     expect(commands).toContain("PLATFORM_SESSION_TTL_HOURS");
     expect(commands).toContain("4320");
     expect(commands).toContain("ROLLBACK_API_IMAGE");
-    expect(script).toMatch(/--no-deps\s+--force-recreate/);
-    expect(script).not.toMatch(/\b(?:psql|pg_dump|createdb|dropdb|drizzle)\b/i);
-    expect(script).not.toMatch(/\bdb\s+push\b/i);
-    expect(script).not.toMatch(/\b(?:migrate|migration|seed)\b/i);
-    expect(script).not.toMatch(/docker\s+(?:compose\s+[^\n]*\s+down|system\s+prune)/i);
+    expect(commands).toMatch(/--no-deps\s+--force-recreate/);
+    expect(commands).not.toMatch(/\b(?:psql|pg_dump|createdb|dropdb|drizzle)\b/i);
+    expect(commands).not.toMatch(/\bdb\s+push\b/i);
+    expect(commands).not.toMatch(/\b(?:migrate|migration|seed)\b/i);
+    expect(commands).not.toMatch(/docker\s+(?:compose\s+[^\n]*\s+down|system\s+prune)/i);
   });
 });
 describe("sensitive logging policy", () => {

@@ -206,9 +206,10 @@ describe("API code-only deployment safety", () => {
       path.resolve(here, "../../../../scripts/vps-deploy-api-code-only.sh"),
       "utf8",
     );
-    expect(script).toContain("PLATFORM_SESSION_TTL_HOURS");
-    expect(script).toContain("4320");
-    expect(script).toContain("ROLLBACK_API_IMAGE");
+    const commands = script.replace(/^[[:space:]]*#.*$/gm, "");
+    expect(commands).toContain("PLATFORM_SESSION_TTL_HOURS");
+    expect(commands).toContain("4320");
+    expect(commands).toContain("ROLLBACK_API_IMAGE");
     expect(script).toMatch(/--no-deps\s+--force-recreate/);
     expect(script).not.toMatch(/\b(?:psql|pg_dump|createdb|dropdb|drizzle)\b/i);
     expect(script).not.toMatch(/\bdb\s+push\b/i);

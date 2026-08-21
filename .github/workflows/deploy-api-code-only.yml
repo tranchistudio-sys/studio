@@ -72,6 +72,14 @@ jobs:
         name: Ghi nhận đúng commit API
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      - name: Lấy bộ điều khiển deploy từ đúng phiên workflow
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: _control
+          sparse-checkout: _control/scripts/vps-deploy-api-code-only.sh
+          sparse-checkout-cone-mode: false
+
       - uses: pnpm/action-setup@v4
         with:
           version: 10.34.5
@@ -109,11 +117,11 @@ jobs:
         shell: bash
         run: |
           forbidden='psql|pg_dump|createdb|dropdb|drizzle|db[[:space:]]+push|pnpm[^\n]*migrat|docker[[:space:]]+compose[^\n]*down|docker[[:space:]]+system[[:space:]]+prune'
-          if grep -Ein "$forbidden" scripts/vps-deploy-api-code-only.sh; then
+          if grep -Ein "$forbidden" _control/scripts/vps-deploy-api-code-only.sh; then
             echo "::error::Script API production chứa lệnh ngoài phạm vi code-only."
             exit 1
           fi
-          bash -n scripts/vps-deploy-api-code-only.sh
+          bash -n _control/scripts/vps-deploy-api-code-only.sh
 
   deploy:
     name: Thay duy nhất container API
@@ -130,7 +138,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.sha }}
           sparse-checkout: scripts/vps-deploy-api-code-only.sh
           sparse-checkout-cone-mode: false
 

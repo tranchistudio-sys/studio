@@ -6,8 +6,8 @@ import type { PlatformRole, PlatformSessionContext, TenantRole, TenantStatus } f
 export const PLATFORM_SESSION_COOKIE = "amazing_session";
 export const LOGIN_CSRF_COOKIE = "amazing_login_csrf";
 
-export const DEFAULT_SESSION_TTL_HOURS = 24 * 180;
-export const MAX_SESSION_TTL_HOURS = 24 * 180;
+export const DEFAULT_SESSION_TTL_HOURS = 24 * 365;
+export const MAX_SESSION_TTL_HOURS = 24 * 365;
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("base64url");

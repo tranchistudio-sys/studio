@@ -77,7 +77,7 @@ export function capLegacyAdmin(
   return tenantRole ? tenantRole === "OWNER" || tenantRole === "ADMIN" : legacyIsAdmin;
 }
 
-export const DEFAULT_LEGACY_SESSION_TTL_SECONDS = 180 * 24 * 60 * 60;
+export const DEFAULT_LEGACY_SESSION_TTL_SECONDS = 365 * 24 * 60 * 60;
 
 export function signLegacyToken(
   staffId: number,

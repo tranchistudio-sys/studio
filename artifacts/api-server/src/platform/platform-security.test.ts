@@ -83,19 +83,25 @@ describe("Google identity validation", () => {
 });
 
 describe("session policy", () => {
-  it("giữ phiên đăng nhập 180 ngày và không cho cấu hình vượt trần", () => {
+  it("giữ phiên đăng nhập 365 ngày và không cho cấu hình vượt trần", () => {
     delete process.env.PLATFORM_SESSION_TTL_HOURS;
-    expect(platformSessionTtlHours()).toBe(24 * 180);
-    expect(DEFAULT_SESSION_TTL_HOURS).toBe(24 * 180);
+    expect(platformSessionTtlHours()).toBe(24 * 365);
+    expect(DEFAULT_SESSION_TTL_HOURS).toBe(24 * 365);
 
-    process.env.PLATFORM_SESSION_TTL_HOURS = String(24 * 365);
+    process.env.PLATFORM_SESSION_TTL_HOURS = String(24 * 365 * 2);
     expect(platformSessionTtlHours()).toBe(MAX_SESSION_TTL_HOURS);
 
     process.env.PLATFORM_SESSION_TTL_HOURS = "khong-hop-le";
     expect(platformSessionTtlHours()).toBe(DEFAULT_SESSION_TTL_HOURS);
   });
 
-  it("lưu ngày hết hạn 180 ngày ở server cho phiên Google và mật khẩu dùng chung", async () => {
+  it("phiên đăng nhập không bao giờ tự hết hạn ở mốc 12 giờ như bug cũ", () => {
+    delete process.env.PLATFORM_SESSION_TTL_HOURS;
+    const twelveHoursMs = 12 * 60 * 60_000;
+    expect(platformSessionTtlHours() * 60 * 60_000).toBeGreaterThan(twelveHoursMs);
+  });
+
+  it("lưu ngày hết hạn 365 ngày ở server cho phiên Google và mật khẩu dùng chung", async () => {
     delete process.env.PLATFORM_SESSION_TTL_HOURS;
     const before = Date.now();
     const query = vi.fn().mockResolvedValue({ rows: [] });
@@ -105,17 +111,44 @@ describe("session policy", () => {
       "user",
       { tenantId: "tenant", membershipId: null, tenantStaffId: 7 },
     );
-    const expectedMs = 180 * 24 * 60 * 60_000;
+    const expectedMs = 365 * 24 * 60 * 60_000;
     expect(session.expiresAt.getTime() - before).toBeGreaterThanOrEqual(expectedMs);
     expect(session.expiresAt.getTime() - before).toBeLessThan(expectedMs + 2_000);
     expect(query).toHaveBeenCalled();
   });
 
-  it("fallback đăng nhập cũ cũng phát hành token 180 ngày", () => {
+  it("phiên tạo lúc login vẫn còn hiệu lực sau 12 giờ, nhiều ngày, và gần 365 ngày; hết hạn đúng sau 365 ngày", async () => {
+    delete process.env.PLATFORM_SESSION_TTL_HOURS;
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+      const query = vi.fn().mockResolvedValue({ rows: [] });
+      const session = await createPlatformSession(
+        { query } as any,
+        { get: vi.fn().mockReturnValue("test-browser"), ip: "127.0.0.1", socket: {} } as any,
+        "user",
+        { tenantId: "tenant", membershipId: null, tenantStaffId: 7 },
+      );
+
+      const isStillActiveAfter = (advanceMs: number) => {
+        vi.setSystemTime(new Date(Date.parse("2026-01-01T00:00:00.000Z") + advanceMs));
+        return session.expiresAt.getTime() > Date.now();
+      };
+
+      expect(isStillActiveAfter(12 * 60 * 60_000)).toBe(true); // 12 giờ — mốc bug cũ
+      expect(isStillActiveAfter(30 * 24 * 60 * 60_000)).toBe(true); // 30 ngày
+      expect(isStillActiveAfter(364 * 24 * 60 * 60_000)).toBe(true); // gần 365 ngày
+      expect(isStillActiveAfter(366 * 24 * 60 * 60_000)).toBe(false); // qua 365 ngày phải hết hạn
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fallback đăng nhập cũ cũng phát hành token 365 ngày", () => {
     const payload = readLegacyToken(`Bearer ${signLegacyToken(7)}`);
     expect(payload).not.toBeNull();
     expect((payload?.exp ?? 0) - (payload?.iat ?? 0)).toBe(DEFAULT_LEGACY_SESSION_TTL_SECONDS);
-    expect(DEFAULT_LEGACY_SESSION_TTL_SECONDS).toBe(180 * 24 * 60 * 60);
+    expect(DEFAULT_LEGACY_SESSION_TTL_SECONDS).toBe(365 * 24 * 60 * 60);
   });
 
   it("kiểm tra lại user, tenant và membership mỗi request", () => {
@@ -208,7 +241,7 @@ describe("API code-only deployment safety", () => {
     );
     const commands = script.replace(/^\s*#.*$/gm, "");
     expect(commands).toContain("PLATFORM_SESSION_TTL_HOURS");
-    expect(commands).toContain("4320");
+    expect(commands).toContain("8760");
     expect(commands).toContain("ROLLBACK_API_IMAGE");
     expect(commands).toMatch(/--no-deps\s+--force-recreate/);
     expect(commands).not.toMatch(/\b(?:psql|pg_dump|createdb|dropdb|drizzle)\b/i);

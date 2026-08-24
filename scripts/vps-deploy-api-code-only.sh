@@ -8,7 +8,7 @@ CONFIG_FILE="${AMAZING_DEPLOY_CONFIG:-/opt/amazing-studio/deploy.conf}"
 PLATFORM_ENV_FILE="${AMAZING_PLATFORM_ENV_FILE:-/opt/amazing-studio/platform-auth.env}"
 PLATFORM_OVERRIDE_FILE="${AMAZING_PLATFORM_OVERRIDE_FILE:-/opt/amazing-studio/platform-auth.override.yml}"
 LOCK_FILE="${AMAZING_DEPLOY_LOCK:-/tmp/amazing-studio-deploy.lock}"
-SESSION_TTL_HOURS="4320"
+SESSION_TTL_HOURS="8760"
 
 die() {
   echo "[deploy-api] ERROR: $*" >&2

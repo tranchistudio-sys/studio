@@ -55,7 +55,7 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
       DEFAULT_TENANT_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
       TENANT_B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_b_test
-      PLATFORM_SESSION_TTL_HOURS: "4320"
+      PLATFORM_SESSION_TTL_HOURS: "8760"
       SESSION_SECRET: ci-only-session-secret-at-least-32-bytes
       BOOTSTRAP_OWNER_EMAIL: owner@gmail.com
       BOOTSTRAP_TENANT_STAFF_ID: "1"

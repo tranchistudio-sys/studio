@@ -21,8 +21,11 @@ RUN_ID="$2"
 [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]] || die "Commit SHA không hợp lệ."
 [[ "$RUN_ID" =~ ^[0-9]+$ ]] || die "Run ID không hợp lệ."
 [ -r "$CONFIG_FILE" ] || die "Thiếu cấu hình deploy production."
-[ -r "$PLATFORM_ENV_FILE" ] || die "Thiếu platform-auth.env production."
-[ -r "$PLATFORM_OVERRIDE_FILE" ] || die "Thiếu platform-auth.override.yml production."
+# platform-auth.env cố ý 600 root:root (chứa SESSION_SECRET, GOOGLE_CLIENT_ID,
+# PLATFORM_DATABASE_URL...) nên user deploy không tự đọc được; phải kiểm tra
+# qua sudo giống mọi thao tác khác với file này trong script.
+sudo -n test -r "$PLATFORM_ENV_FILE" || die "Thiếu platform-auth.env production."
+sudo -n test -r "$PLATFORM_OVERRIDE_FILE" || die "Thiếu platform-auth.override.yml production."
 
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"

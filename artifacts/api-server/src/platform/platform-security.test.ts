@@ -55,6 +55,7 @@ const activeContext = (): PlatformSessionContext => ({
   membershipStatus: "active",
   tenantRole: "STAFF",
   tenantStaffId: 7,
+  permissions: {},
   csrfTokenHash: "hash",
   expiresAt: new Date(Date.now() + 60_000),
 });
@@ -211,9 +212,12 @@ describe("platform migration safety", () => {
     const foundation = migrations.get("0001_platform_foundation.sql") ?? "";
     const revocation = migrations.get("0002_membership_session_revocation.sql") ?? "";
     const isolation = migrations.get("0003_tenant_database_registry_isolation.sql") ?? "";
+    const invitationPermissions = migrations.get("0005_tenant_invitation_permissions.sql") ?? "";
     const statements = migrationEntries.map(([, sql]) => sql).join("\n").replace(/--.*$/gm, "");
     expect(statements).not.toMatch(/\b(?:DROP|TRUNCATE)\b/i);
     expect(statements).not.toMatch(/CREATE TABLE IF NOT EXISTS (?:customers|bookings|payments)\b/i);
+    expect(invitationPermissions).toMatch(/ALTER TABLE tenant_invitations/i);
+    expect(invitationPermissions).toMatch(/ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '\{\}'::jsonb/i);
     for (const table of [
       "platform_users",
       "auth_identities",

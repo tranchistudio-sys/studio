@@ -75,6 +75,20 @@ function assignedStaffFromItems(rawItems: unknown): StaffAssignmentRow[] {
   return out;
 }
 
+function assignedStaffFromAdditionalServices(rawAdditionalServices: unknown): StaffAssignmentRow[] {
+  if (!Array.isArray(rawAdditionalServices)) return [];
+  const out: StaffAssignmentRow[] = [];
+  for (const service of rawAdditionalServices) {
+    if (!service || typeof service !== "object") continue;
+    const assignments = (service as Record<string, unknown>).staffAssignments;
+    if (!Array.isArray(assignments)) continue;
+    for (const row of assignments) {
+      if (row && typeof row === "object") out.push(row as StaffAssignmentRow);
+    }
+  }
+  return out;
+}
+
 /** True when items[] explicitly carries assignedStaff (even empty). */
 export function itemsHaveExplicitAssignedStaff(rawItems: unknown): boolean {
   if (!Array.isArray(rawItems)) return false;
@@ -95,6 +109,22 @@ export function resolveAssignedStaffForDisplay(
     return dedupeAssignedStaff(assignedStaffFromItems(rawItems));
   }
   return dedupeAssignedStaff(parseTopLevelAssignedStaff(rawStaff));
+}
+
+/**
+ * Authorization/read path for the whole booking. Main service assignments keep
+ * their existing items-wins semantics; additional-service assignments are an
+ * independent source and are always included.
+ */
+export function resolveBookingAssignedStaff(
+  rawStaff: unknown,
+  rawItems: unknown,
+  rawAdditionalServices: unknown,
+): StaffAssignmentRow[] {
+  return dedupeAssignedStaff([
+    ...resolveAssignedStaffForDisplay(rawStaff, rawItems),
+    ...assignedStaffFromAdditionalServices(rawAdditionalServices),
+  ]);
 }
 
 /** Merge items staff + optional top-level extras (e.g. photoshop only on booking level). */

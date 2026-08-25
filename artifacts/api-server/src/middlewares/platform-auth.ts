@@ -10,6 +10,7 @@ import {
   revokeSession,
 } from "../platform/session";
 import type { PlatformSessionContext } from "../platform/types";
+import { isCollaboratorSession } from "../platform/collaborator-permissions";
 import {
   acquireTenantDatabase,
   acquireTenantDatabaseBySlug,
@@ -56,6 +57,21 @@ export function tenantRoleCanAccessBusiness(
   ) return false;
   if (!SAFE_METHODS.has(normalizedMethod) && (normalizedPath === "/staff" || normalizedPath.startsWith("/staff/"))) return false;
   return true;
+}
+
+export function collaboratorCanAccessBusiness(method: string, path: string): boolean {
+  return method.toUpperCase() === "GET" && path.toLowerCase() === "/bookings/my-calendar";
+}
+
+export function platformContextCanAccessBusiness(
+  context: PlatformSessionContext,
+  method: string,
+  path: string,
+): boolean {
+  if (isCollaboratorSession(context)) {
+    return collaboratorCanAccessBusiness(method, path);
+  }
+  return tenantRoleCanAccessBusiness(context.tenantRole, method, path);
 }
 
 export function isPublicBusinessRoute(method: string, path: string): boolean {
@@ -245,7 +261,7 @@ export const businessAuthGuard: RequestHandler = async (req, res, next) => {
           });
           return;
         }
-        if (!tenantRoleCanAccessBusiness(context.tenantRole, req.method, req.path)) {
+        if (!platformContextCanAccessBusiness(context, req.method, req.path)) {
           res.status(403).json({ error: "Role trong studio không có quyền sử dụng chức năng này" });
           return;
         }
@@ -365,7 +381,10 @@ export function requireActiveTenantManager(req: Request, res: Response, next: Ne
     res.status(409).json({ error: "Vui lòng chọn studio" });
     return;
   }
-  if (context.tenantRole !== "OWNER" && context.tenantRole !== "ADMIN") {
+  if (
+    isCollaboratorSession(context) ||
+    (context.tenantRole !== "OWNER" && context.tenantRole !== "ADMIN")
+  ) {
     res.status(403).json({ error: "Bạn không có quyền quản lý thành viên" });
     return;
   }

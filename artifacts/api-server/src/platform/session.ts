@@ -2,6 +2,7 @@ import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from
 import type { Request, Response } from "express";
 import { getPlatformPool, type PlatformQueryable, withPlatformTransaction } from "@workspace/platform-db";
 import type { PlatformRole, PlatformSessionContext, TenantRole, TenantStatus } from "./types";
+import { normalizeTenantPermissions } from "./collaborator-permissions";
 
 export const PLATFORM_SESSION_COOKIE = "amazing_session";
 export const LOGIN_CSRF_COOKIE = "amazing_login_csrf";
@@ -158,6 +159,7 @@ interface SessionRow {
   membership_status: string | null;
   tenant_role: TenantRole | null;
   tenant_staff_id: string | number | null;
+  permissions: unknown;
   csrf_token_hash: string;
   expires_at: Date | string;
 }
@@ -175,6 +177,7 @@ function mapSession(row: SessionRow): PlatformSessionContext {
     membershipStatus: row.membership_status,
     tenantRole: row.tenant_role,
     tenantStaffId: row.tenant_staff_id === null ? null : Number(row.tenant_staff_id),
+    permissions: normalizeTenantPermissions(row.permissions),
     csrfTokenHash: row.csrf_token_hash,
     expiresAt: new Date(row.expires_at),
   };
@@ -193,6 +196,7 @@ const SESSION_SELECT = `
     m.status AS membership_status,
     m.tenant_role,
     COALESCE(s.legacy_staff_id, m.tenant_staff_id) AS tenant_staff_id,
+    COALESCE(m.permissions, '{}'::jsonb) AS permissions,
     s.csrf_token_hash,
     s.expires_at
   FROM sessions s

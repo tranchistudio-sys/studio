@@ -22,9 +22,11 @@ import type {
   PlatformSessionContext,
   PlatformUserSummary,
   TenantMembershipSummary,
+  TenantPermissions,
   TenantRole,
   TenantStatus,
 } from "./types";
+import { normalizeTenantPermissions } from "./collaborator-permissions";
 import {
   registryMatchesAmazingRuntime,
   resolveAmazingTenantDatabaseReference,
@@ -48,6 +50,7 @@ interface LegacyStaff {
   avatar: string | null;
   username: string | null;
   is_active?: number;
+  staffType?: string | null;
 }
 
 interface PlatformUserRow {
@@ -68,6 +71,7 @@ interface MembershipRow {
   tenant_role: TenantRole;
   membership_status: string;
   tenant_staff_id: string | number | null;
+  permissions: unknown;
   sessions_revoked_at: Date | string | null;
 }
 
@@ -217,6 +221,7 @@ async function getMembershipRows(
        m.tenant_role,
        m.status AS membership_status,
        m.tenant_staff_id,
+       m.permissions,
        m.sessions_revoked_at
      FROM tenant_memberships m
      JOIN tenants t ON t.id = m.tenant_id
@@ -238,6 +243,7 @@ function toMembershipSummary(row: MembershipRow): TenantMembershipSummary {
     role: row.tenant_role,
     membershipId: row.membership_id,
     tenantStaffId: row.tenant_staff_id === null ? null : Number(row.tenant_staff_id),
+    permissions: normalizeTenantPermissions(row.permissions),
   };
 }
 
@@ -425,16 +431,15 @@ export async function establishLocalPlatformSession(
        WHERE provider = 'local' AND provider_subject = $1 LIMIT 1`,
       [subject],
     );
-    let userId = identity.rows[0]?.user_id;
-
-    if (!userId) {
-      const linked = await client.query<{ user_id: string }>(
-        `SELECT user_id FROM tenant_memberships
-         WHERE tenant_id = $1 AND tenant_staff_id = $2 LIMIT 1`,
-        [tenantId, staff.id],
-      );
-      userId = linked.rows[0]?.user_id;
+    const linked = await client.query<{ user_id: string; status: string }>(
+      `SELECT user_id, status FROM tenant_memberships
+       WHERE tenant_id = $1 AND tenant_staff_id = $2 LIMIT 1`,
+      [tenantId, staff.id],
+    );
+    if (staff.staffType === "freelancer" && linked.rows[0]?.status !== "active") {
+      throw new FreelancerMembershipRequiredError();
     }
+    let userId = identity.rows[0]?.user_id ?? linked.rows[0]?.user_id;
     if (!userId) {
       userId = await createUser(client, {
         email: staff.email,
@@ -506,6 +511,15 @@ export class GoogleAuthenticationError extends Error {
   }
 }
 
+export class FreelancerMembershipRequiredError extends Error {
+  readonly code = "FREELANCER_MEMBERSHIP_REQUIRED";
+
+  constructor() {
+    super("CTV/Freelancer chưa được cấp tài khoản hoặc tài khoản đã bị khóa");
+    this.name = "FreelancerMembershipRequiredError";
+  }
+}
+
 export async function verifyGoogleCredential(credential: string): Promise<GoogleProfile> {
   const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
   if (!clientId) throw new GoogleAuthenticationError("GOOGLE_NOT_CONFIGURED", "Google Login chưa được cấu hình");
@@ -531,6 +545,7 @@ async function findPendingInvitations(
   tenant_staff_id: string | number | null;
   invited_by: string;
   target_user_id: string | null;
+  permissions: TenantPermissions;
 }>> {
   const result = await queryable.query<{
     id: string;
@@ -539,8 +554,9 @@ async function findPendingInvitations(
     tenant_staff_id: string | number | null;
     invited_by: string;
     target_user_id: string | null;
+    permissions: TenantPermissions;
   }>(
-    `SELECT id, tenant_id, invited_role, tenant_staff_id, invited_by, target_user_id
+    `SELECT id, tenant_id, invited_role, tenant_staff_id, invited_by, target_user_id, permissions
      FROM tenant_invitations
      WHERE lower(invited_email) = $1
        AND status = 'pending'
@@ -805,10 +821,11 @@ export async function authenticateGoogle(
     for (const invitation of invitations) {
       if (invitation.tenant_staff_id === null) continue;
       const existingMemberships = await client.query<{
+        id: string;
         user_id: string;
         tenant_staff_id: string | number | null;
       }>(
-        `SELECT user_id, tenant_staff_id
+        `SELECT id, user_id, tenant_staff_id
          FROM tenant_memberships
          WHERE tenant_id = $1 AND (user_id = $2 OR tenant_staff_id = $3)
          FOR UPDATE`,
@@ -824,11 +841,28 @@ export async function authenticateGoogle(
             "Lời mời xung đột với thành viên hiện có. Vui lòng liên hệ OWNER.",
           );
         }
+        await client.query(
+          `UPDATE tenant_memberships
+           SET permissions = $2::jsonb,
+               auth_version = auth_version + 1,
+               sessions_revoked_at = now(),
+               updated_at = now()
+           WHERE id = $1`,
+          [
+            existingMemberships.rows[0].id,
+            JSON.stringify(normalizeTenantPermissions(invitation.permissions)),
+          ],
+        );
+        await client.query(
+          `UPDATE sessions SET revoked_at = now(), revoked_reason = 'invitation_permissions_applied'
+           WHERE tenant_membership_id = $1 AND revoked_at IS NULL`,
+          [existingMemberships.rows[0].id],
+        );
       } else {
         await client.query(
           `INSERT INTO tenant_memberships
-            (id, tenant_id, user_id, tenant_role, status, tenant_staff_id, invited_by)
-           VALUES ($1, $2, $3, $4, 'active', $5, $6)`,
+            (id, tenant_id, user_id, tenant_role, status, tenant_staff_id, invited_by, permissions)
+           VALUES ($1, $2, $3, $4, 'active', $5, $6, $7::jsonb)`,
           [
             randomUUID(),
             invitation.tenant_id,
@@ -836,6 +870,7 @@ export async function authenticateGoogle(
             invitation.invited_role,
             invitation.tenant_staff_id,
             invitation.invited_by,
+            JSON.stringify(normalizeTenantPermissions(invitation.permissions)),
           ],
         );
       }

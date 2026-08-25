@@ -52,6 +52,7 @@ interface TenantMember {
   status: "active" | "suspended" | string;
   lastLoginAt?: string | null;
   tenantStaffId: number;
+  permissions?: Record<string, unknown>;
   isCurrent?: boolean;
 }
 
@@ -63,6 +64,7 @@ interface TenantInvitation {
   expiresAt?: string | null;
   createdAt?: string;
   tenantStaffId: number;
+  permissions?: Record<string, unknown>;
 }
 
 interface StaffCandidate {
@@ -70,6 +72,7 @@ interface StaffCandidate {
   name: string;
   email?: string | null;
   isActive: boolean;
+  staffType?: string | null;
 }
 
 type ConfirmAction =
@@ -82,6 +85,10 @@ const ROLE_LABEL: Record<TenantRole, string> = {
   ADMIN: "Quản trị viên",
   STAFF: "Nhân viên",
 };
+
+function isCollaboratorPermissions(permissions?: Record<string, unknown>): boolean {
+  return permissions?.accessPreset === "COLLABORATOR";
+}
 
 function formatLastLogin(value?: string | null): string {
   if (!value) return "Chưa đăng nhập";
@@ -211,6 +218,7 @@ export default function MembersPage() {
     const staff = staffCandidates.find(candidate => candidate.id === staffId);
     setSelectedStaffId(staffId);
     if (staff?.email) setInviteEmail(staff.email);
+    if (staff?.staffType === "freelancer") setInviteRole("STAFF");
   };
 
   const submitInvite = () => {
@@ -350,7 +358,7 @@ export default function MembersPage() {
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium">{invitation.email}</p>
                     <p className="text-xs text-muted-foreground">
-                      {ROLE_LABEL[invitation.role]} · hết hạn {invitation.expiresAt ? formatLastLogin(invitation.expiresAt) : "theo chính sách hệ thống"}
+                      {isCollaboratorPermissions(invitation.permissions) ? "CTV / Freelancer" : ROLE_LABEL[invitation.role]} · hết hạn {invitation.expiresAt ? formatLastLogin(invitation.expiresAt) : "theo chính sách hệ thống"}
                     </p>
                   </div>
                 </div>
@@ -384,7 +392,7 @@ export default function MembersPage() {
                 <SelectContent>
                   {staffCandidates.filter(staff => staff.isActive).map(staff => (
                     <SelectItem key={staff.id} value={String(staff.id)}>
-                      {staff.name}{staff.email ? ` · ${staff.email}` : ""}
+                      {staff.name}{staff.staffType === "freelancer" ? " · CTV" : ""}{staff.email ? ` · ${staff.email}` : ""}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -408,14 +416,22 @@ export default function MembersPage() {
             </div>
             <div className="space-y-1.5">
               <Label>Quyền trong studio</Label>
-              <Select value={inviteRole} onValueChange={value => setInviteRole(value as "ADMIN" | "STAFF")}>
+              <Select
+                value={inviteRole}
+                onValueChange={value => setInviteRole(value as "ADMIN" | "STAFF")}
+                disabled={selectedStaff?.staffType === "freelancer"}
+              >
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="STAFF">Nhân viên</SelectItem>
                   {isOwner && <SelectItem value="ADMIN">Quản trị viên</SelectItem>}
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">Không thể cấp PLATFORM_OWNER hoặc chuyển quyền sở hữu tại đây.</p>
+              <p className="text-xs text-muted-foreground">
+                {selectedStaff?.staffType === "freelancer"
+                  ? "CTV / Freelancer chỉ được xem Lịch của tôi."
+                  : "Không thể cấp PLATFORM_OWNER hoặc chuyển quyền sở hữu tại đây."}
+              </p>
             </div>
           </div>
           <DialogFooter>
@@ -474,6 +490,7 @@ function MemberIdentity({ member }: { member: TenantMember }) {
       <div className="min-w-0">
         <div className="flex items-center gap-1.5">
           <p className="truncate text-sm font-semibold">{member.name}</p>
+          {isCollaboratorPermissions(member.permissions) && <Badge variant="secondary" className="text-[10px]">CTV</Badge>}
           {member.isCurrent && <Badge variant="outline" className="text-[10px]">Bạn</Badge>}
         </div>
         <p className="truncate text-xs text-muted-foreground">{member.email}</p>
@@ -503,6 +520,9 @@ function RoleControl({
   disabled: boolean;
   onChange: (role: TenantRole) => void;
 }) {
+  if (isCollaboratorPermissions(member.permissions)) {
+    return <Badge variant="secondary"><ShieldCheck className="mr-1 h-3 w-3" /> CTV / Freelancer</Badge>;
+  }
   if (!isOwner || member.isCurrent) {
     return <Badge variant="secondary"><ShieldCheck className="mr-1 h-3 w-3" /> {ROLE_LABEL[member.role]}</Badge>;
   }

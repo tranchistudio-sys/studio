@@ -1,5 +1,6 @@
 export type PlatformRole = "PLATFORM_OWNER" | "PLATFORM_ADMIN" | null;
 export type TenantRole = "OWNER" | "ADMIN" | "STAFF";
+export type TenantPermissions = Record<string, unknown>;
 
 export interface LegacyViewerUser {
   id: number;
@@ -28,6 +29,7 @@ export interface TenantMembershipSummary {
   role: TenantRole;
   membershipId: string | number;
   tenantStaffId?: number | null;
+  permissions?: TenantPermissions;
 }
 
 export interface AuthResponse {
@@ -130,7 +132,10 @@ export function authRuntimeScopeKey(input: {
 }): string {
   const scope = resolveAuthClientScope(input);
   if (scope && input.activeTenant) {
-    return `${scope.key}:role:${encodeScopePart(input.activeTenant.role)}:status:${encodeScopePart(input.activeTenant.status)}`;
+    const preset = typeof input.activeTenant.permissions?.accessPreset === "string"
+      ? input.activeTenant.permissions.accessPreset
+      : "none";
+    return `${scope.key}:role:${encodeScopePart(input.activeTenant.role)}:status:${encodeScopePart(input.activeTenant.status)}:preset:${encodeScopePart(preset)}`;
   }
   if (scope) return scope.key;
   if (input.platformUser) return `platform:${encodeScopePart(input.platformUser.id)}:tenant:none`;
@@ -163,6 +168,12 @@ export function normalizeAuthResponse(value: unknown): AuthResponse | null {
 
 export function canManageTenantMembers(role: TenantRole | undefined): boolean {
   return role === "OWNER" || role === "ADMIN";
+}
+
+export function isCollaboratorTenant(
+  tenant: TenantMembershipSummary | null | undefined,
+): boolean {
+  return tenant?.permissions?.accessPreset === "COLLABORATOR";
 }
 
 export function legacyViewerCanAdmin(user: LegacyViewerUser | null | undefined): boolean {

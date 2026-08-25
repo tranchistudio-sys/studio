@@ -1,5 +1,6 @@
 export type PlatformRole = "PLATFORM_OWNER" | "PLATFORM_ADMIN" | null;
 export type TenantRole = "OWNER" | "ADMIN" | "STAFF";
+export type TenantPermissions = Record<string, unknown>;
 export type TenantStatus =
   | "provisioning"
   | "trial"
@@ -16,6 +17,7 @@ export interface TenantMembershipSummary {
   role: TenantRole;
   membershipId: string;
   tenantStaffId: number | null;
+  permissions: TenantPermissions;
 }
 
 export interface PlatformUserSummary {
@@ -38,6 +40,7 @@ export interface PlatformSessionContext {
   membershipStatus: string | null;
   tenantRole: TenantRole | null;
   tenantStaffId: number | null;
+  permissions: TenantPermissions;
   csrfTokenHash: string;
   expiresAt: Date;
 }

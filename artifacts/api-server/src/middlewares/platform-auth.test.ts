@@ -5,12 +5,82 @@ vi.mock("@workspace/db", () => ({
 }));
 
 import {
+  collaboratorCanAccessBusiness,
   isPublicBusinessRoute,
+  platformContextCanAccessBusiness,
+  requireActiveTenantManager,
   requestIsSameOrigin,
   tenantRoleCanAccessBusiness,
 } from "./platform-auth";
+import type { PlatformSessionContext } from "../platform/types";
+
+function context(
+  permissions: Record<string, unknown>,
+  tenantRole: PlatformSessionContext["tenantRole"] = "STAFF",
+): PlatformSessionContext {
+  return {
+    sessionId: "session",
+    createdAt: new Date(),
+    userId: "user",
+    userStatus: "active",
+    platformRole: null,
+    activeTenantId: "tenant",
+    tenantStatus: "active",
+    membershipId: "membership",
+    membershipStatus: "active",
+    tenantRole,
+    tenantStaffId: 25,
+    permissions,
+    csrfTokenHash: "hash",
+    expiresAt: new Date(Date.now() + 60_000),
+  };
+}
 
 describe("default-deny API boundary", () => {
+  it("collaborator deny-by-default và chỉ whitelist lịch của chính mình", () => {
+    const collaborator = context({
+      accessPreset: "COLLABORATOR",
+      calendarScope: "OWN",
+      bookingDetailScope: "WORK_ONLY",
+    });
+    expect(platformContextCanAccessBusiness(collaborator, "GET", "/bookings/my-calendar")).toBe(true);
+    for (const [method, path] of [
+      ["GET", "/bookings"],
+      ["GET", "/bookings/501"],
+      ["GET", "/customers"],
+      ["GET", "/payments"],
+      ["GET", "/dashboard"],
+      ["GET", "/staff/me/profile"],
+      ["POST", "/bookings/my-calendar"],
+    ]) {
+      expect(platformContextCanAccessBusiness(collaborator, method, path)).toBe(false);
+    }
+    expect(collaboratorCanAccessBusiness("GET", "/BOOKINGS/MY-CALENDAR")).toBe(true);
+    expect(platformContextCanAccessBusiness(
+      context({ accessPreset: "COLLABORATOR" }, "ADMIN"),
+      "GET",
+      "/payments",
+    )).toBe(false);
+  });
+
+  it("permissions rỗng giữ nguyên quyền STAFF cũ", () => {
+    expect(platformContextCanAccessBusiness(context({}), "GET", "/bookings")).toBe(true);
+    expect(platformContextCanAccessBusiness(context({}), "GET", "/calendar")).toBe(true);
+  });
+
+  it("preset collaborator không thể dùng tenant-manager routes dù role bị lệch thành ADMIN", () => {
+    const status = vi.fn().mockReturnThis();
+    const json = vi.fn();
+    const next = vi.fn();
+    requireActiveTenantManager({} as any, {
+      locals: { platformAuth: context({ accessPreset: "COLLABORATOR" }, "ADMIN") },
+      status,
+      json,
+    } as any, next);
+    expect(status).toHaveBeenCalledWith(403);
+    expect(json).toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
+  });
   it("chỉ mở đúng public contract bằng token, không mở legacy ID route", () => {
     expect(isPublicBusinessRoute("GET", "/public/contracts/by-token/opaque-token")).toBe(true);
     expect(isPublicBusinessRoute("POST", "/public/contracts/by-token/opaque-token/sign")).toBe(true);

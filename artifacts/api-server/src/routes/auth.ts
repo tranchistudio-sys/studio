@@ -13,7 +13,10 @@ import {
   signLegacyToken,
   verifyLegacyToken,
 } from "../lib/legacy-auth-token";
-import { establishLocalPlatformSession } from "../platform/service";
+import {
+  establishLocalPlatformSession,
+  FreelancerMembershipRequiredError,
+} from "../platform/service";
 import { verifyLoginCsrf } from "../platform/session";
 import {
   findTenantStaffMembership,
@@ -94,13 +97,13 @@ router.post("/auth/login", (req, res, next) => {
 
   if (normalized.toLowerCase() === "admin") {
     r = await pool.query(
-      `SELECT id, name, role, roles, phone, email, avatar, password_hash, username FROM staff
+      `SELECT id, name, role, roles, phone, email, avatar, password_hash, username, staff_type FROM staff
        WHERE (role = 'admin' OR roles::text LIKE '%admin%') AND is_active = 1
        ORDER BY id LIMIT 1`
     );
   } else {
     r = await pool.query(
-      `SELECT id, name, role, roles, phone, email, avatar, password_hash, username FROM staff
+      `SELECT id, name, role, roles, phone, email, avatar, password_hash, username, staff_type FROM staff
        WHERE (username = $1 OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '(', ''), ')', ''), '.', ''), '+', '') = $1)
        AND is_active = 1 LIMIT 1`,
       [normalized]
@@ -130,8 +133,12 @@ router.post("/auth/login", (req, res, next) => {
       email: typeof u.email === "string" ? u.email : null,
       avatar: typeof u.avatar === "string" ? u.avatar : null,
       username: typeof u.username === "string" ? u.username : null,
+      staffType: typeof u.staff_type === "string" ? u.staff_type : null,
     });
-  } catch {
+  } catch (error) {
+    if (error instanceof FreelancerMembershipRequiredError) {
+      return res.status(403).json({ error: error.message, code: error.code });
+    }
     return res.status(503).json({
       error: "Dịch vụ xác thực nền tảng tạm thời không khả dụng",
       code: "PLATFORM_AUTH_UNAVAILABLE",

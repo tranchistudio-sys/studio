@@ -25,7 +25,7 @@ export interface Notification {
   createdAt: string;
 }
 
-export function useNotifications() {
+export function useNotifications(enabled = true) {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [soundEnabled, setSoundEnabled] = useState(() => localStorage.getItem("notifSound") !== "off");
@@ -67,6 +67,7 @@ export function useNotifications() {
   const knownNotifIdsRef = useRef(new Set<number>());
 
   const fetchNotifications = useCallback(async () => {
+    if (!enabled) return;
     try {
       const r = await authFetch(`${BASE}/api/notifications?limit=30`);
       if (!r.ok) return;
@@ -86,9 +87,10 @@ export function useNotifications() {
       });
       setNotifications(list);
     } catch {}
-  }, []);
+  }, [enabled]);
 
   const fetchUnreadCount = useCallback(async () => {
+    if (!enabled) return;
     try {
       lastUnreadFetchRef.current = Date.now();
       const r = await authFetch(`${BASE}/api/notifications/unread-count`);
@@ -101,7 +103,7 @@ export function useNotifications() {
         });
       }
     } catch {}
-  }, [fetchNotifications]);
+  }, [enabled, fetchNotifications]);
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current) {
@@ -131,6 +133,7 @@ export function useNotifications() {
   }, []);
 
   const connectSSE = useCallback(() => {
+    if (!enabled) return;
     if (!mountedRef.current) return;
     if (document.hidden) return;
     if (eventSourceRef.current) return;
@@ -173,16 +176,24 @@ export function useNotifications() {
         if (mountedRef.current && !document.hidden) connectSSE();
       }, delay);
     };
-  }, [playSound, startPolling, stopPolling]);
+  }, [enabled, playSound, startPolling, stopPolling]);
 
   // Initial fetch
   useEffect(() => {
+    if (!enabled) return;
     fetchNotifications();
     fetchUnreadCount();
-  }, [fetchNotifications, fetchUnreadCount]);
+  }, [enabled, fetchNotifications, fetchUnreadCount]);
 
   // SSE + visibility-aware polling
   useEffect(() => {
+    if (!enabled) {
+      closeSSE();
+      stopPolling();
+      setNotifications([]);
+      setUnreadCount(0);
+      return;
+    }
     connectSSE();
 
     const onVisibility = () => {
@@ -207,7 +218,7 @@ export function useNotifications() {
       closeSSE();
       stopPolling();
     };
-  }, [connectSSE, startPolling, stopPolling, closeSSE, fetchUnreadCount]);
+  }, [enabled, connectSSE, startPolling, stopPolling, closeSSE, fetchUnreadCount]);
 
   const markAsRead = useCallback(async (id: number) => {
     try {

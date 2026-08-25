@@ -9,6 +9,11 @@ import {
 } from "../middlewares/platform-auth";
 import type { PlatformSessionContext, TenantRole } from "../platform/types";
 import {
+  COLLABORATOR_PERMISSIONS,
+  isCollaboratorPermissions,
+  normalizeTenantPermissions,
+} from "../platform/collaborator-permissions";
+import {
   TenantDatabaseUnavailableError,
   withTenantDatabase,
 } from "../platform/tenant-database-router";
@@ -47,6 +52,7 @@ router.get(
          u.avatar_url AS avatar,
          m.tenant_role AS role,
          m.status,
+         m.permissions,
          m.last_login_at AS "lastLoginAt",
          m.tenant_staff_id AS "tenantStaffId",
          (m.id = $2) AS "isCurrent"
@@ -75,6 +81,7 @@ router.get(
          invited_email AS email,
          invited_role AS role,
          status,
+         permissions,
          expires_at AS "expiresAt",
          created_at AS "createdAt",
          tenant_staff_id AS "tenantStaffId"
@@ -257,7 +264,7 @@ router.get(
     try {
       if (!context.activeTenantId) throw new TenantDatabaseUnavailableError();
       const result = await withTenantDatabase(context.activeTenantId, () => pool.query(
-        `SELECT id, name, email, (is_active = 1) AS "isActive"
+        `SELECT id, name, email, staff_type AS "staffType", (is_active = 1) AS "isActive"
          FROM staff
          WHERE is_active = 1
          ORDER BY name`,
@@ -329,8 +336,11 @@ router.post(
 
     try {
       if (!context.activeTenantId) throw new TenantDatabaseUnavailableError();
-      const staff = await withTenantDatabase(context.activeTenantId, () => pool.query<{ id: number }>(
-        "SELECT id FROM staff WHERE id = $1 AND is_active = 1 LIMIT 1",
+      const staff = await withTenantDatabase(context.activeTenantId, () => pool.query<{
+        id: number;
+        staff_type: string | null;
+      }>(
+        "SELECT id, staff_type FROM staff WHERE id = $1 AND is_active = 1 LIMIT 1",
         [tenantStaffId],
       ));
       if (!staff.rows[0]) {
@@ -348,8 +358,13 @@ router.post(
         await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
           `invite-staff:${context.activeTenantId}:${tenantStaffId}`,
         ]);
-        const linked = await client.query<{ id: string; user_id: string; tenant_role: TenantRole }>(
-          `SELECT id, user_id, tenant_role FROM tenant_memberships
+        const linked = await client.query<{
+          id: string;
+          user_id: string;
+          tenant_role: TenantRole;
+          permissions: unknown;
+        }>(
+          `SELECT id, user_id, tenant_role, permissions FROM tenant_memberships
            WHERE tenant_id = $1 AND tenant_staff_id = $2 LIMIT 1`,
           [context.activeTenantId, tenantStaffId],
         );
@@ -365,6 +380,13 @@ router.post(
           throw new Error("Chỉ được mời role OWNER để tự liên kết một OWNER hiện có");
         }
         const effectiveRole = linkedRole ?? role;
+        const isFreelancer = staff.rows[0].staff_type === "freelancer";
+        if (isFreelancer && effectiveRole !== "STAFF") {
+          throw new Error("CTV/Freelancer chỉ được cấp quyền STAFF");
+        }
+        const invitationPermissions = isFreelancer
+          ? COLLABORATOR_PERMISSIONS
+          : normalizeTenantPermissions(linked.rows[0]?.permissions);
         if (targetUserId) {
           const otherTenant = await client.query<{ tenant_id: string }>(
             `SELECT tenant_id FROM tenant_memberships
@@ -411,26 +433,53 @@ router.post(
             `UPDATE tenant_invitations
              SET invited_role = $2, tenant_staff_id = $3,
                  target_user_id = $4,
-                 expires_at = now() + interval '7 days', invited_by = $5
+                 expires_at = now() + interval '7 days', invited_by = $5,
+                 permissions = $6::jsonb
              WHERE id = $1`,
-            [id, effectiveRole, tenantStaffId, targetUserId, context.userId],
+            [
+              id,
+              effectiveRole,
+              tenantStaffId,
+              targetUserId,
+              context.userId,
+              JSON.stringify(invitationPermissions),
+            ],
           );
         } else {
           await client.query(
             `INSERT INTO tenant_invitations
               (id, tenant_id, invited_email, invited_role, tenant_staff_id, target_user_id,
-               expires_at, invited_by, status)
-             VALUES ($1, $2, $3, $4, $5, $6, now() + interval '7 days', $7, 'pending')`,
-            [id, context.activeTenantId, email, effectiveRole, tenantStaffId, targetUserId, context.userId],
+               expires_at, invited_by, status, permissions)
+             VALUES ($1, $2, $3, $4, $5, $6, now() + interval '7 days', $7, 'pending', $8::jsonb)`,
+            [
+              id,
+              context.activeTenantId,
+              email,
+              effectiveRole,
+              tenantStaffId,
+              targetUserId,
+              context.userId,
+              JSON.stringify(invitationPermissions),
+            ],
           );
         }
         await client.query(
           `INSERT INTO platform_audit_logs
             (id, actor_user_id, tenant_id, action, target_type, target_id, metadata)
            VALUES ($1, $2, $3, 'invitation.created', 'tenant_invitation', $4, $5::jsonb)`,
-          [randomUUID(), context.userId, context.activeTenantId, id, JSON.stringify({ role: effectiveRole, tenantStaffId })],
+          [
+            randomUUID(),
+            context.userId,
+            context.activeTenantId,
+            id,
+            JSON.stringify({
+              role: effectiveRole,
+              tenantStaffId,
+              accessPreset: invitationPermissions.accessPreset ?? null,
+            }),
+          ],
         );
-        return { id, email, role: effectiveRole, tenantStaffId };
+        return { id, email, role: effectiveRole, tenantStaffId, permissions: invitationPermissions };
       });
       res.status(201).json({ success: true, invitation });
     } catch (error) {
@@ -479,8 +528,9 @@ router.patch(
         const targetResult = await client.query<{
           tenant_role: TenantRole;
           status: string;
+          permissions: Record<string, unknown>;
         }>(
-          `SELECT tenant_role, status
+          `SELECT tenant_role, status, permissions
            FROM tenant_memberships
            WHERE id = $1 AND tenant_id = $2
            FOR UPDATE`,
@@ -493,6 +543,9 @@ router.patch(
         }
         if (role && context.tenantRole !== "OWNER") {
           throw new Error("Chỉ OWNER được thay đổi role");
+        }
+        if (role && role !== "STAFF" && isCollaboratorPermissions(target.permissions)) {
+          throw new Error("CTV / Freelancer chỉ có thể sử dụng role STAFF");
         }
 
         const removesOwner = target.tenant_role === "OWNER" &&

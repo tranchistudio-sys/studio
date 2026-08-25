@@ -27,8 +27,88 @@ import {
   normalizeDate,
   normalizeTime,
 } from "../lib/booking-occurrences";
+import {
+  buildCollaboratorCalendarEntry,
+  parseCollaboratorCalendarRange,
+  type CollaboratorCalendarRow,
+  type CollaboratorOccurrenceRow,
+} from "../lib/collaborator-calendar";
+import { isCollaboratorSession } from "../platform/collaborator-permissions";
+import type { PlatformSessionContext } from "../platform/types";
 
 const router: IRouter = Router();
+
+router.get("/bookings/my-calendar", async (req, res) => {
+  const context = res.locals.platformAuth as PlatformSessionContext | undefined;
+  if (!context || !isCollaboratorSession(context)) {
+    res.status(403).json({ error: "Endpoint này chỉ dành cho Lịch của tôi" });
+    return;
+  }
+  if (!context.tenantStaffId) {
+    res.status(403).json({ error: "Tài khoản chưa liên kết hồ sơ nhân sự" });
+    return;
+  }
+  const range = parseCollaboratorCalendarRange(req.query.from, req.query.to);
+  if (!range) {
+    res.status(400).json({ error: "Khoảng ngày không hợp lệ hoặc vượt quá 93 ngày" });
+    return;
+  }
+
+  const flags = await getSchemaFlags();
+  const occurrencePredicate = flags.occurrences
+    ? `OR EXISTS (
+         SELECT 1 FROM booking_occurrences bo
+         WHERE bo.booking_id = b.id AND bo.shoot_date BETWEEN $1 AND $2
+       )`
+    : "";
+  const bookingResult = await pool.query<CollaboratorCalendarRow>(
+    `SELECT b.id, b.order_code, c.name AS customer_name,
+            b.shoot_date, b.shoot_time, b.service_category, b.package_type,
+            b.location, b.status, b.items, b.assigned_staff,
+            b.additional_services, b.service_label
+       FROM bookings b
+       JOIN customers c ON c.id = b.customer_id
+      WHERE b.deleted_at IS NULL
+        AND b.status <> 'temp_quote'
+        AND (b.shoot_date BETWEEN $1 AND $2 ${occurrencePredicate})
+      ORDER BY b.shoot_date, b.shoot_time NULLS LAST, b.id`,
+    [range.from, range.to],
+  );
+
+  const assignedEntries = bookingResult.rows
+    .map(row => ({
+      row,
+      entry: buildCollaboratorCalendarEntry(row, [], context.tenantStaffId!),
+    }))
+    .filter((item): item is { row: CollaboratorCalendarRow; entry: NonNullable<typeof item.entry> } => Boolean(item.entry));
+  const bookingIds = assignedEntries.map(item => item.row.id);
+  const occurrencesByBooking = new Map<number, CollaboratorOccurrenceRow[]>();
+  if (flags.occurrences && bookingIds.length > 0) {
+    const occurrenceResult = await pool.query<CollaboratorOccurrenceRow>(
+      `SELECT id, booking_id, shoot_date, shoot_time, label, sort_order
+         FROM booking_occurrences
+        WHERE booking_id = ANY($1::int[])
+          AND shoot_date BETWEEN $2 AND $3
+        ORDER BY booking_id, sort_order, shoot_date, id`,
+      [bookingIds, range.from, range.to],
+    );
+    for (const occurrence of occurrenceResult.rows) {
+      const list = occurrencesByBooking.get(occurrence.booking_id) ?? [];
+      list.push(occurrence);
+      occurrencesByBooking.set(occurrence.booking_id, list);
+    }
+  }
+
+  const bookings = assignedEntries.map(({ row }) =>
+    buildCollaboratorCalendarEntry(
+      row,
+      occurrencesByBooking.get(row.id) ?? [],
+      context.tenantStaffId!,
+    ),
+  ).filter(Boolean);
+  res.set("Cache-Control", "no-store");
+  res.json({ bookings });
+});
 
 /**
  * Yêu cầu caller ĐÃ ĐĂNG NHẬP hợp lệ (staff HOẶC admin, tài khoản còn hoạt động).

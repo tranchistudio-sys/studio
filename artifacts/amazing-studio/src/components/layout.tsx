@@ -155,16 +155,17 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const {
     isAdmin, viewMode, setViewMode, simulateRole, setSimulateRole, effectiveIsAdmin,
     logout, logoutAll, viewer, platformUser, activeTenant, memberships, canManageMembers,
+    isCollaborator,
   } = useStaffAuth();
 
-  const { notifications: notifList, unreadCount: notifUnread, soundEnabled, toggleSound, markAsRead, markAllRead, fetchNotifications } = useNotifications();
+  const { notifications: notifList, unreadCount: notifUnread, soundEnabled, toggleSound, markAsRead, markAllRead, fetchNotifications } = useNotifications(!isCollaborator);
   const [pushEnabled, setPushEnabled] = useState(() => localStorage.getItem("pushRegistered") === "1");
 
   React.useEffect(() => {
-    if (!pushEnabled && viewer && "Notification" in window && Notification.permission === "granted") {
+    if (!isCollaborator && !pushEnabled && viewer && "Notification" in window && Notification.permission === "granted") {
       registerPushNotifications().then(ok => { if (ok) setPushEnabled(true); }).catch(() => {});
     }
-  }, [viewer]);
+  }, [isCollaborator, pushEnabled, viewer]);
 
   React.useEffect(() => {
     setIsMobileOpen(false);
@@ -198,18 +199,24 @@ export function Layout({ children }: { children: React.ReactNode }) {
   };
 
   // Filter nav items based on effective role
-  const visibleMain = ALL_NAV_ITEMS.filter(item =>
-    effectiveIsAdmin || !item.adminOnly || item.href === "/expenses"
-  );
-  const visibleSecondary = SECONDARY_NAV.filter(item =>
+  const visibleMain = isCollaborator
+    ? ALL_NAV_ITEMS
+        .filter(item => item.href === "/calendar" || item.href === "/my-profile")
+        .sort((left, right) => left.href === "/calendar" ? -1 : right.href === "/calendar" ? 1 : 0)
+        .map(item => ({
+          ...item,
+          label: item.href === "/calendar" ? "Lịch của tôi" : "Hồ sơ",
+        }))
+    : ALL_NAV_ITEMS.filter(item => effectiveIsAdmin || !item.adminOnly || item.href === "/expenses");
+  const visibleSecondary = isCollaborator ? [] : SECONDARY_NAV.filter(item =>
     (effectiveIsAdmin || !item.adminOnly) && (!item.memberManagerOnly || canManageMembers)
   );
-  const visibleFacebook = FACEBOOK_NAV.filter(item =>
+  const visibleFacebook = isCollaborator ? [] : FACEBOOK_NAV.filter(item =>
     effectiveIsAdmin || !item.adminOnly
   );
   // Các nhóm menu thu gọn/mở rộng (nhớ qua localStorage; chưa chọn thì tự mở nhóm chứa trang đang xem).
   const toolsActive = visibleSecondary.some(i => location === i.href || (i.href !== "/" && location.startsWith(i.href)));
-  const cmsItems = CMS_NAV.filter(item => isAdmin || !item.adminOnly);
+  const cmsItems = isCollaborator ? [] : CMS_NAV.filter(item => isAdmin || !item.adminOnly);
   const cmsActive = cmsItems.some(i => !i.publicPreview && (location === i.href || location.startsWith(i.href + "/")));
   const facebookActive = visibleFacebook.some(i => location === i.href || (i.href !== "/" && location.startsWith(i.href)));
   const [toolsOpen, toggleTools] = useNavGroup("tools", toolsActive);
@@ -217,7 +224,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [fbGroupOpen, toggleFbGroup] = useNavGroup("facebook", facebookActive);
 
   // Current mode label
-  const modeLabel = simulateRole
+  const modeLabel = isCollaborator
+    ? "CTV / Freelancer"
+    : simulateRole
     ? SIMULATE_ROLES.find(r => r.key === simulateRole)?.label ?? "Nhân viên"
     : viewMode === "admin" ? "Quản trị viên" : "Nhân viên";
 
@@ -254,7 +263,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
         {/* Account card with role switcher */}
         <div className="px-4 mb-4" ref={roleMenuRef}>
           <button
-            onClick={() => setShowRoleMenu(v => !v)}
+            onClick={() => { if (!isCollaborator) setShowRoleMenu(v => !v); }}
             className="w-full flex items-center gap-3 p-3 rounded-xl bg-accent/50 border border-accent/20 hover:bg-accent/80 transition-colors group">
             <div className="flex-shrink-0">
               {viewer ? (
@@ -280,11 +289,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 {activeTenant ? `${activeTenant.name} · ${modeLabel}` : modeLabel}
               </p>
             </div>
-            <ChevronDown className={cn("w-4 h-4 text-muted-foreground transition-transform flex-shrink-0", showRoleMenu && "rotate-180")} />
+            {!isCollaborator && <ChevronDown className={cn("w-4 h-4 text-muted-foreground transition-transform flex-shrink-0", showRoleMenu && "rotate-180")} />}
           </button>
 
           {/* Role dropdown */}
-          {showRoleMenu && (
+          {!isCollaborator && showRoleMenu && (
             <div className="mt-1 bg-popover border border-border rounded-xl shadow-lg overflow-hidden z-50">
               {/* Admin mode */}
               {isAdmin && (
@@ -366,7 +375,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
             })}
           </div>
 
-          <div className="mt-3 pt-3 border-t border-sidebar-border space-y-0.5">
+          {visibleSecondary.length > 0 && <div className="mt-3 pt-3 border-t border-sidebar-border space-y-0.5">
             <button type="button" onClick={toggleTools}
               className="w-full flex items-center gap-2 px-4 py-1.5 rounded-lg text-muted-foreground hover:bg-muted transition-colors"
               title={toolsOpen ? "Thu gọn" : "Mở rộng"} aria-expanded={toolsOpen}>
@@ -390,7 +399,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 </Link>
               );
             })}
-          </div>
+          </div>}
 
           {/* ── Quản lý website public ── */}
           {cmsItems.length > 0 && (
@@ -488,18 +497,18 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
         {/* Footer buttons */}
         <div className="p-4 border-t border-sidebar-border space-y-1">
-          <button onClick={toggleDarkMode}
+          {!isCollaborator && <button onClick={toggleDarkMode}
             className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-sidebar-foreground hover:bg-muted w-full transition-colors">
             <Moon className="w-5 h-5 text-muted-foreground" />
             Chế độ Tối
-          </button>
+          </button>}
           <button
             onClick={() => void logout().catch(error => window.alert(error instanceof Error ? error.message : "Không thể đăng xuất"))}
             className="flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-destructive hover:bg-destructive/10 w-full transition-colors">
             <LogOut className="w-5 h-5" />
             Đăng xuất
           </button>
-          {platformUser && (
+          {platformUser && !isCollaborator && (
             <button
               onClick={() => {
                 if (window.confirm("Đăng xuất tài khoản này khỏi tất cả thiết bị?")) {
@@ -527,7 +536,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
             {/* View mode badge */}
             {(!effectiveIsAdmin) && (
               <span className={cn("hidden sm:flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full", modeBadgeColor)}>
-                {simulateRole
+                {isCollaborator
+                  ? "CTV / Freelancer"
+                  : simulateRole
                   ? `Đang xem thử: ${SIMULATE_ROLES.find(r => r.key === simulateRole)?.label}`
                   : isAdmin && viewMode === "staff"
                     ? "Test chấm công · NHÂN VIÊN TEST"
@@ -537,6 +548,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
           </div>
           
           <div className="flex items-center gap-2 sm:gap-4">
+            {!isCollaborator && <>
             <SmartSearch />
             <Link href="/customers"
               className="flex items-center gap-2 text-sm font-medium text-primary bg-primary/10 hover:bg-primary/20 px-3 py-1.5 sm:px-4 sm:py-2 rounded-full transition-colors">
@@ -668,6 +680,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                 </div>
               )}
             </div>
+            </>}
             {/* Logout — always visible in header */}
             <button
               onClick={() => void logout().catch(error => window.alert(error instanceof Error ? error.message : "Không thể đăng xuất"))}

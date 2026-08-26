@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildCollaboratorCalendarEntry,
   parseCollaboratorCalendarRange,
+  resolveCollaboratorServiceNames,
   type CollaboratorCalendarRow,
 } from "./collaborator-calendar";
 
@@ -49,6 +50,48 @@ describe("collaborator calendar DTO", () => {
     expect(dto).not.toHaveProperty("paidAmount");
     expect(dto).not.toHaveProperty("notes");
     expect(dto).not.toHaveProperty("internalNotes");
+  });
+
+  it("ưu tiên tên gói snapshot trong item thay cho nhãn Dịch vụ N", () => {
+    const booking = row([]);
+    booking.service_label = "Dịch vụ 1";
+    booking.package_type = "Dịch vụ 1";
+    booking.items = [{
+      serviceName: "Combo Makeup Luxury",
+      assignedStaff: [{ staffId: 25, staffName: "Châu", role: "makeup" }],
+      price: 9_500_000,
+    }];
+
+    const dto = buildCollaboratorCalendarEntry(booking, [], 25)!;
+    expect(dto.serviceName).toBe("Combo Makeup Luxury");
+    expect(dto.serviceNames).toEqual(["Combo Makeup Luxury"]);
+    expect(dto).not.toHaveProperty("price");
+  });
+
+  it("chỉ ưu tiên tên item được giao cho chính CTV", () => {
+    const booking = row([]);
+    booking.items = [
+      {
+        serviceName: "Chụp cổng Luxury",
+        assignedStaff: [{ staffId: 25, role: "makeup" }],
+      },
+      {
+        serviceName: "Chụp tiệc",
+        assignedStaff: [{ staffId: 30, role: "photographer" }],
+      },
+    ];
+    expect(resolveCollaboratorServiceNames(booking, 25)).toEqual(["Chụp cổng Luxury"]);
+  });
+
+  it("lấy tên dịch vụ cộng thêm khi CTV được giao tại dòng đó", () => {
+    const booking = row([]);
+    booking.items = [];
+    booking.additional_services = [{
+      title: "Makeup tại nhà",
+      staffAssignments: [{ staffId: 25, role: "makeup" }],
+      unitPrice: 2_000_000,
+    }];
+    expect(resolveCollaboratorServiceNames(booking, 25)).toEqual(["Makeup tại nhà"]);
   });
 });
 

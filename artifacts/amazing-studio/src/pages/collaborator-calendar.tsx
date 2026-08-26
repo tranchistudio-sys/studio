@@ -3,15 +3,13 @@ import { useQuery } from "@tanstack/react-query";
 import {
   addMonths,
   endOfMonth,
-  endOfWeek,
   format,
   parseISO,
   startOfMonth,
-  startOfWeek,
   subMonths,
 } from "date-fns";
 import { vi } from "date-fns/locale";
-import { CalendarDays, ChevronLeft, ChevronRight, Clock, MapPin, UserRound } from "lucide-react";
+import { CalendarDays, ChevronDown, ChevronLeft, ChevronRight, Clock, MapPin, UserRound } from "lucide-react";
 import { API_BASE } from "@/lib/api-base";
 
 type Occurrence = {
@@ -31,6 +29,8 @@ type CollaboratorBooking = {
   serviceLabel: string | null;
   serviceCategory: string;
   packageType: string;
+  serviceName: string;
+  serviceNames: string[];
   location: string | null;
   status: string;
   assignedRoles: string[];
@@ -78,9 +78,10 @@ async function fetchMyCalendar(from: string, to: string): Promise<CollaboratorBo
 
 export default function CollaboratorCalendarPage() {
   const [currentMonth, setCurrentMonth] = useState(() => startOfMonth(new Date()));
+  const [expandedEventKey, setExpandedEventKey] = useState<string | null>(null);
   const range = useMemo(() => ({
-    from: format(startOfWeek(startOfMonth(currentMonth), { weekStartsOn: 1 }), "yyyy-MM-dd"),
-    to: format(endOfWeek(endOfMonth(currentMonth), { weekStartsOn: 1 }), "yyyy-MM-dd"),
+    from: format(startOfMonth(currentMonth), "yyyy-MM-dd"),
+    to: format(endOfMonth(currentMonth), "yyyy-MM-dd"),
   }), [currentMonth]);
   const query = useQuery({
     queryKey: ["collaborator-calendar", range.from, range.to],
@@ -147,6 +148,11 @@ export default function CollaboratorCalendarPage() {
             <p className="mt-1 text-sm text-muted-foreground">
               {format(currentMonth, "'Tháng' M 'năm' yyyy", { locale: vi })}
             </p>
+            {!query.isLoading && !query.isError && (
+              <p className="mt-1 text-xs text-muted-foreground" aria-live="polite">
+                Từ {format(parseISO(range.from), "dd/MM")} đến {format(parseISO(range.to), "dd/MM")} · {events.length} show được phân công
+              </p>
+            )}
           </div>
           <button
             type="button"
@@ -187,7 +193,13 @@ export default function CollaboratorCalendarPage() {
           </div>
           <div className="divide-y">
             {dayEvents.map(event => (
-              <article key={event.eventKey} className="space-y-2 p-4">
+              <article key={event.eventKey} className="p-4">
+                <button
+                  type="button"
+                  className="w-full space-y-2 text-left"
+                  aria-expanded={expandedEventKey === event.eventKey}
+                  onClick={() => setExpandedEventKey(current => current === event.eventKey ? null : event.eventKey)}
+                >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
@@ -195,7 +207,7 @@ export default function CollaboratorCalendarPage() {
                       <h2 className="truncate font-semibold">{event.customerName}</h2>
                     </div>
                     <p className="mt-1 text-sm text-muted-foreground">
-                      {event.serviceLabel || event.packageType}
+                      {event.serviceName || event.serviceLabel || event.packageType}
                       {event.occurrenceLabel ? ` · ${event.occurrenceLabel}` : ""}
                     </p>
                   </div>
@@ -220,7 +232,18 @@ export default function CollaboratorCalendarPage() {
                     </span>
                   ))}
                   {event.orderCode && <span className="px-1 py-1 text-xs text-muted-foreground">{event.orderCode}</span>}
+                  <ChevronDown className={`ml-auto h-4 w-4 text-muted-foreground transition-transform ${expandedEventKey === event.eventKey ? "rotate-180" : ""}`} />
                 </div>
+                </button>
+                {expandedEventKey === event.eventKey && (
+                  <div className="mt-3 space-y-1.5 rounded-xl bg-muted/50 p-3 text-sm">
+                    <p><span className="text-muted-foreground">Ngày:</span> {format(parseISO(event.eventDate), "dd/MM/yyyy")}</p>
+                    <p><span className="text-muted-foreground">Thời gian:</span> {event.eventTime?.slice(0, 5) || "Chưa chốt giờ"}</p>
+                    <p><span className="text-muted-foreground">Tên show:</span> {event.customerName}</p>
+                    <p><span className="text-muted-foreground">Dịch vụ:</span> {event.serviceName || event.serviceLabel || event.packageType}</p>
+                    <p><span className="text-muted-foreground">Vai trò:</span> {event.assignedRoles.map(role => ROLE_LABELS[role] ?? role).join(", ")}</p>
+                  </div>
+                )}
               </article>
             ))}
           </div>

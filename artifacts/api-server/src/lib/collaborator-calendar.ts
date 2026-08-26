@@ -53,6 +53,76 @@ function dateOnly(value: string | Date): string {
   return String(value).slice(0, 10);
 }
 
+const GENERIC_SERVICE_LABEL = /^d(?:ị|i)ch v(?:ụ|u)(?:\s+\d+)?(?:\s*\+\s*d(?:ị|i)ch v(?:ụ|u)\s+\d+)*$/iu;
+
+function text(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function meaningfulServiceName(value: unknown): string {
+  const name = text(value);
+  return name && !GENERIC_SERVICE_LABEL.test(name) ? name : "";
+}
+
+function itemServiceName(item: Record<string, unknown>): string {
+  for (const value of [
+    item.serviceName,
+    item.packageName,
+    item.serviceLabel,
+    item.packageType,
+    item.label,
+    item.name,
+  ]) {
+    const name = meaningfulServiceName(value);
+    if (name) return name;
+  }
+  return "";
+}
+
+function hasStaffId(rawAssignments: unknown, tenantStaffId: number): boolean {
+  return Array.isArray(rawAssignments) && rawAssignments.some(assignment => {
+    if (!assignment || typeof assignment !== "object") return false;
+    return Number((assignment as Record<string, unknown>).staffId) === tenantStaffId;
+  });
+}
+
+/**
+ * Prefer the booking item snapshot assigned to this collaborator. This keeps the
+ * displayed name stable even if the pricing catalogue is renamed later.
+ */
+export function resolveCollaboratorServiceNames(
+  row: Pick<CollaboratorCalendarRow, "items" | "additional_services" | "service_label" | "package_type" | "service_category">,
+  tenantStaffId: number,
+): string[] {
+  const items = Array.isArray(row.items)
+    ? row.items.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+    : [];
+  const assignedItemNames = items
+    .filter(item => hasStaffId(item.assignedStaff, tenantStaffId))
+    .map(itemServiceName)
+    .filter(Boolean);
+
+  const additionalServiceNames = Array.isArray(row.additional_services)
+    ? row.additional_services
+      .filter(service => Boolean(service) && typeof service === "object")
+      .filter(service => hasStaffId((service as Record<string, unknown>).staffAssignments, tenantStaffId))
+      .map(service => meaningfulServiceName((service as Record<string, unknown>).title))
+      .filter(Boolean)
+    : [];
+
+  const itemNames = assignedItemNames.length > 0
+    ? assignedItemNames
+    : items.map(itemServiceName).filter(Boolean);
+  const names = [...new Set([...itemNames, ...additionalServiceNames])];
+  if (names.length > 0) return names;
+
+  for (const fallback of [row.service_label, row.package_type, row.service_category]) {
+    const name = meaningfulServiceName(fallback);
+    if (name) return [name];
+  }
+  return ["Dịch vụ"];
+}
+
 export function buildCollaboratorCalendarEntry(
   row: CollaboratorCalendarRow,
   occurrences: CollaboratorOccurrenceRow[],
@@ -64,6 +134,7 @@ export function buildCollaboratorCalendarEntry(
     row.additional_services,
   ).filter(assignment => Number(assignment.staffId) === tenantStaffId);
   if (ownAssignments.length === 0) return null;
+  const serviceNames = resolveCollaboratorServiceNames(row, tenantStaffId);
 
   return {
     bookingId: row.id,
@@ -74,6 +145,8 @@ export function buildCollaboratorCalendarEntry(
     serviceLabel: row.service_label,
     serviceCategory: row.service_category,
     packageType: row.package_type,
+    serviceName: serviceNames.join(" + "),
+    serviceNames,
     location: row.location,
     status: row.status,
     assignedRoles: [...new Set(ownAssignments.map(item => item.role).filter(Boolean))],

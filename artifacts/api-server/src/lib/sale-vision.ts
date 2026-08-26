@@ -15,6 +15,8 @@ import { callChat, type ChatImage } from "./ai-orchestrator";
 export const SERVICE_INTENTS = [
   "beauty",
   "wedding_album",
+  "album_studio",
+  "album_outdoor",
   "wedding_gate",
   "wedding_party",
   "rental_outfit",
@@ -106,7 +108,7 @@ Nhìn ẢNH + tin nhắn khách, xác định khách đang muốn dịch vụ g�
 
 JSON gồm đúng các khóa:
 - "image_type": loại ảnh ngắn gọn (vd "beauty nam", "ảnh cưới ngoại cảnh", "váy cưới", "cổng cưới", "concept decor").
-- "service_intent": CHỈ 1 trong: "beauty" | "wedding_album" | "wedding_gate" | "wedding_party" | "rental_outfit" | "maternity" | "family" | "new_concept_idea" | "unknown".
+- "service_intent": CHỈ 1 trong: "beauty" | "wedding_album" | "album_studio" | "album_outdoor" | "wedding_gate" | "wedding_party" | "rental_outfit" | "maternity" | "family" | "new_concept_idea" | "unknown".
 - "confidence": số 0..1.
 - "visual_description": mô tả ngắn những gì thấy trong ảnh (tiếng Việt).
 - "outfit": trang phục trong ảnh.
@@ -119,7 +121,7 @@ JSON gồm đúng các khóa:
 
 QUY TẮC:
 - beauty / cool boy / chân dung cá nhân / nàng thơ → "beauty".
-- cô dâu chú rể / ảnh cưới / ngoại cảnh → "wedding_album". Cổng cưới riêng → "wedding_gate". Tiệc cưới/phóng sự → "wedding_party".
+- album cưới tại studio → "album_studio"; album cưới ngoại cảnh → "album_outdoor"; chưa rõ loại album → "wedding_album". Cổng cưới riêng → "wedding_gate". Tiệc cưới/phóng sự → "wedding_party".
 - chỉ có váy cưới / áo dài / vest / trang phục (không có người mẫu chụp concept) → "rental_outfit".
 - mẹ bầu → "maternity". Gia đình nhiều người → "family".
 - concept hoa/decor/setup lạ, độc đáo, khó xác định dịch vụ → "new_concept_idea" + should_use_photo_ideas=true.
@@ -188,6 +190,10 @@ const SOURCE_GUIDANCE: Record<ServiceIntent, string> = {
     'Khách muốn BEAUTY/chân dung cá nhân/cool boy. CHỈ gửi ảnh/bộ/dịch vụ nhóm Beauty (hoặc bộ cá tính gần gu). TUYỆT ĐỐI KHÔNG gửi album cưới.',
   wedding_album:
     'Khách muốn ẢNH CƯỚI/ngoại cảnh (cô dâu chú rể). Gửi bộ ảnh/album cưới, gói ngoại cảnh. KHÔNG gửi beauty cá nhân (trừ khi khách hỏi makeup/beauty riêng).',
+  album_studio:
+    'Khách muốn ALBUM CƯỚI TẠI STUDIO. Chỉ dùng ảnh thật trong nhánh Cổng Studio - Album Studio; không gửi ngoại cảnh hoặc beauty.',
+  album_outdoor:
+    'Khách muốn ALBUM CƯỚI NGOẠI CẢNH. Chỉ dùng album ngoại cảnh Tây Ninh đã cấu hình; không tự gợi ý tỉnh khác hoặc gửi beauty.',
   wedding_gate:
     'Khách quan tâm CỔNG CƯỚI. Gửi ảnh/dịch vụ cổng cưới (chụp cổng tại studio). KHÔNG gửi beauty.',
   wedding_party:

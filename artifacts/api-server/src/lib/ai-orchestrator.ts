@@ -116,6 +116,7 @@ function redact(s: string): string {
 
 function classifyStatus(status: number): ErrorClass {
   if (status === 401 || status === 403) return "auth_error";
+  if (status === 402) return "quota";
   if (status === 400 || status === 422) return "bad_request";
   if (status === 408) return "timeout";
   if (status === 429) return "rate_limit";
@@ -166,7 +167,7 @@ async function callClaude(apiKey: string, model: string, req: ChatRequest, timeo
 }
 
 async function callOpenAI(apiKey: string, model: string, req: ChatRequest, timeoutMs: number): Promise<string> {
-  const baseUrl = (process.env.AI_INTEGRATIONS_OPENAI_BASE_URL ?? "https://api.openai.com/v1").replace(/\/$/, "");
+  const baseUrl = (process.env.AI_INTEGRATIONS_OPENAI_BASE_URL?.trim() || "https://api.openai.com/v1").replace(/\/$/, "");
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
@@ -204,12 +205,25 @@ async function callOpenAI(apiKey: string, model: string, req: ChatRequest, timeo
 
 function classifyThrown(providerLabel: string, e: unknown): ProviderError {
   if (e instanceof ProviderError) return e;
-  const anyE = e as { status?: number; name?: string; message?: string } | null;
+  const anyE = e as {
+    status?: number;
+    name?: string;
+    message?: string;
+    error?: { error?: { message?: string }; message?: string };
+  } | null;
   const name = anyE?.name ?? "";
+  const detail = anyE?.error?.error?.message ?? anyE?.error?.message ?? anyE?.message ?? String(e);
   if (/Timeout/i.test(name) || name === "AbortError") return new ProviderError("timeout", `${providerLabel} timeout`);
   if (/Connection/i.test(name)) return new ProviderError("network", `${providerLabel} network`);
-  if (typeof anyE?.status === "number") return new ProviderError(classifyStatus(anyE.status), `${providerLabel} ${anyE.status}`);
-  return new ProviderError("server_error", `${providerLabel}: ${String(anyE?.message ?? e).slice(0, 120)}`);
+  // Anthropic currently reports an exhausted credit balance as HTTP 400. Treat it as
+  // quota so the configured OpenAI provider can answer instead of stopping the chain.
+  if (/credit balance is too low|purchase credits|insufficient credits|billing quota/i.test(detail)) {
+    return new ProviderError("quota", `${providerLabel}: ${detail.slice(0, 160)}`);
+  }
+  if (typeof anyE?.status === "number") {
+    return new ProviderError(classifyStatus(anyE.status), `${providerLabel} ${anyE.status}: ${detail.slice(0, 140)}`);
+  }
+  return new ProviderError("server_error", `${providerLabel}: ${detail.slice(0, 120)}`);
 }
 
 async function callOneProvider(
@@ -282,8 +296,8 @@ export async function callChat(req: ChatRequest): Promise<AiChatResult> {
       } catch (e) {
         const pe = e instanceof ProviderError ? e : new ProviderError("server_error", String((e as Error)?.message ?? e));
         lastErr = pe;
-        if (FALLBACKABLE.includes(pe.errorClass) && attempt < cfg.retries) {
-          console.warn(`[AI] ${lbl}${PROVIDER_LABEL[provider]} lỗi ${pe.errorClass} → thử lại (${attempt + 1}/${cfg.retries})`);
+        if (pe.errorClass !== "quota" && FALLBACKABLE.includes(pe.errorClass) && attempt < cfg.retries) {
+          console.warn(`[AI] ${lbl}${PROVIDER_LABEL[provider]} lỗi ${pe.errorClass}: ${redact(pe.message)} → thử lại (${attempt + 1}/${cfg.retries})`);
           continue;
         }
         attempts.push({ provider, ok: false, latencyMs: Date.now() - t0, errorClass: pe.errorClass, errorMsg: redact(pe.message) });

@@ -32,13 +32,23 @@ export type SampleImage = {
 
 export type SampleLink = { title: string; url: string };
 
+export type SampleSelection = {
+  images: SampleImage[];
+  links: SampleLink[];
+  resolvedIntents: ServiceIntent[];
+  exhausted: boolean;
+  /** A style was requested and at least one selected gallery asset has that exact CMS tag. */
+  styleMatched: boolean;
+  requestedStyleTags: string[];
+};
+
 // ─── Chuẩn hóa chuỗi (bỏ dấu, đ→d, thường hóa) để so khớp không phụ thuộc dấu ──
 function norm(s: string | null | undefined): string {
   return (s ?? "")
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/đ/g, "d")
-    .replace(/Đ/g, "d")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\u0111/g, "d")
+    .replace(/\u0110/g, "d")
     .toLowerCase()
     .replace(/\s+/g, " ")
     .trim();
@@ -63,6 +73,8 @@ const RENTAL_TEXT_RE =
   /(thuê|thue)\s*(đồ|do|váy|vay|áo dài|ao dai|vest)|váy cưới|vay cuoi|áo dài|ao dai|\bvest\b|việt phục|viet phuc|cổ phục|co phuc|cho thuê|cho thue|có (váy|vay|đồ|do)|co (vay|do)/i;
 const WEDDING_GATE_RE = /(cổng|cong)\s*(cưới|cuoi)?|chụp cổng|chup cong/i;
 const WEDDING_PARTY_RE = /(tiệc cưới|tiec cuoi|phóng sự|phong su|đãi tiệc|dai tiec|chụp tiệc|chup tiec)/i;
+const ALBUM_STUDIO_RE = /(album\s*(tai\s*)?studio|chup (anh )?cuoi studio|anh cuoi studio)/i;
+const ALBUM_OUTDOOR_RE = /(album\s*ngoai canh|ngoai canh cuoi|chup (anh )?cuoi ngoai canh|anh cuoi ngoai canh)/i;
 // LUẬT 4 — "ngoại cảnh" TRẦN (không kèm "cưới") cố tình KHÔNG khớp ở đây: có thể là
 // ngoại cảnh CƯỚI hoặc ngoại cảnh BEAUTY → để Lulu hỏi lại thay vì đoán bừa.
 const WEDDING_ALBUM_RE =
@@ -79,14 +91,17 @@ const NEW_CONCEPT_RE =
  * (Lulu sẽ hỏi lại, KHÔNG gửi ảnh bừa). Thứ tự ưu tiên đặt theo độ đặc trưng.
  */
 export function detectServiceIntentFromText(message: string): ServiceIntent {
-  const m = (message ?? "").toLowerCase();
+  const m = norm(message);
   if (!m.trim()) return "unknown";
   // Concept lạ/mới đặt TRƯỚC: khách chê mẫu cũ / muốn ý tưởng → Ý tưởng chụp.
   if (NEW_CONCEPT_RE.test(m)) return "new_concept_idea";
-  // Hỏi trang phục để THUÊ đặt trước cưới (vì "váy cưới" cũng khớp WEDDING_ALBUM_RE).
-  if (RENTAL_TEXT_RE.test(m)) return "rental_outfit";
+  // Tên dịch vụ cụ thể thắng các từ quyền lợi trong câu trả lời trước (sare/vest/váy).
   if (WEDDING_GATE_RE.test(m)) return "wedding_gate";
   if (WEDDING_PARTY_RE.test(m)) return "wedding_party";
+  if (ALBUM_STUDIO_RE.test(m)) return "album_studio";
+  if (ALBUM_OUTDOOR_RE.test(m)) return "album_outdoor";
+  // Hỏi trang phục để THUÊ đặt trước cưới (vì "váy cưới" cũng khớp WEDDING_ALBUM_RE).
+  if (RENTAL_TEXT_RE.test(m)) return "rental_outfit";
   if (MATERNITY_RE.test(m)) return "maternity";
   if (FAMILY_RE.test(m)) return "family";
   if (WEDDING_ALBUM_RE.test(m)) return "wedding_album";
@@ -147,7 +162,12 @@ const INTENT_ALIASES: Record<string, ServiceIntent> = {
   "wedding album": "wedding_album",
   cuoi: "wedding_album",
   "album cuoi": "wedding_album",
-  "ngoai canh": "wedding_album",
+  album_studio: "album_studio",
+  "album studio": "album_studio",
+  "album tai studio": "album_studio",
+  album_outdoor: "album_outdoor",
+  "album ngoai canh": "album_outdoor",
+  "ngoai canh cuoi": "album_outdoor",
   wedding_gate: "wedding_gate",
   "wedding gate": "wedding_gate",
   cong: "wedding_gate",
@@ -196,6 +216,8 @@ function imageToggleOn(intent: ServiceIntent, s?: ClaudeSaleSettings | null): bo
     case "beauty":
       return s.imgBeauty;
     case "wedding_album":
+    case "album_studio":
+    case "album_outdoor":
     case "wedding_gate":
     case "wedding_party":
       return s.imgWedding;
@@ -265,6 +287,8 @@ const INTENT_PRIMARY: Partial<Record<ServiceIntent, PrimaryGroup>> = {
   beauty: "thoitrang",
   maternity: "thoitrang",
   wedding_album: "wedding",
+  album_studio: "wedding",
+  album_outdoor: "wedding",
   wedding_gate: "wedding",
   wedding_party: "wedding",
   family: "family",
@@ -279,7 +303,9 @@ const INTENT_SUBRULE: Partial<Record<ServiceIntent, GalleryRule>> = {
   beauty: { pos: [], neg: ["bau", "me bau", "maternity", "mang thai"] }, // thời trang nói chung, TRỪ bầu
   maternity: { pos: ["bau", "me bau", "maternity", "mang thai"], neg: [] },
   wedding_album: { pos: [], neg: [] }, // bất kỳ nhánh nào trong Ảnh Cưới
-  wedding_gate: { pos: ["cong", "studio", "trong nha", "album"], neg: ["ngoai canh", "tiec", "phong su"] },
+  album_studio: { pos: ["cong studio", "album studio"], neg: ["ngoai canh", "tiec", "phong su"] },
+  album_outdoor: { pos: ["ngoai canh cuoi"], neg: ["studio", "tiec", "phong su"] },
+  wedding_gate: { pos: ["cong", "trong nha"], neg: ["ngoai canh", "tiec", "phong su"] },
   wedding_party: { pos: ["tiec", "phong su", "dai tiec"], neg: [] },
   family: { pos: [], neg: [] },
 };
@@ -292,18 +318,41 @@ export function subcategoryAllows(intent: ServiceIntent, catPathNorm: string): b
   return true;
 }
 
-// ─── LUẬT 3 — TAGS = "gia vị": chỉ XẾP HẠNG trong nhóm ĐÃ KHÓA, KHÔNG bao giờ đổi nhóm ──
-const TAG_STOPWORDS = new Set([
-  "anh", "chi", "minh", "muon", "chup", "cho", "xem", "coi", "mau", "hinh", "duoc",
-  "khong", "nha", "cai", "kieu", "mot", "vai", "gui", "the", "nay", "shop", "studio",
-]);
-function preferenceTokens(messageText: string): string[] {
-  return norm(messageText).split(" ").filter((w) => w.length >= 3 && !TAG_STOPWORDS.has(w));
+// ─── LUẬT 3 — STYLE chỉ được xác nhận bằng TAG CMS, không suy từ tên album ──
+// Các key này trùng với vocabulary discovery. Chúng chỉ được dùng khi khách thực sự
+// nêu gu; tên danh mục như "studio" hay "cưới" không tự trở thành style.
+const STYLE_TAGS = [
+  "nhe nhang", "sang trong", "nang tho", "ngot ngao", "sexy", "quyen ru",
+  "ca tinh", "ngau", "toi gian", "han quoc", "co dien", "truyen thong",
+  "viet phuc", "co trang", "tinh te", "tu nhien", "hien dai", "luxury",
+  "cool boy", "cool girl",
+];
+
+function requestedStyleTags(messageText: string): string[] {
+  const text = norm(messageText);
+  return STYLE_TAGS.filter((tag) => hayHas(text, tag));
 }
-function tagScore(nameTagsNorm: string, tokens: string[]): number {
-  let s = 0;
-  for (const t of tokens) if (hayHas(nameTagsNorm, t)) s++;
-  return s;
+
+function cmsTags(tagsText: string | null | undefined): string[] {
+  return (tagsText ?? "")
+    .split(/[;,|\n]+/)
+    .map((tag) => norm(tag))
+    .filter(Boolean);
+}
+
+function hasExactCmsStyleTag(tagsText: string | null | undefined, requested: string[]): boolean {
+  if (requested.length === 0) return true;
+  const tags = cmsTags(tagsText);
+  return requested.some((tag) => tags.includes(tag));
+}
+
+function shuffle<T>(items: T[]): T[] {
+  const shuffled = [...items];
+  for (let index = shuffled.length - 1; index > 0; index--) {
+    const target = Math.floor(Math.random() * (index + 1));
+    [shuffled[index], shuffled[target]] = [shuffled[target], shuffled[index]];
+  }
+  return shuffled;
 }
 
 type GalleryRow = {
@@ -318,6 +367,29 @@ type GalleryRow = {
 };
 
 type CatRow = { id: number; name: string; parent_id: number | null };
+
+const TAY_NINH_OUTDOOR_ALBUM_MARKERS = [
+  "tay ninh",
+  "nui ba den",
+  "nui ba",
+  "ho nuoc tay ninh",
+  "vu garden",
+  "maison",
+];
+
+function isVerifiedTayNinhOutdoorAlbum(nameTagsNorm: string): boolean {
+  if (hayHasAny(nameTagsNorm, ["vung tau", "da lat", "sai gon", "ho chi minh", "nha trang", "phu quoc", "mui ne"])) return false;
+  return hayHasAny(nameTagsNorm, TAY_NINH_OUTDOOR_ALBUM_MARKERS);
+}
+
+function beautySubtypeMarkers(messageText: string): string[] | null {
+  const text = norm(messageText);
+  if (hayHasAny(text, ["sinh nhat", "birthday"])) return ["sinh nhat"];
+  if (hayHasAny(text, ["couple", "tinh yeu", "cap doi"])) return ["couple"];
+  if (hayHasAny(text, ["co trang", "viet phuc", "co phuc", "ao dai"])) return ["co trang", "viet phuc", "ao dai", "yem"];
+  if (hayHasAny(text, ["cool boy", "nam tinh", "chup nam"])) return ["nam", "gym", "boy"];
+  return null;
+}
 
 /** Đường dẫn tên danh mục (own + cha + gốc) cho 1 category_id, đã norm + nối space. */
 function catPath(catId: number | null, byId: Map<number, CatRow>): string {
@@ -337,9 +409,10 @@ async function resolveGallerySamples(
   excludeUrls: Set<string>,
   gender?: Gender | null,
   messageText = "",
-): Promise<SampleImage[]> {
+): Promise<{ images: SampleImage[]; styleMatched: boolean; requestedStyleTags: string[] }> {
   const primary = intentPrimaryGroup(intent);
-  if (!primary) return [];
+  const requested = requestedStyleTags(messageText);
+  if (!primary) return { images: [], styleMatched: requested.length === 0, requestedStyleTags: requested };
   try {
     const [albumsRes, catsRes] = await Promise.all([
       pool.query(
@@ -349,7 +422,7 @@ async function resolveGallerySamples(
          LEFT JOIN LATERAL (
            SELECT image_url FROM gallery_photos
            WHERE album_id = a.id AND status = 'visible' AND deleted_at IS NULL
-           ORDER BY sort_order, id LIMIT 1
+            ORDER BY random() LIMIT 1
          ) gp ON TRUE
          WHERE a.status = 'visible' AND a.deleted_at IS NULL
          ORDER BY a.sort_order, a.id`,
@@ -360,14 +433,13 @@ async function resolveGallerySamples(
       (catsRes.rows as CatRow[]).map((c) => [c.id, c]),
     );
     const base = getPublicBaseUrl().replace(/\/+$/, "");
-    const tokens = preferenceTokens(messageText);
 
-    type Scored = SampleImage & { score: number; sortOrder: number };
-    const strict: Scored[] = [];  // đúng nhóm lớn + đúng nhánh con
-    const relaxed: Scored[] = []; // đúng nhóm lớn nhưng nhánh con chưa khớp (dự phòng TRONG cùng nhóm)
+    type Candidate = SampleImage & { hasRequestedStyleTag: boolean };
+    const strict: Candidate[] = [];  // đúng nhóm lớn + đúng nhánh con
+    const relaxed: Candidate[] = []; // đúng nhóm lớn nhưng nhánh con chưa khớp (dự phòng TRONG cùng nhóm)
 
     for (const a of albumsRes.rows as GalleryRow[]) {
-      const imageUrl = (a.cover_image_url ?? a.first_photo ?? "").trim();
+      const imageUrl = (a.first_photo ?? a.cover_image_url ?? "").trim();
       if (!imageUrl) continue; // không có ảnh thật → bỏ (KHÔNG bịa)
 
       // LUẬT 1+5 — KHÓA NHÓM LỚN theo DANH MỤC GỐC. Sai nhóm (hoặc chưa gắn danh
@@ -376,6 +448,12 @@ async function resolveGallerySamples(
 
       const catP = catPath(a.category_id, byId);
       const nameTags = `${norm(a.name)} ${norm(a.tags_text)}`;
+
+      if (intent === "album_outdoor" && !isVerifiedTayNinhOutdoorAlbum(nameTags)) continue;
+      if (intent === "beauty") {
+        const subtype = beautySubtypeMarkers(messageText);
+        if (subtype && !hayHasAny(`${catP} ${norm(a.tags_text)}`, subtype)) continue;
+      }
 
       // LỌC GIỚI TÍNH (chỉ beauty/cá nhân — cưới/bầu/gia đình là cặp đôi/gia đình).
       // Khách hỏi NAM → CHỈ mẫu nam (thà thiếu còn hơn sai giới); NỮ → loại mẫu nam.
@@ -386,14 +464,13 @@ async function resolveGallerySamples(
       }
       if (excludeUrls.has(imageUrl)) continue;
 
-      const img: Scored = {
+      const img: Candidate = {
         title: (a.name ?? "").trim() || "Bộ ảnh mẫu",
         imageUrl,
         detailUrl: a.slug ? `${base}/bo-anh/${a.slug}` : undefined,
         sourceType: "gallery",
         serviceIntent: intent,
-        score: tagScore(nameTags, tokens), // LUẬT 3 — tag chỉ XẾP HẠNG gu trong nhóm
-        sortOrder: a.sort_order ?? 0,      // LUẬT 8 — ưu tiên: số NHỎ (được ghim) lên trước
+        hasRequestedStyleTag: hasExactCmsStyleTag(a.tags_text, requested),
       };
 
       // LUẬT 2 — nhánh con xét trên ĐƯỜNG DẪN DANH MỤC (KHÔNG xét tag/tên).
@@ -405,16 +482,26 @@ async function resolveGallerySamples(
       else relaxed.push(img);
     }
 
-    // Ưu tiên đúng nhánh con; nếu trống thì CHỈ nhóm cưới mới nới về cùng nhóm lớn
-    // (vd "cổng cưới" chưa tách nhánh Studio → vẫn lấy album Ảnh Cưới, KHÔNG sang beauty).
-    const picked = strict.length ? strict : primary === "wedding" ? relaxed : [];
-    // Thứ tự gửi (LUẬT 1 + 8): khớp gu (tag) nhiều hơn TRƯỚC; cùng mức gu thì album
-    // ƯU TIÊN/được ghim (sort_order nhỏ) lên trước; rồi tới album thường.
-    picked.sort((x, y) => (y.score - x.score) || (x.sortOrder - y.sortOrder));
-    return picked.slice(0, limit).map(({ score, sortOrder, ...s }) => s);
+    // Phong cách chỉ được xác nhận nếu tag CMS khớp ngay trong nhánh dịch vụ.
+    // Không có tag thì vẫn chọn ảnh thật cùng nhánh; cưới chỉ được nới tới gốc Ảnh Cưới
+    // để bù số lượng, tuyệt đối không đổi sang Beauty hoặc cho thuê đồ.
+    const exactInBranch = strict.filter((image) => image.hasRequestedStyleTag);
+    const styleMatched = requested.length === 0 || exactInBranch.length > 0;
+    const picked = requested.length > 0 && exactInBranch.length > 0
+      ? shuffle(exactInBranch)
+      : shuffle(strict);
+    if (picked.length < limit && primary === "wedding") {
+      picked.push(...shuffle(relaxed).slice(0, limit - picked.length));
+    }
+
+    return {
+      images: picked.slice(0, limit).map(({ hasRequestedStyleTag, ...image }) => image),
+      styleMatched,
+      requestedStyleTags: requested,
+    };
   } catch (err) {
     console.error("[Samples] gallery lỗi:", String(err).slice(0, 160));
-    return [];
+    return { images: [], styleMatched: requested.length === 0, requestedStyleTags: requested };
   }
 }
 
@@ -572,16 +659,23 @@ export type ResolveSampleImagesOpts = {
   maxTotal?: number;
 };
 
+type ResolvedSampleImages = {
+  images: SampleImage[];
+  styleMatched: boolean;
+  requestedStyleTags: string[];
+};
+
 /**
  * Lấy 1–2 ảnh mẫu THẬT đúng nhóm. Duyệt intent theo thứ tự, tôn trọng công tắc,
  * gom tối đa maxTotal ảnh, dedupe theo URL CÔNG KHAI (chuẩn hóa để khớp được cả
  * đường dẫn thô lẫn public đã lưu trong lịch sử). [] nếu không có ảnh phù hợp
  * (caller sẽ fallback sang text/link — KHÔNG bịa ảnh).
  */
-export async function resolveSampleImages(opts: ResolveSampleImagesOpts): Promise<SampleImage[]> {
+async function resolveSampleImagesWithMeta(opts: ResolveSampleImagesOpts): Promise<ResolvedSampleImages> {
   const maxTotal = Math.max(1, Math.min(2, opts.maxTotal ?? 2));
   const messageText = opts.messageText ?? "";
   const gender = opts.gender ?? null;
+  const requested = requestedStyleTags(messageText);
   // Chuẩn hóa exclude về URL CÔNG KHAI (lịch sử lưu public url, còn ứng viên là
   // đường dẫn thô) → dedupe xuyên lượt mới hoạt động.
   const exclude = new Set<string>(
@@ -592,6 +686,7 @@ export async function resolveSampleImages(opts: ResolveSampleImagesOpts): Promis
   const intents = opts.intents.filter((i) => i && i !== "unknown" && !seenIntent.has(i) && seenIntent.add(i));
 
   const out: SampleImage[] = [];
+  let matchedRequestedStyle = requested.length === 0;
   const pushUnique = (imgs: SampleImage[]) => {
     for (const img of imgs) {
       if (out.length >= maxTotal) break;
@@ -617,15 +712,25 @@ export async function resolveSampleImages(opts: ResolveSampleImagesOpts): Promis
       pushUnique(await resolveIdeaSamples(messageText, pool, new Set()));
     } else {
       // gallery (beauty/wedding_*/maternity/family). gate/party rỗng → fallback wedding_album.
-      let imgs = await resolveGallerySamples(intent, pool, new Set(), gender, messageText);
-      if (imgs.length === 0 && (intent === "wedding_gate" || intent === "wedding_party")) {
-        imgs = await resolveGallerySamples("wedding_album", pool, new Set(), gender, messageText);
-        imgs = imgs.map((i) => ({ ...i, serviceIntent: intent }));
+      let gallery = await resolveGallerySamples(intent, pool, new Set(), gender, messageText);
+      if (gallery.images.length === 0 && (intent === "wedding_gate" || intent === "wedding_party")) {
+        gallery = await resolveGallerySamples("wedding_album", pool, new Set(), gender, messageText);
+        gallery = {
+          ...gallery,
+          // Fallback at wedding root must not be presented as an exact gate/party style match.
+          styleMatched: requested.length === 0,
+          images: gallery.images.map((image) => ({ ...image, serviceIntent: intent })),
+        };
       }
-      pushUnique(imgs);
+      if (requested.length > 0 && gallery.styleMatched && gallery.images.length > 0) matchedRequestedStyle = true;
+      pushUnique(gallery.images);
     }
   }
-  return out;
+  return { images: out, styleMatched: matchedRequestedStyle, requestedStyleTags: requested };
+}
+
+export async function resolveSampleImages(opts: ResolveSampleImagesOpts): Promise<SampleImage[]> {
+  return (await resolveSampleImagesWithMeta(opts)).images;
 }
 
 /** Gom detailUrl của các ảnh mẫu thành danh sách link "xem thêm" (dedupe theo url). */
@@ -642,12 +747,57 @@ export function buildSampleLinks(images: SampleImage[]): SampleLink[] {
   return links;
 }
 
+const STYLE_LABELS: Record<string, string> = {
+  "nhe nhang": "nhẹ nhàng",
+  "sang trong": "sang trọng",
+  "nang tho": "nàng thơ",
+  "ngot ngao": "ngọt ngào",
+  "tinh te": "tinh tế",
+  "toi gian": "tối giản",
+  "tu nhien": "tự nhiên",
+  "ca tinh": "cá tính",
+  "quyen ru": "quyến rũ",
+  "co trang": "cổ trang",
+  "viet phuc": "Việt phục",
+  "han quoc": "Hàn Quốc",
+  "co dien": "cổ điển",
+  "truyen thong": "truyền thống",
+};
+
+/** Shared text for Brain Lab and Messenger after gallery selection. */
+export function buildWorkflowSampleReply(input: {
+  serviceKey?: string | null;
+  style?: string | null;
+  styleMatched?: boolean;
+}): string {
+  const style = (input.style ?? "").trim();
+  const isWedding = ["wedding_gate", "album_studio", "album_outdoor", "wedding_album", "wedding_party"].includes(input.serviceKey ?? "");
+  const serviceLabel: Record<string, string> = {
+    wedding_gate: "chụp cổng",
+    album_studio: "Album Studio",
+    album_outdoor: "Album ngoại cảnh",
+    wedding_album: "album cưới",
+    beauty: "Beauty/Thời trang",
+    maternity: "chụp bầu",
+  };
+  if (style && input.styleMatched === false) {
+    return isWedding
+      ? "Dạ em gửi mình vài mẫu cưới để tham khảo trước nha. Mình thích tấm nào thì nói em, em sẽ tìm thêm đúng hướng đó cho mình ạ."
+      : "Dạ em gửi mình vài mẫu đúng dịch vụ để tham khảo trước nha. Mình thích tấm nào thì nói em, em sẽ tìm thêm đúng hướng đó cho mình ạ.";
+  }
+  const styleText = style ? ` theo hướng ${STYLE_LABELS[style] ?? style}` : "";
+  const target = serviceLabel[input.serviceKey ?? ""] ?? "đúng dịch vụ";
+  return `Dạ em gửi mình vài mẫu ${target}${styleText} để tham khảo nha. Mình ưng hướng nào thì nói em, em tư vấn tiếp cho sát gu ạ.`;
+}
+
 // ─── Entry-point dùng chung cho Test & Messenger ──────────────────────────────
 export type SelectSampleImagesOpts = {
   /** Claude có chèn marker <<SAMPLE...>> lượt này không. */
   sampleRequested: boolean;
   /** Nhóm Claude ghi trong marker (chuỗi thô, có thể rỗng). */
   sampleIntents: string[];
+  /** Workflow đã xác nhận đúng một dịch vụ cho lượt gửi mẫu này. */
+  intentLocked?: boolean;
   /** Tin nhắn khách lượt này. */
   messageText?: string | null;
   /** Ngữ cảnh hội thoại gần đây (vài tin gần nhất) — dùng để suy NHÓM ảnh khi tin lượt này không nêu nhóm. */
@@ -679,7 +829,13 @@ const AFFIRMATIVE_RE =
 
 /** Câu nhắn khi khách đòi xem thêm nhưng đã xem hết mẫu CHÍNH của nhóm (req: không lặp ảnh cũ). */
 export const SAMPLES_EXHAUSTED_NOTE =
-  "Mấy mẫu chính em vừa gửi ở trên rồi á anh. Anh muốn em tư vấn theo phong cách nhẹ nhàng, hiện đại hay sang hơn không ạ?";
+  "Mấy mẫu chính em vừa gửi ở trên rồi á. Mình thích phong cách nhẹ nhàng, hiện đại hay sang hơn để em tư vấn tiếp nha?";
+
+export function isExplicitSampleRequest(message: string | null | undefined): boolean {
+  const normalized = norm(message);
+  if (/\bde\s+(minh|anh|chi|em|toi)\s+(xem|coi)(\s+them)?\b/.test(normalized)) return false;
+  return EXPLICIT_IMAGE_REQUEST_RE.test((message ?? "").trim());
+}
 
 // Khách CHỦ ĐỘNG đòi xem NGUYÊN ALBUM / cả bộ → MỚI gửi link "xem thêm bộ đầy đủ".
 // Đã gửi ảnh mẫu rồi thì KHÔNG kèm link nữa — gửi cả ảnh lẫn link trông quá "chỉn chu",
@@ -697,13 +853,10 @@ const WANTS_FULL_ALBUM_RE =
  *   • Loại ảnh ĐÃ GỬI trong hội thoại (excludeUrls). Hết ảnh mới → exhausted=true để caller nhắn khéo.
  * Trả {images, links, resolvedIntents, exhausted}. images rỗng & !exhausted → khách chưa đòi xem ảnh.
  */
-export async function selectSampleImages(opts: SelectSampleImagesOpts): Promise<{
-  images: SampleImage[];
-  links: SampleLink[];
-  resolvedIntents: ServiceIntent[];
-  exhausted: boolean;
-}> {
-  const empty = { images: [], links: [], resolvedIntents: [] as ServiceIntent[], exhausted: false };
+export async function selectSampleImages(opts: SelectSampleImagesOpts): Promise<SampleSelection> {
+  const empty: SampleSelection = {
+    images: [], links: [], resolvedIntents: [], exhausted: false, styleMatched: true, requestedStyleTags: [],
+  };
 
   // ── CỔNG GỬI ───────────────────────────────────────────────────────────────
   // 1) HONOR marker <<SAMPLE>> của Claude: marker phản ánh ĐÚNG điều Claude vừa nói
@@ -713,7 +866,7 @@ export async function selectSampleImages(opts: SelectSampleImagesOpts): Promise<
   //    đặt marker khi khách mới nói loại dịch vụ + backend đã BỎ auto-detect-from-text.
   // 2) explicitRequest / consent: lưới an toàn khi Claude QUÊN đặt marker.
   const msg = (opts.messageText ?? "").trim();
-  const explicitRequest = EXPLICIT_IMAGE_REQUEST_RE.test(msg);
+  const explicitRequest = isExplicitSampleRequest(msg);
   const consent =
     !!opts.lastBotText &&
     BOT_OFFERED_SAMPLES_RE.test(opts.lastBotText) &&
@@ -733,25 +886,25 @@ export async function selectSampleImages(opts: SelectSampleImagesOpts): Promise<
     detectGender(opts.contextText ?? "") ??
     detectGender(`${opts.visionIntent?.image_type ?? ""} ${opts.visionIntent?.visual_description ?? ""} ${opts.visionIntent?.outfit ?? ""}`);
 
-  let intents: ServiceIntent[] = explicit;
+  const currentTextIntent = detectServiceIntentFromText(msg);
+  const rememberedTextIntent = currentTextIntent === "unknown" && opts.contextText
+    ? detectServiceIntentFromText(opts.contextText)
+    : currentTextIntent;
+
+  // A workflow-locked service is authoritative; stale chat context must not switch galleries.
+  let intents: ServiceIntent[] = opts.intentLocked && explicit.length > 0
+    ? explicit
+    : rememberedTextIntent !== "unknown" ? [rememberedTextIntent] : explicit;
   if (intents.length === 0) {
-    // 2) Suy nhóm: ảnh khách gửi (Vision ≥45%) → tin lượt này → ngữ cảnh gần đây.
     const v = opts.visionIntent;
-    let detected: ServiceIntent = "unknown";
     if (v && v.service_intent !== "unknown" && (v.confidence ?? 0) >= 0.45) {
-      detected = v.service_intent;
-    } else {
-      detected = detectServiceIntentFromText(msg);
-      if (detected === "unknown" && opts.contextText) {
-        detected = detectServiceIntentFromText(opts.contextText);
-      }
+      intents = [v.service_intent];
     }
-    if (detected !== "unknown") intents = [detected];
   }
 
   if (intents.length === 0) return empty; // đã muốn xem nhưng chưa rõ nhóm → để text hỏi tiếp
 
-  const images = await resolveSampleImages({
+  const resolved = await resolveSampleImagesWithMeta({
     intents,
     messageText: msg,
     gender,
@@ -761,15 +914,17 @@ export async function selectSampleImages(opts: SelectSampleImagesOpts): Promise<
   });
 
   // Đã loại trùng mà KHÔNG còn ảnh MỚI nào (nhóm này từng gửi rồi) → báo caller nhắn khéo.
-  const exhausted = images.length === 0 && (opts.excludeUrls?.length ?? 0) > 0;
+  const exhausted = resolved.images.length === 0 && (opts.excludeUrls?.length ?? 0) > 0;
 
   // Đã có ảnh → mặc định KHÔNG kèm link; chỉ gửi link khi khách đòi nguyên album/cả bộ.
   const wantsFullAlbum = WANTS_FULL_ALBUM_RE.test(msg);
   return {
-    images,
-    links: wantsFullAlbum ? buildSampleLinks(images) : [],
+    images: resolved.images,
+    links: wantsFullAlbum ? buildSampleLinks(resolved.images) : [],
     resolvedIntents: intents,
     exhausted,
+    styleMatched: resolved.styleMatched,
+    requestedStyleTags: resolved.requestedStyleTags,
   };
 }
 

@@ -1,506 +1,524 @@
-import type { ThreadState } from "./sale-thread-state";
-import { detectPhone, detectAppointmentIntent, detectEscalation } from "./sale-lead-flags";
-
-/**
- * SALE WORKFLOW V1 — Router + Playbook máy-đọc-được cho Lulu ("khúc giữa" tầng 2-3).
- *
- * OFFLINE MODULE: chưa nối vào luồng Messenger production. Hiện chỉ chạy ở:
- *   - sân test Claude Sale Test (shadow mode — hiển thị Router SẼ quyết gì, không ép LLM);
- *   - Golden Test Set (sale-workflow-golden.test.ts).
- * Nối thật vào fb-inbox là bước RIÊNG, chỉ làm sau khi thread-state chạy ổn trên pilot
- * (chỉ đạo chủ studio 28/07: "State ổn mới Router+Validator, không nhét thêm rule vào prompt").
- *
- * NGUYÊN TẮC: mọi Business Rule CỨNG (không hỏi lại ngày khi khách đã nói chưa chốt,
- * không lặp câu hỏi, escalation tiền/cọc/khiếu nại) quyết định bằng CODE deterministic —
- * KHÔNG giao cho LLM. LLM chỉ "viết lời" cho action đã chọn.
- *
- * THUẦN: không DB, không AI, không I/O → test được 100%.
- */
-
-// ─── Kiểu dữ liệu ─────────────────────────────────────────────────────────────
+import { isExplicitSampleRequest } from "./sale-samples";
+import { isPriceSheetRequest, resolveServiceKeyFromConversation, type SaleHistoryItem } from "./sale-price-sheet";
 
 export type SaleStage =
-  | "NEW_LEAD"        // chưa có gì — khách vừa xuất hiện
-  | "DISCOVERY"       // đang tìm hiểu khách cần dịch vụ gì
-  | "CONSULTING"      // đã rõ nhóm dịch vụ — tư vấn gu/mẫu
-  | "QUOTE_REFERENCE" // khách chưa chốt ngày — chỉ báo giá tham khảo
-  | "QUOTED"          // đã báo giá
-  | "CONSIDERING"     // sau báo giá: phân vân / so sánh / chê giá
-  | "BOOKING_INTENT"  // khách muốn giữ lịch / để SĐT / cọc
-  | "WAITING"         // bot đã hỏi, chờ khách (stage nghỉ giữa lượt)
-  | "HUMAN_REVIEW"    // người thật phải xử lý
-  | "BOOKED";         // đã cọc/đã thành khách — chăm sóc, không sale lại từ đầu
+  | "GREETING"
+  | "IDENTIFY_SERVICE"
+  | "DISCOVERY"
+  | "SEND_SAMPLE"
+  | "WAIT_SAMPLE_CONFIRMATION"
+  | "SEND_PRICE_SHEET"
+  | "EXPLAIN_PACKAGES"
+  | "RECOMMEND_PACKAGE"
+  | "FOLLOW_UP"
+  | "CLOSE_OR_HANDOFF";
 
-export type SaleAction =
-  | "GREET"
-  | "IDENTIFY_SERVICE" // đã rõ nhóm — đào sâu (loại con / gu)
-  | "ASK_SERVICE"      // chưa rõ nhóm — hỏi khách cần gì
-  | "ASK_DATE"
-  | "QUOTE_REFERENCE"  // báo giá THAM KHẢO (chưa có ngày) + câu "xác nhận lại khi có ngày"
-  | "QUOTE_EXACT"      // báo giá khi đã đủ dữ kiện
-  | "SEND_PRICE"       // gửi ảnh/bảng giá (khách xin bảng giá)
-  | "SEND_SAMPLE"      // gửi ảnh mẫu (khách đòi xem / đồng ý xem)
-  | "ANSWER_FAQ"
-  | "HANDLE_OBJECTION" // khách chê giá / so sánh — đồng cảm + giá trị, KHÔNG tự giảm
-  | "ASK_FOR_BOOKING"  // mời giữ lịch
-  | "ASK_PHONE"
-  | "ESCALATE_HUMAN"
-  | "WAIT";            // tin không tín hiệu (ack cụt) — đáp nhẹ, không đẩy bước mới
+export type SaleWorkflowAction =
+  | "ASK_SERVICE"
+  | "ASK_DISCOVERY"
+  | "EXPLAIN_PENDING"
+  | "SEND_SAMPLE"
+  | "ASK_SAMPLE_CONFIRMATION"
+  | "SEND_PRICE_SHEET"
+  | "CONTINUE_CONVERSATION";
 
-export type RouterInput = {
-  customerMessage: string;
-  /** Trạng thái thread (từ lulu_thread_state thật hoặc simulateThreadStateFromHistory). */
-  threadState: ThreadState;
-  /** true nếu đây là tin ĐẦU TIÊN của thread (chưa có lịch sử). */
-  isFirstContact: boolean;
-};
+export type RequestedSaleAction =
+  | "price_sheet"
+  | "sample"
+  | "sample_confirmation"
+  | "clarification"
+  | "discovery_answer"
+  | "service_switch"
+  | "none";
 
-export type RouterDecision = {
+export type SaleSlot = { key: string; label: string; value: string | null; source: string | null };
+
+export type SaleWorkflowDecision = {
   stage: SaleStage;
-  action: SaleAction;
-  /** Vì sao chọn action này — hiển thị cho người vận hành (trace). */
+  action: SaleWorkflowAction;
   reason: string;
-  requiredData: string[];
-  missingData: string[];
-  allowedQuestions: string[];
-  forbiddenQuestions: string[];
-  /** Nguồn knowledge cần nạp cho LLM ở action này (đặt nền cho context-theo-action). */
-  knowledgeNeeded: string[];
-  shouldEscalate: boolean;
+  greeted: boolean;
+  serviceKey: string | null;
+  slots: SaleSlot[];
+  filledSlots: SaleSlot[];
+  missingSlots: SaleSlot[];
+  nextSlot: SaleSlot | null;
+  quoteRequested: boolean;
+  forcedPrice: boolean;
+  sampleRequired: boolean;
+  sampleSent: boolean;
+  sampleConfirmed: boolean;
+  priceSheetSent: boolean;
+  sampleAsset: string | null;
+  style: string | null;
+  detectedIntent: string | null;
+  requestedAction: RequestedSaleAction;
+  priceRequested: boolean;
+  askedQuestionKeys: string[];
+  lastAskedQuestionKey: string | null;
+  answeredSlots: string[];
+  selectedAction: SaleWorkflowAction;
+  actionPriorityReason: string;
 };
 
-// ─── PLAYBOOK V1 (machine-readable) ───────────────────────────────────────────
-// Mỗi stage: mục tiêu, điều kiện vào, dữ liệu cần, action được phép/bị cấm,
-// điều kiện hoàn thành, stage kế, khi nào chuyển người thật.
-// Router DÙNG THẬT bảng này (enforcePlaybook) — không phải tài liệu suông.
+type SlotConfig = { key: string; label: string };
+type TextEvidence = { text: string; source: string; index: number; direction: "incoming" | "outgoing"; aiDecision?: string | null };
 
-export type StageDef = {
-  goal: string;
-  entryWhen: string;
-  requiredData: string[];
-  allowedActions: SaleAction[];
-  forbiddenActions: SaleAction[];
-  doneWhen: string;
-  nextStages: SaleStage[];
-  escalateWhen: string;
+const DISCOVERY_SLOTS: Record<string, SlotConfig[]> = {
+  wedding_album: [
+    { key: "wedding_kind", label: "album/prewedding hay chup ngay cuoi/tiec cuoi" },
+    { key: "album_location_type", label: "album tai studio hay ngoai canh" },
+  ],
+  wedding_gate: [
+    { key: "gate_count", label: "so luong cong can chup" },
+    { key: "wedding_date", label: "ngay chup/ngay cuoi du kien" },
+    { key: "style", label: "phong cach/gu anh cong" },
+    { key: "outfit_status", label: "trang phuc chup cong" },
+    { key: "makeup_need", label: "nhu cau makeup" },
+    { key: "priority", label: "uu tien tiet kiem hay day du" },
+  ],
+  album_studio: [{ key: "style", label: "phong cach album studio" }],
+  album_outdoor: [
+    { key: "location_need", label: "boi canh that tai Tay Ninh" },
+    { key: "style", label: "phong cach anh" },
+  ],
+  beauty: [
+    { key: "beauty_type", label: "the loai beauty/thoi trang" },
+    { key: "style", label: "gu/tone anh" },
+  ],
+  maternity: [
+    { key: "pregnancy_month", label: "thang thai ky" },
+    { key: "participants", label: "chup ca nhan hay cung gia dinh" },
+    { key: "style", label: "phong cach anh bau" },
+  ],
+  wedding_party: [
+    { key: "wedding_date", label: "ngay cuoi duong lich" },
+    { key: "bride_location", label: "khu vuc nha co dau" },
+    { key: "groom_location", label: "khu vuc nha chu re" },
+    { key: "venue_format", label: "tiec tai nha hay nha hang" },
+    { key: "table_count", label: "so ban du kien" },
+  ],
+  rental_outfit: [
+    { key: "use_date", label: "ngay su dung" },
+    { key: "outfit_type", label: "loai trang phuc" },
+    { key: "size_need", label: "size hoac nhu cau thu do" },
+  ],
+  family: [{ key: "primary_need", label: "nhu cau chinh cua buoi chup" }],
+  makeup: [{ key: "primary_need", label: "dip va nhu cau makeup" }],
+  video: [{ key: "primary_need", label: "nhu cau quay chinh" }],
+  printing: [{ key: "primary_need", label: "kich thuoc va so luong can in" }],
 };
 
-export const SALE_PLAYBOOK_V1: Record<SaleStage, StageDef> = {
-  NEW_LEAD: {
-    goal: "Chào tự nhiên, mở chuyện để biết khách cần gì",
-    entryWhen: "Thread mới, chưa có service_intent",
-    requiredData: [],
-    allowedActions: ["GREET", "IDENTIFY_SERVICE", "ASK_SERVICE", "ANSWER_FAQ", "HANDLE_OBJECTION", "WAIT", "ESCALATE_HUMAN"],
-    forbiddenActions: ["QUOTE_EXACT", "SEND_PRICE", "ASK_PHONE", "ASK_DATE"],
-    doneWhen: "Biết được service_intent",
-    nextStages: ["DISCOVERY", "CONSULTING"],
-    escalateWhen: "Khách mở đầu bằng khiếu nại / đòi gặp người thật",
-  },
-  DISCOVERY: {
-    goal: "Chốt được khách cần NHÓM dịch vụ nào",
-    entryWhen: "Có hội thoại nhưng service_intent chưa rõ",
-    requiredData: ["service_intent"],
-    allowedActions: ["ASK_SERVICE", "IDENTIFY_SERVICE", "ANSWER_FAQ", "SEND_SAMPLE", "HANDLE_OBJECTION", "WAIT", "ESCALATE_HUMAN"],
-    forbiddenActions: ["QUOTE_EXACT", "SEND_PRICE", "ASK_PHONE"],
-    doneWhen: "service_intent xác định",
-    nextStages: ["CONSULTING"],
-    escalateWhen: "Từ khóa escalation (cọc/CK/khiếu nại/gặp người)",
-  },
-  CONSULTING: {
-    goal: "Tư vấn đúng nhóm: gu, mẫu, giải đáp — dẫn tới báo giá",
-    entryWhen: "service_intent đã rõ",
-    requiredData: ["service_intent"],
-    allowedActions: [
-      "IDENTIFY_SERVICE", "ASK_DATE", "SEND_SAMPLE", "ANSWER_FAQ", "HANDLE_OBJECTION",
-      "QUOTE_REFERENCE", "QUOTE_EXACT", "SEND_PRICE", "ASK_FOR_BOOKING", "WAIT", "ESCALATE_HUMAN",
-    ],
-    forbiddenActions: ["GREET", "ASK_SERVICE"],
-    doneWhen: "Khách hỏi giá hoặc muốn giữ lịch",
-    nextStages: ["QUOTE_REFERENCE", "QUOTED", "BOOKING_INTENT"],
-    escalateWhen: "Concept lạ ngoài dữ liệu / từ khóa escalation",
-  },
-  QUOTE_REFERENCE: {
-    goal: "Khách CHƯA chốt ngày vẫn được báo giá tham khảo đầy đủ — không ép ngày",
-    entryWhen: "slots.date_status = not_decided và khách quan tâm giá",
-    requiredData: ["service_intent"],
-    allowedActions: ["QUOTE_REFERENCE", "SEND_PRICE", "SEND_SAMPLE", "ANSWER_FAQ", "HANDLE_OBJECTION", "WAIT", "ESCALATE_HUMAN"],
-    forbiddenActions: ["ASK_DATE", "GREET", "ASK_SERVICE"],
-    doneWhen: "Khách có ngày (tự khai) hoặc muốn giữ lịch",
-    nextStages: ["QUOTED", "CONSIDERING", "BOOKING_INTENT"],
-    escalateWhen: "Khách deal giá sâu / muốn cọc",
-  },
-  QUOTED: {
-    goal: "Đã báo giá — giải thích gói, so sánh, đẩy nhẹ sang giữ lịch",
-    entryWhen: "quoted_packages có ít nhất 1 gói",
-    requiredData: ["service_intent"],
-    allowedActions: [
-      "ANSWER_FAQ", "SEND_SAMPLE", "SEND_PRICE", "QUOTE_EXACT", "QUOTE_REFERENCE",
-      "HANDLE_OBJECTION", "ASK_FOR_BOOKING", "ASK_DATE", "ASK_PHONE", "WAIT", "ESCALATE_HUMAN",
-    ],
-    forbiddenActions: ["GREET", "ASK_SERVICE"],
-    doneWhen: "Khách đồng ý giữ lịch / để SĐT",
-    nextStages: ["CONSIDERING", "BOOKING_INTENT"],
-    escalateWhen: "Xin giảm giá / phát sinh phức tạp",
-  },
-  CONSIDERING: {
-    goal: "Khách phân vân sau báo giá — xử lý băn khoăn bằng giá trị, không tự giảm",
-    entryWhen: "Sau báo giá, khách chê giá / so sánh / chần chừ",
-    requiredData: [],
-    allowedActions: ["HANDLE_OBJECTION", "ANSWER_FAQ", "SEND_SAMPLE", "ASK_FOR_BOOKING", "WAIT", "ESCALATE_HUMAN"],
-    forbiddenActions: ["GREET", "ASK_SERVICE", "QUOTE_EXACT"],
-    doneWhen: "Khách quay lại quan tâm hoặc rời đi",
-    nextStages: ["BOOKING_INTENT", "WAITING"],
-    escalateWhen: "Deal giá cụ thể — người thật quyết",
-  },
-  BOOKING_INTENT: {
-    goal: "Khách muốn giữ lịch/cọc/đã cho SĐT — khép kín: ngày + SĐT + bàn giao người thật",
-    entryWhen: "Ý định đặt lịch / có SĐT / nhắc cọc",
-    requiredData: ["service_intent", "event_date", "phone"],
-    allowedActions: ["ASK_DATE", "ASK_PHONE", "ANSWER_FAQ", "ESCALATE_HUMAN", "WAIT"],
-    forbiddenActions: ["GREET", "ASK_SERVICE"],
-    doneWhen: "Đủ ngày + SĐT → bàn giao nhân viên",
-    nextStages: ["HUMAN_REVIEW", "WAITING"],
-    escalateWhen: "LUÔN bàn giao người thật để chốt cọc (bot không bao giờ tự chốt)",
-  },
-  WAITING: {
-    goal: "Bot đã hỏi/gửi đủ — chờ khách, không dồn ép",
-    entryWhen: "Không còn tín hiệu mới từ khách",
-    requiredData: [],
-    allowedActions: ["WAIT", "ANSWER_FAQ", "SEND_SAMPLE", "ESCALATE_HUMAN"],
-    forbiddenActions: ["ASK_DATE", "ASK_PHONE"],
-    doneWhen: "Khách nhắn lại có tín hiệu",
-    nextStages: ["CONSULTING", "QUOTED", "BOOKING_INTENT"],
-    escalateWhen: "—",
-  },
-  HUMAN_REVIEW: {
-    goal: "Người thật tiếp quản — bot chỉ giữ khách lịch sự",
-    entryWhen: "Escalation (cọc/CK/khiếu nại/gặp người/concept lạ)",
-    requiredData: [],
-    allowedActions: ["ESCALATE_HUMAN", "WAIT"],
-    forbiddenActions: [
-      "GREET", "ASK_SERVICE", "ASK_DATE", "QUOTE_REFERENCE", "QUOTE_EXACT",
-      "SEND_PRICE", "SEND_SAMPLE", "ASK_FOR_BOOKING", "ASK_PHONE",
-    ],
-    doneWhen: "Nhân viên xử lý xong, mở lại bot",
-    nextStages: ["CONSULTING", "QUOTED"],
-    escalateWhen: "Mặc định đã ở người thật",
-  },
-  BOOKED: {
-    goal: "Khách đã cọc/đã thành khách — chăm sóc, giải đáp; KHÔNG sale lại từ đầu",
-    entryWhen: "customer_status = customer / có cọc (tín hiệu V2 — deriveStage chưa tự vào được, chờ nối crm_leads.customer_id)",
-    requiredData: [],
-    allowedActions: ["ANSWER_FAQ", "SEND_SAMPLE", "WAIT", "ESCALATE_HUMAN"],
-    forbiddenActions: ["GREET", "ASK_SERVICE", "ASK_DATE", "QUOTE_REFERENCE", "QUOTE_EXACT", "SEND_PRICE", "ASK_PHONE", "ASK_FOR_BOOKING"],
-    doneWhen: "Buổi chụp hoàn tất / bàn giao ảnh (ngoài phạm vi bot sale)",
-    nextStages: ["WAITING"],
-    escalateWhen: "Đổi/dời lịch, phát sinh, khiếu nại — luôn người thật",
-  },
-};
+const SAMPLE_REQUIRED_SERVICES = new Set([
+  "wedding_gate",
+  "album_studio",
+  "album_outdoor",
+  "beauty",
+  "maternity",
+]);
 
-// ─── Nhận diện tín hiệu trong tin khách (thuần regex, đã bỏ dấu) ──────────────
-
-function normalizeVi(text: string): string {
-  return (text ?? "")
-    .toLowerCase()
+function norm(value: string | null | undefined): string {
+  return (value ?? "")
     .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/đ/g, "d");
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\u0111/g, "d")
+    .replace(/\u0110/g, "d")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
-// "bao nhieu" trần chỉ tính khi KHÔNG theo sau bởi danh từ đếm ("bao nhiêu người/kiểu/phút"
-// là câu hỏi số lượng, không phải giá). Đã bỏ `cho.{0,8}gia` (dính "cho gia đình").
-const PRICE_QUESTION_RE =
-  /(gia (sao|the nao|nhieu|bao nhieu)|bao nhieu(?!\s*(nguoi|khach|kieu|tam|buc|phut|tieng|gio|ngay|buoi|thang|tuoi|kg|cm|cai|bo|noi))|nhieu tien|gia ca|bang gia|hoi gia|xin gia|gia goi|combo bao nhieu)/;
-const SEND_PRICELIST_RE = /((gui|xin|cho)[^.?!\n]{0,15}bang gia|bang gia day du|gui gia\b)/;
-// Khách đòi gặp người thật — check trên text ĐÃ BỎ DẤU vì detectEscalation (prod) dùng
-// class [oơ] không chứa "ờ" nên "người thật" gõ đủ dấu KHÔNG match (bug tiềm ẩn prod,
-// đã ghi vào báo cáo — không sửa file prod trong PR offline này).
-const WANT_HUMAN_RE = /((gap|noi chuyen voi|cho (gap|noi chuyen))\s*(nguoi that|nhan vien|nguoi tu van|ai do)|can nguoi that|nguoi that (tu van|tra loi))/;
-// Đã bỏ `xem thu` trần (dính "để chị xem thử rồi báo lại" = khách xin suy nghĩ).
-const WANT_SAMPLE_RE =
-  /(xem (anh|hinh|mau|album|bo anh)|cho.{0,10}(mau|anh mau|hinh)|co (mau|anh mau|hinh mau)|gui (anh|hinh|mau)|mau (nao )?dep|anh (that|chup) (cua )?ben|cho coi|xem thu (anh|hinh|mau|album))/;
-const GREETING_ONLY_RE = /^(hi+|hello+|alo+|chao( em| shop| ban| anh| chi)?|xin chao|cho hoi|e oi|em oi|shop oi)( a| nha| nhe)?[.!~\s]*$/;
-// Ack cụt theo TOKEN (chống backtracking + bắt được ack 2-3 từ "ok ạ"/"dạ vâng"/"ok nha").
-// Text vào đã bỏ dấu nên chỉ cần token không dấu.
-const ACK_WORDS = new Set(["da", "vang", "ok", "oke", "okie", "okay", "uk", "u", "uh", "um", "uhm", "a", "nha", "nhe", "👍"]);
-function isShortAck(t: string): boolean {
-  const words = t.replace(/[.!~?]+/g, " ").trim().split(/\s+/).filter(Boolean);
-  return words.length > 0 && words.length <= 3 && words.every((w) => ACK_WORDS.has(w) || /^\.+$/.test(w));
+function allEvidence(message: string, prior: SaleHistoryItem[]): TextEvidence[] {
+  return [
+    ...prior.map((item, index) => ({
+      text: item.message,
+      source: `prior_${item.direction}_${index}`,
+      index,
+      direction: item.direction,
+      aiDecision: item.aiDecision,
+    })),
+    { text: message, source: "current_message", index: prior.length, direction: "incoming" as const, aiDecision: null },
+  ].filter((item) => item.text.trim());
 }
-// Khách quay lại thăm dò ("còn đó không / ngủ chưa") — đáp nhẹ, không đẩy bước.
-const PRESENCE_CHECK_RE = /(con (do|o do|day) (khong|ko|hong)|ngu chua|co (do|day) (khong|ko)|check tin nhan|thay tin nhan (khong|ko))/;
 
-// FAQ topic → knowledge cần nạp. (Nguồn FAQ có cấu trúc CHƯA tồn tại — known gap từ audit;
-// router vẫn trả knowledgeNeeded để tầng knowledge sau này nạp đúng.)
-const FAQ_TOPICS: Array<{ topic: string; re: RegExp }> = [
-  { topic: "faq:address", re: /(dia chi|o dau|cho nao|nam o|studio o|toi dau|den dau|duong nao)/ },
-  { topic: "faq:hours", re: /(may gio|gio mo|gio lam viec|mo cua|dong cua)/ },
-  { topic: "faq:delivery", re: /((bao lau|khi nao|bao gio|may ngay)\s*(thi\s*)?(co|nhan|lay|tra|gui|cho|xong)\s*(anh|hinh)|bao lau xong)/ },
-  { topic: "faq:package_detail", re: /(gom (nhung )?gi|bao gom|co nhung gi|trong goi co|goi nay (co|gom))/ },
-  { topic: "faq:services", re: /(co (vay|ao dai|vest|makeup|trang diem|quay phim|make up)|ben (em|minh) co)/ },
-  { topic: "faq:payment", re: /(thanh toan|tra gop|coc bao nhieu|dat coc bao nhieu)/ },
-];
+function incomingTexts(evidence: TextEvidence[]): TextEvidence[] {
+  return evidence.filter((item) => item.direction === "incoming" && !item.text.startsWith("[image:"));
+}
 
-function detectFaqTopic(t: string): string | null {
-  for (const f of FAQ_TOPICS) if (f.re.test(t)) return f.topic;
+function lastMatch(
+  texts: TextEvidence[],
+  matcher: (text: string, normalized: string) => string | null,
+): { value: string; source: string } | null {
+  for (let i = texts.length - 1; i >= 0; i--) {
+    const value = matcher(texts[i].text, norm(texts[i].text));
+    if (value) return { value, source: texts[i].source };
+  }
   return null;
 }
 
-// Lý do nghiệp vụ MỚI được phép mở lại câu hỏi ngày (theo chỉ đạo golden flow):
-// khách muốn giữ lịch / đặt cọc / nhờ kiểm tra lịch cụ thể / CHỐT MUA.
-const REOPEN_DATE_RE = /(giu lich|chot lich|dat lich|book lich|dat coc|coc giu|kiem tra lich|xem lich (giup|gium)|con lich khong|ngay .{0,12}con (trong|lich))/;
-// Khách CHỐT MUA không kèm chữ "lịch" ("chốt gói này", "lấy gói basic", "ok chốt luôn").
-// Lookbehind chặn phủ định ("chưa chốt nha" KHÔNG phải chốt mua).
-const CLOSE_DEAL_RE =
-  /(?<!chua )(?<!khong )(?<!dung )(chot (goi|don|luon|lun|nhe|di\b)|\b(lay|chon)\s+goi|dong y (chot|lam|dat)|ok chot)/;
+const STYLE_KEYWORDS = [
+  "nhe nhang", "sang trong", "nang tho", "ngot ngao", "sexy", "quyen ru", "luxury",
+  "cool boy", "cool girl", "ca tinh", "tu nhien", "han quoc", "co dien", "hien dai",
+  "tinh te", "toi gian", "chinh chu", "cao cap", "premium", "viet phuc", "co trang", "truyen thong",
+];
 
-// ─── Suy stage từ state (V1: stage suy mỗi lượt, chưa persist current_stage) ──
-
-export function deriveStage(state: ThreadState, opts?: { isFirstContact?: boolean }): SaleStage {
-  if (opts?.isFirstContact) return "NEW_LEAD";
-  if (state.quotedPackages.length > 0) return "QUOTED";
-  if (state.slots.date_status === "not_decided") {
-    // Chưa chốt ngày + đã rõ nhóm → làm việc ở chế độ tham khảo.
-    return state.serviceIntent ? "QUOTE_REFERENCE" : "DISCOVERY";
-  }
-  if (state.serviceIntent) return "CONSULTING";
-  if (state.lastUserMessageAt || state.lastBotMessageAt) return "DISCOVERY";
-  return "NEW_LEAD";
+function styleSlot(texts: TextEvidence[]) {
+  return lastMatch(texts, (raw, text) => {
+    const found = STYLE_KEYWORDS.find((keyword) => text.includes(keyword));
+    if (found) return found;
+    if (/\b(thich|ung|chon)\b.{0,24}\b(mau|hinh|phong cach|kieu|tone|gu)\b/.test(text)) return raw.trim();
+    return null;
+  });
 }
 
-// ─── Router ───────────────────────────────────────────────────────────────────
+function beautyTypeSlot(texts: TextEvidence[]) {
+  const types: Array<{ value: string; pattern: RegExp; specificity: number }> = [
+    { value: "maternity", pattern: /\b(chup bau|me bau|mang thai|thai ky|maternity)\b/, specificity: 3 },
+    { value: "birthday", pattern: /\b(sinh nhat|birthday)\b/, specificity: 2 },
+    { value: "couple", pattern: /\b(couple|tinh yeu|cap doi)\b/, specificity: 2 },
+    { value: "historical", pattern: /\b(co trang|viet phuc|co phuc|ao dai)\b/, specificity: 2 },
+    { value: "cool_boy", pattern: /\b(cool boy|nam tinh|chup nam)\b/, specificity: 2 },
+    { value: "sexy", pattern: /\b(sexy|quyen ru)\b/, specificity: 2 },
+    { value: "luxury", pattern: /\b(sang trong|luxury|sang chanh)\b/, specificity: 1 },
+    { value: "sweet", pattern: /\b(nang tho|ngot ngao|nhe nhang)\b/, specificity: 1 },
+    { value: "personal", pattern: /\b(beauty|beaty|ca nhan|chan dung|profile|thoi trang)\b/, specificity: 0 },
+  ];
+  let best: { value: string; source: string; specificity: number; index: number } | null = null;
+  for (let index = 0; index < texts.length; index++) {
+    const type = types.find((candidate) => candidate.pattern.test(norm(texts[index].text)));
+    if (!type || (best && type.specificity < best.specificity)) continue;
+    best = { value: type.value, source: texts[index].source, specificity: type.specificity, index };
+  }
+  return best ? { value: best.value, source: best.source } : null;
+}
 
-const KNOWLEDGE_BY_ACTION: Partial<Record<SaleAction, (intent: string | null) => string[]>> = {
-  QUOTE_REFERENCE: (i) => [`pricing:${i ?? "all"}`],
-  QUOTE_EXACT: (i) => [`pricing:${i ?? "all"}`],
-  SEND_PRICE: (i) => [`pricing:${i ?? "all"}`, "price_images"],
-  SEND_SAMPLE: (i) => [`gallery:${i ?? "all"}`],
-  IDENTIFY_SERVICE: (i) => [`services:${i ?? "all"}`],
-  ASK_SERVICE: () => ["services:menu"],
+function dateSlot(texts: TextEvidence[], unknownAllowed = true) {
+  return lastMatch(texts, (raw, text) => {
+    if (unknownAllowed && /\b(chua biet ngay|chua chot ngay|chua co ngay|khong biet ngay)\b/.test(text)) return "unknown_date";
+    const date = raw.match(/\b([0-3]?\d)[\/.\-]([01]?\d)(?:[\/.\-](20\d{2}|\d{2}))?\b/);
+    if (date) return date[0];
+    const written = text.match(/\bngay\s+([0-3]?\d)\s+thang\s+([01]?\d)(?:\s+nam\s+(20\d{2}))?/);
+    return written?.[0] ?? null;
+  });
+}
+
+function simpleKeywordSlot(texts: TextEvidence[], patterns: RegExp[], fallbackRaw = false) {
+  return lastMatch(texts, (raw, text) => patterns.some((pattern) => pattern.test(text)) ? (fallbackRaw ? raw.trim() : text) : null);
+}
+
+function locationSlot(texts: TextEvidence[], who: "bride" | "groom") {
+  const marker = who === "bride" ? /(nha co dau|co dau)/ : /(nha chu re|chu re)/;
+  return lastMatch(texts, (raw, text) => marker.test(text) && /\b(o|tai|khu vuc|quan|huyen|tinh|tp|thanh pho|q\d+)\b/.test(text) ? raw.trim() : null);
+}
+
+function outdoorLocationSlot(texts: TextEvidence[]) {
+  return lastMatch(texts, (raw, text) => {
+    const allowed = /\b(tay ninh|nui ba den|nui ba|ho dau tieng|duong minh chau|ho nuoc|quan ca phe|cafe|coffee|chua go ken|toa thanh cao dai|dong co|bo ho|thien nhien|kien truc|vu garden|maison)\b/;
+    const outside = /\b(vung tau|da lat|sai gon|tp hcm|ho chi minh|nha trang|phu quoc|mui ne)\b/;
+    if (outside.test(text) || !allowed.test(text)) return null;
+    return raw.trim();
+  });
+}
+
+function inferSlotValue(key: string, texts: TextEvidence[]) {
+  switch (key) {
+    case "gate_count": return lastMatch(texts, (_raw, text) => {
+      if (/\b(2|hai)\s*cong\b/.test(text)) return "two_gates";
+      if (/\b(1|mot)\s*cong\b/.test(text)) return "one_gate";
+      return null;
+    });
+    case "style": return styleSlot(texts);
+    case "outfit_status": return lastMatch(texts, (_raw, text) => {
+      if (/\b(chua co|chua chon|can thue)\b.{0,24}\b(trang phuc|vay|ao dai|vest)\b|\b(chua co do)\b/.test(text)) return "needs_outfit";
+      if (/\b(da co|tu chuan bi)\b.{0,24}\b(trang phuc|vay|ao dai|vest)\b|\bda co do\b/.test(text)) return "has_outfit";
+      return null;
+    });
+    case "makeup_need": return lastMatch(texts, (_raw, text) => {
+      if (/\b(khong can|tu makeup|tu trang diem)\b/.test(text)) return "no_makeup";
+      if (/\b(can|co)\b.{0,20}\b(makeup|make up|trang diem)\b/.test(text)) return "needs_makeup";
+      return null;
+    });
+    case "priority": return lastMatch(texts, (_raw, text) => {
+      if (/\b(tiet kiem|ngan sach|gia mem|re)\b/.test(text)) return "budget";
+      if (/\b(day du|chinh chu|cao cap|tot nhat)\b/.test(text)) return "full_service";
+      return null;
+    });
+    case "beauty_type": return beautyTypeSlot(texts);
+    case "wedding_date":
+    case "use_date": return dateSlot(texts);
+    case "bride_location": return locationSlot(texts, "bride");
+    case "groom_location": return locationSlot(texts, "groom");
+    case "venue_format": return simpleKeywordSlot(texts, [/\bnha hang\b/, /\btiec tai nha\b/, /\blam tai nha\b/, /\bchi lam nha hang\b/], true);
+    case "table_count": return lastMatch(texts, (_raw, text) => text.match(/\b\d{1,3}\s*ban\b/)?.[0] ?? null);
+    case "pregnancy_month": return lastMatch(texts, (_raw, text) => text.match(/\b(?:bau|thai|mang thai)?\s*(\d{1,2})\s*thang\b/)?.[0] ?? null);
+    case "participants": return simpleKeywordSlot(texts, [/\bchup mot minh\b/, /\bchup ca nhan\b/, /\bmot minh\b/, /\bchup cung chong\b/, /\bcung chong\b/, /\bchup gia dinh\b/, /\bcung gia dinh\b/], true);
+    case "outfit_type": return simpleKeywordSlot(texts, [/\bvay cuoi\b/, /\bao dai\b/, /\bvest\b/, /\bsuit\b/, /\btrang phuc\b/], true);
+    case "size_need": return simpleKeywordSlot(texts, [/\bsize\b/, /\bthu do\b/, /\bthu vay\b/, /\bthu trang phuc\b/], true);
+    case "location_need": return outdoorLocationSlot(texts);
+    case "wedding_kind": return simpleKeywordSlot(texts, [/\balbum\b/, /\bprewedding\b/, /\bpre wedding\b/, /\bngay cuoi\b/, /\btiec cuoi\b/], true);
+    case "album_location_type": return simpleKeywordSlot(texts, [/\bstudio\b/, /\bngoai canh\b/], true);
+    case "primary_need": return texts.length > 0 ? { value: texts[texts.length - 1].text.trim(), source: texts[texts.length - 1].source } : null;
+    default: return null;
+  }
+}
+
+const QUESTION_KEY_PATTERNS: Record<string, RegExp> = {
+  service_type: /\b(dich vu nao|quan tam dich vu|chup cong,? album|chup anh cong,? album|muon xem dich vu nao truoc|studio hay album ngoai canh)\b/,
+  gate_count: /\b(mot cong hay hai cong|1 cong hay 2 cong|so luong cong)\b/,
+  sample_confirmation: /\bmau\b.{0,60}\b(hop gu|ung huong|ung mau|thich huong|on khong)\b/,
+  style: /\b(thich huong|thich phong cach|thich tone|phong cach nao|huong nao|tone nao)\b/,
+  location_need: /\b(canh thien nhien|nui ba den|quan ca phe|kien truc nao|boi canh nao)\b/,
+  beauty_type: /\b(chup sinh nhat|beauty ca nhan|cool boy|co trang hay chup bau|the loai beauty)\b/,
+  pregnancy_month: /\b(thang thai ky|mang thai may thang|bau may thang)\b/,
+  participants: /\b(chup ca nhan hay cung gia dinh|chup mot minh hay)\b/,
+  wedding_date: /\b(ngay cuoi|ngay duong lich)\b/,
+  bride_location: /\b(nha co dau|khu vuc co dau)\b/,
+  groom_location: /\b(nha chu re|khu vuc chu re)\b/,
+  venue_format: /\b(tiec tai nha hay nha hang|lam tai nha hay nha hang)\b/,
+  table_count: /\b(bao nhieu ban|so ban du kien)\b/,
+  use_date: /\b(ngay su dung|can dung vao ngay nao)\b/,
+  outfit_type: /\b(loai trang phuc|can thue loai)\b/,
+  size_need: /\b(size nao|thu do|ghe thu do)\b/,
+  wedding_kind: /\b(album prewedding|album\/prewedding|chup ngay cuoi)\b/,
+  album_location_type: /\b(album tai studio hay ngoai canh|studio hay ngoai canh)\b/,
+  primary_need: /\b(nhu cau chinh|nhu cau quan trong nhat)\b/,
 };
 
-function baseDecision(stage: SaleStage, action: SaleAction, reason: string): RouterDecision {
-  return {
-    stage,
-    action,
-    reason,
-    requiredData: [],
-    missingData: [],
-    allowedQuestions: [],
-    forbiddenQuestions: [],
-    knowledgeNeeded: [],
-    shouldEscalate: false,
-  };
+function askedQuestionState(evidence: TextEvidence[], serviceStart: number): { keys: string[]; last: string | null } {
+  const keys: string[] = [];
+  let last: string | null = null;
+  for (const item of evidence) {
+    if (item.index < serviceStart || item.direction !== "outgoing" || item.text.startsWith("[image:")) continue;
+    const text = norm(item.text);
+    const key = Object.entries(QUESTION_KEY_PATTERNS).find(([, pattern]) => pattern.test(text))?.[0] ?? null;
+    if (!key) continue;
+    if (!keys.includes(key)) keys.push(key);
+    last = key;
+  }
+  return { keys, last };
 }
 
-/**
- * Tính danh sách câu hỏi BỊ CẤM từ state (rule cứng — chạy cho MỌI quyết định):
- *  - ask_date cấm khi khách ĐÃ nói chưa chốt ngày (trừ khi có lý do nghiệp vụ mới).
- *  - ask_date cấm khi đã hỏi mà khách chưa trả lời (đừng lặp).
- *  - mọi câu đã hỏi >=2 lần đều cấm.
- */
-export function computeForbiddenQuestions(state: ThreadState, reopenDate: boolean): string[] {
-  const forbidden = new Set<string>();
-  const askedDate = state.askedQuestions.find((q) => q.key === "ask_date");
-  if (!reopenDate) {
-    if (state.slots.date_status === "not_decided") forbidden.add("ask_date");
-    if (askedDate && state.slots.date_status !== "known") forbidden.add("ask_date");
-  }
-  if (state.slots.date_status === "known") forbidden.add("ask_date"); // đã có ngày thì không bao giờ hỏi lại
-  for (const q of state.askedQuestions) if ((q.count ?? 0) >= 2) forbidden.add(q.key);
-  return [...forbidden];
+const FORCE_PRICE_RE = /\b(cu|cho|gui)\b.{0,28}\b(bang gia|gia)\b.{0,18}\b(truoc|di)|\bkhong can hoi|cu xem gia/i;
+const SAMPLE_CONFIRM_RE = /\b(ung|thich|chon|dung gu|hop gu|mau nay ok|kieu nay ok|lay phong cach nay|bao gia di|gui bang gia)\b/;
+const SAMPLE_REJECT_RE = /\b(khong ung|khong thich|chua ung|doi mau|mau khac|kieu khac|khong hop)\b/;
+const CUSTOMER_DEFERS_RE = /\b(de|cho)\s+(minh|anh|chi|em|toi)\s+(xem|coi|tham khao|suy nghi)(\s+them|\s+ky)?\b|\b(chua quyet dinh|chua chot|de tinh|suy nghi them|xem ky them)\b/;
+const CLARIFICATION_RE = /\b(nghia la sao|y la sao|la sao|giai thich)\b/;
+
+function imageUrlFromMessage(message: string): string | null {
+  return message.match(/^\s*\[image:(.+?)\]\s*$/)?.[1]?.trim() ?? null;
 }
 
-/** Áp playbook: action nằm ngoài allowedActions của stage → hạ về fallback an toàn. */
-function enforcePlaybook(d: RouterDecision): RouterDecision {
-  const def = SALE_PLAYBOOK_V1[d.stage];
-  if (def.allowedActions.includes(d.action)) return d;
-  const fallback: SaleAction = def.allowedActions.includes("ANSWER_FAQ") ? "ANSWER_FAQ" : "WAIT";
-  return {
-    ...d,
-    action: fallback,
-    reason: `${d.reason} → action gốc bị playbook stage ${d.stage} cấm, hạ về ${fallback}`,
-  };
+function findServiceStartIndex(evidence: TextEvidence[], serviceKey: string): number {
+  let start = 0;
+  let previousExplicitService: string | null = null;
+  for (const item of evidence) {
+    if (item.direction !== "incoming") continue;
+    const resolved = resolveServiceKeyFromConversation(item.text, []);
+    if (resolved.ambiguous || !resolved.key) continue;
+    if (resolved.key === serviceKey && previousExplicitService !== serviceKey) start = item.index;
+    previousExplicitService = resolved.key;
+  }
+  return start;
 }
 
-export function routeSaleAction(input: RouterInput): RouterDecision {
-  const state = input.threadState;
-  const msg = (input.customerMessage ?? "").trim();
-  const t = normalizeVi(msg);
-  const intent = state.serviceIntent;
-  const stage = deriveStage(state, { isFirstContact: input.isFirstContact });
+function sampleEvidence(evidence: TextEvidence[], serviceKey: string): { sent: boolean; asset: string | null; index: number } {
+  const serviceStart = findServiceStartIndex(evidence, serviceKey);
+  for (let i = evidence.length - 1; i >= 0; i--) {
+    const item = evidence[i];
+    if (item.index < serviceStart || item.direction !== "outgoing") continue;
+    const asset = imageUrlFromMessage(item.text);
+    const explicitlySample = /sample/i.test(item.aiDecision ?? "");
+    const explicitlyPrice = /price_sheet/i.test(item.aiDecision ?? "");
+    if (explicitlyPrice) continue;
+    if (asset && (explicitlySample || !item.aiDecision)) return { sent: true, asset, index: item.index };
+  }
+  return { sent: false, asset: null, index: -1 };
+}
 
-  const reopenDate = REOPEN_DATE_RE.test(t) || CLOSE_DEAL_RE.test(t) || detectAppointmentIntent(msg);
-  const forbidden = computeForbiddenQuestions(state, reopenDate);
+function priceSheetEvidence(evidence: TextEvidence[], serviceStart: number): { sent: boolean; index: number } {
+  for (let i = evidence.length - 1; i >= 0; i--) {
+    const item = evidence[i];
+    if (item.index < serviceStart || item.direction !== "outgoing") continue;
+    if (/price_sheet/i.test(item.aiDecision ?? "")) return { sent: true, index: item.index };
+  }
+  return { sent: false, index: -1 };
+}
 
-  const finish = (d: RouterDecision): RouterDecision => {
-    d.forbiddenQuestions = [...new Set([...forbidden, ...d.forbiddenQuestions])];
-    // RULE CỨNG CUỐI: router không bao giờ được trả ASK_DATE khi ask_date đang bị cấm.
-    if (d.action === "ASK_DATE" && d.forbiddenQuestions.includes("ask_date")) {
-      if (d.stage === "BOOKING_INTENT") {
-        // Khách đang muốn chốt nhưng đã hết quota hỏi ngày → khép kín booking bằng SĐT
-        // + bàn giao người thật (đúng escalateWhen của playbook BOOKING_INTENT).
-        const alt = baseDecision(
-          "BOOKING_INTENT",
-          "ASK_PHONE",
-          `${d.reason} → NHƯNG ask_date đã hỏi đủ, không lặp — xin SĐT để nhân viên liên hệ chốt ngày`,
-        );
-        alt.allowedQuestions = ["ask_phone"];
-        alt.forbiddenQuestions = d.forbiddenQuestions;
-        alt.shouldEscalate = true;
-        d = alt;
-      } else {
-        const alt = baseDecision(
-          "QUOTE_REFERENCE",
-          "QUOTE_REFERENCE",
-          `${d.reason} → NHƯNG ask_date đang bị cấm (khách chưa chốt/đã hỏi rồi) → báo giá tham khảo`,
-        );
-        alt.forbiddenQuestions = d.forbiddenQuestions;
-        alt.shouldEscalate = d.shouldEscalate;
-        d = alt;
-      }
+function sampleConfirmedAfter(evidence: TextEvidence[], sampleIndex: number): boolean {
+  if (sampleIndex < 0) return false;
+  return evidence.some((item) => {
+    if (item.direction !== "incoming" || item.index <= sampleIndex) return false;
+    const text = norm(item.text);
+    return SAMPLE_CONFIRM_RE.test(text) && !SAMPLE_REJECT_RE.test(text);
+  });
+}
+
+type SaleWorkflowBase = Omit<
+  SaleWorkflowDecision,
+  "stage" | "action" | "reason" | "selectedAction" | "actionPriorityReason"
+>;
+
+function decisionBase(input: SaleWorkflowBase) {
+  return input;
+}
+
+function selectDecision(
+  base: SaleWorkflowBase,
+  stage: SaleStage,
+  action: SaleWorkflowAction,
+  reason: string,
+  nextSlot: SaleSlot | null = base.nextSlot,
+): SaleWorkflowDecision {
+  return { ...base, stage, action, reason, nextSlot, selectedAction: action, actionPriorityReason: reason };
+}
+
+export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHistoryItem[] }): SaleWorkflowDecision {
+  const prior = input.prior ?? [];
+  const service = resolveServiceKeyFromConversation(input.message, prior);
+  const serviceKey = service.ambiguous ? null : service.key;
+  const evidence = allEvidence(input.message, prior);
+  const serviceStart = serviceKey ? findServiceStartIndex(evidence, serviceKey) : 0;
+  // A service switch starts a fresh discovery scope; never reuse a prior service's preferences.
+  const texts = incomingTexts(evidence).filter((item) => item.index >= serviceStart);
+  const configs = serviceKey ? (DISCOVERY_SLOTS[serviceKey] ?? [{ key: "primary_need", label: "nhu cau quan trong nhat" }]) : [];
+  const slots: SaleSlot[] = configs.map((config) => {
+    const found = inferSlotValue(config.key, texts);
+    return { ...config, value: found?.value ?? null, source: found?.source ?? null };
+  });
+  const filledSlots = slots.filter((slot) => slot.value);
+  const missingSlots = slots.filter((slot) => !slot.value);
+  const priceRequested = isPriceSheetRequest(input.message);
+  const quoteRequested = priceRequested;
+  const forcedPrice = FORCE_PRICE_RE.test(norm(input.message)) && isPriceSheetRequest(input.message);
+  const alternateSampleRequested = isExplicitSampleRequest(input.message) && !isPriceSheetRequest(input.message);
+  const greeted = prior.some((item) => item.direction === "outgoing" && !item.message.startsWith("[image:"));
+  const sampleRequired = !!serviceKey && SAMPLE_REQUIRED_SERVICES.has(serviceKey);
+  const sample = serviceKey ? sampleEvidence(evidence, serviceKey) : { sent: false, asset: null, index: -1 };
+  const priceSheet = priceSheetEvidence(evidence, serviceStart);
+  const sampleConfirmed = sampleConfirmedAfter(evidence, sample.index);
+  const sampleConfirmedNow = sample.sent && SAMPLE_CONFIRM_RE.test(norm(input.message)) && !SAMPLE_REJECT_RE.test(norm(input.message));
+  const customerDefers = CUSTOMER_DEFERS_RE.test(norm(input.message));
+  const clarificationRequested = CLARIFICATION_RE.test(norm(input.message));
+  const style = slots.find((slot) => slot.key === "style")?.value ?? null;
+  const questions = askedQuestionState(evidence, serviceStart);
+  const explicitCurrentService = resolveServiceKeyFromConversation(input.message, []);
+  const previousService = resolveServiceKeyFromConversation("", prior);
+  const serviceSwitched = !explicitCurrentService.ambiguous && !!explicitCurrentService.key
+    && !previousService.ambiguous && !!previousService.key && explicitCurrentService.key !== previousService.key;
+  const answeredCurrentSlot = filledSlots.some((slot) => slot.source === "current_message");
+  const requestedAction: RequestedSaleAction = priceRequested
+    ? "price_sheet"
+    : alternateSampleRequested
+      ? "sample"
+      : sampleConfirmedNow
+        ? "sample_confirmation"
+        : clarificationRequested
+          ? "clarification"
+        : answeredCurrentSlot
+          ? "discovery_answer"
+          : serviceSwitched
+            ? "service_switch"
+            : "none";
+  const base = decisionBase({
+    greeted,
+    serviceKey,
+    slots,
+    filledSlots,
+    missingSlots,
+    nextSlot: missingSlots[0] ?? null,
+    quoteRequested,
+    forcedPrice,
+    sampleRequired,
+    sampleSent: sample.sent,
+    sampleConfirmed,
+    priceSheetSent: priceSheet.sent,
+    sampleAsset: sample.asset,
+    style,
+    detectedIntent: priceRequested ? "price_sheet" : serviceKey,
+    requestedAction,
+    priceRequested,
+    askedQuestionKeys: questions.keys,
+    lastAskedQuestionKey: questions.last,
+    answeredSlots: filledSlots.map((slot) => slot.key),
+  });
+
+  if (!serviceKey) {
+    return selectDecision(base, greeted ? "IDENTIFY_SERVICE" : "GREETING", "ASK_SERVICE", service.ambiguous ? "multiple_services" : "service_unknown", null);
+  }
+  // Direct customer actions always outrank incomplete discovery slots.
+  if (priceRequested) {
+    return selectDecision(base, "SEND_PRICE_SHEET", "SEND_PRICE_SHEET", forcedPrice ? "customer_insists_on_price_first" : "direct_price_request", null);
+  }
+  if (alternateSampleRequested && sampleRequired) {
+    return selectDecision(base, "SEND_SAMPLE", "SEND_SAMPLE", sample.sent ? "customer_requested_another_sample" : "direct_sample_request", null);
+  }
+  if (sampleConfirmedNow) {
+    return selectDecision(base, "SEND_PRICE_SHEET", "SEND_PRICE_SHEET", "sample_confirmed_ready_to_quote", null);
+  }
+  if (clarificationRequested && base.nextSlot) {
+    return selectDecision(base, "DISCOVERY", "EXPLAIN_PENDING", `clarify_pending_slot:${base.nextSlot.key}`);
+  }
+  if (customerDefers) {
+    return selectDecision(base, "FOLLOW_UP", "CONTINUE_CONVERSATION", "customer_wants_time_to_consider", null);
+  }
+  if (priceSheet.sent) {
+    return selectDecision(base, "RECOMMEND_PACKAGE", "CONTINUE_CONVERSATION", "price_sheet_already_sent_follow_latest_preference", null);
+  }
+  if (sampleRequired && sample.sent && !sampleConfirmed) {
+    if (questions.keys.includes("sample_confirmation")) {
+      return selectDecision(base, "FOLLOW_UP", "CONTINUE_CONVERSATION", "repeat_sample_confirmation_guard", null);
     }
-    // Áp playbook TRƯỚC khi tính knowledge/requiredData — decision cuối phải nhất quán
-    // action↔knowledge (hết chuyện ANSWER_FAQ mang knowledge của action đã bị hạ).
-    d = enforcePlaybook(d);
-    d.knowledgeNeeded = d.knowledgeNeeded.length ? d.knowledgeNeeded : (KNOWLEDGE_BY_ACTION[d.action]?.(intent) ?? []);
-    if (d.action === "QUOTE_EXACT") d.requiredData = ["service_intent", "event_date"];
-    else if (d.action === "QUOTE_REFERENCE" || d.action === "SEND_PRICE" || d.action === "SEND_SAMPLE") d.requiredData = ["service_intent"];
-    else d.requiredData = [];
-    d.missingData = d.requiredData.filter((k) =>
-      k === "service_intent" ? !intent : k === "event_date" ? state.slots.date_status !== "known" : false,
-    );
-    return d;
-  };
-
-  // ── 1. ESCALATION CỨNG (tiền/cọc/khiếu nại/gặp người/hủy dời) ──
-  const esc = detectEscalation(msg);
-  if (esc) {
-    if (/giảm giá|so sánh|than mắc/.test(esc)) {
-      const d = baseDecision(state.quotedPackages.length ? "CONSIDERING" : stage, "HANDLE_OBJECTION", `Khách chê giá/xin giảm ("${esc}") — đồng cảm + giá trị, KHÔNG tự giảm; vẫn báo người thật`);
-      d.shouldEscalate = true;
-      d.forbiddenQuestions.push("self_discount");
-      return finish(d);
+    return selectDecision(base, "WAIT_SAMPLE_CONFIRMATION", "ASK_SAMPLE_CONFIRMATION", "waiting_for_customer_style_confirmation", null);
+  }
+  if (missingSlots.length > 0) {
+    if (sampleRequired && !sample.sent && questions.last === missingSlots[0].key) {
+      return selectDecision(base, "SEND_SAMPLE", "SEND_SAMPLE", `repeat_question_guard:${missingSlots[0].key}`, null);
     }
-    const isBooking = /chuyển khoản|đặt cọc/.test(esc);
-    const d = baseDecision(isBooking ? "BOOKING_INTENT" : "HUMAN_REVIEW", "ESCALATE_HUMAN", `Escalation cứng: ${esc}`);
-    d.shouldEscalate = true;
-    if (isBooking) d.allowedQuestions.push("ask_date"); // muốn cọc → được phép chốt ngày
-    return finish(d);
+    return selectDecision(base, "DISCOVERY", "ASK_DISCOVERY", `missing_required_slot:${missingSlots[0].key}`);
   }
+  if (sampleRequired && !sample.sent) {
+    return selectDecision(base, "SEND_SAMPLE", "SEND_SAMPLE", "discovery_complete_send_correct_portfolio");
+  }
+  return selectDecision(
+    base,
+    "SEND_PRICE_SHEET",
+    "SEND_PRICE_SHEET",
+    sampleRequired ? "sample_confirmed" : quoteRequested ? "discovery_complete_and_price_requested" : "discovery_complete",
+    null,
+  );
+}
 
-  // ── 1b. Khách đòi gặp người thật (bắt cả bản gõ đủ dấu — detectEscalation prod bỏ sót) ──
-  if (WANT_HUMAN_RE.test(t)) {
-    const d = baseDecision("HUMAN_REVIEW", "ESCALATE_HUMAN", "Khách muốn gặp người thật — bàn giao ngay");
-    d.shouldEscalate = true;
-    return finish(d);
-  }
+export function buildSaleWorkflowBlock(decision: SaleWorkflowDecision): string {
+  const filled = decision.filledSlots.map((slot) => `${slot.key}=${slot.value}`).join("; ") || "none";
+  const missing = decision.missingSlots.map((slot) => `${slot.key} (${slot.label})`).join("; ") || "none";
+  const next = decision.nextSlot ? `${decision.nextSlot.key}: ${decision.nextSlot.label}` : "none";
+  return `WORKFLOW SALE BAT BUOC (backend decided; AI only writes natural Vietnamese):
+- Stage: ${decision.stage}
+- Service: ${decision.serviceKey ?? "unknown"}
+- Detected intent: ${decision.detectedIntent ?? "unknown"}
+- Requested action: ${decision.requestedAction}; price requested: ${decision.priceRequested}
+- Filled slots: ${filled}
+- Missing slots: ${missing}
+- Asked question keys: ${decision.askedQuestionKeys.join(", ") || "none"}; last: ${decision.lastAskedQuestionKey ?? "none"}
+- Sample required: ${decision.sampleRequired}; sent: ${decision.sampleSent}; confirmed: ${decision.sampleConfirmed}
+- Price sheet already sent: ${decision.priceSheetSent}
+- Action this turn: ${decision.action}
+- Reason: ${decision.reason}
+- Next slot: ${next}
 
-  // ── 2. Khách để SĐT → bàn giao người thật chốt ──
-  if (detectPhone(msg)) {
-    const d = baseDecision("BOOKING_INTENT", "ESCALATE_HUMAN", "Khách để lại SĐT — cảm ơn + hẹn nhân viên liên hệ, bàn giao ngay");
-    d.shouldEscalate = true;
-    return finish(d);
-  }
-
-  // ── 3. Ý định giữ lịch (lý do nghiệp vụ MỚI → mở lại quyền hỏi ngày) ──
-  if (reopenDate) {
-    if (state.slots.date_status !== "known") {
-      const d = baseDecision("BOOKING_INTENT", "ASK_DATE", "Khách muốn giữ lịch/kiểm tra lịch — lý do nghiệp vụ mới, được phép hỏi ngày");
-      d.allowedQuestions.push("ask_date");
-      return finish(d);
-    }
-    const d = baseDecision("BOOKING_INTENT", "ASK_PHONE", "Khách muốn giữ lịch, đã có ngày — xin SĐT để nhân viên chốt");
-    d.allowedQuestions.push("ask_phone");
-    return finish(d);
-  }
-
-  // ── 4. FAQ ──
-  const faq = detectFaqTopic(t);
-  if (faq) {
-    // Câu hỏi cọc/thanh toán = việc tiền bạc → người thật xác nhận (chính sách prod hiện hành).
-    if (faq === "faq:payment") {
-      const d = baseDecision("BOOKING_INTENT", "ESCALATE_HUMAN", "Khách hỏi cọc/thanh toán — người thật xác nhận thông tin tiền bạc, bot không tự trả lời");
-      d.shouldEscalate = true;
-      d.allowedQuestions.push("ask_date");
-      return finish(d);
-    }
-    const d = baseDecision(stage, "ANSWER_FAQ", `Khách hỏi ${faq}`);
-    d.knowledgeNeeded = [faq];
-    // Câu ghép FAQ + hỏi giá ("gồm gì và bao nhiêu tiền") — nạp kèm pricing để LLM trả lời cả 2 ý.
-    if ((PRICE_QUESTION_RE.test(t) || SEND_PRICELIST_RE.test(t)) && intent) {
-      d.knowledgeNeeded.push(`pricing:${intent}`);
-      d.reason += " + câu có hỏi giá — nạp kèm pricing";
-    }
-    if (faq === "faq:address" || faq === "faq:hours") {
-      d.reason += " (LƯU Ý: nguồn FAQ có cấu trúc chưa tồn tại — cần bảng FAQ trước khi bật thật)";
-    }
-    return finish(d);
-  }
-
-  // ── 5. Khách đòi xem mẫu / xin bảng giá ──
-  if (WANT_SAMPLE_RE.test(t)) {
-    if (!intent) return finish(baseDecision("DISCOVERY", "ASK_SERVICE", "Khách đòi xem mẫu nhưng chưa rõ nhóm dịch vụ — hỏi nhóm trước để gửi đúng ảnh"));
-    // Giữ nguyên stage nếu playbook stage đó cho phép SEND_SAMPLE (QUOTED không bị ép về CONSULTING).
-    const sampleStage = SALE_PLAYBOOK_V1[stage].allowedActions.includes("SEND_SAMPLE") ? stage : "CONSULTING";
-    return finish(baseDecision(sampleStage, "SEND_SAMPLE", "Khách chủ động đòi xem mẫu — gửi đúng nhóm"));
-  }
-  if (SEND_PRICELIST_RE.test(t)) {
-    if (!intent) return finish(baseDecision("DISCOVERY", "ASK_SERVICE", "Khách xin bảng giá nhưng chưa rõ nhóm — hỏi nhóm để gửi đúng bảng"));
-    return finish(baseDecision(stage, "SEND_PRICE", "Khách xin bảng giá — gửi ảnh bảng giá đúng nhóm"));
-  }
-
-  // ── 6. Câu hỏi giá ──
-  if (PRICE_QUESTION_RE.test(t)) {
-    if (!intent) return finish(baseDecision("DISCOVERY", "ASK_SERVICE", "Hỏi giá nhưng chưa rõ nhóm dịch vụ — price gating: hỏi nhóm trước"));
-    const askedDate = state.askedQuestions.some((q) => q.key === "ask_date");
-    const quotedStage: SaleStage = state.quotedPackages.length ? "QUOTED" : "QUOTE_REFERENCE";
-    if (state.slots.date_status === "not_decided") {
-      return finish(baseDecision(quotedStage, "QUOTE_REFERENCE", "Khách hỏi giá nhưng ĐÃ nói chưa chốt ngày — báo giá tham khảo, tuyệt đối không hỏi ngày"));
-    }
-    if (state.slots.date_status === "known") {
-      return finish(baseDecision("QUOTED", "QUOTE_EXACT", "Đủ nhóm + ngày — báo giá chính thức"));
-    }
-    if (!askedDate) {
-      const d = baseDecision("CONSULTING", "ASK_DATE", "Hỏi giá, chưa biết ngày & chưa từng hỏi — hỏi ngày 1 lần để tư vấn đúng (khách không trả lời sẽ không hỏi lại)");
-      d.allowedQuestions.push("ask_date");
-      return finish(d);
-    }
-    return finish(baseDecision(quotedStage, "QUOTE_REFERENCE", "Khách hỏi giá, đã hỏi ngày 1 lần mà khách bỏ qua — không lặp, báo giá tham khảo"));
-  }
-
-  // ── 7. Chào hỏi / tin cụt ──
-  if (GREETING_ONLY_RE.test(t)) {
-    if (input.isFirstContact) return finish(baseDecision("NEW_LEAD", "GREET", "Khách chào — chào lại + mở chuyện nhu cầu"));
-    return finish(baseDecision(stage, "WAIT", "Khách chỉ chào/gọi — đáp nhẹ, không đẩy bước mới"));
-  }
-  if (isShortAck(t) || PRESENCE_CHECK_RE.test(t)) {
-    return finish(baseDecision(stage, "WAIT", "Tin xác nhận cụt / thăm dò còn đó không — đáp nhẹ, không đẩy bước mới"));
-  }
-
-  // ── 8. Mặc định theo trạng thái ──
-  if (!intent) {
-    return finish(baseDecision(input.isFirstContact ? "NEW_LEAD" : "DISCOVERY", input.isFirstContact ? "GREET" : "ASK_SERVICE", "Chưa rõ nhóm dịch vụ — hỏi nhu cầu"));
-  }
-  // Tin ĐẦU TIÊN đã nêu rõ nhu cầu ("Chào em, chị muốn chụp gia đình") → chào + mở chuyện
-  // đào sâu (NEW_LEAD cho phép), không để rơi xuống IDENTIFY_SERVICE rồi bị playbook hạ.
-  if (input.isFirstContact) {
-    const d = baseDecision("NEW_LEAD", "GREET", "Tin đầu đã rõ nhóm — chào + mở chuyện đào sâu gu/loại");
-    d.knowledgeNeeded = [`services:${intent}`];
-    d.allowedQuestions.push("ask_style");
-    return finish(d);
-  }
-  // GOLDEN FLOW: khách vừa chốt "chưa biết ngày / tham khảo" (thường là câu trả lời cho
-  // câu hỏi ngày sau khi hỏi giá) → giao ngay GIÁ THAM KHẢO thay vì hỏi thêm.
-  if (stage === "QUOTE_REFERENCE" && state.quotedPackages.length === 0) {
-    return finish(baseDecision("QUOTE_REFERENCE", "QUOTE_REFERENCE", "Khách chưa chốt ngày & chưa được báo giá — giao giá tham khảo kèm câu 'xác nhận lại khi có ngày'"));
-  }
-  // SAU BÁO GIÁ mà tin không có tín hiệu mới ("để chị xem thử rồi báo lại") → chờ, không dồn ép.
-  if (state.quotedPackages.length > 0) {
-    return finish(baseDecision("QUOTED", "WAIT", "Sau báo giá, tin không có tín hiệu mới — chờ khách cân nhắc, không dồn ép"));
-  }
-  // Đã rõ nhóm, không tín hiệu đặc biệt → đào sâu gu/loại con (không tự bung giá/ảnh).
-  const d = baseDecision(stage, "IDENTIFY_SERVICE", "Đã rõ nhóm — đào sâu gu/loại để tư vấn đúng, chưa tự bung giá/ảnh");
-  d.allowedQuestions.push("ask_style");
-  return finish(d);
+Rules:
+- Perform exactly ONE action above and ask at most ONE main question.
+- Never ask for a filled slot again.
+- Do not repeat a question already listed in Asked question keys or already visible in the conversation.
+- Avoid empty sales praise such as "tuyệt vời", "hoàn hảo", "lựa chọn tuyệt vời", or "em rất vui". State the useful recommendation and reason directly.
+- Do not end every reply with a question. Ask only when one concrete missing answer is needed for the next action.
+- ASK_DISCOVERY: briefly acknowledge, then ask only the next slot. Do not quote or promise a price sheet.
+- ASK_SERVICE: ask which service the customer needs. Do not guess and do not send an image.
+- SEND_SAMPLE: say briefly that the correct portfolio samples are being sent, then ask whether the customer likes that direction. Do not quote and do not use a price marker.
+- ASK_SAMPLE_CONFIRMATION: ask whether the customer likes the samples already sent. Do not send another sample or quote yet.
+- CONTINUE_CONVERSATION: answer the latest customer message in the current context. Do not repeat any question listed in Asked question keys. If the price sheet was already sent and the customer states a preference, recommend the closest verified package or explain the trade-off without restarting discovery.
+- When Reason is customer_wants_time_to_consider, acknowledge briefly and do not ask another question or offer more samples.
+- Album outdoor suggestions must stay in Tay Ninh and must not invent a location outside configured data.
+- Maternity uses neutral/female address; never address a pregnant customer as \"anh\".
+- Do not greet again when greeted=${decision.greeted}.`;
 }

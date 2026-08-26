@@ -1009,8 +1009,12 @@ async function updateGroupSortOrders() {
   console.log("[migrate] Thứ tự nhóm dịch vụ đã được cập nhật.");
 }
 
-seedCongGroup().catch(console.error);
-updateGroupSortOrders().catch(console.error);
+// These legacy seed/update routines mutate business pricing data, so test and
+// deployment starts that explicitly skip migrations must never invoke them.
+if (process.env.SKIP_STARTUP_MIGRATIONS !== "1") {
+  seedCongGroup().catch(console.error);
+  updateGroupSortOrders().catch(console.error);
+}
 
 // ─── Service groups ─────────────────────────────────────────────────────────
 router.get("/service-groups", async (_req, res) => {

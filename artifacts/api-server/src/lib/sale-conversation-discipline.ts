@@ -45,7 +45,7 @@ type TopGroup = "rental" | "maternity" | "family" | "beauty" | "wedding";
 // bỏ "cong hoa" (trùng tên đường "Cộng Hòa"); "chup cong" có guard riêng cho "chụp công ty".
 const INTENT_SIGNALS: Array<{ group: TopGroup; keywords: string[] }> = [
   { group: "rental", keywords: ["thue vay", "thue ao dai", "thue vest", "thue suit", "thue do", "thue trang phuc", "cho thue", "thue ao cuoi"] },
-  { group: "maternity", keywords: ["chup bau", "anh bau", "me bau", "bung bau", "mang thai", "maternity"] },
+  { group: "maternity", keywords: ["chup bau", "anh bau", "me bau", "dang bau", "bung bau", "mang thai", "maternity"] },
   { group: "family", keywords: ["gia dinh", "ca nha", "family", "ba the he", "ba me con"] },
   { group: "beauty", keywords: ["beauty", "cool boy", "nang tho", "chup ca nhan", "chup chan dung", "profile ca nhan"] },
   { group: "wedding", keywords: ["chup cuoi", "anh cuoi", "album cuoi", "ngoai canh", "co dau chu re", "tiec cuoi", "phong su cuoi", "wedding", "chup cong", "cong cuoi", "pre wedding", "prewedding"] },
@@ -142,13 +142,10 @@ const RESET_PHRASES = [
 ];
 
 // Từ khóa dịch vụ KHÁC — nếu xuất hiện khi đã khóa nhu cầu = trôi nhóm (heuristic, đã bỏ dấu).
-// LƯU Ý token (bài học cùng lớp với INTENT_SIGNALS dòng 44): KHÔNG để "co dau"/"chu re"
-// trần — sau bỏ dấu chúng trùng "có đâu"/"chứ rẻ" ("Dạ không có đâu ạ" bị bắt oan).
-// Chỉ giữ cụm ghép "co dau chu re".
 const OFF_INTENT_WORDS: Record<KnownIntent, string[]> = {
   wedding_gate: ["beauty", "gia dinh", "bau", "san pham", "doanh nhan"],
   wedding: ["beauty", "gia dinh", "bau", "san pham", "doanh nhan"],
-  beauty: ["chup cuoi", "co dau chu re", "gia dinh", "bau", "thue vay"],
+  beauty: ["chup cuoi", "album cuoi", "ngoai canh", "cong cuoi", "co dau", "chu re", "gia dinh", "bau", "thue vay"],
   rental: ["beauty", "gia dinh", "bau", "chup cuoi", "san pham"],
   maternity: ["beauty", "chup cuoi", "gia dinh", "thue vay", "san pham"],
   family: ["beauty", "chup cuoi", "bau", "thue vay", "san pham"],
@@ -165,8 +162,7 @@ export function detectServiceDrift(reply: string, knownIntent: KnownIntent | nul
   const hits: string[] = [];
   for (const p of RESET_PHRASES) if (t.includes(p)) hits.push(`reset:${p}`);
   if (knownIntent) {
-    // hasKeyword (ranh giới từ) thay cho substring — chống va chạm kiểu "cá nhân"/"cả nhà".
-    for (const w of OFF_INTENT_WORDS[knownIntent]) if (hasKeyword(t, w)) hits.push(`offintent:${w}`);
+    for (const w of OFF_INTENT_WORDS[knownIntent]) if (t.includes(w)) hits.push(`offintent:${w}`);
   }
   return [...new Set(hits)];
 }

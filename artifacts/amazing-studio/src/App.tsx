@@ -40,6 +40,7 @@ import ClaudeSaleReengagePage from "@/pages/claude-sale-reengage";
 import SaleLearningPage from "@/pages/sale-learning";
 import LuluHumanReviewPage from "@/pages/lulu-human-review";
 import LuluBrainLabPage from "@/pages/lulu-brain-lab";
+import SaleScriptsPage from "@/pages/sale-scripts";
 import AutoPostFacebookPage from "@/pages/auto-post-facebook";
 import NotificationsPage from "@/pages/notifications";
 import NotFound from "@/pages/not-found";
@@ -109,7 +110,7 @@ const INTERNAL_PREFIXES = [
   "/members",
   "/bookings", "/payments", "/expenses", "/revenue", "/contracts", "/reports",
   "/my-profile", "/photoshop-jobs", "/attendance",
-  "/crm-leads", "/facebook-inbox-ai", "/ai-sale-scripts", "/ai-test", "/claude-sale-test", "/claude-sale-settings", "/claude-sale-monitor", "/claude-sale-reengage", "/sale-learning", "/lulu-human-review", "/lulu-brain-lab", "/auto-post-facebook", "/notifications",
+  "/crm-leads", "/facebook-inbox-ai", "/ai-sale-scripts", "/ai-test", "/claude-sale-test", "/claude-sale-settings", "/claude-sale-monitor", "/claude-sale-reengage", "/sale-learning", "/lulu-human-review", "/lulu-brain-lab", "/sale-scripts", "/auto-post-facebook", "/notifications",
   "/cms",
 ];
 
@@ -306,6 +307,9 @@ function InternalRouter() {
         <Route path="/sale-learning" component={SaleLearningPage} />
         <Route path="/lulu-human-review" component={LuluHumanReviewPage} />
         <Route path="/lulu-brain-lab" component={LuluBrainLabPage} />
+        <Route path="/sale-scripts/common" component={SaleScriptsPage} />
+        <Route path="/sale-scripts/:id" component={SaleScriptsPage} />
+        <Route path="/sale-scripts" component={SaleScriptsPage} />
         <Route path="/auto-post-facebook" component={AutoPostFacebookPage} />
         <Route path="/notifications" component={NotificationsPage} />
         <Route path="/cms/home-settings" component={CmsHomeSettingsPage} />

@@ -103,10 +103,52 @@ export const surchargesTable = pgTable("surcharges", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+export const weddingGiftProgramsTable = pgTable("wedding_gift_programs", {
+  id: serial("id").primaryKey(),
+  name: text("name").notNull(),
+  description: text("description"),
+  enabled: boolean("enabled").notNull().default(false),
+  startsAt: timestamp("starts_at", { withTimezone: true }),
+  endsAt: timestamp("ends_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
+export const weddingGiftEligibleGroupsTable = pgTable("wedding_gift_eligible_groups", {
+  id: serial("id").primaryKey(),
+  programId: integer("program_id").notNull().references(() => weddingGiftProgramsTable.id, { onDelete: "cascade" }),
+  groupId: integer("group_id").notNull().references(() => serviceGroupsTable.id),
+  serviceKey: text("service_key").notNull(),
+  isActive: boolean("is_active").notNull().default(true),
+});
+
+export const weddingGiftTiersTable = pgTable("wedding_gift_tiers", {
+  id: serial("id").primaryKey(),
+  programId: integer("program_id").notNull().references(() => weddingGiftProgramsTable.id, { onDelete: "cascade" }),
+  minimumServiceCount: integer("minimum_service_count").notNull(),
+  name: text("name").notNull(),
+  chooseCount: integer("choose_count").notNull().default(1),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+});
+
+export const weddingGiftOptionsTable = pgTable("wedding_gift_options", {
+  id: serial("id").primaryKey(),
+  tierId: integer("tier_id").notNull().references(() => weddingGiftTiersTable.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  description: text("description"),
+  isActive: boolean("is_active").notNull().default(true),
+  sortOrder: integer("sort_order").notNull().default(0),
+});
+
 export const insertServiceGroupSchema = createInsertSchema(serviceGroupsTable).omit({ id: true, createdAt: true });
 export const insertServicePackageSchema = createInsertSchema(servicePackagesTable).omit({ id: true, createdAt: true });
 export const insertPackageItemSchema = createInsertSchema(packageItemsTable).omit({ id: true });
 export const insertSurchargeSchema = createInsertSchema(surchargesTable).omit({ id: true, createdAt: true });
+export const insertWeddingGiftProgramSchema = createInsertSchema(weddingGiftProgramsTable).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertWeddingGiftEligibleGroupSchema = createInsertSchema(weddingGiftEligibleGroupsTable).omit({ id: true });
+export const insertWeddingGiftTierSchema = createInsertSchema(weddingGiftTiersTable).omit({ id: true });
+export const insertWeddingGiftOptionSchema = createInsertSchema(weddingGiftOptionsTable).omit({ id: true });
 
 export type InsertServiceGroup = z.infer<typeof insertServiceGroupSchema>;
 export type ServiceGroup = typeof serviceGroupsTable.$inferSelect;
@@ -116,3 +158,7 @@ export type InsertPackageItem = z.infer<typeof insertPackageItemSchema>;
 export type PackageItem = typeof packageItemsTable.$inferSelect;
 export type InsertSurcharge = z.infer<typeof insertSurchargeSchema>;
 export type Surcharge = typeof surchargesTable.$inferSelect;
+export type WeddingGiftProgram = typeof weddingGiftProgramsTable.$inferSelect;
+export type WeddingGiftEligibleGroup = typeof weddingGiftEligibleGroupsTable.$inferSelect;
+export type WeddingGiftTier = typeof weddingGiftTiersTable.$inferSelect;
+export type WeddingGiftOption = typeof weddingGiftOptionsTable.$inferSelect;

@@ -19,6 +19,8 @@ import {
   parseImageOverrides, type ImageOverride, type OverrideImage,
 } from "../lib/sale-image-overrides";
 import { browseImageStore } from "../lib/sale-image-store";
+import { getScriptCatalog } from "../lib/sale-script-registry";
+import { getSaleScriptDraftStore } from "../lib/sale-script-drafts";
 
 /**
  * Lulu Brain Lab — quản lý / sửa / test / lưu version cho "não Sale AI Lulu".
@@ -74,6 +76,18 @@ router.get("/lulu-brain/active", async (req, res) => {
   } catch (err) {
     console.error("[BrainLab] active lỗi:", String(err).slice(0, 200));
     res.status(500).json({ error: "Không tải được não đang dùng" });
+  }
+});
+
+// Registry is read-only in this rebuild. Wedding gate is active; every other group stays a draft shell.
+router.get("/lulu-brain/scripts", async (req, res) => {
+  if (!(await requireStaff(req, res))) return;
+  try {
+    const groups = await pool.query(`SELECT id, name FROM service_groups ORDER BY sort_order, id`);
+    res.json({ scripts: getScriptCatalog(groups.rows as Array<{ id: number; name: string }>) });
+  } catch (err) {
+    console.error("[BrainLab] script registry load failed:", String(err).slice(0, 180));
+    res.status(500).json({ error: "Không tải được danh sách kịch bản gốc" });
   }
 });
 
@@ -470,10 +484,6 @@ router.post("/lulu-brain/analyze-screenshot", async (req, res) => {
   }
   const hasImage = images.length > 0;
 
-  if (!(process.env.ANTHROPIC_API_KEY ?? "").trim()) {
-    return res.status(400).json({ error: "Chưa cấu hình ANTHROPIC_API_KEY trong .env" });
-  }
-
   try {
     const userMsg = text
       ? `Nhân viên mô tả lỗi: "${text}".${hasImage ? ` Kèm ${images.length} ảnh chụp màn hình đoạn chat ở trên (có thể là nhiều phần nối tiếp của cùng 1 cuộc trò chuyện — đọc theo thứ tự).` : ""}\nHãy phân tích và trả về JSON theo đúng cấu trúc.`
@@ -510,7 +520,7 @@ router.post("/lulu-brain/test", async (req, res) => {
     if (!(await requireStaff(req, res))) return;
     const b = (req.body ?? {}) as {
       message?: string;
-      messages?: Array<{ direction?: string; text?: string }>;
+      messages?: Array<{ direction?: string; text?: string; aiDecision?: string | null }>;
       imageBase64?: string; imageMediaType?: string;
       draftVersionId?: number;
       compareWithActive?: boolean;
@@ -518,36 +528,57 @@ router.post("/lulu-brain/test", async (req, res) => {
     const message = (b.message ?? "").trim();
     const hasImage = !!(b.imageBase64 ?? "").trim();
     if (!message && !hasImage) return res.status(400).json({ error: "Thiếu nội dung tin nhắn hoặc ảnh" });
-    if (!(process.env.ANTHROPIC_API_KEY ?? "").trim()) {
-      return res.status(400).json({ error: "Chưa cấu hình ANTHROPIC_API_KEY trong .env" });
-    }
-
     const prior = Array.isArray(b.messages)
       ? b.messages.filter((m) => m && typeof m.text === "string" && m.text.trim())
-          .map((m) => ({ direction: m.direction === "outgoing" ? "outgoing" as const : "incoming" as const, message: String(m.text).trim() }))
+          .map((m) => ({
+            direction: m.direction === "outgoing" ? "outgoing" as const : "incoming" as const,
+            message: String(m.text).trim(),
+            aiDecision: typeof m.aiDecision === "string" ? m.aiDecision : null,
+          }))
       : [];
 
     // Bộ luật + override ẢNH của bản nháp cần test (override lấy từ rulesJson của chính nháp đó).
     let draftRules: string | null = null;
     let draftVersionId: number | null = null;
     let draftOverrides: ImageOverride[] = [];
+    let draftScriptOverrides = {};
+    let draftScriptQuestionAnswerSheets = {};
     if (b.draftVersionId) {
       const d = await getVersion(b.draftVersionId);
       if (!d) return res.status(404).json({ error: "Không tìm thấy bản nháp để test" });
       draftRules = d.promptContent;
       draftVersionId = d.id;
       draftOverrides = parseImageOverrides(d.rulesJson);
+      const draftScriptStore = getSaleScriptDraftStore(d.rulesJson);
+      draftScriptOverrides = draftScriptStore.nodes;
+      draftScriptQuestionAnswerSheets = draftScriptStore.questionAnswerSheets;
     }
     console.log(`[BrainLab] testVersion versionId=${draftVersionId ?? "active"} isDraft=${draftRules != null} compareWithActive=${b.compareWithActive !== false}`);
     // Override của bản ĐANG CHẠY THẬT (để cột so sánh "Đang chạy" cũng đúng với thực tế).
     const activeOverrides = b.compareWithActive !== false ? await getActiveImageOverrides() : [];
+    const activeVersion = b.compareWithActive !== false ? await getActiveVersion() : null;
+    const activeScriptStore = getSaleScriptDraftStore(activeVersion?.rulesJson);
+    const activeScriptOverrides = activeScriptStore.nodes;
+    const activeScriptQuestionAnswerSheets = activeScriptStore.questionAnswerSheets;
 
     // TEST-ONLY: Brain Lab test tab dùng ShopAIKey nếu bật cờ; undefined = Anthropic như cũ.
     const common = { message, prior, imageBase64: b.imageBase64, imageMediaType: b.imageMediaType, providerOverride: resolveTestProviderOverride() };
     // Chạy song song: bản nháp (nếu có) + bản đang chạy thật (để so sánh — TAB 4).
     const [draft, active] = await Promise.all([
-      draftRules != null ? simulateReply({ ...common, brainRules: draftRules, imageOverrides: draftOverrides }) : Promise.resolve(null),
-      b.compareWithActive !== false ? simulateReply({ ...common, brainRules: null, imageOverrides: activeOverrides }) : Promise.resolve(null),
+      draftRules != null ? simulateReply({
+        ...common,
+        brainRules: draftRules,
+        imageOverrides: draftOverrides,
+        scriptOverrides: draftScriptOverrides,
+        scriptQuestionAnswerSheets: draftScriptQuestionAnswerSheets,
+      }) : Promise.resolve(null),
+      b.compareWithActive !== false ? simulateReply({
+        ...common,
+        brainRules: null,
+        imageOverrides: activeOverrides,
+        scriptOverrides: activeScriptOverrides,
+        scriptQuestionAnswerSheets: activeScriptQuestionAnswerSheets,
+      }) : Promise.resolve(null),
     ]);
     res.json({ draft, active, draftVersionId });
   } catch (err) {

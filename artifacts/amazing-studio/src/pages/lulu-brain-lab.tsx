@@ -7,7 +7,7 @@ import {
   Brain, Sparkles, Pencil, FlaskConical, History, Send, Image as ImageIcon, X,
   Check, AlertTriangle, Loader2, RotateCcw, Save, Trash2, Bot, User, ShieldCheck,
   Plus, Eye, Megaphone, GitCompareArrows, ChevronDown, Wand2, MessageSquare,
-  Search, Images, Repeat,
+  Search, Images, Repeat, BookOpen, Database,
 } from "lucide-react";
 
 // Ảnh hỏng (URL 404 / không tải được) → thay bằng nền xám "ảnh lỗi" thay cho icon vỡ + log để debug.
@@ -57,9 +57,56 @@ type TestCase = {
   isRequired: boolean; priorContext: Array<{ direction: "incoming" | "outgoing"; text: string }>;
 };
 type SampleImage = { title: string; imageUrl: string; detailUrl?: string; sourceType: string; serviceIntent?: string };
+type PriceSheetTrace = {
+  intent: "price_sheet"; resourceType: "price_sheet"; serviceKey: string | null;
+  groupId: number | null; groupName: string | null; assetId: string | null; assetUrl: string | null;
+  includedPackages: Array<{ id: number; name: string; code: string | null; price: number; finalPrice: number; benefits: string }>;
+  excludedPackages: Array<{ id: number; name: string; reason: string }>;
+  discount: { status: string; name: string | null; type: string | null; value: number | null };
+  actionOrder: string[]; validator: { passed: boolean; reasons: string[] };
+};
+type SaleWorkflowTrace = {
+  stage: string; action: string; reason: string; greeted: boolean; serviceKey: string | null;
+  slots: Array<{ key: string; label: string; value: string | null; source: string | null }>;
+  filledSlots: Array<{ key: string; label: string; value: string | null; source: string | null }>;
+  missingSlots: Array<{ key: string; label: string; value: string | null; source: string | null }>;
+  nextSlot: { key: string; label: string; value: string | null; source: string | null } | null;
+  quoteRequested: boolean; forcedPrice: boolean; sampleRequired: boolean; sampleSent: boolean;
+  sampleConfirmed: boolean; sampleAsset: string | null; style: string | null;
+  priceSheetSent?: boolean;
+  detectedIntent?: string | null; requestedAction?: string; priceRequested?: boolean;
+  askedQuestionKeys?: string[]; lastAskedQuestionKey?: string | null; answeredSlots?: string[];
+  selectedAction?: string; actionPriorityReason?: string;
+};
+type ScriptResponseTrace = {
+  status: "MAPPED" | "UNMAPPED_RESPONSE";
+  scriptKey: string; scriptVersion: number; nodeKey: string; stepNumber: number; stage: string;
+  originalTemplate: string; renderedText: string;
+  variables: Record<string, string | number | boolean | null | string[]>;
+  dataSources: string[]; assetIds: string[];
+  priceSnapshot: Array<{ packageId: number; price: number; finalPrice: number }>;
+  validatorResults: Array<{ name: string; passed: boolean; detail?: string }>;
+  stateBefore: { serviceIntent: string | null; currentStep: number; pendingQuestion: string | null; slots: Record<string, string | null>; sampleSent: boolean; priceSheetSent: boolean; humanHandoff: boolean };
+  stateAfter: { serviceIntent: string | null; currentStep: number; pendingQuestion: string | null; slots: Record<string, string | null>; sampleSent: boolean; priceSheetSent: boolean; humanHandoff: boolean };
+  decisionRule: string;
+  aiParaphrase: { used: false; changes: [] };
+};
+type ScriptNode = { nodeKey: string; scriptKey: string; version: number; stepNumber: number; stage: string; title: string; replyTemplate: string; requiredSlots: string[]; dataSources: string[]; validators: string[]; status: "draft" | "active" | "locked" };
+type ScriptCatalogItem = { serviceKey: string; serviceGroupName: string; scriptKey: string; version: number; status: "draft" | "active" | "locked"; active: boolean; nodes: ScriptNode[] };
+type WeddingGiftTrace = {
+  programId: number | null; programName: string; programStatus: string; promotionSource: string;
+  interestedWeddingServices: string[]; confirmedWeddingServices: string[]; eligibleServiceCount: number;
+  giftTier: number | null; giftTierName: string | null; chooseCount: number | null;
+  giftOptions: Array<{ id: number; name: string; description: string | null }>;
+  packagesExplained: boolean; action: string; reason: string;
+};
 type SimResult = {
   reply: string[]; raw: string; escalation: string | null; escalated: boolean; escalationReason: string | null;
   holdMessage: string | null; detectedIntent: string | null; priceImages: string[];
+  priceSheetTrace?: PriceSheetTrace | null;
+  saleWorkflow?: SaleWorkflowTrace;
+  scriptTrace?: ScriptResponseTrace;
+  weddingGiftTrace?: WeddingGiftTrace;
   sampleImages: SampleImage[]; sampleNote: string | null; responseTimeMs: number;
   /** Bong bóng có nhịp (human chat pacing): text + delayMs từng bubble. reply = chunks.map(c=>c.text). */
   chunks?: { text: string; delayMs: number }[];
@@ -96,13 +143,14 @@ const INTENT_OPTIONS: Array<{ value: string; label: string }> = [
 // Tone / gu gợi ý (admin có thể tự gõ thêm). Để trống = áp cho mọi tone của intent.
 const TONE_CHIPS = ["nhẹ nhàng", "tự nhiên", "sang trọng", "cổ điển", "hiện đại", "Hàn Quốc", "nàng thơ", "cá tính", "vintage"];
 
-type Tab = "active" | "aifix" | "fixtest" | "history";
-type ConvoMsg = { direction: "incoming" | "outgoing"; text: string };
+type Tab = "active" | "aifix" | "fixtest" | "history" | "scripts" | "sources";
+type ConvoMsg = { direction: "incoming" | "outgoing"; text: string; aiDecision?: string | null };
 // Map các key tab CŨ (deep-link / bookmark) sang tab mới.
 const LEGACY_TAB_MAP: Record<string, Tab> = {
   active: "active", history: "history",
   ai: "aifix", aifix: "aifix",
   draft: "fixtest", test: "fixtest", fixtest: "fixtest",
+  scripts: "scripts", sources: "sources",
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -219,6 +267,170 @@ function StatusBadge({ status }: { status: Status }) {
   return <span className={`inline-block text-[11px] font-semibold px-2 py-0.5 rounded-full border ${STATUS_BADGE[status]}`}>{STATUS_LABEL[status]}</span>;
 }
 
+function PriceSheetTracePanel({ trace }: { trace?: PriceSheetTrace | null }) {
+  if (!trace) return null;
+  return (
+    <details className="border border-sky-200 bg-sky-50 rounded-lg px-2.5 py-2 text-[11px] text-sky-950">
+      <summary className="cursor-pointer font-semibold">Trace bảng giá · {trace.validator.passed ? "Đã xác minh" : "Đã chặn"}</summary>
+      <div className="mt-2 space-y-1 break-words">
+        <p>Intent: <b>{trace.intent}</b> · resource: <b>{trace.resourceType}</b> · service: <b>{trace.serviceKey ?? "chưa rõ"}</b></p>
+        <p>Nhóm: <b>{trace.groupId ?? "-"}</b> · {trace.groupName ?? "chưa xác định"}</p>
+        <p>Asset: <b>{trace.assetId ?? "-"}</b> · {trace.assetUrl ?? "không có"}</p>
+        <p>Gói đưa vào: {trace.includedPackages.length ? trace.includedPackages.map((p) => `#${p.id} ${p.name} (${p.finalPrice.toLocaleString("vi-VN")}đ)`).join(" · ") : "không có"}</p>
+        <p>Gói bị loại: {trace.excludedPackages.length ? trace.excludedPackages.map((p) => `#${p.id} ${p.name}: ${p.reason}`).join(" · ") : "không có"}</p>
+        <p>Giảm giá nhóm: <b>{trace.discount.status}</b>{trace.discount.name ? ` · ${trace.discount.name}` : ""}</p>
+        <p>Thứ tự: <b>{trace.actionOrder.join(" → ")}</b></p>
+        <p>Validator: <b className={trace.validator.passed ? "text-emerald-700" : "text-rose-700"}>{trace.validator.passed ? "PASS" : `BLOCK · ${trace.validator.reasons.join(", ")}`}</b></p>
+      </div>
+    </details>
+  );
+}
+
+function SaleWorkflowTracePanel({ trace }: { trace?: SaleWorkflowTrace }) {
+  if (!trace) return null;
+  return (
+    <details className="border border-amber-200 bg-amber-50 rounded-lg px-2.5 py-2 text-[11px] text-amber-950">
+      <summary className="cursor-pointer font-semibold">Workflow · {trace.stage} · {trace.action}</summary>
+      <div className="mt-2 space-y-1 break-words">
+        <p>Current service: <b>{trace.serviceKey ?? "chưa xác định"}</b> · current stage: <b>{trace.stage}</b></p>
+        <p>Detected intent: <b>{trace.detectedIntent ?? trace.serviceKey ?? "chưa rõ"}</b> · requested action: <b>{trace.requestedAction ?? "none"}</b></p>
+        <p>Slot đã có: {trace.filledSlots.length ? trace.filledSlots.map((s) => `${s.key}=${s.value}`).join(" · ") : "chưa có"}</p>
+        <p>Slot còn thiếu: {trace.missingSlots.length ? trace.missingSlots.map((s) => `${s.key} (${s.label})`).join(" · ") : "không còn"}</p>
+        <p>Tiếp theo: <b>{trace.nextSlot ? `${trace.nextSlot.key} (${trace.nextSlot.label})` : "không có"}</b></p>
+        <p>Gu: <b>{trace.style ?? "chưa có"}</b> · mẫu: <b>{trace.sampleSent ? "đã gửi" : "chưa gửi"}</b> · xác nhận: <b>{trace.sampleConfirmed ? "đã ưng" : "chưa"}</b></p>
+        <p>Đã hỏi: <b>{trace.askedQuestionKeys?.length ? trace.askedQuestionKeys.join(" · ") : "chưa có"}</b> · câu gần nhất: <b>{trace.lastAskedQuestionKey ?? "không có"}</b></p>
+        <p>Price requested: <b>{trace.priceRequested ? "có" : "không"}</b> · price sent: <b>{trace.priceSheetSent ? "có" : "chưa"}</b> · selected action: <b>{trace.selectedAction ?? trace.action}</b></p>
+        <p>Sample asset: <b>{trace.sampleAsset ?? "không có"}</b></p>
+        <p>Lý do ưu tiên: <b>{trace.actionPriorityReason ?? trace.reason}</b>{trace.forcedPrice ? " · khách yêu cầu xem giá trước" : ""}</p>
+      </div>
+    </details>
+  );
+}
+
+function ScriptTracePanel({ trace }: { trace?: ScriptResponseTrace }) {
+  if (!trace) return null;
+  const blocked = trace.status === "UNMAPPED_RESPONSE";
+  return (
+    <details className={`border rounded-lg px-2.5 py-2 text-[11px] ${blocked ? "border-rose-300 bg-rose-50 text-rose-950" : "border-violet-200 bg-violet-50 text-violet-950"}`}>
+      <summary className="cursor-pointer font-semibold">
+        {blocked ? "UNMAPPED_RESPONSE" : `Nguồn: ${trace.scriptKey} → Bước ${trace.stepNumber} → ${trace.nodeKey} → v${trace.scriptVersion}`}
+      </summary>
+      <div className="mt-2 space-y-1 break-words">
+        <p>Node: <b>{trace.nodeKey}</b> · stage: <b>{trace.stage}</b> · rule: <b>{trace.decisionRule}</b></p>
+        <p>Câu gốc: <span className="whitespace-pre-wrap">{trace.originalTemplate}</span></p>
+        <p>Biến: <b>{Object.keys(trace.variables).length ? JSON.stringify(trace.variables) : "không có"}</b></p>
+        <p>Nguồn dữ liệu: <b>{trace.dataSources.length ? trace.dataSources.join(" · ") : "không có"}</b></p>
+        <p>Asset ID: <b>{trace.assetIds.length ? trace.assetIds.join(" · ") : "không có"}</b></p>
+        <p>Price snapshot: <b>{trace.priceSnapshot.length ? trace.priceSnapshot.map((item) => `#${item.packageId}: ${item.finalPrice.toLocaleString("vi-VN")}đ`).join(" · ") : "không có"}</b></p>
+        <p>State trước: <b>{JSON.stringify(trace.stateBefore)}</b></p>
+        <p>State sau: <b>{JSON.stringify(trace.stateAfter)}</b></p>
+        <p>Validator: {trace.validatorResults.map((item) => <span key={item.name} className={item.passed ? "text-emerald-700" : "text-rose-700"}>{item.passed ? "PASS" : "BLOCK"} {item.name}{item.detail ? ` (${item.detail})` : ""} · </span>)}</p>
+        <p>AI diễn đạt lại: <b>không dùng</b>. Nội dung cuối: <span className="whitespace-pre-wrap">{trace.renderedText}</span></p>
+      </div>
+    </details>
+  );
+}
+
+const SALE_STEP_LABELS: Record<number, string> = {
+  1: "Chào hỏi",
+  2: "Phân loại và tìm hiểu nhu cầu",
+  3: "Gửi ảnh mẫu",
+  4: "Báo giá",
+  5: "Tư vấn khuyến mãi",
+  6: "Chốt khách và chuyển nhân viên",
+  7: "Follow-up khách chưa chốt",
+};
+
+function ScriptCatalogPanel({ scripts }: { scripts: ScriptCatalogItem[] }) {
+  if (scripts.length === 0) return <p className="text-sm text-gray-500">Đang tải danh sách nhóm dịch vụ...</p>;
+  return (
+    <div className="space-y-3">
+      <div className="flex items-start gap-2 rounded-lg border bg-white px-3 py-3">
+        <BookOpen className="mt-0.5 h-5 w-5 shrink-0 text-violet-600" />
+        <div>
+          <h2 className="text-base font-bold text-gray-900">Kịch bản Sale</h2>
+          <p className="text-sm text-gray-500">Kịch bản gốc Lulu đang dùng để trả lời khách.</p>
+        </div>
+      </div>
+      <div className="flex items-start gap-2 border border-violet-200 bg-violet-50 rounded-lg px-3 py-2 text-sm text-violet-950">
+        <BookOpen className="w-4 h-4 mt-0.5 shrink-0" />
+        <span>Chỉ <b>Chụp cổng tại studio</b> đang dùng trong Brain Lab. Các nhóm khác là khung bản nháp, chưa được tự động trả lời.</span>
+      </div>
+      {scripts.map((script) => (
+        <details key={`${script.serviceKey}-${script.scriptKey}`} open={script.active} className="bg-white border rounded-lg px-3 py-2">
+          <summary className="cursor-pointer flex items-center justify-between gap-3 text-sm font-semibold">
+            <span>{script.serviceGroupName}</span>
+            <span className={script.active ? "text-emerald-700" : "text-amber-700"}>{script.active ? "Đang dùng" : "Bản nháp"} · v{script.version}</span>
+          </summary>
+          <div className="mt-3 space-y-2 text-xs text-gray-700">
+            <p>Service key: <b>{script.serviceKey}</b> · Script key: <b>{script.scriptKey}</b></p>
+            {script.nodes.length === 0 ? <p className="text-amber-700">Chưa có node kích hoạt cho nhóm này.</p> : [1, 2, 3, 4, 5, 6, 7].map((stepNumber) => {
+              const nodes = script.nodes.filter((node) => node.stepNumber === stepNumber);
+              return (
+                <details key={stepNumber} open={stepNumber === 1} className="border rounded-lg bg-gray-50 px-2.5 py-2">
+                  <summary className="cursor-pointer font-semibold text-gray-900">Bước {stepNumber}. {SALE_STEP_LABELS[stepNumber]}</summary>
+                  <div className="mt-2 space-y-2">
+                    {nodes.length === 0 ? <p className="text-gray-500">Chưa có node cho bước này.</p> : nodes.map((node) => (
+                      <div key={node.nodeKey} className="border rounded-lg bg-white p-2.5 space-y-1">
+                        <p className="font-semibold">{node.nodeKey} · v{node.version} <span className={node.status === "active" ? "text-emerald-700" : "text-amber-700"}>({node.status})</span></p>
+                        <p>{node.title}</p>
+                        <p className="whitespace-pre-wrap text-gray-600">Câu gốc: {node.replyTemplate}</p>
+                        <p>Nguồn: {node.dataSources.join(" · ") || "không có"}</p>
+                        <p>Điều kiện: {node.validators.join(" · ") || "không có"}</p>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              );
+            })}
+          </div>
+        </details>
+      ))}
+    </div>
+  );
+}
+
+function ResponseSourcesPanel({ turns }: { turns: TestTurn[] }) {
+  const responses = turns.filter((turn): turn is Extract<TestTurn, { role: "lulu" }> => turn.role === "lulu");
+  return (
+    <div className="space-y-3">
+      <div className="flex items-start gap-2 border border-sky-200 bg-sky-50 rounded-lg px-3 py-2 text-sm text-sky-950">
+        <Database className="w-4 h-4 mt-0.5 shrink-0" />
+        <span>Mỗi câu test phải có script, node, state, dữ liệu và validator. Dòng <b>UNMAPPED_RESPONSE</b> bị chặn, không được đánh dấu đạt.</span>
+      </div>
+      {responses.length === 0 ? <p className="text-sm text-gray-500">Chưa có phản hồi test. Hãy gửi câu ở tab Test Chat.</p> : responses.slice().reverse().map((turn) => {
+        const trace = turn.result.scriptTrace;
+        return (
+          <div key={turn.id} className={`border rounded-lg p-3 text-sm ${trace?.status === "UNMAPPED_RESPONSE" ? "border-rose-300 bg-rose-50" : "bg-white"}`}>
+            <p className="text-gray-500">Khách: {turn.forText}</p>
+            {trace ? <>
+              <p className="font-semibold mt-1">{trace.status === "UNMAPPED_RESPONSE" ? "UNMAPPED_RESPONSE" : `Nguồn: ${trace.scriptKey} → Bước ${trace.stepNumber} → ${trace.nodeKey} → v${trace.scriptVersion}`}</p>
+              <p className="text-xs mt-1">Rule: {trace.decisionRule} · data: {trace.dataSources.join(" · ") || "không có"}</p>
+            </> : <p className="font-semibold text-rose-700 mt-1">UNMAPPED_RESPONSE: phản hồi cũ không có trace.</p>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function WeddingGiftTracePanel({ trace }: { trace?: WeddingGiftTrace }) {
+  if (!trace) return null;
+  return (
+    <details className="border border-emerald-200 bg-emerald-50 rounded-lg px-2.5 py-2 text-[11px] text-emerald-950">
+      <summary className="cursor-pointer font-semibold">Quà cưới · {trace.programStatus} · {trace.action}</summary>
+      <div className="mt-2 space-y-1 break-words">
+        <p>Nguồn: <b>{trace.promotionSource}</b> · chương trình: <b>{trace.programName}</b></p>
+        <p>Đang quan tâm: {trace.interestedWeddingServices.length ? trace.interestedWeddingServices.join(" · ") : "không có"}</p>
+        <p>Đã xác nhận chọn: {trace.confirmedWeddingServices.length ? trace.confirmedWeddingServices.join(" · ") : "không có"}</p>
+        <p>Eligible count: <b>{trace.eligibleServiceCount}</b> · tier: <b>{trace.giftTier ?? "chưa có"}</b> · chọn: <b>{trace.chooseCount ?? "-"}</b></p>
+        <p>Quà: {trace.giftOptions.length ? trace.giftOptions.map((option) => option.name).join(" · ") : "chưa có"}</p>
+        <p>Đã giải thích gói: <b>{trace.packagesExplained ? "có" : "chưa"}</b> · lý do: <b>{trace.reason}</b></p>
+      </div>
+    </details>
+  );
+}
+
 // ─── Render 1 cột kết quả test ─────────────────────────────────────────────────
 function ReplyColumn({ title, accent, result }: { title: string; accent: string; result: SimResult | null }) {
   return (
@@ -246,6 +458,9 @@ function ReplyColumn({ title, accent, result }: { title: string; accent: string;
               <div key={i} className="bg-gray-50 border rounded-lg px-3 py-2 whitespace-pre-wrap break-words">{m}</div>
             ))}
             {result.sampleNote && <p className="text-[11px] text-amber-600 italic">{result.sampleNote}</p>}
+            <SaleWorkflowTracePanel trace={result.saleWorkflow} />
+            <PriceSheetTracePanel trace={result.priceSheetTrace} />
+            <WeddingGiftTracePanel trace={result.weddingGiftTrace} />
             <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-500 pt-1 border-t">
               {result.detectedIntent && <span>intent: <b className="text-violet-600">{result.detectedIntent}</b></span>}
               <span>{result.responseTimeMs}ms</span>
@@ -646,6 +861,7 @@ export default function LuluBrainLabPage() {
   const [draft, setDraft] = useState<BrainVersion | null>(null);
   const [changeRequests, setChangeRequests] = useState<ChangeRequest[]>([]);
   const [testCases, setTestCases] = useState<TestCase[]>([]);
+  const [scripts, setScripts] = useState<ScriptCatalogItem[]>([]);
   const [busy, setBusy] = useState(false);
   // Hàng đợi sửa lỗi (state FE) — khôi phục từ localStorage để GIỮ QUA REFRESH (bỏ ảnh base64 cho nhẹ).
   const [fixQueue, setFixQueue] = useState<QueueCard[]>(() => {
@@ -691,6 +907,10 @@ export default function LuluBrainLabPage() {
     try { const d = await apiGet<{ cases: TestCase[] }>("/lulu-brain/test-cases"); setTestCases(d.cases); }
     catch { /* không chặn */ }
   }, []);
+  const loadScripts = useCallback(async () => {
+    try { const d = await apiGet<{ scripts: ScriptCatalogItem[] }>("/lulu-brain/scripts"); setScripts(d.scripts); }
+    catch { setScripts([]); }
+  }, []);
   // Bản nháp đang mở = nguồn chân lý từ server (một bản nháp duy nhất). DRAFT_KEY chỉ là gợi ý phụ.
   const loadDraft = useCallback(async () => {
     try {
@@ -702,13 +922,14 @@ export default function LuluBrainLabPage() {
   }, []);
 
   useEffect(() => {
-    loadActive(); loadVersions(); loadChangeRequests(); loadTestCases(); loadDraft();
+    loadActive(); loadVersions(); loadChangeRequests(); loadTestCases(); loadScripts(); loadDraft();
     // Deep-link ?tab= (gồm cả key cũ ai/draft/test → gộp về "fixtest").
     try {
       const t = new URLSearchParams(window.location.search).get("tab");
+      if (t === "scripts") { window.location.replace("/sale-scripts"); return; }
       if (t && LEGACY_TAB_MAP[t]) setTab(LEGACY_TAB_MAP[t]);
     } catch { /* ignore */ }
-  }, [loadActive, loadVersions, loadChangeRequests, loadTestCases, loadDraft]);
+  }, [loadActive, loadVersions, loadChangeRequests, loadTestCases, loadScripts, loadDraft]);
 
   // Lưu hàng đợi sửa lỗi vào localStorage (bỏ base64 ảnh cho nhẹ; chỉ giữ số lượng ảnh).
   useEffect(() => {
@@ -791,10 +1012,8 @@ export default function LuluBrainLabPage() {
   };
 
   const TABS: { key: Tab; label: string; icon: typeof Brain }[] = [
-    { key: "fixtest", label: "Sửa & Test Lulu", icon: FlaskConical }, // ưu tiên tab làm việc chính lên đầu
-    { key: "aifix", label: "Nhờ AI sửa Lulu", icon: Sparkles },
-    { key: "active", label: "Não đang dùng", icon: Brain },           // xem não đang chạy — để kế cuối
-    { key: "history", label: "Version History", icon: History },
+    { key: "fixtest", label: "Test Chat", icon: FlaskConical },
+    { key: "sources", label: "Nguồn câu trả lời", icon: Database },
   ];
 
   return (
@@ -802,6 +1021,9 @@ export default function LuluBrainLabPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
+          <span className="inline-flex mb-2 rounded border border-emerald-300 bg-emerald-50 px-2 py-1 text-[11px] font-bold tracking-wide text-emerald-800">
+            LULU SCRIPT REBUILD V1
+          </span>
           <h1 className="text-2xl font-bold flex items-center gap-2"><Brain className="w-6 h-6 text-violet-600" /> Lulu Brain Lab</h1>
           <p className="text-sm text-gray-500 mt-1">Quản lý, chỉnh, test &amp; lưu version cho não Sale AI Lulu. AI chỉ tạo bản nháp — chỉ admin mới áp dụng vào bản chạy thật.</p>
         </div>
@@ -820,14 +1042,19 @@ export default function LuluBrainLabPage() {
       )}
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b overflow-x-auto">
-        {TABS.map((t) => (
-          <button key={t.key} onClick={() => setTab(t.key)}
-            className={`flex items-center gap-1.5 px-3 py-2 text-sm font-medium border-b-2 whitespace-nowrap transition-colors ${tab === t.key ? "border-violet-600 text-violet-700" : "border-transparent text-gray-500 hover:text-gray-700"}`}>
-            <t.icon className="w-4 h-4" />{t.label}
-            {(t.key === "fixtest" || t.key === "aifix") && draft && <span className="ml-1 w-2 h-2 rounded-full bg-amber-500" />}
-          </button>
-        ))}
+      <div className="sticky top-0 z-20 -mx-1 bg-background/95 px-1 py-2 backdrop-blur">
+        <div className="flex gap-1 overflow-x-auto rounded-lg border bg-white p-1 shadow-sm">
+          {TABS.map((t) => (
+            <button key={t.key} onClick={() => setTab(t.key)}
+              className={`flex items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors ${tab === t.key ? "bg-violet-50 text-violet-700" : "text-gray-500 hover:bg-gray-50 hover:text-gray-700"}`}>
+              <t.icon className="w-4 h-4" />{t.label}
+              {t.key === "fixtest" && draft && <span className="ml-1 w-2 h-2 rounded-full bg-amber-500" />}
+            </button>
+          ))}
+          <a href="/sale-scripts" className="ml-auto flex items-center gap-1.5 rounded-md border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-700 hover:bg-violet-100">
+            <BookOpen className="w-4 h-4" /> Kịch bản Sale
+          </a>
+        </div>
       </div>
 
       {/* Thanh trạng thái version + nút tạo bản nháp mới (hiện ở mọi tab) */}
@@ -929,6 +1156,8 @@ export default function LuluBrainLabPage() {
           onAppliedInfo={(info) => setLastApplied(info)}
           turns={chatTurns} setTurns={setChatTurns} convo={chatConvo} setConvo={setChatConvo} />
       )}
+
+      {tab === "sources" && <ResponseSourcesPanel turns={chatTurns} />}
 
       {/* ─── TAB 3: Version History ─── */}
       {tab === "history" && (
@@ -1646,13 +1875,13 @@ function FixTestTab({
     catch { showErr("Không đọc được ảnh"); }
   };
 
-  const send = async () => {
-    const text = input.trim();
+  const send = async (messageOverride?: string) => {
+    const text = (typeof messageOverride === "string" ? messageOverride : input).trim();
     if ((!text && !attached) || sending) return;
     const img = attached;
     setTurns((p) => [...p, { id: newId(), role: "customer", text: text || "[ảnh]", imageUrl: img?.dataUrl }]);
     setInput(""); setAttached(null); setSending(true);
-    const priorForApi = convo.map((c) => ({ direction: c.direction, text: c.text }));
+    const priorForApi = convo.map((c) => ({ direction: c.direction, text: c.text, aiDecision: c.aiDecision ?? null }));
     try {
       const d = await apiSend<{ draft: SimResult | null; active: SimResult | null }>("POST", "/lulu-brain/test", {
         message: text, messages: priorForApi,
@@ -1668,10 +1897,23 @@ function FixTestTab({
       // Ghi lại ảnh mẫu ĐÃ GỬI vào lịch sử dạng [image:<url>] để lượt sau KHÔNG gửi trùng
       // (backend dedupe qua extractRecentSampleUrls — giống Messenger thật). Các dòng [image:] này
       // backend tự lọc khỏi ngữ cảnh AI, chỉ dùng để loại ảnh trùng; KHÔNG hiển thị trong khung chat.
-      for (const s of res.sampleImages ?? []) {
-        if (s?.imageUrl) next.push({ direction: "outgoing", text: `[image:${s.imageUrl}]` });
+      for (const [index, s] of (res.sampleImages ?? []).entries()) {
+        if (s?.imageUrl) next.push({ direction: "outgoing", text: `[image:${s.imageUrl}]`, aiDecision: `claude_sample_img${index}` });
       }
-      if (res.reply?.length) next.push({ direction: "outgoing", text: res.reply.join("\n\n") });
+      for (const [index, imageUrl] of (res.priceImages ?? []).entries()) {
+        if (imageUrl) next.push({ direction: "outgoing", text: `[image:${imageUrl}]`, aiDecision: `claude_price_sheet_img${index}` });
+      }
+      if (res.reply?.length) {
+        const action = res.saleWorkflow?.action ?? "CONTINUE_CONVERSATION";
+        const aiDecision = action === "SEND_PRICE_SHEET"
+          ? "claude_price_sheet_replied"
+          : action === "SEND_SAMPLE"
+            ? "claude_sample_replied"
+            : action === "ASK_SAMPLE_CONFIRMATION"
+              ? "claude_sample_confirmation_asked"
+              : `claude_workflow_${action.toLowerCase()}`;
+        next.push({ direction: "outgoing", text: res.reply.join("\n\n"), aiDecision });
+      }
       setConvo(next);
     } catch (e) { showErr(String((e as Error).message)); } finally { setSending(false); }
   };
@@ -1895,6 +2137,10 @@ function FixTestTab({
                   );
                 })()}
                 {t.result.sampleNote && <p className="text-[11px] text-amber-600 italic">{t.result.sampleNote}</p>}
+                <ScriptTracePanel trace={t.result.scriptTrace} />
+                <SaleWorkflowTracePanel trace={t.result.saleWorkflow} />
+                <PriceSheetTracePanel trace={t.result.priceSheetTrace} />
+                <WeddingGiftTracePanel trace={t.result.weddingGiftTrace} />
                 <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-gray-400">
                   {t.result.detectedIntent && <span>intent: <b className="text-violet-600">{t.result.detectedIntent}</b></span>}
                   <span>{t.result.responseTimeMs}ms</span>
@@ -1932,11 +2178,11 @@ function FixTestTab({
           )}
         </div>
 
-        {/* Câu hỏi mẫu nhanh (điền vào ô nhập) — CUỘN NGANG 1 hàng để KHÔNG ăn chiều cao khung chat. */}
+        {/* Câu hỏi mẫu nhanh — bấm là gửi test ngay; cuộn ngang để không ăn chiều cao khung chat. */}
         {exampleChips.length > 0 && (
           <div className="px-3 pt-2 flex flex-nowrap gap-1.5 overflow-x-auto pb-1 [scrollbar-width:thin]">
             {exampleChips.map((tc) => (
-              <button key={tc.id} onClick={() => setInput(tc.customerMessage)} disabled={sending}
+              <button key={tc.id} onClick={() => void send(tc.customerMessage)} disabled={sending}
                 className="shrink-0 whitespace-nowrap max-w-[220px] truncate text-[11px] bg-gray-100 hover:bg-gray-200 px-2 py-1 rounded-full text-gray-600 disabled:opacity-50" title={tc.customerMessage}>{tc.customerMessage}</button>
             ))}
           </div>
@@ -1952,7 +2198,7 @@ function FixTestTab({
           )}
           <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
             placeholder="Nhập câu khách hỏi…" className="flex-1 border rounded-lg px-3 py-2 text-sm" />
-          <button disabled={sending || (!input.trim() && !attached)} onClick={send} className="flex items-center gap-1.5 bg-violet-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-violet-700 disabled:opacity-50 shrink-0">
+          <button disabled={sending || (!input.trim() && !attached)} onClick={() => void send()} className="flex items-center gap-1.5 bg-violet-600 text-white text-sm px-3 py-2 rounded-lg hover:bg-violet-700 disabled:opacity-50 shrink-0">
             {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />} Gửi
           </button>
         </div>

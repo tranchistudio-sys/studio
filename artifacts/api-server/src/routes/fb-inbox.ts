@@ -1,11 +1,9 @@
 import { Router, type IRouter } from "express";
 import type { Request } from "express";
-import { db, getTenantDatabaseIdentity, pool } from "@workspace/db";
-import { isPlatformDatabaseConfigured } from "@workspace/platform-db";
+import { db, pool } from "@workspace/db";
 import { crmLeadsTable, customersTable, settingsTable } from "@workspace/db/schema";
 import { eq, inArray } from "drizzle-orm";
 import { verifyToken } from "./auth";
-import { capLegacyAdmin } from "../lib/legacy-auth-token";
 import { webhookEvents } from "./webhook-log";
 import {
   splitIntoChunks,
@@ -22,7 +20,15 @@ import {
 import { askClaudeForReply, type ClaudeHistoryItem } from "../lib/claude-sale";
 import { getSaleContext, resolvePriceImagesByCodes, wantsNewConcept, getPhotoIdeasBlock } from "../lib/sale-context";
 import { classifyCustomerImageIntent, buildImageRoutingBlock, type CustomerImageIntent } from "../lib/sale-vision";
-import { selectSampleImages, extractRecentSampleUrls, toPublicImageUrl, SAMPLES_EXHAUSTED_NOTE, type SampleImage } from "../lib/sale-samples";
+import {
+  buildWorkflowSampleReply,
+  selectSampleImages,
+  extractRecentSampleUrls,
+  isExplicitSampleRequest,
+  toPublicImageUrl,
+  SAMPLES_EXHAUSTED_NOTE,
+  type SampleImage,
+} from "../lib/sale-samples";
 import { getActivePlaybook } from "../lib/sale-playbook";
 import { getActiveBrainRules, getActiveImageOverrides } from "../lib/sale-brain-lab";
 import { applyImageOverrides } from "../lib/sale-image-overrides";
@@ -37,16 +43,62 @@ import {
   HOLD_MESSAGE, imageEscalationReason, upsertOpenHumanReview, markHoldSent,
 } from "../lib/sale-human-review";
 import {
-  isLuluStateEnabledFor, applyIncomingMessage, getThreadState, buildThreadStateBlock,
-  recordBotReply, type ThreadState,
-} from "../lib/sale-thread-state";
-import { botAsksDate } from "../lib/sale-slots";
+  buildPriceSheetReply,
+  PRICE_SHEET_SEND_FAILED_MESSAGE,
+  resolvePriceSheetRequest,
+} from "../lib/sale-price-sheet";
+import { buildSaleWorkflowBlock, evaluateSaleWorkflow } from "../lib/sale-workflow";
+import { buildWeddingGiftPromptBlock, evaluateWeddingGiftTrace, loadWeddingGiftProgram } from "../lib/sale-wedding-gifts";
 import { emitNotification } from "./notifications";
 import multer from "multer";
 import { randomUUID } from "crypto";
 import { objectStorageClient, ObjectStorageService } from "../lib/objectStorage";
 import { getPublicBaseUrl } from "../lib/publicUrl";
 import { withStartupDdlLock } from "../lib/startup-ddl";
+import { createKeyedDebouncedQueue } from "../lib/sale-message-coalescer";
+import { resolveApiKey } from "../lib/ai-provider";
+
+function workflowControlledReply(workflow: { action: string; reason?: string; serviceKey?: string | null; style?: string | null; nextSlot?: { key: string } | null }, sampleStyleMatched?: boolean): string | null {
+  if (workflow.reason === "customer_wants_time_to_consider") {
+    return "Dạ mình cứ xem kỹ và cân nhắc thoải mái nha. Khi nào cần em so sánh thêm các gói hoặc giữ lịch thì nhắn em ạ.";
+  }
+  if (workflow.action === "ASK_SERVICE") {
+    return "Dạ mình đang cần chụp cổng, album studio, album ngoại cảnh, tiệc cưới, beauty hay dịch vụ khác ạ?";
+  }
+  if (workflow.action === "ASK_DISCOVERY") {
+    const questions: Record<string, string> = {
+      style: "mình thích hướng sang trọng, nàng thơ, nhẹ nhàng, tinh tế hay tối giản hơn ạ?",
+      location_need: "mình thích cảnh thiên nhiên, Núi Bà Đen, hồ, quán cà phê hay kiến trúc nào tại Tây Ninh ạ?",
+      beauty_type: "mình muốn chụp sinh nhật, beauty cá nhân, nàng thơ, ngọt ngào, sexy, sang trọng, cool boy, cổ trang hay chụp bầu ạ?",
+      pregnancy_month: "mình đang ở tháng thai kỳ thứ mấy ạ?",
+      participants: "mình muốn chụp cá nhân hay cùng gia đình ạ?",
+      wedding_date: "mình cho em xin ngày cưới theo ngày dương lịch nha.",
+      bride_location: "nhà cô dâu ở khu vực nào ạ?",
+      groom_location: "nhà chú rể ở khu vực nào ạ?",
+      venue_format: "tiệc mình làm tại nhà hay nhà hàng ạ?",
+      table_count: "mình dự kiến khoảng bao nhiêu bàn ạ?",
+      use_date: "mình cần dùng vào ngày nào ạ?",
+      outfit_type: "mình cần thuê loại trang phục nào ạ?",
+      size_need: "mình thường mặc size nào hoặc cần ghé thử đồ không ạ?",
+      wedding_kind: "mình đang quan tâm album/prewedding hay chụp ngày cưới, tiệc cưới ạ?",
+      album_location_type: "mình muốn chụp album tại studio hay ngoại cảnh ạ?",
+      primary_need: "mình cho em xin nhu cầu chính để em tư vấn đúng dịch vụ ạ?",
+    };
+    const question = workflow.nextSlot ? questions[workflow.nextSlot.key] : null;
+    return `Dạ ${question ?? "mình cho em xin thêm nhu cầu để em tư vấn đúng dịch vụ ạ?"}`;
+  }
+  if (workflow.action === "SEND_SAMPLE") {
+    return buildWorkflowSampleReply({
+      serviceKey: workflow.serviceKey,
+      style: workflow.style,
+      styleMatched: sampleStyleMatched,
+    });
+  }
+  if (workflow.action === "ASK_SAMPLE_CONFIRMATION") {
+    return "M\u00ecnh th\u1ea5y nh\u1eefng m\u1eabu em v\u1eeba g\u1eedi c\u00f3 h\u1ee3p gu kh\u00f4ng \u1ea1? M\u00ecnh \u01b0ng h\u01b0\u1edbng n\u00e0o th\u00ec em g\u1eedi b\u1ea3ng gi\u00e1 \u0111\u00fang nh\u00f3m \u0111\u1ec3 m\u00ecnh xem ti\u1ebfp nha.";
+  }
+  return null;
+}
 
 const router: IRouter = Router();
 
@@ -92,29 +144,19 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 
 const _objectStorageService = new ObjectStorageService();
 
 async function uploadImageToGcs(buffer: Buffer, mimeType: string, ext: string): Promise<string> {
-  if (!isPlatformDatabaseConfigured()) {
-    const privateDir = _objectStorageService.getPrivateObjectDir();
-    const entityId = `fb-inbox-images/${randomUUID()}.${ext}`;
-    const fullGcsPath = `${privateDir.replace(/\/$/, "")}/${entityId}`;
-    const parts = fullGcsPath.replace(/^\//, "").split("/");
-    const bucketName = parts[0]!;
-    const objectName = parts.slice(1).join("/");
-    await objectStorageClient.bucket(bucketName).file(objectName).save(buffer, {
-      contentType: mimeType,
-      resumable: false,
-    });
-    return `${getPublicBaseUrl()}/api/storage/objects/${entityId}`;
-  }
+  const privateDir = _objectStorageService.getPrivateObjectDir();
+  const entityId = `fb-inbox-images/${randomUUID()}.${ext}`;
+  const fullGcsPath = `${privateDir.replace(/\/$/, "")}/${entityId}`;
 
-  const { tenantId, tenantSlug } = getTenantDatabaseIdentity();
-  const objectName = `${randomUUID()}.${ext}`;
-  const objectPath = await _objectStorageService.saveTenantObject(
-    { tenantId, tenantSlug },
-    "fb-inbox-images",
-    objectName,
-    buffer,
-    mimeType,
-  );
+  const parts = fullGcsPath.replace(/^\//, "").split("/");
+  const bucketName = parts[0];
+  const objectName = parts.slice(1).join("/");
+
+  const bucket = objectStorageClient.bucket(bucketName);
+  const gcsFile = bucket.file(objectName);
+  await gcsFile.save(buffer, { contentType: mimeType, resumable: false });
+
+  const objectPath = `/objects/${entityId}`;
   return `${getPublicBaseUrl()}/api/storage${objectPath}`;
 }
 
@@ -153,15 +195,9 @@ async function getCaller(req: Request) {
   return caller;
 }
 
-function isAdmin(
-  caller: { role?: string; roles?: string[] } | null,
-  authorization?: string,
-): boolean {
+function isAdmin(caller: { role?: string; roles?: string[] } | null): boolean {
   if (!caller) return false;
-  return capLegacyAdmin(
-    authorization,
-    caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin")),
-  );
+  return caller.role === "admin" || (Array.isArray(caller.roles) && caller.roles.includes("admin"));
 }
 
 function sleep(ms: number) {
@@ -342,17 +378,15 @@ async function sendPriceImagesSequentially(
 /**
  * Gửi 1–2 ẢNH MẪU THẬT (bộ ảnh/đồ thuê/concept) qua Messenger attachment — gửi
  * HÌNH trực tiếp thay vì link. Resolve URL công khai (toPublicImageUrl) cho cả
- * /uploads lẫn /objects. Trả số ảnh gửi thành công + DANH SÁCH URL public đã gửi
- * (ảnh fail/skip ở giữa không được đếm — không dùng prefix slice). KHÔNG throw.
+ * /uploads lẫn /objects. Trả số ảnh gửi thành công. KHÔNG throw.
  */
 async function sendSampleImagesSequentially(
   psid: string,
   pageAccessToken: string,
   samples: SampleImage[],
   settings?: AiSettings,
-): Promise<{ sent: number; sentUrls: string[] }> {
+): Promise<number> {
   let sent = 0;
-  const sentUrls: string[] = [];
   for (let i = 0; i < samples.length; i++) {
     const url = toPublicImageUrl(samples[i].imageUrl);
     if (!url) continue;
@@ -361,7 +395,6 @@ async function sendSampleImagesSequentially(
     const { ok, mid } = await sendFacebookImageAttachment(psid, url, pageAccessToken);
     if (ok) {
       sent++;
-      sentUrls.push(url);
       await pool.query(
         `INSERT INTO fb_inbox_messages (facebook_user_id, direction, message, sent_status, ai_decision, mid)
          VALUES ($1, 'outgoing', $2, 'sent', $3, $4)
@@ -376,7 +409,7 @@ async function sendSampleImagesSequentially(
       );
     }
   }
-  return { sent, sentUrls };
+  return sent;
 }
 
 async function fetchFacebookProfile(psid: string, pageAccessToken: string): Promise<{ name: string | null; avatarUrl: string | null; errorMsg?: string }> {
@@ -426,12 +459,43 @@ export function resolveMessageTagLabel(
   return sentBy ? sentBy : "Nhân viên";
 }
 
-export async function processIncomingFacebookMessage(
+type IncomingFacebookOptions = { alreadyInserted?: boolean; imageUrls?: string[]; skipAiReply?: boolean };
+type IncomingFacebookJob = {
+  text: string;
+  mid?: string | null;
+  activePageId?: string | null;
+  opts?: IncomingFacebookOptions;
+};
+
+const incomingMessageQueue = createKeyedDebouncedQueue<IncomingFacebookJob>(450, async (psid, jobs) => {
+  for (const job of jobs.slice(0, -1)) {
+    await processIncomingFacebookMessageNow(psid, job.text, job.mid, job.activePageId, {
+      ...job.opts,
+      skipAiReply: true,
+    });
+  }
+  const last = jobs[jobs.length - 1];
+  if (!last) return;
+  if (jobs.length > 1) console.log(`[FBInbox] psid=${psid} coalesced ${jobs.length} rapid messages into one AI turn`);
+  await processIncomingFacebookMessageNow(psid, last.text, last.mid, last.activePageId, last.opts);
+});
+
+export function processIncomingFacebookMessage(
   psid: string,
   text: string,
   mid?: string | null,
   activePageId?: string | null,
   opts?: { alreadyInserted?: boolean; imageUrls?: string[] },
+): Promise<void> {
+  return incomingMessageQueue.enqueue(psid, { text, mid, activePageId, opts });
+}
+
+async function processIncomingFacebookMessageNow(
+  psid: string,
+  text: string,
+  mid?: string | null,
+  activePageId?: string | null,
+  opts?: IncomingFacebookOptions,
 ) {
   if (activePageId && psid === activePageId) {
     console.log(`[FBInbox] Guard: skip processIncomingFacebookMessage — psid=${psid} matches activePageId`);
@@ -547,11 +611,13 @@ export async function processIncomingFacebookMessage(
   if (detectPhone(text)) markPhoneCaptured(psid).catch(() => {});
   if (detectAppointmentIntent(text)) markAppointmentIntent(psid).catch(() => {});
 
-  // TRÍ NHỚ CÓ CẤU TRÚC (cờ LULU_STATE_ENABLED + allowlist pilot LULU_STATE_PSIDS):
-  // rút slot ngày/nhu cầu từ tin khách vào lulu_thread_state TRƯỚC khi build prompt
-  // để lượt này đọc được ngay. Fail-open: lỗi DB → hàm tự nuốt, bot chạy tiếp như cũ.
-  if (isLuluStateEnabledFor(psid)) {
-    await applyIncomingMessage(psid, text);
+  if (opts?.skipAiReply) {
+    await pool.query(
+      `UPDATE fb_inbox_messages SET ai_decision = 'claude_coalesced'
+       WHERE id = (SELECT id FROM fb_inbox_messages WHERE facebook_user_id = $1 AND direction = 'incoming' ORDER BY id DESC LIMIT 1)`,
+      [psid],
+    );
+    return;
   }
 
   // ══ BỘ NÃO SALE CLAUDE (Giai đoạn 1 — chỉ tư vấn) ════════════════════════════
@@ -559,7 +625,9 @@ export async function processIncomingFacebookMessage(
   // Khi TẮT: webhook vẫn nhận tin, vẫn lưu lead + lịch sử (ở trên) — chỉ KHÔNG trả lời.
   // Khi lead ở 'paused'/'takeover': nhân viên đang chăm → AI im.
   const masterOn = await getMasterEnabled();
-  if (masterOn && aiMode === "active") {
+  // Brain Lab remains test-only until an operator explicitly approves the rebuilt script.
+  const rebuildApproved = toBool(process.env.LULU_SALE_REBUILD_APPROVED);
+  if (masterOn && rebuildApproved && aiMode === "active") {
     await handleClaudeSaleReply(psid, text, lead, cfg, opts?.imageUrls);
     return;
   }
@@ -568,7 +636,7 @@ export async function processIncomingFacebookMessage(
   await pool.query(
     `UPDATE fb_inbox_messages SET ai_decision = $1
      WHERE id = (SELECT id FROM fb_inbox_messages WHERE facebook_user_id = $2 AND direction = 'incoming' ORDER BY id DESC LIMIT 1)`,
-    [!masterOn ? "claude_master_off" : aiMode === "takeover" ? "ai_disabled_takeover" : "ai_disabled_paused", psid],
+    [!masterOn ? "claude_master_off" : !rebuildApproved ? "lulu_rebuild_not_approved" : aiMode === "takeover" ? "ai_disabled_takeover" : "ai_disabled_paused", psid],
   );
   return;
   // ══ HẾT CLAUDE — phía dưới là bot ChatGPT/OpenAI cũ (đang tắt qua công tắc) ═══
@@ -595,7 +663,7 @@ export async function processIncomingFacebookMessage(
   }
 
   const historyRows = await pool.query(
-    `SELECT direction, message FROM fb_inbox_messages WHERE facebook_user_id = $1 ORDER BY id DESC LIMIT 20`,
+    `SELECT direction, message, ai_decision AS "aiDecision" FROM fb_inbox_messages WHERE facebook_user_id = $1 ORDER BY id DESC LIMIT 20`,
     [psid],
   );
   const history = (historyRows.rows as Array<{ direction: "incoming" | "outgoing"; message: string }>).reverse();
@@ -802,12 +870,6 @@ async function handleClaudeSaleReply(
     );
   };
 
-  const apiKey = (process.env.ANTHROPIC_API_KEY ?? "").trim();
-  if (!apiKey) {
-    console.warn(`[Claude] psid=${psid} ANTHROPIC_API_KEY chưa cấu hình — bỏ qua trả lời`);
-    await markIncoming("claude_no_key");
-    return;
-  }
   if (!cfg.pageAccessToken) {
     await markIncoming("claude_no_page_token");
     return;
@@ -815,13 +877,94 @@ async function handleClaudeSaleReply(
 
   // Lịch sử hội thoại (tin khách hiện tại đã nằm cuối danh sách này)
   const historyRows = await pool.query(
-    `SELECT direction, message FROM fb_inbox_messages WHERE facebook_user_id = $1 ORDER BY id DESC LIMIT 20`,
+    `SELECT direction, message, ai_decision AS "aiDecision" FROM fb_inbox_messages WHERE facebook_user_id = $1 ORDER BY id DESC LIMIT 20`,
     [psid],
   );
   const history = (historyRows.rows as ClaudeHistoryItem[]).reverse();
+  const saleWorkflow = evaluateSaleWorkflow({ message: text, prior: history });
+  const weddingGiftProgram = await loadWeddingGiftProgram();
+  const weddingGiftTrace = evaluateWeddingGiftTrace({
+    message: text,
+    prior: history,
+    currentServiceKey: saleWorkflow.serviceKey,
+    program: weddingGiftProgram,
+  });
+  const weddingGiftBlock = buildWeddingGiftPromptBlock(weddingGiftTrace);
 
   // Nạp cấu hình Claude Sale (dùng chung với Test) + lịch (read-only) nếu bật.
   const settings = await getClaudeSaleSettings();
+  // Keep workflow replies deterministic. The sample wording is refined after CMS selection below.
+  let controlledWorkflowReply = workflowControlledReply(
+    saleWorkflow,
+    saleWorkflow.action === "SEND_SAMPLE" ? false : undefined,
+  );
+
+  const priceSheet = await resolvePriceSheetRequest({
+    message: text,
+    prior: history,
+    force: saleWorkflow.action === "SEND_PRICE_SHEET",
+    serviceKey: saleWorkflow.serviceKey,
+  });
+  if (saleWorkflow.action === "SEND_PRICE_SHEET" && priceSheet.requested) {
+    if (priceSheet.needsClarification) {
+      const clarification = priceSheet.clarificationMessage ?? "Mình muốn xem bảng giá dịch vụ nào ạ?";
+      const sent = await sendChunksWithTyping(psid, cfg.pageAccessToken, [clarification], "claude_price_sheet_clarify");
+      await markIncoming(sent ? "claude_price_sheet_clarify" : "claude_price_sheet_clarify_failed");
+      return;
+    }
+
+    const blockAndEscalate = async (reason: string) => {
+      const sent = await sendChunksWithTyping(
+        psid,
+        cfg.pageAccessToken,
+        [PRICE_SHEET_SEND_FAILED_MESSAGE],
+        "claude_price_sheet_blocked",
+      );
+      await markIncoming(sent ? "claude_price_sheet_blocked" : "claude_price_sheet_blocked_send_failed");
+      if (settings.humanReviewEnabled) {
+        const hr = await upsertOpenHumanReview({
+          facebookUserId: psid,
+          channel: "messenger",
+          customerName: lead?.name ?? null,
+          customerQuestion: text,
+          customerImages: imageUrls && imageUrls.length > 0 ? imageUrls : null,
+          detectedIntent: "price_sheet",
+          confidence: 1,
+          reasonForEscalation: reason,
+          aiSuggestedReply: settings.allowAiSuggestedReply ? PRICE_SHEET_SEND_FAILED_MESSAGE : null,
+        });
+        if (sent) await markHoldSent(hr.id);
+      }
+      if (settings.autoPauseThreadWhenEscalated) await escalateToHuman(psid, lead?.name, reason);
+      else await markNeedsHuman(psid, reason);
+    };
+
+    if (!priceSheet.trace?.validator.passed || !priceSheet.assetUrl) {
+      await blockAndEscalate(priceSheet.escalationReason ?? "Không xác minh được ảnh bảng giá chính thức");
+      return;
+    }
+
+    const imageSent = await sendPriceImagesSequentially(
+      psid,
+      cfg.pageAccessToken,
+      [priceSheet.assetUrl],
+      "claude_price_sheet",
+    );
+    if (!imageSent) {
+      await blockAndEscalate(`Gửi ảnh bảng giá ${priceSheet.group?.name ?? "dịch vụ"} thất bại`);
+      return;
+    }
+
+    const priceReplies = buildPriceSheetReply(priceSheet, text);
+    if (priceReplies.length === 0) {
+      await blockAndEscalate("Không dựng được nội dung giải thích từ dữ liệu gói bán lẻ đã xác minh");
+      return;
+    }
+    const textSent = await sendChunksWithTyping(psid, cfg.pageAccessToken, priceReplies, "claude_price_sheet_replied");
+    await markIncoming(textSent ? "claude_price_sheet_replied" : "claude_price_sheet_text_failed");
+    return;
+  }
+
   let scheduleContext = "";
   if (settings.calendarEnabled) {
     try { scheduleContext = await getScheduleContext(settings.calWindowDays); } catch { /* bỏ qua */ }
@@ -829,9 +972,10 @@ async function handleClaudeSaleReply(
 
   let reply;
   let visionIntent: CustomerImageIntent | null = null;
-  let threadState: ThreadState | null = null;
   try {
     let context = await getSaleContext();
+    context += `\n\n${buildSaleWorkflowBlock(saleWorkflow)}`;
+    if (weddingGiftBlock) context += `\n\n${weddingGiftBlock}`;
     // "Ý tưởng chụp ảnh" là NGUỒN PHỤ: chỉ nạp khi khách thật sự muốn concept mới/lạ.
     if (wantsNewConcept(text)) {
       const ideas = await getPhotoIdeasBlock();
@@ -855,17 +999,9 @@ async function handleClaudeSaleReply(
       }
       console.log(`[Vision] psid=${psid} ảnh → intent=${intent.service_intent} (conf=${intent.confidence})`);
     }
-    // TRẠNG THÁI KHÁCH (trí nhớ có cấu trúc) → chèn khối nhắc vào context để Lulu không
-    // hỏi lại ngày / không bung lại bảng giá đã báo. "" khi tắt cờ hoặc chưa có gì đáng nói.
-    if (isLuluStateEnabledFor(psid)) {
-      threadState = await getThreadState(psid);
-      const stateBlock = buildThreadStateBlock(threadState);
-      if (stateBlock) context += `\n\n${stateBlock}`;
-    }
     const styleGuide = await getActivePlaybook();
     const brainRules = await getActiveBrainRules();
     reply = await askClaudeForReply({
-      apiKey,
       model: process.env.ANTHROPIC_MODEL?.trim() || undefined,
       customerMessage: text,
       customerName: lead?.name,
@@ -891,8 +1027,8 @@ async function handleClaudeSaleReply(
 
   // Escalation: từ marker của Claude HOẶC từ khóa (chuyển khoản/đặt cọc/gặp người/deal/hủy lịch)
   // HOẶC ảnh không chắc nhu cầu (confidence thấp / studio chưa chắc làm được).
-  const escalationReason =
-    reply.escalation
+  let escalationReason =
+    (controlledWorkflowReply ? null : reply.escalation)
     || detectEscalation(text)
     || imageEscalationReason(visionIntent, settings.lowConfidenceThreshold);
 
@@ -938,9 +1074,7 @@ async function handleClaudeSaleReply(
   // Đặt TRƯỚC guard "chunks rỗng" để tin chỉ-có-marker (<<SAMPLE>>) vẫn gửi được ảnh.
   // Marker <<SAMPLE>> của Claude hoặc tự suy nhóm từ ảnh/tin khách. Lỗi/không có ảnh → bỏ qua, vẫn gửi text.
   let samplesExhausted = false;
-  const sentSampleUrlsForState: string[] = []; // URL public ảnh mẫu ĐÃ GỬI THÀNH CÔNG lượt này
-  const sentPriceGroupIdsForState: number[] = []; // id nhóm giá đã gửi ảnh bảng giá
-  const quotedCodesForState: string[] = []; // mã gói mà bảng giá THẬT SỰ đến được khách (ảnh hoặc link)
+  let sampleUnavailableReason: string | null = null;
   try {
     const contextText = history
       .filter((h) => !h.message.startsWith("[image:"))
@@ -950,10 +1084,20 @@ async function handleClaudeSaleReply(
     // Tin nhắn gần nhất của bot (để xét khách "đồng ý" sau khi bot mời gửi mẫu).
     const lastBotText = [...history].reverse().find((h) => h.direction === "outgoing")?.message ?? null;
     const excludeUrls = extractRecentSampleUrls(history);
+    const workflowLocksSampleIntent = !!saleWorkflow.serviceKey && (
+      saleWorkflow.action === "SEND_SAMPLE"
+      || (saleWorkflow.sampleRequired && isExplicitSampleRequest(text))
+    );
+    const sampleSelectionText = saleWorkflow.action === "SEND_SAMPLE"
+      ? [text, ...saleWorkflow.filledSlots.map((slot) => slot.value ?? "")].join("\n")
+      : text;
     const sel = await selectSampleImages({
-      sampleRequested: reply.sampleRequested,
-      sampleIntents: reply.sampleIntents,
-      messageText: text,
+      sampleRequested: saleWorkflow.action === "SEND_SAMPLE" || (!saleWorkflow.sampleRequired && reply.sampleRequested),
+      sampleIntents: workflowLocksSampleIntent && saleWorkflow.serviceKey
+        ? [saleWorkflow.serviceKey]
+        : reply.sampleIntents,
+      intentLocked: workflowLocksSampleIntent,
+      messageText: sampleSelectionText,
       contextText,
       lastBotText,
       visionIntent,
@@ -964,7 +1108,9 @@ async function handleClaudeSaleReply(
     // ÁP OVERRIDE "ADMIN DẠY" của version đang chạy thật (rỗng nếu admin chưa áp dụng gì → hành vi cũ y hệt).
     const activeOverrides = await getActiveImageOverrides();
     const detectedIntentForOverride =
-      (reply.sampleIntents && reply.sampleIntents.length ? reply.sampleIntents[0] : null)
+      workflowLocksSampleIntent && saleWorkflow.serviceKey
+        ? saleWorkflow.serviceKey
+        : (reply.sampleIntents && reply.sampleIntents.length ? reply.sampleIntents[0] : null)
       || (visionIntent?.service_intent ?? null);
     const finalSel = applyImageOverrides(sel, activeOverrides, {
       detectedIntent: detectedIntentForOverride,
@@ -977,13 +1123,56 @@ async function handleClaudeSaleReply(
       console.log(`[Claude] psid=${psid} dùng ẢNH ADMIN DẠY (override ${finalSel.overrideId})`);
     }
     if (finalSel.images.length > 0) {
-      const { sent: nSent, sentUrls } = await sendSampleImagesSequentially(psid, cfg.pageAccessToken, finalSel.images);
+      if (saleWorkflow.action === "SEND_SAMPLE") {
+        controlledWorkflowReply = workflowControlledReply(saleWorkflow, sel.styleMatched);
+      }
+      const nSent = await sendSampleImagesSequentially(psid, cfg.pageAccessToken, finalSel.images);
       console.log(`[Claude] psid=${psid} gửi ${nSent}/${finalSel.images.length} ảnh mẫu (nhóm: ${finalSel.resolvedIntents.join(",")})`);
-      sentSampleUrlsForState.push(...sentUrls);
     }
     samplesExhausted = finalSel.exhausted;
+    if ((isExplicitSampleRequest(text) || saleWorkflow.action === "SEND_SAMPLE") && finalSel.images.length === 0 && !finalSel.exhausted) {
+      sampleUnavailableReason = "Khách xin xem mẫu nhưng hệ thống không tìm được ảnh đúng nhóm";
+    }
   } catch (e) {
     console.error(`[Claude] psid=${psid} gửi ảnh mẫu lỗi:`, String(e).slice(0, 160));
+  }
+
+  if (sampleUnavailableReason) {
+    escalationReason ||= sampleUnavailableReason;
+    if (settings.humanReviewEnabled) {
+      const hr = await upsertOpenHumanReview({
+        facebookUserId: psid,
+        channel: "messenger",
+        customerName: lead?.name ?? null,
+        customerQuestion: text,
+        customerImages: imageUrls && imageUrls.length > 0 ? imageUrls : null,
+        detectedIntent: reply.sampleIntents?.[0] ?? visionIntent?.service_intent ?? null,
+        confidence: typeof visionIntent?.confidence === "number" ? visionIntent.confidence : null,
+        reasonForEscalation: sampleUnavailableReason,
+        aiSuggestedReply: settings.allowAiSuggestedReply
+          ? "Hiện em chưa tìm được ảnh mẫu đúng nhóm để gửi ngay. Em chuyển nhân viên lọc đúng mẫu cho mình nha."
+          : null,
+      });
+      if (hr.created || !hr.holdAlreadySent) {
+        await sendChunksWithTyping(psid, cfg.pageAccessToken, [HOLD_MESSAGE], "claude_hold_message");
+        await markHoldSent(hr.id);
+      }
+      await markIncoming("claude_escalated_no_sample");
+      if (settings.autoPauseThreadWhenEscalated) await escalateToHuman(psid, lead?.name, sampleUnavailableReason);
+      else await markNeedsHuman(psid, sampleUnavailableReason);
+      return;
+    }
+    reply.messageChunks = [{
+      text: "Hiện em chưa tìm được ảnh mẫu đúng nhóm để gửi ngay. Em chuyển nhân viên lọc đúng mẫu cho mình nha.",
+      delayMs: 900,
+    }];
+  }
+
+  if (controlledWorkflowReply) {
+    reply.messageChunks = [{ text: controlledWorkflowReply, delayMs: 900 }];
+    reply.messages = [controlledWorkflowReply];
+    reply.raw = controlledWorkflowReply;
+    reply.escalation = null;
   }
 
   // Human chat pacing: lấy bong bóng + delay từng tin từ reply.messageChunks (đã căn 1:1 với messages).
@@ -996,17 +1185,6 @@ async function handleClaudeSaleReply(
   if (chunks.length === 0) {
     console.warn(`[Claude] psid=${psid} Claude trả về rỗng`);
     await markIncoming(escalationReason ? "claude_escalated_empty" : "claude_empty");
-    // Tin chỉ-có-marker <<SAMPLE>> vẫn có thể ĐÃ gửi ảnh ở trên → ghi vào trí nhớ trước khi
-    // return, kẻo sent_assets thiếu sự thật (consumer chống-lặp-ảnh sau này sẽ gửi lại).
-    if (isLuluStateEnabledFor(psid) && sentSampleUrlsForState.length > 0) {
-      await recordBotReply(psid, {
-        action: "reply",
-        askedDate: false,
-        quotedCodes: [],
-        sampleUrls: sentSampleUrlsForState,
-        priceGroupIds: [],
-      });
-    }
     if (escalationReason) await escalateToHuman(psid, lead?.name, escalationReason);
     return;
   }
@@ -1022,19 +1200,11 @@ async function handleClaudeSaleReply(
         const imgsSent = await sendPriceImagesSequentially(psid, cfg.pageAccessToken, objectPaths, "claude_price_img");
         if (imgsSent) {
           console.log(`[Claude] psid=${psid} đã gửi ${hits.length} ảnh bảng giá nhóm: ${hits.map((h) => h.groupName).join(", ")}`);
-          for (const h of hits) {
-            sentPriceGroupIdsForState.push(h.groupId);
-            if (h.code) quotedCodesForState.push(h.code);
-          }
         } else {
           // Fallback: gửi LINK ảnh public dạng text để khách vẫn xem được.
           const links = objectPaths.map((p) => resolveImagePath(p)).filter(Boolean).join("\n");
           if (links) {
-            try {
-              await sendFacebookMessage(psid, `Dạ em gửi bảng giá để mình xem nha 😊\n${links}`, cfg.pageAccessToken);
-              // Link đến được khách = khách vẫn xem được bảng giá → tính là đã báo giá.
-              for (const h of hits) if (h.code) quotedCodesForState.push(h.code);
-            } catch { /* bỏ qua */ }
+            try { await sendFacebookMessage(psid, `Dạ em gửi bảng giá để mình xem nha 😊\n${links}`, cfg.pageAccessToken); } catch { /* bỏ qua */ }
             console.log(`[Claude] psid=${psid} ảnh attachment lỗi → đã fallback gửi link ảnh bảng giá`);
           }
         }
@@ -1042,32 +1212,6 @@ async function handleClaudeSaleReply(
     } catch (e) {
       console.error(`[Claude] psid=${psid} gửi ảnh bảng giá nhóm lỗi:`, String(e).slice(0, 160));
     }
-  }
-
-  // Ghi "bot vừa làm gì" vào trí nhớ TRƯỚC khi gửi chuỗi bubble (chuỗi typing-delay có thể
-  // kéo 5-15s; khách rep nhanh trong cửa sổ đó phải đọc được ask_date rồi — đóng race
-  // "tham khảo thôi" bị bỏ qua vì botAskedDate=false). Đổi lại: nếu gửi fail toàn bộ thì
-  // state ghi "đã hỏi" thừa — hướng lỗi bảo thủ (bot không hỏi lại), chấp nhận được.
-  // quotedCodes = quotedCodesForState (chỉ mã bảng giá THẬT SỰ đến khách qua ảnh/link,
-  // không phải mọi marker Claude đặt). Fail-open.
-  if (isLuluStateEnabledFor(psid)) {
-    const decidedAction = escalationReason ? "reply_escalated" : quotedCodesForState.length ? "quote" : "reply";
-    await recordBotReply(psid, {
-      action: decidedAction,
-      askedDate: botAsksDate(chunks.join("\n")),
-      quotedCodes: quotedCodesForState,
-      sampleUrls: sentSampleUrlsForState,
-      priceGroupIds: sentPriceGroupIdsForState,
-    });
-    // LOG QUYẾT ĐỊNH (mảnh cuối, ghép với [LuluState][in]/[out]): trạng thái lúc build
-    // prompt + hành động + câu trả lời cuối — đủ 5 trường soi lại từng lượt trên log.
-    console.log(
-      `[LuluState][decision] psid=${psid} stateAtPrompt=${JSON.stringify({
-        date: threadState?.slots.date_status ?? "unknown",
-        intent: threadState?.serviceIntent ?? null,
-        quoted: (threadState?.quotedPackages ?? []).map((p) => p.code),
-      })} action=${decidedAction} reply="${(chunks[0] ?? "").slice(0, 80).replace(/\n/g, " ")}" bubbles=${chunks.length}`,
-    );
   }
 
   // Tốc độ trả lời: delay theo độ dài tin KHÁCH (cấu hình + random ±30%). Áp dụng cho bubble đầu.
@@ -1116,7 +1260,7 @@ function maskToken(t: string | null): string | null {
 
 router.get("/fb-ai/config", async (req, res) => {
   const caller = await getCaller(req);
-  if (!isAdmin(caller, req.headers.authorization)) return res.status(403).json({ error: "Chỉ admin mới xem cấu hình" });
+  if (!isAdmin(caller)) return res.status(403).json({ error: "Chỉ admin mới xem cấu hình" });
   const cfg = await getConfig();
   res.json({
     hasPageAccessToken: !!cfg.pageAccessToken,
@@ -1131,7 +1275,7 @@ router.get("/fb-ai/config", async (req, res) => {
 
 router.put("/fb-ai/config", async (req, res) => {
   const caller = await getCaller(req);
-  if (!isAdmin(caller, req.headers.authorization)) return res.status(403).json({ error: "Chỉ admin mới sửa cấu hình" });
+  if (!isAdmin(caller)) return res.status(403).json({ error: "Chỉ admin mới sửa cấu hình" });
 
   const {
     pageAccessToken,
@@ -1168,25 +1312,26 @@ router.get("/fb-ai/status", async (req, res) => {
   const caller = await getCaller(req);
   if (!caller) return res.status(401).json({ error: "Chưa đăng nhập" });
   const cfg = await getConfig();
-  // CẦU DAO TỔNG (DB) là nguồn sự thật DUY NHẤT cho Claude Sale. hasConfig = sẵn sàng
-  // chạy Claude (có Page token + ANTHROPIC_API_KEY). autoReplyEnabled giữ tên cũ để
+  // CẦU DAO TỔNG (DB) là nguồn sự thật DUY NHẤT cho Lulu Sale. hasConfig = sẵn sàng
+  // chạy ít nhất một provider (Claude/OpenAI) và có Page token. autoReplyEnabled giữ tên cũ để
   // tương thích UI, nhưng nay = trạng thái cầu dao tổng.
   const masterEnabled = await getMasterEnabled();
-  const hasApiKey = !!(process.env.ANTHROPIC_API_KEY ?? "").trim();
+  const [claudeKey, openAiKey] = await Promise.all([resolveApiKey("claude"), resolveApiKey("openai")]);
+  const hasApiKey = !!(claudeKey || openAiKey);
   res.json({ autoReplyEnabled: masterEnabled, masterEnabled, hasConfig: !!cfg.pageAccessToken && hasApiKey });
 });
 
 // GET /fb-ai/webhook-log — xem 50 sự kiện webhook gần nhất (chỉ admin)
 router.get("/fb-ai/webhook-log", async (req, res) => {
   const caller = await getCaller(req);
-  if (!isAdmin(caller, req.headers.authorization)) return res.status(403).json({ error: "Không có quyền" });
+  if (!isAdmin(caller)) return res.status(403).json({ error: "Không có quyền" });
   res.json({ events: webhookEvents, total: webhookEvents.length });
 });
 
 // GET /fb-ai/page-info — lấy thông tin fanpage đang được kết nối (dùng token lưu trong DB)
 router.get("/fb-ai/page-info", async (req, res) => {
   const caller = await getCaller(req);
-  if (!isAdmin(caller, req.headers.authorization)) return res.status(403).json({ error: "Không có quyền" });
+  if (!isAdmin(caller)) return res.status(403).json({ error: "Không có quyền" });
   const cfg = await getConfig();
   if (!cfg.pageAccessToken) return res.status(400).json({ error: "Chưa cấu hình Page Access Token" });
   try {
@@ -1202,7 +1347,7 @@ router.get("/fb-ai/page-info", async (req, res) => {
 // POST /fb-ai/subscribe-webhook — đăng ký webhook cho fanpage (dùng token lưu trong DB)
 router.post("/fb-ai/subscribe-webhook", async (req, res) => {
   const caller = await getCaller(req);
-  if (!isAdmin(caller, req.headers.authorization)) return res.status(403).json({ error: "Không có quyền" });
+  if (!isAdmin(caller)) return res.status(403).json({ error: "Không có quyền" });
   const cfg = await getConfig();
   if (!cfg.pageAccessToken) return res.status(400).json({ error: "Chưa cấu hình Page Access Token" });
   try {

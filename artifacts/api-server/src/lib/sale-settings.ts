@@ -367,13 +367,12 @@ export function buildSettingsPromptBlock(s: ClaudeSaleSettings): string {
   const name = s.aiName.trim() || "Hoa";
   const role = s.aiRole.trim() || "Nhân viên tư vấn Amazing Studio";
   const genderText = GENDER_LABEL[s.aiGender];
-  // Xưng hô cố định "anh – em", không dùng "anh/chị" (log để dễ kiểm khi debug văn phong).
-  console.log("[SaleBrain] persona pronoun=anh-em noAnhChi=true");
+  console.log("[SaleBrain] persona pronoun=contextual neutralWhenUnknown=true");
 
   const styleLines: string[] = [];
   if (s.styleSelfEm) styleLines.push(`Xưng "em", tên ${name}.`);
-  if (s.styleAddressByContext) styleLines.push(`Xưng hô "anh – em": LUÔN gọi khách là "anh" (kể cả khi khách là nữ — theo quy ước studio). TUYỆT ĐỐI KHÔNG dùng "chị", KHÔNG dùng "anh/chị", KHÔNG dùng "quý khách".`);
-  if (s.styleNoRepeatAnhChi) styleLines.push(`KHÔNG lặp lại cách gọi "anh" quá nhiều lần liên tục trong cùng một câu (nghe máy móc).`);
+  if (s.styleAddressByContext) styleLines.push(`Xưng hô theo ngữ cảnh: khách tự xưng "anh" thì gọi anh; khách có tín hiệu là nữ (chị, cô dâu, đang bầu/mang thai) thì gọi chị; chưa xác định thì gọi trung tính là "mình". TUYỆT ĐỐI KHÔNG tự đoán giới tính, KHÔNG dùng "anh/chị", KHÔNG dùng "quý khách".`);
+  if (s.styleNoRepeatAnhChi) styleLines.push(`KHÔNG lặp đại từ gọi khách liên tục trong cùng một câu; ưu tiên dùng "mình" tự nhiên khi không cần nhắc lại.`);
   if (s.styleNoQuyKhach) styleLines.push(`KHÔNG dùng "quý khách".`);
   if (s.styleNoRobot) styleLines.push(`KHÔNG văn phong robot/sáo rỗng: tránh "Em sẵn sàng hỗ trợ", "Rất vui được hỗ trợ", "Dạ vâng ạ". Nhắn tự nhiên như người thật.`);
   if (s.styleNoMarkdown) styleLines.push(`KHÔNG dùng markdown (##, __).`);

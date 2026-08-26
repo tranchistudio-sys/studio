@@ -12,7 +12,7 @@ import {
   Camera, Palette, Layers, Banknote, Star, TrendingDown, User, Timer, Funnel, FlaskConical,
   Volume2, VolumeX, CheckCheck,
   Images, DollarSign, Tag, Trash2, Globe, Home, ExternalLink, Heart, LayoutTemplate, Lightbulb,
-  SlidersHorizontal, Activity, RefreshCw, Share2, ShieldAlert, Brain
+  SlidersHorizontal, Activity, RefreshCw, Share2, ShieldAlert, Brain, BookOpen
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useStaffAuth, type SimulateRole } from "@/contexts/StaffAuthContext";
@@ -66,8 +66,19 @@ const ALL_NAV_ITEMS = [
 
 // 📘 Nhóm Facebook & Sale (Lulu) — gom 1 cụm, có nút thu gọn, đặt CUỐI sidebar.
 //    Route giữ nguyên (/claude-sale-*) để không hỏng link/bookmark; chỉ đổi nhãn hiển thị.
+// The rebuild keeps legacy routes intact but hides their menu entries until explicitly enabled.
+const LULU_LEGACY_SALE_UI_ENABLED = import.meta.env.VITE_LULU_LEGACY_SALE_UI_ENABLED === "true";
+const LEGACY_LULU_SALE_ROUTES = new Set([
+  "/claude-sale-settings",
+  "/claude-sale-monitor",
+  "/lulu-human-review",
+  "/claude-sale-reengage",
+  "/sale-learning",
+]);
+
 const FACEBOOK_NAV = [
   { href: "/facebook-inbox-ai",    label: "Inbox Facebook",     icon: MessageSquare,     adminOnly: false },
+  { href: "/sale-scripts",         label: "Kịch bản Sale",      icon: BookOpen,          adminOnly: false },
   // "Lulu Sale Test" đã gộp vào "Lulu Brain Lab" → tab "Sửa & Test Lulu" (1 nơi test duy nhất).
   // ⚙️ Mở toàn bộ nhóm Facebook & Sale cho NHÂN VIÊN (quyết định của chủ studio). Vẫn cần đăng nhập.
   { href: "/claude-sale-settings", label: "Lulu Sale Settings", icon: SlidersHorizontal, adminOnly: false },
@@ -77,7 +88,7 @@ const FACEBOOK_NAV = [
   { href: "/claude-sale-reengage", label: "Khách cần chăm lại", icon: RefreshCw,         adminOnly: false },
   { href: "/sale-learning",        label: "Sale Learning",      icon: Sparkles,          adminOnly: false },
   { href: "/auto-post-facebook",   label: "AutoPost Facebook",  icon: Share2,            adminOnly: false },
-];
+].filter((item) => LULU_LEGACY_SALE_UI_ENABLED || !LEGACY_LULU_SALE_ROUTES.has(item.href));
 
 const SECONDARY_NAV = [
   { href: "/reports",       label: "Báo cáo",        icon: TrendingUp, adminOnly: true  },

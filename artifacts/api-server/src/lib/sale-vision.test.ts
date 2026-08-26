@@ -30,9 +30,9 @@ function stubFetchOk() {
 beforeEach(() => { mockCall.mockReset(); vi.unstubAllGlobals(); });
 
 describe("sale-vision", () => {
-  it("đủ 9 nhóm service_intent", () => {
-    expect(SERVICE_INTENTS.length).toBe(9);
-    for (const k of ["beauty", "wedding_album", "wedding_gate", "wedding_party", "rental_outfit", "maternity", "family", "new_concept_idea", "unknown"]) {
+  it("đủ 11 nhóm service_intent", () => {
+    expect(SERVICE_INTENTS.length).toBe(11);
+    for (const k of ["beauty", "wedding_album", "album_studio", "album_outdoor", "wedding_gate", "wedding_party", "rental_outfit", "maternity", "family", "new_concept_idea", "unknown"]) {
       expect(SERVICE_INTENTS).toContain(k);
     }
   });

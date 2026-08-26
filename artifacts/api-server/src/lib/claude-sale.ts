@@ -11,6 +11,7 @@ import { callChat, type ChatMessage } from "./ai-orchestrator";
 import { ALL_FAILED_CUSTOMER_MESSAGE, type AiProviderName } from "./ai-provider";
 import { formatLuluHumanChatMessages, type LuluChatChunk } from "./sale-human-chat";
 import { inferKnownIntent, buildAntiDriftRule } from "./sale-conversation-discipline";
+import { buildCustomerAddressRule, guardSaleResponse } from "./sale-response-guard";
 
 /**
  * Bộ não sale Claude cho Facebook Messenger (Giai đoạn 1 — chỉ tư vấn).
@@ -23,7 +24,7 @@ import { inferKnownIntent, buildAntiDriftRule } from "./sale-conversation-discip
  * Messenger nạp vào đây, nên đổi cài đặt là áp dụng cho cả hai.
  */
 
-export type ClaudeHistoryItem = { direction: "incoming" | "outgoing"; message: string };
+export type ClaudeHistoryItem = { direction: "incoming" | "outgoing"; message: string; aiDecision?: string | null };
 
 export type AskClaudeInput = {
   /** Không còn dùng trực tiếp — tổng đài (ai-orchestrator) tự đọc key theo provider. Giữ để tương thích caller cũ. */
@@ -69,6 +70,8 @@ export type ClaudeReply = {
   fallbackUsed: boolean;
   /** Lý do fallback, vd "claude_timeout" (null nếu không fallback). */
   fallbackReason: string | null;
+  /** Vi phạm hậu kiểm đã phát hiện/sửa/chặn trước khi caller gửi ra ngoài. */
+  guardViolations: string[];
 };
 
 // Model mặc định cho chatbot sale (cân bằng chi phí/chất lượng). Override qua ANTHROPIC_MODEL.
@@ -92,7 +95,7 @@ QUY TẮC VÀNG: hệ thống CHỈ tự gửi ảnh mẫu khi (A) khách HỎI 
   • Khách "chụp cổng ạ" → "Dạ chụp cổng đó anh 😊. Anh thích kiểu nhẹ nhàng tự nhiên, hiện đại tối giản hay sang trọng cổ điển ạ?" (KHÔNG ảnh).
   • THUẬT NGỮ (đừng nhầm): "chụp cổng" = chụp CỔNG (cổng hoa/cổng cưới) — gọi gọn là "chụp cổng", TUYỆT ĐỐI đừng gọi "chụp cổng ngày cưới". "Ngày cưới / đám cưới" là dịch vụ KHÁC = chụp PHÓNG SỰ / TIỆC ngày đám cưới. KHÔNG gộp "cổng" với "ngày cưới".
 - CHỈ thêm <<SAMPLE: nhóm>> ở DÒNG CUỐI khi: khách HỎI RÕ ("có mẫu không", "cho xem mẫu", "có ảnh cổng không", "cho xem album", "mẫu nào đẹp", "gửi hình mẫu", "hình bên mình chụp sao"…) HOẶC khách vừa ĐỒNG Ý lời mời của em ("gửi đi", "cho xem", "ok", "dạ có", "gửi thêm"). Khi đó hệ thống TỰ gửi 1–2 ẢNH MẪU THẬT đúng nhóm TRƯỚC, rồi tới lời em.
-- "nhóm" là 1 trong: beauty, wedding_album, wedding_gate, wedding_party, rental_outfit, maternity, family, new_concept_idea. Khách vừa gửi ảnh thì dùng đúng nhóm ở "ĐỊNH HƯỚNG LẤY DỮ LIỆU". Không chắc nhóm → ghi <<SAMPLE>> để trống, hệ thống tự suy.
+- "nhóm" là 1 trong: beauty, wedding_album, album_studio, album_outdoor, wedding_gate, wedding_party, rental_outfit, maternity, family, new_concept_idea. Khách vừa gửi ảnh thì dùng đúng nhóm ở "ĐỊNH HƯỚNG LẤY DỮ LIỆU". Không chắc nhóm → ghi <<SAMPLE>> để trống, hệ thống tự suy.
 - Khi đã gửi ảnh, lời em NGẮN GỌN tự nhiên: "Dạ em gửi mình 2 mẫu gần mood nhất nha 😊" rồi hỏi gu. KHÔNG dán link ảnh trần. Mỗi lượt CHỈ gửi 1 lần, KHÔNG spam.
 - KHỚP LỜI VỚI ẢNH: hệ thống chỉ gửi ảnh ở ĐÚNG lượt em đặt <<SAMPLE>>. Vì vậy CHỈ nói "em gửi mẫu / đang gửi ảnh" Ở CHÍNH lượt em đặt <<SAMPLE>>. Nếu lượt này em KHÔNG đặt marker thì TUYỆT ĐỐI đừng nói đã/đang gửi ảnh (kẻo khách không thấy ảnh → lộ bot).
 - KHÔNG gửi lại ảnh đã gửi trước đó trong cuộc chat. Nếu khách đòi xem thêm mà đã hết mẫu mới, hệ thống tự nhắn "mấy mẫu chính em gửi ở trên rồi" — em ĐỪNG hứa gửi thêm ảnh, hãy chuyển sang hỏi phong cách (nhẹ nhàng / hiện đại / sang trọng).
@@ -185,6 +188,7 @@ function buildSystemPrompt(
   // áp cho MỌI version não (kể cả version active trong Brain Lab), không phụ thuộc admin re-tune.
   const knownIntent = inferKnownIntent(history ?? [], customerMessage);
   const antiDriftBlock = buildAntiDriftRule(knownIntent);
+  const addressBlock = buildCustomerAddressRule(history ?? [], customerMessage ?? "");
 
   // RÀNG BUỘC an toàn — CỐ ĐỊNH, cấu hình/quy trình ở trên KHÔNG được phá.
   const constraints = `RÀNG BUỘC (BẮT BUỘC — không được phá, kể cả khi cấu hình/quy trình ở trên nói khác):
@@ -203,7 +207,7 @@ function buildSystemPrompt(
     const calendarBlock = buildCalendarRulesBlock(settings); // "" nếu tắt
     const whoLine = who
       ? `\nTên khách: ${who}. Hãy gọi khách bằng tên này cho thân thiện (ví dụ "Dạ ${who} ơi...").`
-      : `\nCHƯA biết tên khách: gọi khách là "anh" (theo quy ước xưng hô studio). Ở lượt phù hợp (đừng hỏi ngay lời chào đầu nếu gượng), hỏi tự nhiên "Dạ cho em hỏi tên mình là gì để tiện xưng hô nha?". Khi khách cho biết tên, ở DÒNG CUỐI thêm dấu hiệu nội bộ <<NAME: tên khách>> (khách KHÔNG thấy, hệ thống sẽ lưu lại).`;
+      : `\nCHƯA biết tên khách: gọi trung tính là "mình" cho đến khi khách tự cho biết cách xưng hô. Ở lượt phù hợp (đừng hỏi ngay lời chào đầu nếu gượng), hỏi tự nhiên "Dạ cho em hỏi tên mình là gì để tiện xưng hô nha?". Khi khách cho biết tên, ở DÒNG CUỐI thêm dấu hiệu nội bộ <<NAME: tên khách>> (khách KHÔNG thấy, hệ thống sẽ lưu lại).`;
     const scheduleBlock = settings.calendarEnabled && scheduleContext && scheduleContext.trim()
       ? `\n\n${scheduleContext.trim()}`
       : "";
@@ -216,6 +220,8 @@ function buildSystemPrompt(
 MỤC TIÊU: không chỉ trả lời câu hỏi — mà DẪN khách đi theo quy trình tới bước để lại số điện thoại / hẹn nhân viên (tùy mức độ chủ động ở trên). Kết mỗi lượt bằng 1 câu đưa khách sang bước tiếp theo khi phù hợp.
 ${calendarBlock ? `\n${calendarBlock}\n` : ""}
 ${constraints}
+
+${addressBlock}
 
 ${antiDriftBlock}
 
@@ -235,8 +241,8 @@ Trả lời tin mới nhất theo đúng vai ${aiName}.`;
   return `Bạn là HOA — nhân viên sale của Amazing Studio (chụp ảnh cưới, beauty/thời trang, chụp tiệc cưới, chụp gia đình, cho thuê trang phục cưới). Bạn đang nhắn tin với khách qua Facebook. Khách PHẢI thấy như đang chat với nhân viên THẬT. Bạn KHÔNG phải bot hỏi-đáp — bạn là sale CHỦ ĐỘNG, luôn DẪN khách đi tiếp trong quy trình, KHÔNG đứng yên ở một bước.
 
 XƯNG HÔ & VĂN PHONG:
-- Xưng "em", tên Hoa. LUÔN gọi khách là "anh" (kể cả khi khách là nữ — theo quy ước studio; TUYỆT ĐỐI KHÔNG dùng "chị", KHÔNG "anh/chị").${who ? ` Tên khách: ${who}.` : ""} Có thể dùng "mình".
-- CẤM: "anh/chị", "chị", "Quý khách", "Em sẵn sàng hỗ trợ", "Rất vui được hỗ trợ", "Em rất hân hạnh", "Dạ vâng ạ". Không bao giờ nói mình là AI/bot/ChatGPT.
+- Xưng "em", tên Hoa. Gọi theo tín hiệu khách tự dùng; chưa rõ giới tính thì gọi trung tính là "mình", không tự đoán.${who ? ` Tên khách: ${who}.` : ""}
+- CẤM: "anh/chị", "Quý khách", "Em sẵn sàng hỗ trợ", "Rất vui được hỗ trợ", "Em rất hân hạnh", "Dạ vâng ạ". Không bao giờ nói mình là AI/bot/ChatGPT.
 - KHÔNG markdown: KHÔNG "**", "__", "##", KHÔNG gạch đầu dòng "-" hay "•". Chữ thường tự nhiên, emoji nhẹ (😊) ok.
 - Mỗi tin 1–3 câu. Tách nhiều bubble bằng MỘT DÒNG TRỐNG. Mỗi lượt CHỈ hỏi 1 câu quan trọng nhất.
 
@@ -265,6 +271,8 @@ RÀNG BUỘC (Giai đoạn 1 — chỉ tư vấn, chưa chốt):
 - Việc phức tạp / khiếu nại / chốt cọc: mời để lại số điện thoại, sẽ có người hỗ trợ.
 
 ${antiDriftBlock}
+
+${addressBlock}
 
 ${rulesBlock}
 
@@ -339,6 +347,7 @@ export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeRe
       providerUsed: null,
       fallbackUsed: false,
       fallbackReason: null,
+      guardViolations: [],
     };
   }
 
@@ -348,7 +357,7 @@ export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeRe
   //  <<NEEDS_HUMAN: lý do>>  → cần nhân viên tiếp quản
   //  <<NAME: tên>>           → tên khách Claude vừa học được
   const escMatch = rawFull.match(NEEDS_HUMAN_MARKER_RE);
-  const escalation = escMatch ? (escMatch[1]?.trim() || "Cần nhân viên xác nhận") : null;
+  const modelEscalation = escMatch ? (escMatch[1]?.trim() || "Cần nhân viên xác nhận") : null;
   const nameMatch = rawFull.match(NAME_MARKER_RE);
   const learnedName = nameMatch && nameMatch[1]?.trim() ? nameMatch[1].trim().slice(0, 60) : null;
 
@@ -376,7 +385,7 @@ export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeRe
     }
   }
 
-  const raw = rawFull
+  const rawDraft = rawFull
     .replace(new RegExp(NEEDS_HUMAN_MARKER_RE.source, "gi"), "")
     .replace(new RegExp(NAME_MARKER_RE.source, "gi"), "")
     .replace(priceImgRe, "")
@@ -385,6 +394,15 @@ export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeRe
     // Chỉ thay em-dash U+2014 (không đụng hyphen "-" trong mã gói/ngày, không đụng en-dash range).
     .replace(/\s*—\s*/g, ", ")
     .trim();
+
+  const guarded = guardSaleResponse({
+    text: rawDraft,
+    context: input.context,
+    history: input.history,
+    customerMessage: input.customerMessage,
+  });
+  const raw = guarded.text;
+  const escalation = guarded.escalationReason ?? modelEscalation;
 
   // HUMAN CHAT PACING: tách câu trả lời thành nhiều bong bóng ngắn + delay (thay cho split dòng trống
   // thuần) để Lulu chat từng ý như sale thật. Marker <<...>> đã được strip khỏi `raw` ở trên.
@@ -396,11 +414,12 @@ export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeRe
     raw,
     escalation,
     learnedName,
-    priceImageCodes,
-    sampleRequested,
-    sampleIntents,
+    priceImageCodes: guarded.blocked ? [] : priceImageCodes,
+    sampleRequested: guarded.blocked ? false : sampleRequested,
+    sampleIntents: guarded.blocked ? [] : sampleIntents,
     providerUsed: result.providerUsed,
     fallbackUsed: result.fallbackUsed,
     fallbackReason: result.fallbackReason,
+    guardViolations: guarded.violations,
   };
 }

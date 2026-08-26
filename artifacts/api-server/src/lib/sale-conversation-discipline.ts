@@ -45,7 +45,7 @@ type TopGroup = "rental" | "maternity" | "family" | "beauty" | "wedding";
 // bỏ "cong hoa" (trùng tên đường "Cộng Hòa"); "chup cong" có guard riêng cho "chụp công ty".
 const INTENT_SIGNALS: Array<{ group: TopGroup; keywords: string[] }> = [
   { group: "rental", keywords: ["thue vay", "thue ao dai", "thue vest", "thue suit", "thue do", "thue trang phuc", "cho thue", "thue ao cuoi"] },
-  { group: "maternity", keywords: ["chup bau", "anh bau", "me bau", "bung bau", "mang thai", "maternity"] },
+  { group: "maternity", keywords: ["chup bau", "anh bau", "me bau", "dang bau", "bung bau", "mang thai", "maternity"] },
   { group: "family", keywords: ["gia dinh", "ca nha", "family", "ba the he", "ba me con"] },
   { group: "beauty", keywords: ["beauty", "cool boy", "nang tho", "chup ca nhan", "chup chan dung", "profile ca nhan"] },
   { group: "wedding", keywords: ["chup cuoi", "anh cuoi", "album cuoi", "ngoai canh", "co dau chu re", "tiec cuoi", "phong su cuoi", "wedding", "chup cong", "cong cuoi", "pre wedding", "prewedding"] },
@@ -145,7 +145,7 @@ const RESET_PHRASES = [
 const OFF_INTENT_WORDS: Record<KnownIntent, string[]> = {
   wedding_gate: ["beauty", "gia dinh", "bau", "san pham", "doanh nhan"],
   wedding: ["beauty", "gia dinh", "bau", "san pham", "doanh nhan"],
-  beauty: ["chup cuoi", "co dau", "chu re", "gia dinh", "bau", "thue vay"],
+  beauty: ["chup cuoi", "album cuoi", "ngoai canh", "cong cuoi", "co dau", "chu re", "gia dinh", "bau", "thue vay"],
   rental: ["beauty", "gia dinh", "bau", "chup cuoi", "san pham"],
   maternity: ["beauty", "chup cuoi", "gia dinh", "thue vay", "san pham"],
   family: ["beauty", "chup cuoi", "bau", "thue vay", "san pham"],

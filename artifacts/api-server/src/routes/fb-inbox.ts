@@ -20,7 +20,15 @@ import {
 import { askClaudeForReply, type ClaudeHistoryItem } from "../lib/claude-sale";
 import { getSaleContext, resolvePriceImagesByCodes, wantsNewConcept, getPhotoIdeasBlock } from "../lib/sale-context";
 import { classifyCustomerImageIntent, buildImageRoutingBlock, type CustomerImageIntent } from "../lib/sale-vision";
-import { selectSampleImages, extractRecentSampleUrls, toPublicImageUrl, SAMPLES_EXHAUSTED_NOTE, type SampleImage } from "../lib/sale-samples";
+import {
+  buildWorkflowSampleReply,
+  selectSampleImages,
+  extractRecentSampleUrls,
+  isExplicitSampleRequest,
+  toPublicImageUrl,
+  SAMPLES_EXHAUSTED_NOTE,
+  type SampleImage,
+} from "../lib/sale-samples";
 import { getActivePlaybook } from "../lib/sale-playbook";
 import { getActiveBrainRules, getActiveImageOverrides } from "../lib/sale-brain-lab";
 import { applyImageOverrides } from "../lib/sale-image-overrides";
@@ -34,12 +42,63 @@ import {
 import {
   HOLD_MESSAGE, imageEscalationReason, upsertOpenHumanReview, markHoldSent,
 } from "../lib/sale-human-review";
+import {
+  buildPriceSheetReply,
+  PRICE_SHEET_SEND_FAILED_MESSAGE,
+  resolvePriceSheetRequest,
+} from "../lib/sale-price-sheet";
+import { buildSaleWorkflowBlock, evaluateSaleWorkflow } from "../lib/sale-workflow";
+import { buildWeddingGiftPromptBlock, evaluateWeddingGiftTrace, loadWeddingGiftProgram } from "../lib/sale-wedding-gifts";
 import { emitNotification } from "./notifications";
 import multer from "multer";
 import { randomUUID } from "crypto";
 import { objectStorageClient, ObjectStorageService } from "../lib/objectStorage";
 import { getPublicBaseUrl } from "../lib/publicUrl";
 import { withStartupDdlLock } from "../lib/startup-ddl";
+import { createKeyedDebouncedQueue } from "../lib/sale-message-coalescer";
+import { resolveApiKey } from "../lib/ai-provider";
+
+function workflowControlledReply(workflow: { action: string; reason?: string; serviceKey?: string | null; style?: string | null; nextSlot?: { key: string } | null }, sampleStyleMatched?: boolean): string | null {
+  if (workflow.reason === "customer_wants_time_to_consider") {
+    return "Dạ mình cứ xem kỹ và cân nhắc thoải mái nha. Khi nào cần em so sánh thêm các gói hoặc giữ lịch thì nhắn em ạ.";
+  }
+  if (workflow.action === "ASK_SERVICE") {
+    return "Dạ mình đang cần chụp cổng, album studio, album ngoại cảnh, tiệc cưới, beauty hay dịch vụ khác ạ?";
+  }
+  if (workflow.action === "ASK_DISCOVERY") {
+    const questions: Record<string, string> = {
+      style: "mình thích hướng sang trọng, nàng thơ, nhẹ nhàng, tinh tế hay tối giản hơn ạ?",
+      location_need: "mình thích cảnh thiên nhiên, Núi Bà Đen, hồ, quán cà phê hay kiến trúc nào tại Tây Ninh ạ?",
+      beauty_type: "mình muốn chụp sinh nhật, beauty cá nhân, nàng thơ, ngọt ngào, sexy, sang trọng, cool boy, cổ trang hay chụp bầu ạ?",
+      pregnancy_month: "mình đang ở tháng thai kỳ thứ mấy ạ?",
+      participants: "mình muốn chụp cá nhân hay cùng gia đình ạ?",
+      wedding_date: "mình cho em xin ngày cưới theo ngày dương lịch nha.",
+      bride_location: "nhà cô dâu ở khu vực nào ạ?",
+      groom_location: "nhà chú rể ở khu vực nào ạ?",
+      venue_format: "tiệc mình làm tại nhà hay nhà hàng ạ?",
+      table_count: "mình dự kiến khoảng bao nhiêu bàn ạ?",
+      use_date: "mình cần dùng vào ngày nào ạ?",
+      outfit_type: "mình cần thuê loại trang phục nào ạ?",
+      size_need: "mình thường mặc size nào hoặc cần ghé thử đồ không ạ?",
+      wedding_kind: "mình đang quan tâm album/prewedding hay chụp ngày cưới, tiệc cưới ạ?",
+      album_location_type: "mình muốn chụp album tại studio hay ngoại cảnh ạ?",
+      primary_need: "mình cho em xin nhu cầu chính để em tư vấn đúng dịch vụ ạ?",
+    };
+    const question = workflow.nextSlot ? questions[workflow.nextSlot.key] : null;
+    return `Dạ ${question ?? "mình cho em xin thêm nhu cầu để em tư vấn đúng dịch vụ ạ?"}`;
+  }
+  if (workflow.action === "SEND_SAMPLE") {
+    return buildWorkflowSampleReply({
+      serviceKey: workflow.serviceKey,
+      style: workflow.style,
+      styleMatched: sampleStyleMatched,
+    });
+  }
+  if (workflow.action === "ASK_SAMPLE_CONFIRMATION") {
+    return "M\u00ecnh th\u1ea5y nh\u1eefng m\u1eabu em v\u1eeba g\u1eedi c\u00f3 h\u1ee3p gu kh\u00f4ng \u1ea1? M\u00ecnh \u01b0ng h\u01b0\u1edbng n\u00e0o th\u00ec em g\u1eedi b\u1ea3ng gi\u00e1 \u0111\u00fang nh\u00f3m \u0111\u1ec3 m\u00ecnh xem ti\u1ebfp nha.";
+  }
+  return null;
+}
 
 const router: IRouter = Router();
 
@@ -400,12 +459,43 @@ export function resolveMessageTagLabel(
   return sentBy ? sentBy : "Nhân viên";
 }
 
-export async function processIncomingFacebookMessage(
+type IncomingFacebookOptions = { alreadyInserted?: boolean; imageUrls?: string[]; skipAiReply?: boolean };
+type IncomingFacebookJob = {
+  text: string;
+  mid?: string | null;
+  activePageId?: string | null;
+  opts?: IncomingFacebookOptions;
+};
+
+const incomingMessageQueue = createKeyedDebouncedQueue<IncomingFacebookJob>(450, async (psid, jobs) => {
+  for (const job of jobs.slice(0, -1)) {
+    await processIncomingFacebookMessageNow(psid, job.text, job.mid, job.activePageId, {
+      ...job.opts,
+      skipAiReply: true,
+    });
+  }
+  const last = jobs[jobs.length - 1];
+  if (!last) return;
+  if (jobs.length > 1) console.log(`[FBInbox] psid=${psid} coalesced ${jobs.length} rapid messages into one AI turn`);
+  await processIncomingFacebookMessageNow(psid, last.text, last.mid, last.activePageId, last.opts);
+});
+
+export function processIncomingFacebookMessage(
   psid: string,
   text: string,
   mid?: string | null,
   activePageId?: string | null,
   opts?: { alreadyInserted?: boolean; imageUrls?: string[] },
+): Promise<void> {
+  return incomingMessageQueue.enqueue(psid, { text, mid, activePageId, opts });
+}
+
+async function processIncomingFacebookMessageNow(
+  psid: string,
+  text: string,
+  mid?: string | null,
+  activePageId?: string | null,
+  opts?: IncomingFacebookOptions,
 ) {
   if (activePageId && psid === activePageId) {
     console.log(`[FBInbox] Guard: skip processIncomingFacebookMessage — psid=${psid} matches activePageId`);
@@ -521,12 +611,23 @@ export async function processIncomingFacebookMessage(
   if (detectPhone(text)) markPhoneCaptured(psid).catch(() => {});
   if (detectAppointmentIntent(text)) markAppointmentIntent(psid).catch(() => {});
 
+  if (opts?.skipAiReply) {
+    await pool.query(
+      `UPDATE fb_inbox_messages SET ai_decision = 'claude_coalesced'
+       WHERE id = (SELECT id FROM fb_inbox_messages WHERE facebook_user_id = $1 AND direction = 'incoming' ORDER BY id DESC LIMIT 1)`,
+      [psid],
+    );
+    return;
+  }
+
   // ══ BỘ NÃO SALE CLAUDE (Giai đoạn 1 — chỉ tư vấn) ════════════════════════════
   // CẦU DAO TỔNG (DB) thay cho biến môi trường: 1 công tắc cho cả Test & Messenger.
   // Khi TẮT: webhook vẫn nhận tin, vẫn lưu lead + lịch sử (ở trên) — chỉ KHÔNG trả lời.
   // Khi lead ở 'paused'/'takeover': nhân viên đang chăm → AI im.
   const masterOn = await getMasterEnabled();
-  if (masterOn && aiMode === "active") {
+  // Brain Lab remains test-only until an operator explicitly approves the rebuilt script.
+  const rebuildApproved = toBool(process.env.LULU_SALE_REBUILD_APPROVED);
+  if (masterOn && rebuildApproved && aiMode === "active") {
     await handleClaudeSaleReply(psid, text, lead, cfg, opts?.imageUrls);
     return;
   }
@@ -535,7 +636,7 @@ export async function processIncomingFacebookMessage(
   await pool.query(
     `UPDATE fb_inbox_messages SET ai_decision = $1
      WHERE id = (SELECT id FROM fb_inbox_messages WHERE facebook_user_id = $2 AND direction = 'incoming' ORDER BY id DESC LIMIT 1)`,
-    [!masterOn ? "claude_master_off" : aiMode === "takeover" ? "ai_disabled_takeover" : "ai_disabled_paused", psid],
+    [!masterOn ? "claude_master_off" : !rebuildApproved ? "lulu_rebuild_not_approved" : aiMode === "takeover" ? "ai_disabled_takeover" : "ai_disabled_paused", psid],
   );
   return;
   // ══ HẾT CLAUDE — phía dưới là bot ChatGPT/OpenAI cũ (đang tắt qua công tắc) ═══
@@ -562,7 +663,7 @@ export async function processIncomingFacebookMessage(
   }
 
   const historyRows = await pool.query(
-    `SELECT direction, message FROM fb_inbox_messages WHERE facebook_user_id = $1 ORDER BY id DESC LIMIT 20`,
+    `SELECT direction, message, ai_decision AS "aiDecision" FROM fb_inbox_messages WHERE facebook_user_id = $1 ORDER BY id DESC LIMIT 20`,
     [psid],
   );
   const history = (historyRows.rows as Array<{ direction: "incoming" | "outgoing"; message: string }>).reverse();
@@ -769,12 +870,6 @@ async function handleClaudeSaleReply(
     );
   };
 
-  const apiKey = (process.env.ANTHROPIC_API_KEY ?? "").trim();
-  if (!apiKey) {
-    console.warn(`[Claude] psid=${psid} ANTHROPIC_API_KEY chưa cấu hình — bỏ qua trả lời`);
-    await markIncoming("claude_no_key");
-    return;
-  }
   if (!cfg.pageAccessToken) {
     await markIncoming("claude_no_page_token");
     return;
@@ -782,13 +877,94 @@ async function handleClaudeSaleReply(
 
   // Lịch sử hội thoại (tin khách hiện tại đã nằm cuối danh sách này)
   const historyRows = await pool.query(
-    `SELECT direction, message FROM fb_inbox_messages WHERE facebook_user_id = $1 ORDER BY id DESC LIMIT 20`,
+    `SELECT direction, message, ai_decision AS "aiDecision" FROM fb_inbox_messages WHERE facebook_user_id = $1 ORDER BY id DESC LIMIT 20`,
     [psid],
   );
   const history = (historyRows.rows as ClaudeHistoryItem[]).reverse();
+  const saleWorkflow = evaluateSaleWorkflow({ message: text, prior: history });
+  const weddingGiftProgram = await loadWeddingGiftProgram();
+  const weddingGiftTrace = evaluateWeddingGiftTrace({
+    message: text,
+    prior: history,
+    currentServiceKey: saleWorkflow.serviceKey,
+    program: weddingGiftProgram,
+  });
+  const weddingGiftBlock = buildWeddingGiftPromptBlock(weddingGiftTrace);
 
   // Nạp cấu hình Claude Sale (dùng chung với Test) + lịch (read-only) nếu bật.
   const settings = await getClaudeSaleSettings();
+  // Keep workflow replies deterministic. The sample wording is refined after CMS selection below.
+  let controlledWorkflowReply = workflowControlledReply(
+    saleWorkflow,
+    saleWorkflow.action === "SEND_SAMPLE" ? false : undefined,
+  );
+
+  const priceSheet = await resolvePriceSheetRequest({
+    message: text,
+    prior: history,
+    force: saleWorkflow.action === "SEND_PRICE_SHEET",
+    serviceKey: saleWorkflow.serviceKey,
+  });
+  if (saleWorkflow.action === "SEND_PRICE_SHEET" && priceSheet.requested) {
+    if (priceSheet.needsClarification) {
+      const clarification = priceSheet.clarificationMessage ?? "Mình muốn xem bảng giá dịch vụ nào ạ?";
+      const sent = await sendChunksWithTyping(psid, cfg.pageAccessToken, [clarification], "claude_price_sheet_clarify");
+      await markIncoming(sent ? "claude_price_sheet_clarify" : "claude_price_sheet_clarify_failed");
+      return;
+    }
+
+    const blockAndEscalate = async (reason: string) => {
+      const sent = await sendChunksWithTyping(
+        psid,
+        cfg.pageAccessToken,
+        [PRICE_SHEET_SEND_FAILED_MESSAGE],
+        "claude_price_sheet_blocked",
+      );
+      await markIncoming(sent ? "claude_price_sheet_blocked" : "claude_price_sheet_blocked_send_failed");
+      if (settings.humanReviewEnabled) {
+        const hr = await upsertOpenHumanReview({
+          facebookUserId: psid,
+          channel: "messenger",
+          customerName: lead?.name ?? null,
+          customerQuestion: text,
+          customerImages: imageUrls && imageUrls.length > 0 ? imageUrls : null,
+          detectedIntent: "price_sheet",
+          confidence: 1,
+          reasonForEscalation: reason,
+          aiSuggestedReply: settings.allowAiSuggestedReply ? PRICE_SHEET_SEND_FAILED_MESSAGE : null,
+        });
+        if (sent) await markHoldSent(hr.id);
+      }
+      if (settings.autoPauseThreadWhenEscalated) await escalateToHuman(psid, lead?.name, reason);
+      else await markNeedsHuman(psid, reason);
+    };
+
+    if (!priceSheet.trace?.validator.passed || !priceSheet.assetUrl) {
+      await blockAndEscalate(priceSheet.escalationReason ?? "Không xác minh được ảnh bảng giá chính thức");
+      return;
+    }
+
+    const imageSent = await sendPriceImagesSequentially(
+      psid,
+      cfg.pageAccessToken,
+      [priceSheet.assetUrl],
+      "claude_price_sheet",
+    );
+    if (!imageSent) {
+      await blockAndEscalate(`Gửi ảnh bảng giá ${priceSheet.group?.name ?? "dịch vụ"} thất bại`);
+      return;
+    }
+
+    const priceReplies = buildPriceSheetReply(priceSheet, text);
+    if (priceReplies.length === 0) {
+      await blockAndEscalate("Không dựng được nội dung giải thích từ dữ liệu gói bán lẻ đã xác minh");
+      return;
+    }
+    const textSent = await sendChunksWithTyping(psid, cfg.pageAccessToken, priceReplies, "claude_price_sheet_replied");
+    await markIncoming(textSent ? "claude_price_sheet_replied" : "claude_price_sheet_text_failed");
+    return;
+  }
+
   let scheduleContext = "";
   if (settings.calendarEnabled) {
     try { scheduleContext = await getScheduleContext(settings.calWindowDays); } catch { /* bỏ qua */ }
@@ -798,6 +974,8 @@ async function handleClaudeSaleReply(
   let visionIntent: CustomerImageIntent | null = null;
   try {
     let context = await getSaleContext();
+    context += `\n\n${buildSaleWorkflowBlock(saleWorkflow)}`;
+    if (weddingGiftBlock) context += `\n\n${weddingGiftBlock}`;
     // "Ý tưởng chụp ảnh" là NGUỒN PHỤ: chỉ nạp khi khách thật sự muốn concept mới/lạ.
     if (wantsNewConcept(text)) {
       const ideas = await getPhotoIdeasBlock();
@@ -824,7 +1002,6 @@ async function handleClaudeSaleReply(
     const styleGuide = await getActivePlaybook();
     const brainRules = await getActiveBrainRules();
     reply = await askClaudeForReply({
-      apiKey,
       model: process.env.ANTHROPIC_MODEL?.trim() || undefined,
       customerMessage: text,
       customerName: lead?.name,
@@ -850,8 +1027,8 @@ async function handleClaudeSaleReply(
 
   // Escalation: từ marker của Claude HOẶC từ khóa (chuyển khoản/đặt cọc/gặp người/deal/hủy lịch)
   // HOẶC ảnh không chắc nhu cầu (confidence thấp / studio chưa chắc làm được).
-  const escalationReason =
-    reply.escalation
+  let escalationReason =
+    (controlledWorkflowReply ? null : reply.escalation)
     || detectEscalation(text)
     || imageEscalationReason(visionIntent, settings.lowConfidenceThreshold);
 
@@ -897,6 +1074,7 @@ async function handleClaudeSaleReply(
   // Đặt TRƯỚC guard "chunks rỗng" để tin chỉ-có-marker (<<SAMPLE>>) vẫn gửi được ảnh.
   // Marker <<SAMPLE>> của Claude hoặc tự suy nhóm từ ảnh/tin khách. Lỗi/không có ảnh → bỏ qua, vẫn gửi text.
   let samplesExhausted = false;
+  let sampleUnavailableReason: string | null = null;
   try {
     const contextText = history
       .filter((h) => !h.message.startsWith("[image:"))
@@ -906,10 +1084,20 @@ async function handleClaudeSaleReply(
     // Tin nhắn gần nhất của bot (để xét khách "đồng ý" sau khi bot mời gửi mẫu).
     const lastBotText = [...history].reverse().find((h) => h.direction === "outgoing")?.message ?? null;
     const excludeUrls = extractRecentSampleUrls(history);
+    const workflowLocksSampleIntent = !!saleWorkflow.serviceKey && (
+      saleWorkflow.action === "SEND_SAMPLE"
+      || (saleWorkflow.sampleRequired && isExplicitSampleRequest(text))
+    );
+    const sampleSelectionText = saleWorkflow.action === "SEND_SAMPLE"
+      ? [text, ...saleWorkflow.filledSlots.map((slot) => slot.value ?? "")].join("\n")
+      : text;
     const sel = await selectSampleImages({
-      sampleRequested: reply.sampleRequested,
-      sampleIntents: reply.sampleIntents,
-      messageText: text,
+      sampleRequested: saleWorkflow.action === "SEND_SAMPLE" || (!saleWorkflow.sampleRequired && reply.sampleRequested),
+      sampleIntents: workflowLocksSampleIntent && saleWorkflow.serviceKey
+        ? [saleWorkflow.serviceKey]
+        : reply.sampleIntents,
+      intentLocked: workflowLocksSampleIntent,
+      messageText: sampleSelectionText,
       contextText,
       lastBotText,
       visionIntent,
@@ -920,7 +1108,9 @@ async function handleClaudeSaleReply(
     // ÁP OVERRIDE "ADMIN DẠY" của version đang chạy thật (rỗng nếu admin chưa áp dụng gì → hành vi cũ y hệt).
     const activeOverrides = await getActiveImageOverrides();
     const detectedIntentForOverride =
-      (reply.sampleIntents && reply.sampleIntents.length ? reply.sampleIntents[0] : null)
+      workflowLocksSampleIntent && saleWorkflow.serviceKey
+        ? saleWorkflow.serviceKey
+        : (reply.sampleIntents && reply.sampleIntents.length ? reply.sampleIntents[0] : null)
       || (visionIntent?.service_intent ?? null);
     const finalSel = applyImageOverrides(sel, activeOverrides, {
       detectedIntent: detectedIntentForOverride,
@@ -933,12 +1123,56 @@ async function handleClaudeSaleReply(
       console.log(`[Claude] psid=${psid} dùng ẢNH ADMIN DẠY (override ${finalSel.overrideId})`);
     }
     if (finalSel.images.length > 0) {
+      if (saleWorkflow.action === "SEND_SAMPLE") {
+        controlledWorkflowReply = workflowControlledReply(saleWorkflow, sel.styleMatched);
+      }
       const nSent = await sendSampleImagesSequentially(psid, cfg.pageAccessToken, finalSel.images);
       console.log(`[Claude] psid=${psid} gửi ${nSent}/${finalSel.images.length} ảnh mẫu (nhóm: ${finalSel.resolvedIntents.join(",")})`);
     }
     samplesExhausted = finalSel.exhausted;
+    if ((isExplicitSampleRequest(text) || saleWorkflow.action === "SEND_SAMPLE") && finalSel.images.length === 0 && !finalSel.exhausted) {
+      sampleUnavailableReason = "Khách xin xem mẫu nhưng hệ thống không tìm được ảnh đúng nhóm";
+    }
   } catch (e) {
     console.error(`[Claude] psid=${psid} gửi ảnh mẫu lỗi:`, String(e).slice(0, 160));
+  }
+
+  if (sampleUnavailableReason) {
+    escalationReason ||= sampleUnavailableReason;
+    if (settings.humanReviewEnabled) {
+      const hr = await upsertOpenHumanReview({
+        facebookUserId: psid,
+        channel: "messenger",
+        customerName: lead?.name ?? null,
+        customerQuestion: text,
+        customerImages: imageUrls && imageUrls.length > 0 ? imageUrls : null,
+        detectedIntent: reply.sampleIntents?.[0] ?? visionIntent?.service_intent ?? null,
+        confidence: typeof visionIntent?.confidence === "number" ? visionIntent.confidence : null,
+        reasonForEscalation: sampleUnavailableReason,
+        aiSuggestedReply: settings.allowAiSuggestedReply
+          ? "Hiện em chưa tìm được ảnh mẫu đúng nhóm để gửi ngay. Em chuyển nhân viên lọc đúng mẫu cho mình nha."
+          : null,
+      });
+      if (hr.created || !hr.holdAlreadySent) {
+        await sendChunksWithTyping(psid, cfg.pageAccessToken, [HOLD_MESSAGE], "claude_hold_message");
+        await markHoldSent(hr.id);
+      }
+      await markIncoming("claude_escalated_no_sample");
+      if (settings.autoPauseThreadWhenEscalated) await escalateToHuman(psid, lead?.name, sampleUnavailableReason);
+      else await markNeedsHuman(psid, sampleUnavailableReason);
+      return;
+    }
+    reply.messageChunks = [{
+      text: "Hiện em chưa tìm được ảnh mẫu đúng nhóm để gửi ngay. Em chuyển nhân viên lọc đúng mẫu cho mình nha.",
+      delayMs: 900,
+    }];
+  }
+
+  if (controlledWorkflowReply) {
+    reply.messageChunks = [{ text: controlledWorkflowReply, delayMs: 900 }];
+    reply.messages = [controlledWorkflowReply];
+    reply.raw = controlledWorkflowReply;
+    reply.escalation = null;
   }
 
   // Human chat pacing: lấy bong bóng + delay từng tin từ reply.messageChunks (đã căn 1:1 với messages).
@@ -1078,11 +1312,12 @@ router.get("/fb-ai/status", async (req, res) => {
   const caller = await getCaller(req);
   if (!caller) return res.status(401).json({ error: "Chưa đăng nhập" });
   const cfg = await getConfig();
-  // CẦU DAO TỔNG (DB) là nguồn sự thật DUY NHẤT cho Claude Sale. hasConfig = sẵn sàng
-  // chạy Claude (có Page token + ANTHROPIC_API_KEY). autoReplyEnabled giữ tên cũ để
+  // CẦU DAO TỔNG (DB) là nguồn sự thật DUY NHẤT cho Lulu Sale. hasConfig = sẵn sàng
+  // chạy ít nhất một provider (Claude/OpenAI) và có Page token. autoReplyEnabled giữ tên cũ để
   // tương thích UI, nhưng nay = trạng thái cầu dao tổng.
   const masterEnabled = await getMasterEnabled();
-  const hasApiKey = !!(process.env.ANTHROPIC_API_KEY ?? "").trim();
+  const [claudeKey, openAiKey] = await Promise.all([resolveApiKey("claude"), resolveApiKey("openai")]);
+  const hasApiKey = !!(claudeKey || openAiKey);
   res.json({ autoReplyEnabled: masterEnabled, masterEnabled, hasConfig: !!cfg.pageAccessToken && hasApiKey });
 });
 

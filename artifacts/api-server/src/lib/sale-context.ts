@@ -30,13 +30,13 @@ CHÍNH SÁCH:
 - Mọi ưu đãi/giảm giá ngoài bảng giá phải do quản lý duyệt.`;
 
 // Mã code chuẩn của catalog bán lẻ: 2+ chữ rồi dấu '-'. So khớp sau khi upper-case.
-const RETAIL_CODE_RE = /^[A-Z]{2,}[A-Z0-9]*-/;
-
 // Từ khóa CẤM — chặn dù có code (đề phòng dữ liệu tương lai bị gắn nhãn nhầm).
 const DENY_KEYWORDS = [
   "đối tác", "doi tac", "nội bộ", "noi bo", "ctv", "cộng tác viên", "cong tac vien",
   "giá vốn", "gia von", "test", "thử nghiệm", "thu nghiem", "nháp", "draft",
   "nhân viên", "nhan vien", "internal", "wholesale", "sỉ",
+  "giá hỗ trợ", "gia ho tro", "dành riêng cho khách từ đối tác", "danh rieng cho khach tu doi tac",
+  "thuê lẻ", "thue le", "cho thuê trang phục lẻ", "cho thue trang phuc le",
 ];
 
 export type PkgRow = {
@@ -96,13 +96,31 @@ function cleanDesc(d?: string | null): string {
     .slice(0, 240);
 }
 
+function normalizeTierText(text: string): string {
+  return (text ?? "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d");
+}
+
+/** Keep the package price, but hide benefits when the stored description names a different tier. */
+export function safePackageDescription(packageName: string, description?: string | null): string {
+  const cleaned = cleanDesc(description);
+  if (!cleaned) return "";
+  const tiers = ["basic", "normal", "standard", "premium", "luxury", "silver", "gold", "diamond"];
+  const packageTier = tiers.find((tier) => new RegExp(`\\b${tier}\\b`).test(normalizeTierText(packageName)));
+  const descriptionTier = tiers.find((tier) => new RegExp(`\\b${tier}\\b`).test(normalizeTierText(cleaned.slice(0, 100))));
+  if (packageTier && descriptionTier && packageTier !== descriptionTier) return "";
+  return cleaned;
+}
+
 /** Lý do một gói KHÔNG an toàn cho Claude (null nếu an toàn). */
-function unsafeReason(r: PkgRow): string | null {
+export function packageExclusionReason(r: PkgRow): string | null {
   const code = (r.code ?? "").trim();
   const name = (r.pkg_name ?? "").trim();
-  const hay = `${name} ${code}`.toLowerCase();
+  const hay = `${r.group_name ?? ""} ${name} ${code} ${r.description ?? ""}`.toLowerCase();
   for (const kw of DENY_KEYWORDS) if (hay.includes(kw)) return `denylist:"${kw}"`;
-  if (!RETAIL_CODE_RE.test(code.toUpperCase())) return "no_standard_code";
   return null;
 }
 
@@ -129,18 +147,18 @@ export async function auditPackages(): Promise<{ total: number; kept: AuditRow[]
   const kept: AuditRow[] = [];
   const excluded: AuditRow[] = [];
   for (const r of rows) {
-    const reason = unsafeReason(r);
+    const reason = packageExclusionReason(r);
     if (reason) {
       excluded.push({ ...r, kept: false, reason });
       continue;
     }
     const code = (r.code ?? "").trim().toUpperCase();
-    if (seenCode.has(code)) {
+    if (code && seenCode.has(code)) {
       excluded.push({ ...r, kept: false, reason: `duplicate_code:${code}` });
       continue;
     }
-    seenCode.add(code);
-    kept.push({ ...r, kept: true, reason: "retail_ok" });
+    if (code) seenCode.add(code);
+    kept.push({ ...r, kept: true, reason: code ? "retail_ok" : "retail_ok_no_code" });
   }
   return { total: rows.length, kept, excluded };
 }
@@ -172,7 +190,7 @@ export async function getSaleContext(): Promise<string> {
     const groupNote = new Map<string, string>();
     for (const r of kept) {
       if (!groups.has(r.group_name)) groups.set(r.group_name, []);
-      const desc = cleanDesc(r.description);
+      const desc = safePackageDescription(r.pkg_name, r.description);
       const code = (r.code ?? "").trim().toUpperCase();
       // Mã [CODE] đứng đầu để Claude trích đúng mã gói khi báo giá (dùng cho <<PRICE_IMAGE: MÃ>>).
       const head = code ? `[${code}] ` : "";

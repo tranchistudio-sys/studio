@@ -56,3 +56,11 @@ describe("splitExactReplyMessages — 'nói y chang' giữ nguyên xuống dòng
     expect(formatted.join(" ")).not.toContain("😊");
   });
 });
+
+describe("formatLuluHumanChatMessages", () => {
+  it("keeps Vietnamese thousands separators intact", () => {
+    const chunks = formatLuluHumanChatMessages("Dạ chụp cổng hiện có gói từ 2.900.000đ. Mình muốn xem gói này không ạ?");
+    expect(chunks.map((chunk) => chunk.text).join(" ")).toContain("2.900.000đ");
+    expect(chunks.map((chunk) => chunk.text).join(" ")).not.toContain("2. 900. 000đ");
+  });
+});

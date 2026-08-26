@@ -4,13 +4,39 @@ import {
   getSaleContext, resolvePriceImagesByCodes, wantsNewConcept, getPhotoIdeasBlock,
 } from "./sale-context";
 import { classifyCustomerImageFromData, buildImageRoutingBlock } from "./sale-vision";
-import { selectSampleImages, extractRecentSampleUrls, SAMPLES_EXHAUSTED_NOTE } from "./sale-samples";
+import {
+  buildWorkflowSampleReply,
+  selectSampleImages,
+  extractRecentSampleUrls,
+  isExplicitSampleRequest,
+  SAMPLES_EXHAUSTED_NOTE,
+} from "./sale-samples";
 import { applyImageOverrides, matchResponseOverride, type ImageOverride } from "./sale-image-overrides";
 import { getActivePlaybook } from "./sale-playbook";
 import { getClaudeSaleSettings, computeReplyDelayMs } from "./sale-settings";
 import { getScheduleContext } from "./sale-calendar";
 import { detectEscalation } from "./sale-lead-flags";
 import { HOLD_MESSAGE, imageEscalationReason } from "./sale-human-review";
+import {
+  buildPriceSheetReply,
+  PRICE_SHEET_SEND_FAILED_MESSAGE,
+  resolvePriceSheetRequest,
+  type PriceSheetTrace,
+} from "./sale-price-sheet";
+import { buildSaleWorkflowBlock, evaluateSaleWorkflow, type SaleWorkflowDecision } from "./sale-workflow";
+import {
+  appendScriptTraceData,
+  selectSaleScriptResponse,
+  type SaleScriptQuestionAnswerSheets,
+  type SaleScriptNodeOverrides,
+  type LuluResponseTrace,
+} from "./sale-script-registry";
+import {
+  buildWeddingGiftPromptBlock,
+  evaluateWeddingGiftTrace,
+  loadWeddingGiftProgram,
+  type WeddingGiftTrace,
+} from "./sale-wedding-gifts";
 
 /**
  * URL ảnh có hợp lệ để gửi/hiển thị không? Chặn trường hợp lỡ dùng TIÊU ĐỀ (title tiếng Việt có dấu /
@@ -22,6 +48,48 @@ function isPlausibleImageUrl(u: string | null | undefined): boolean {
   if (!s) return false;
   if (/\s/.test(s)) return false; // URL không có khoảng trắng; title tiếng Việt thì có → loại
   return /^https?:\/\//i.test(s) || s.startsWith("/") || /^[\w.\-]+\/\S+$/.test(s);
+}
+
+function workflowControlledReply(workflow: SaleWorkflowDecision, sampleStyleMatched?: boolean): string | null {
+  if (workflow.reason === "customer_wants_time_to_consider") {
+    return "Dạ mình cứ xem kỹ và cân nhắc thoải mái nha. Khi nào cần em so sánh thêm các gói hoặc giữ lịch thì nhắn em ạ.";
+  }
+  if (workflow.action === "ASK_SERVICE") {
+    return "Dạ mình đang cần chụp cổng, album studio, album ngoại cảnh, tiệc cưới, beauty hay dịch vụ khác ạ?";
+  }
+  if (workflow.action === "ASK_DISCOVERY") {
+    const questions: Record<string, string> = {
+      style: "mình thích hướng sang trọng, nàng thơ, nhẹ nhàng, tinh tế hay tối giản hơn ạ?",
+      location_need: "mình thích cảnh thiên nhiên, Núi Bà Đen, hồ, quán cà phê hay kiến trúc nào tại Tây Ninh ạ?",
+      beauty_type: "mình muốn chụp sinh nhật, beauty cá nhân, nàng thơ, ngọt ngào, sexy, sang trọng, cool boy, cổ trang hay chụp bầu ạ?",
+      pregnancy_month: "mình đang ở tháng thai kỳ thứ mấy ạ?",
+      participants: "mình muốn chụp cá nhân hay cùng gia đình ạ?",
+      wedding_date: "mình cho em xin ngày cưới theo ngày dương lịch nha.",
+      bride_location: "nhà cô dâu ở khu vực nào ạ?",
+      groom_location: "nhà chú rể ở khu vực nào ạ?",
+      venue_format: "tiệc mình làm tại nhà hay nhà hàng ạ?",
+      table_count: "mình dự kiến khoảng bao nhiêu bàn ạ?",
+      use_date: "mình cần dùng vào ngày nào ạ?",
+      outfit_type: "mình cần thuê loại trang phục nào ạ?",
+      size_need: "mình thường mặc size nào hoặc cần ghé thử đồ không ạ?",
+      wedding_kind: "mình đang quan tâm album/prewedding hay chụp ngày cưới, tiệc cưới ạ?",
+      album_location_type: "mình muốn chụp album tại studio hay ngoại cảnh ạ?",
+      primary_need: "mình cho em xin nhu cầu chính để em tư vấn đúng dịch vụ ạ?",
+    };
+    const question = workflow.nextSlot ? questions[workflow.nextSlot.key] : null;
+    return `Dạ ${question ?? "mình cho em xin thêm nhu cầu để em tư vấn đúng dịch vụ ạ?"}`;
+  }
+  if (workflow.action === "SEND_SAMPLE") {
+    return buildWorkflowSampleReply({
+      serviceKey: workflow.serviceKey,
+      style: workflow.style,
+      styleMatched: sampleStyleMatched,
+    });
+  }
+  if (workflow.action === "ASK_SAMPLE_CONFIRMATION") {
+    return "M\u00ecnh th\u1ea5y nh\u1eefng m\u1eabu em v\u1eeba g\u1eedi c\u00f3 h\u1ee3p gu kh\u00f4ng \u1ea1? M\u00ecnh \u01b0ng h\u01b0\u1edbng n\u00e0o th\u00ec em g\u1eedi b\u1ea3ng gi\u00e1 \u0111\u00fang nh\u00f3m \u0111\u1ec3 m\u00ecnh xem ti\u1ebfp nha.";
+  }
+  return null;
 }
 
 /**
@@ -46,6 +114,10 @@ export type SimulateInput = {
   brainRules?: string | null;
   /** Override ảnh "admin dạy" của version đang test (rulesJson.imageOverrides). Rỗng → không thay ảnh. */
   imageOverrides?: ImageOverride[] | null;
+  /** Node sửa tay của phiên bản đang test. Chỉ Brain Lab mới nhận bản nháp này. */
+  scriptOverrides?: SaleScriptNodeOverrides | null;
+  /** Các dòng Khách có thể nói / Lulu trả lời của phiên bản đang test. */
+  scriptQuestionAnswerSheets?: SaleScriptQuestionAnswerSheets | null;
 };
 
 export type SimulateResult = {
@@ -64,6 +136,10 @@ export type SimulateResult = {
   botPaused: boolean;
   detectedIntent: string | null;
   priceImages: string[];
+  priceSheetTrace: PriceSheetTrace | null;
+  saleWorkflow: SaleWorkflowDecision;
+  scriptTrace: LuluResponseTrace;
+  weddingGiftTrace: WeddingGiftTrace;
   sampleImages: Awaited<ReturnType<typeof selectSampleImages>>["images"];
   sampleLinks: Awaited<ReturnType<typeof selectSampleImages>>["links"];
   sampleNote: string | null;
@@ -80,20 +156,36 @@ export type SimulateResult = {
 };
 
 export async function simulateReply(input: SimulateInput): Promise<SimulateResult> {
-  const apiKey = (process.env.ANTHROPIC_API_KEY ?? "").trim();
-  if (!apiKey) throw new Error("Chưa cấu hình ANTHROPIC_API_KEY trong .env");
-
   const message = (input.message ?? "").trim();
   const imageBase64 = (input.imageBase64 ?? "").trim();
   const hasImage = imageBase64.length > 0;
   const incomingText = message || (hasImage ? "[Khách gửi một hình ảnh]" : "");
   const prior = input.prior ?? [];
+  const workflowBefore = evaluateSaleWorkflow({ message: "", prior });
+  let saleWorkflow = evaluateSaleWorkflow({ message: incomingText, prior });
+  let scriptTrace = selectSaleScriptResponse({
+    message: incomingText,
+    workflow: saleWorkflow,
+    workflowBefore,
+    overrides: input.scriptOverrides ?? undefined,
+    questionAnswerSheets: input.scriptQuestionAnswerSheets ?? undefined,
+  });
+  const weddingGiftProgram = await loadWeddingGiftProgram();
+  const weddingGiftTrace = evaluateWeddingGiftTrace({
+    message: incomingText,
+    prior,
+    currentServiceKey: saleWorkflow.serviceKey,
+    program: weddingGiftProgram,
+  });
   const history: ClaudeHistoryItem[] = [...prior, { direction: "incoming", message: incomingText }];
 
   const model = resolveModel();
   const startedAt = Date.now();
 
   let context = await getSaleContext();
+  context += `\n\n${buildSaleWorkflowBlock(saleWorkflow)}`;
+  const weddingGiftBlock = buildWeddingGiftPromptBlock(weddingGiftTrace);
+  if (weddingGiftBlock) context += `\n\n${weddingGiftBlock}`;
   if (wantsNewConcept(message)) {
     const ideas = await getPhotoIdeasBlock();
     if (ideas) context += `\n\n${ideas}`;
@@ -123,6 +215,179 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
     try { scheduleContext = await getScheduleContext(settings.calWindowDays); } catch { /* bỏ qua */ }
   }
 
+  const priceSheet = await resolvePriceSheetRequest({
+    message: incomingText,
+    prior,
+    force: saleWorkflow.action === "SEND_PRICE_SHEET",
+    serviceKey: saleWorkflow.serviceKey,
+  });
+  if (saleWorkflow.action === "SEND_PRICE_SHEET" && priceSheet.requested) {
+    let finalReply: string[] = [];
+    let quoteChunks: LuluChatChunk[] = [];
+    let quoteRaw = "";
+    if (priceSheet.needsClarification) {
+      finalReply = [priceSheet.clarificationMessage ?? "Mình muốn xem bảng giá dịch vụ nào ạ?"];
+    } else if (priceSheet.trace?.validator.passed) {
+      finalReply = buildPriceSheetReply(priceSheet, incomingText);
+    } else {
+      finalReply = [PRICE_SHEET_SEND_FAILED_MESSAGE];
+    }
+    if (finalReply.length === 0) finalReply = [PRICE_SHEET_SEND_FAILED_MESSAGE];
+    const priceSnapshot = priceSheet.trace?.includedPackages.map((pkg) => ({
+      packageId: pkg.id,
+      price: pkg.price,
+      finalPrice: pkg.finalPrice,
+    })) ?? [];
+    scriptTrace = appendScriptTraceData(scriptTrace, {
+      renderedText: finalReply.join("\n\n"),
+      assetIds: priceSheet.trace?.assetId ? [priceSheet.trace.assetId] : [],
+      dataSources: ["service_groups", "service_packages", "service_groups.ai_image_url"],
+      priceSnapshot,
+      validatorResults: priceSheet.trace
+        ? [
+          { name: "official_price_asset", passed: !priceSheet.trace.validator.reasons.includes("price_sheet_missing") && !priceSheet.trace.validator.reasons.includes("price_sheet_asset_not_official_storage") },
+          { name: "asset_group_matches_service", passed: !priceSheet.trace.validator.reasons.includes("price_sheet_group_mismatch") },
+          { name: "public_for_customer", passed: !priceSheet.trace.validator.reasons.includes("price_sheet_not_public") },
+          { name: "retail_packages_only", passed: !priceSheet.trace.validator.reasons.includes("no_retail_packages") },
+          { name: "image_before_text", passed: priceSheet.trace.validator.passed },
+        ]
+        : [{ name: "price_resolution", passed: false, detail: "missing_price_trace" }],
+      stateAfter: { priceSheetSent: !!priceSheet.trace?.validator.passed, currentStep: 4, pendingQuestion: "gate_count" },
+    });
+    const chunks = quoteChunks.length === finalReply.length
+      ? quoteChunks
+      : finalReply.map((text) => ({ text, delayMs: 900 }));
+    const escalated = !priceSheet.needsClarification && !priceSheet.trace?.validator.passed && settings.humanReviewEnabled;
+    return {
+      reply: finalReply,
+      chunks,
+      raw: quoteRaw || finalReply.join("\n\n"),
+      model,
+      responseTimeMs: Date.now() - startedAt,
+      replyDelayMs: computeReplyDelayMs(incomingText, settings),
+      escalation: null,
+      learnedName: null,
+      escalated,
+      escalationReason: escalated ? priceSheet.escalationReason : null,
+      holdMessage: escalated ? HOLD_MESSAGE : null,
+      botPaused: escalated && settings.autoPauseThreadWhenEscalated,
+      detectedIntent: "price_sheet",
+      priceImages: priceSheet.trace?.validator.passed && priceSheet.assetUrl ? [priceSheet.assetUrl] : [],
+      priceSheetTrace: priceSheet.trace,
+      saleWorkflow,
+      scriptTrace,
+      weddingGiftTrace,
+      sampleImages: [],
+      sampleLinks: [],
+      sampleNote: null,
+      imageIntent,
+      overrideApplied: false,
+      responseMode: null,
+    };
+  }
+
+  // The rebuilt script path is intentionally deterministic: no Claude prompt may fill a missing node.
+  if (scriptTrace.status === "UNMAPPED_RESPONSE") {
+    return {
+      reply: [scriptTrace.renderedText],
+      chunks: [{ text: scriptTrace.renderedText, delayMs: 900 }],
+      raw: scriptTrace.renderedText,
+      model,
+      responseTimeMs: Date.now() - startedAt,
+      replyDelayMs: computeReplyDelayMs(incomingText, settings),
+      escalation: "UNMAPPED_RESPONSE",
+      learnedName: null,
+      escalated: true,
+      escalationReason: "UNMAPPED_RESPONSE",
+      holdMessage: HOLD_MESSAGE,
+      botPaused: false,
+      detectedIntent: saleWorkflow.serviceKey,
+      priceImages: [],
+      priceSheetTrace: null,
+      saleWorkflow,
+      scriptTrace,
+      weddingGiftTrace,
+      sampleImages: [],
+      sampleLinks: [],
+      sampleNote: "Không có node kịch bản phù hợp; Lulu không tự tạo câu trả lời.",
+      imageIntent,
+      overrideApplied: false,
+      responseMode: null,
+    };
+  }
+
+  if (scriptTrace.scriptKey === "SALE_WEDDING_GATE" || scriptTrace.scriptKey === "SALE_COMMON") {
+    let sampleImages: SimulateResult["sampleImages"] = [];
+    let sampleLinks: SimulateResult["sampleLinks"] = [];
+    let sampleNote: string | null = null;
+    if (scriptTrace.nodeKey === "WEDDING_GATE.SAMPLE.SEND_MATCHED") {
+      const contextText = prior.filter((h) => !h.message.startsWith("[image:")).slice(-4).map((h) => h.message).join("\n");
+      const lastBotText = [...prior].reverse().find((h) => h.direction === "outgoing")?.message ?? null;
+      const selected = await selectSampleImages({
+        sampleRequested: true,
+        sampleIntents: ["wedding_gate"],
+        intentLocked: true,
+        messageText: [incomingText, ...saleWorkflow.filledSlots.map((slot) => slot.value ?? "")].join("\n"),
+        contextText,
+        lastBotText,
+        visionIntent: imageIntent,
+        settings,
+        excludeUrls: extractRecentSampleUrls(prior),
+        maxTotal: 2,
+      });
+      sampleImages = selected.images.filter((image) => isPlausibleImageUrl(image.imageUrl));
+      sampleLinks = selected.links;
+      if (sampleImages.length === 0) {
+        sampleNote = "Không tìm được ảnh mẫu chụp cổng hợp lệ để gửi; đã chặn trả lời tự do và cần nhân viên kiểm tra kho ảnh.";
+        scriptTrace = appendScriptTraceData(scriptTrace, {
+          validatorResults: [
+            { name: "service_key_is_wedding_gate", passed: true },
+            { name: "sample_asset_not_previously_sent", passed: true },
+            { name: "sample_asset_available", passed: false },
+          ],
+        });
+      } else {
+        saleWorkflow = { ...saleWorkflow, sampleSent: true, sampleAsset: sampleImages[0].imageUrl };
+        scriptTrace = appendScriptTraceData(scriptTrace, {
+          assetIds: sampleImages.map((image) => image.imageUrl),
+          dataSources: ["image_store:wedding_gate", "conversation_state.sent_assets"],
+          stateAfter: { sampleSent: true, currentStep: 3 },
+          validatorResults: [
+            { name: "service_key_is_wedding_gate", passed: true },
+            { name: "sample_asset_not_previously_sent", passed: true },
+            { name: "not_price_request", passed: true },
+          ],
+        });
+      }
+    }
+    return {
+      reply: [scriptTrace.renderedText],
+      chunks: [{ text: scriptTrace.renderedText, delayMs: 900 }],
+      raw: scriptTrace.renderedText,
+      model,
+      responseTimeMs: Date.now() - startedAt,
+      replyDelayMs: computeReplyDelayMs(incomingText, settings),
+      escalation: sampleImages.length === 0 && scriptTrace.nodeKey === "WEDDING_GATE.SAMPLE.SEND_MATCHED" ? "sample_asset_unavailable" : null,
+      learnedName: null,
+      escalated: false,
+      escalationReason: null,
+      holdMessage: null,
+      botPaused: false,
+      detectedIntent: saleWorkflow.serviceKey,
+      priceImages: [],
+      priceSheetTrace: null,
+      saleWorkflow,
+      scriptTrace,
+      weddingGiftTrace,
+      sampleImages,
+      sampleLinks,
+      sampleNote,
+      imageIntent,
+      overrideApplied: false,
+      responseMode: null,
+    };
+  }
+
   // ── ĐIỀU KHIỂN TEXT (responseMode) — khớp override TRƯỚC khi gọi AI ──
   // learn_from_this: chèn câu mẫu admin vào prompt để AI bám theo (giữ đúng ý chính).
   // exact_reply: xử lý SAU khi có reply (thay text bằng câu admin), để ảnh vẫn dùng marker của AI.
@@ -135,7 +400,6 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
   }
 
   const reply = await askClaudeForReply({
-    apiKey,
     model,
     customerMessage: incomingText,
     customerName: "Khách test",
@@ -157,16 +421,28 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
   let sampleImages: SimulateResult["sampleImages"] = [];
   let sampleLinks: SimulateResult["sampleLinks"] = [];
   let sampleNote: string | null = null;
+  let sampleUnavailableReason: string | null = null;
   let overrideApplied = false;
+  let sampleStyleMatched: boolean | undefined;
   try {
     const contextText = prior.filter((h) => !h.message.startsWith("[image:")).slice(-4)
       .map((h) => h.message).join("\n");
     const lastBotText = [...prior].reverse().find((h) => h.direction === "outgoing")?.message ?? null;
     const excludeUrls = extractRecentSampleUrls(prior);
+    const workflowLocksSampleIntent = !!saleWorkflow.serviceKey && (
+      saleWorkflow.action === "SEND_SAMPLE"
+      || (saleWorkflow.sampleRequired && isExplicitSampleRequest(incomingText))
+    );
+    const sampleSelectionText = saleWorkflow.action === "SEND_SAMPLE"
+      ? [incomingText, ...saleWorkflow.filledSlots.map((slot) => slot.value ?? "")].join("\n")
+      : incomingText;
     const sel = await selectSampleImages({
-      sampleRequested: reply.sampleRequested,
-      sampleIntents: reply.sampleIntents,
-      messageText: incomingText,
+      sampleRequested: saleWorkflow.action === "SEND_SAMPLE" || (!saleWorkflow.sampleRequired && reply.sampleRequested),
+      sampleIntents: workflowLocksSampleIntent && saleWorkflow.serviceKey
+        ? [saleWorkflow.serviceKey]
+        : reply.sampleIntents,
+      intentLocked: workflowLocksSampleIntent,
+      messageText: sampleSelectionText,
       contextText,
       lastBotText,
       visionIntent: imageIntent,
@@ -174,10 +450,13 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
       excludeUrls,
       maxTotal: 2,
     });
+    sampleStyleMatched = sel.styleMatched;
     // ÁP OVERRIDE "ADMIN DẠY": nếu khớp (intent + tone/gu) → thay ảnh mẫu bằng ảnh admin chọn.
     const overrides = input.imageOverrides ?? [];
     const detectedIntentForOverride =
-      (reply.sampleIntents && reply.sampleIntents.length ? reply.sampleIntents[0] : null)
+      workflowLocksSampleIntent && saleWorkflow.serviceKey
+        ? saleWorkflow.serviceKey
+        : (reply.sampleIntents && reply.sampleIntents.length ? reply.sampleIntents[0] : null)
       || (imageIntent?.service_intent ?? null);
     const applied = applyImageOverrides(sel, overrides, {
       detectedIntent: detectedIntentForOverride,
@@ -195,19 +474,28 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
       return ok;
     });
     sampleLinks = applied.links;
+    if (sampleImages.length > 0 && saleWorkflow.action === "SEND_SAMPLE") {
+      saleWorkflow = { ...saleWorkflow, sampleSent: true, sampleAsset: sampleImages[0].imageUrl };
+    }
     overrideApplied = applied.overrideApplied && sampleImages.length > 0;
     if (applied.exhausted) sampleNote = SAMPLES_EXHAUSTED_NOTE;
+    if ((isExplicitSampleRequest(incomingText) || saleWorkflow.action === "SEND_SAMPLE") && sampleImages.length === 0 && !applied.exhausted) {
+      sampleUnavailableReason = "Khách xin xem mẫu nhưng hệ thống không tìm được ảnh đúng nhóm";
+      sampleNote = "Hiện em chưa tìm được ảnh mẫu đúng nhóm để gửi ngay. Em chuyển nhân viên lọc đúng mẫu cho mình nha.";
+    }
     if (overrideApplied) console.log(`[SaleBrain] image override applied id=${applied.overrideId} count=${sampleImages.length}`);
   } catch (e) { console.error("[BrainRunner] sampleImages lỗi:", String(e).slice(0, 160)); }
 
   const escalationReason =
     reply.escalation
     || detectEscalation(incomingText)
-    || imageEscalationReason(imageIntent, settings.lowConfidenceThreshold);
+    || imageEscalationReason(imageIntent, settings.lowConfidenceThreshold)
+    || sampleUnavailableReason;
   const wouldEscalate = !!escalationReason && settings.humanReviewEnabled;
 
   // EXACT REPLY: admin yêu cầu Lulu nói Y CHANG câu đã ghim cho tình huống này → dùng đúng câu đó,
   // KHÔNG dùng text AI, KHÔNG escalate (admin đã cho câu chốt). Ảnh vẫn theo luồng ảnh ở trên.
+  const controlledWorkflowReply = workflowControlledReply(saleWorkflow, sampleStyleMatched);
   const aiChunks: LuluChatChunk[] = reply.messageChunks.length > 0
     ? reply.messageChunks
     : (reply.raw ? [{ text: reply.raw, delayMs: 900 }] : [{ text: "(Lulu không trả về nội dung)", delayMs: 900 }]);
@@ -217,18 +505,21 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
   // EXACT REPLY ("nói y chang"): tách bong bóng THEO ĐOẠN (dòng trống), GIỮ NGUYÊN xuống dòng +
   // chữ + emoji admin gõ. KHÔNG tách theo câu, KHÔNG gộp một dòng (xem splitExactReplyMessages).
   const exactChunks = exactPinned ? splitExactReplyMessages(exactPinned) : [];
-  const finalChunks: LuluChatChunk[] = exactPinned
+  const finalChunks: LuluChatChunk[] = controlledWorkflowReply
+    ? [{ text: controlledWorkflowReply, delayMs: 900 }]
+    : exactPinned
     ? (exactChunks.length ? exactChunks : [{ text: exactPinned.trim(), delayMs: 900 }])
     : aiChunks;
   const finalReply = finalChunks.map((c) => c.text);
-  const finalEscalated = exactPinned ? false : wouldEscalate;
+  const finalEscalated = controlledWorkflowReply || exactPinned ? false : wouldEscalate;
   const responseMode: SimulateResult["responseMode"] = respOverride?.responseMode ?? null;
   if (exactPinned) console.log(`[SaleBrain] responseMode=exact_reply (nói y chang câu admin, ${finalReply.length} bubble)`);
 
   const detectedIntent =
     imageIntent?.service_intent
     || (reply.sampleIntents && reply.sampleIntents.length ? reply.sampleIntents[0] : null)
-    || (sampleImages[0]?.serviceIntent ?? null);
+    || (sampleImages[0]?.serviceIntent ?? null)
+    || saleWorkflow.serviceKey;
 
   return {
     reply: finalReply,
@@ -237,14 +528,18 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
     model,
     responseTimeMs,
     replyDelayMs: computeReplyDelayMs(incomingText, settings),
-    escalation: exactPinned ? null : reply.escalation,
+    escalation: controlledWorkflowReply || exactPinned ? null : reply.escalation,
     learnedName: reply.learnedName,
     escalated: finalEscalated,
-    escalationReason: exactPinned ? null : escalationReason,
+    escalationReason: controlledWorkflowReply || exactPinned ? null : escalationReason,
     holdMessage: finalEscalated ? HOLD_MESSAGE : null,
     botPaused: finalEscalated && settings.autoPauseThreadWhenEscalated,
     detectedIntent,
     priceImages,
+    priceSheetTrace: null,
+    saleWorkflow,
+    scriptTrace,
+    weddingGiftTrace,
     sampleImages,
     sampleLinks,
     sampleNote,

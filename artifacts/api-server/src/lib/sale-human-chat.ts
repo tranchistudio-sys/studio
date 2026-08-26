@@ -45,7 +45,7 @@ function stripEmoji(s: string): string {
  */
 function isSensitive(s: string): boolean {
   return (
-    /\d[\d.,]*\s*(đ|vnđ|vnd|k|tr|triệu|trieu|nghìn|nghin|ngàn|ngan)\b/i.test(s) ||
+    /\d[\d.,]*\s*(đ|vnđ|vnd|k|tr|triệu|trieu|nghìn|nghin|ngàn|ngan)(?=$|[\s,.;:!?()])/i.test(s) ||
     /\b\d{1,2}\s*\/\s*\d{1,2}(\s*\/\s*\d{2,4})?\b/.test(s) ||
     /(cọc|coc|đặt cọc|dat coc|chuyển khoản|chuyen khoan|\bstk\b|số tài khoản|so tai khoan)/i.test(s) ||
     /gồm\s*:/i.test(s) ||

@@ -13,6 +13,7 @@ import { getScheduleContext } from "../lib/sale-calendar";
 import { getMasterEnabled } from "../lib/sale-master";
 import { detectEscalation } from "../lib/sale-lead-flags";
 import { HOLD_MESSAGE, imageEscalationReason } from "../lib/sale-human-review";
+import { resolveApiKey } from "../lib/ai-provider";
 
 /**
  * KARU / Claude Sale Test — sân test nội bộ cho admin.
@@ -45,7 +46,8 @@ async function requireAdmin(req: Request, res: Response): Promise<boolean> {
 // Thông tin để hiển thị: model, số gói context, đã có API key chưa
 router.get("/claude-sale-test/info", async (req, res) => {
   if (!(await requireAdmin(req, res))) return;
-  const hasApiKey = !!(process.env.ANTHROPIC_API_KEY ?? "").trim();
+  const [claudeKey, openAiKey] = await Promise.all([resolveApiKey("claude"), resolveApiKey("openai")]);
+  const hasApiKey = !!(claudeKey || openAiKey);
   let packageCount = 0;
   let totalActive = 0;
   try {
@@ -81,11 +83,6 @@ router.post("/claude-sale-test/chat", async (req, res) => {
   const imageBase64 = (body.imageBase64 ?? "").trim();
   const hasImage = imageBase64.length > 0;
   if (!message && !hasImage) return res.status(400).json({ error: "Thiếu nội dung tin nhắn hoặc ảnh" });
-
-  const apiKey = (process.env.ANTHROPIC_API_KEY ?? "").trim();
-  if (!apiKey) {
-    return res.status(400).json({ error: "Chưa cấu hình ANTHROPIC_API_KEY trong .env" });
-  }
 
   // Lịch sử trước đó (admin gửi lên) → chuẩn hóa, rồi nối tin mới ở cuối (incoming)
   const prior: ClaudeHistoryItem[] = Array.isArray(body.messages)
@@ -133,7 +130,6 @@ router.post("/claude-sale-test/chat", async (req, res) => {
       try { scheduleContext = await getScheduleContext(settings.calWindowDays); } catch { /* bỏ qua */ }
     }
     const reply = await askClaudeForReply({
-      apiKey,
       model,
       customerMessage: incomingText,
       customerName: "Khách test",

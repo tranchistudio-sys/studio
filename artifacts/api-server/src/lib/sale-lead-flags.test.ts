@@ -29,6 +29,11 @@ describe("detectEscalation — chuyển người thật khi cần (backup, khôn
     expect(detectEscalation("bên kia rẻ hơn")).not.toBeNull();
   });
 
+  it("hỏi thông tin giảm giá bình thường → không escalate", () => {
+    expect(detectEscalation("Có giảm giá không?")).toBeNull();
+    expect(detectEscalation("Gói này có ưu đãi gì không?")).toBeNull();
+  });
+
   it("hủy / dời lịch / hoàn cọc → escalate (giữ nguyên)", () => {
     expect(detectEscalation("anh muốn hủy lịch")).not.toBeNull();
     expect(detectEscalation("cho anh dời lịch nha")).not.toBeNull();

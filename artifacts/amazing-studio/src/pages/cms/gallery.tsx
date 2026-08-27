@@ -32,6 +32,19 @@ interface Photo {
 }
 // Ảnh đã upload-presign sẵn nhưng CHƯA gắn vào album (dùng khi tạo album mới kèm nhiều ảnh 1 lần).
 type PendingPhoto = { id: number; objectPath: string; mimeType?: string };
+
+async function apiError(response: Response, fallback: string): Promise<string> {
+  const text = await response.text().catch(() => "");
+  if (!text) return `${fallback} (${response.status})`;
+  try {
+    const json = JSON.parse(text) as { error?: string; message?: string };
+    return json.error || json.message || `${fallback} (${response.status})`;
+  } catch {
+    return response.status === 404
+      ? `${fallback}: API trên máy chủ chưa được cập nhật (404)`
+      : `${fallback} (${response.status})`;
+  }
+}
 interface Capabilities {
   videoUpload: boolean;
   videoMaxSizeMb: number;
@@ -276,7 +289,7 @@ export default function CmsGalleryPage() {
       const r = await fetch(`${CMS_BASE}/api/cms/albums/bulk-delete`, {
         method: "POST", headers: authHeaders(), body: JSON.stringify({ ids: [...bulk.selected] }),
       });
-      if (!r.ok) throw new Error((await r.json()).error ?? "Lỗi xoá");
+      if (!r.ok) throw new Error(await apiError(r, "Lỗi xoá"));
       return r.json() as Promise<{ affected: number }>;
     },
     onSuccess: (d) => { bulkInvalidate(); bulk.exit(); toast({ title: `Đã đưa ${d.affected} album vào thùng rác` }); },
@@ -342,11 +355,15 @@ export default function CmsGalleryPage() {
   });
 
   const deleteAlbum = useMutation({
-    mutationFn: (id: number) => fetch(`${CMS_BASE}/api/cms/albums/${id}`, { method: "DELETE", headers: authHeaders() }),
+    mutationFn: async (id: number) => {
+      const r = await fetch(`${CMS_BASE}/api/cms/albums/${id}`, { method: "DELETE", headers: authHeaders() });
+      if (!r.ok) throw new Error(await apiError(r, "Lỗi xoá album"));
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["cms-albums"] });
       qc.invalidateQueries({ queryKey: ["cms-categories", "gallery"] });
     },
+    onError: (e: Error) => toast({ title: "Lỗi xoá album", description: e.message, variant: "destructive" }),
   });
 
   const reorderAlbums = useMutation({
@@ -1118,7 +1135,10 @@ function AlbumPhotosTab({
   });
 
   const deletePhoto = useMutation({
-    mutationFn: (id: number) => fetch(`${CMS_BASE}/api/cms/photos/${id}`, { method: "DELETE", headers: authHeaders() }),
+    mutationFn: async (id: number) => {
+      const r = await fetch(`${CMS_BASE}/api/cms/photos/${id}`, { method: "DELETE", headers: authHeaders() });
+      if (!r.ok) throw new Error(await apiError(r, "Lỗi xoá ảnh"));
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["cms-photos", album.id] });
       qc.invalidateQueries({ queryKey: ["cms-albums"] });
@@ -1127,6 +1147,7 @@ function AlbumPhotosTab({
       qc.invalidateQueries({ queryKey: ["public-gallery-categories"] });
       toast({ title: "Đã xoá ảnh" });
     },
+    onError: (e: Error) => toast({ title: "Lỗi xoá ảnh", description: e.message, variant: "destructive" }),
   });
 
   const reorderPhotos = useMutation({

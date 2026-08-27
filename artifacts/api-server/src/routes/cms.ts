@@ -366,6 +366,54 @@ router.get("/cms/albums", async (req, res) => {
   } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
+function parseAlbumIds(value: unknown): number[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map(Number).filter(id => Number.isInteger(id) && id > 0))];
+}
+
+router.post("/cms/albums/bulk-delete", async (req, res) => {
+  if (!(await requireCmsStaff(req, res))) return;
+  const ids = parseAlbumIds(req.body?.ids);
+  if (!ids.length) return res.status(400).json({ error: "Chưa chọn album hợp lệ" });
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const albums = await client.query(
+      `UPDATE gallery_albums SET deleted_at = NOW()
+       WHERE id = ANY($1::int[]) AND deleted_at IS NULL RETURNING id`, [ids]);
+    await client.query(
+      `UPDATE gallery_photos SET deleted_at = NOW(), status = 'hidden'
+       WHERE album_id = ANY($1::int[]) AND deleted_at IS NULL`, [ids]);
+    await client.query("COMMIT");
+    res.json({ affected: albums.rowCount ?? 0 });
+  } catch (e) {
+    await client.query("ROLLBACK");
+    res.status(500).json({ error: String(e) });
+  } finally { client.release(); }
+});
+
+router.patch("/cms/albums/bulk-category", async (req, res) => {
+  if (!(await requireCmsStaff(req, res))) return;
+  const ids = parseAlbumIds(req.body?.ids);
+  if (!ids.length) return res.status(400).json({ error: "Chưa chọn album hợp lệ" });
+  const categoryId = req.body?.categoryId == null ? null : Number(req.body.categoryId);
+  if (categoryId !== null) {
+    if (!Number.isInteger(categoryId) || categoryId <= 0) {
+      return res.status(400).json({ error: "Danh mục không hợp lệ" });
+    }
+    const category = await pool.query(
+      `SELECT id FROM cms_categories WHERE id = $1 AND type = 'gallery' AND deleted_at IS NULL`,
+      [categoryId]);
+    if (!category.rowCount) return res.status(400).json({ error: "Danh mục không tồn tại" });
+  }
+  try {
+    const result = await pool.query(
+      `UPDATE gallery_albums SET category_id = $1
+       WHERE id = ANY($2::int[]) AND deleted_at IS NULL`, [categoryId, ids]);
+    res.json({ affected: result.rowCount ?? 0 });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
+});
+
 router.post("/cms/albums", async (req, res) => {
   if (!(await requireAuth(req, res))) return;
   try {

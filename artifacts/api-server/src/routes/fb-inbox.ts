@@ -47,6 +47,7 @@ import { randomUUID } from "crypto";
 import { objectStorageClient, ObjectStorageService } from "../lib/objectStorage";
 import { getPublicBaseUrl } from "../lib/publicUrl";
 import { withStartupDdlLock } from "../lib/startup-ddl";
+import { getCommonSaleScript } from "../lib/sale-common-script";
 
 const router: IRouter = Router();
 
@@ -864,6 +865,7 @@ async function handleClaudeSaleReply(
     }
     const styleGuide = await getActivePlaybook();
     const brainRules = await getActiveBrainRules();
+    const commonScript = await getCommonSaleScript();
     reply = await askClaudeForReply({
       apiKey,
       model: process.env.ANTHROPIC_MODEL?.trim() || undefined,
@@ -875,6 +877,7 @@ async function handleClaudeSaleReply(
       settings,
       scheduleContext,
       brainRules,
+      commonScript,
     });
   } catch (err) {
     console.error(`[Claude] psid=${psid} lỗi gọi Claude:`, err);

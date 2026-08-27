@@ -12,6 +12,7 @@ import { getClaudeSaleSettings, computeReplyDelayMs } from "./sale-settings";
 import { getScheduleContext } from "./sale-calendar";
 import { detectEscalation } from "./sale-lead-flags";
 import { HOLD_MESSAGE, imageEscalationReason } from "./sale-human-review";
+import { getCommonSaleScript } from "./sale-common-script";
 
 /**
  * URL ảnh có hợp lệ để gửi/hiển thị không? Chặn trường hợp lỡ dùng TIÊU ĐỀ (title tiếng Việt có dấu /
@@ -137,6 +138,7 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
     console.log("[SaleBrain] responseMode=learn_from_this (chèn câu mẫu admin vào prompt)");
   }
 
+  const commonScript = await getCommonSaleScript();
   const reply = await askClaudeForReply({
     apiKey,
     model,
@@ -148,6 +150,7 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
     settings,
     scheduleContext,
     brainRules: input.brainRules ?? null,
+    commonScript,
     providerOverride: input.providerOverride,
   });
   const responseTimeMs = Date.now() - startedAt;

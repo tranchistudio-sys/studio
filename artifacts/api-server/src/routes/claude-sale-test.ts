@@ -22,6 +22,7 @@ import { detectDateSlot } from "../lib/sale-slots";
 import { detectServiceIntentFromText } from "../lib/sale-samples";
 import { auditPackages, pkgDiscountCfg, groupDiscountCfg } from "../lib/sale-context";
 import { resolveDiscount } from "../lib/pricing-discount";
+import { getCommonSaleScript } from "../lib/sale-common-script";
 
 /**
  * KARU / Claude Sale Test — sân test nội bộ cho admin.
@@ -173,6 +174,7 @@ router.post("/claude-sale-test/chat", async (req, res) => {
     }
     // TEST-ONLY: sân test dùng ShopAIKey nếu bật cờ (LULU_TEST_PROVIDER=shopaikey). undefined = Anthropic như cũ.
     const testOverride = resolveTestProviderOverride();
+    const commonScript = await getCommonSaleScript();
     const reply = await askClaudeForReply({
       apiKey,
       model,
@@ -184,6 +186,7 @@ router.post("/claude-sale-test/chat", async (req, res) => {
       settings,
       scheduleContext,
       brainRules,
+      commonScript,
       providerOverride: testOverride,
     });
     const responseTimeMs = Date.now() - startedAt;

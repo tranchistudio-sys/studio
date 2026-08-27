@@ -46,6 +46,8 @@ export type AskClaudeInput = {
    * Thay cho 5 khối luật mặc định trong code. Rỗng/null → dùng DEFAULT_BRAIN_RULES (hành vi cũ).
    */
   brainRules?: string | null;
+  /** Kịch bản chung B1–B3 do admin cấu hình; null/rỗng → giữ hành vi mặc định. */
+  commonScript?: string | null;
 };
 
 /**
@@ -172,6 +174,7 @@ function buildSystemPrompt(
   settings?: ClaudeSaleSettings | null,
   scheduleContext?: string | null,
   brainRules?: string | null,
+  commonScript?: string | null,
   history?: ClaudeHistoryItem[],
   customerMessage?: string,
 ): string {
@@ -183,6 +186,7 @@ function buildSystemPrompt(
   // BỘ LUẬT NÃO LULU áp dụng lượt này: ưu tiên version active/nháp (Lulu Brain Lab);
   // rỗng → quay về 5 khối luật mặc định trong code (hành vi cũ, không đổi gì).
   const rulesBlock = brainRules && brainRules.trim() ? brainRules.trim() : DEFAULT_BRAIN_RULES;
+  const commonScriptBlock = commonScript && commonScript.trim() ? commonScript.trim() : "";
 
   // KỶ LUẬT HỘI THOẠI (chống "trôi"): suy ra nhu cầu đang khóa từ lịch sử rồi nhắc model bám đúng
   // nhóm, không reset/không hỏi lại/không đổi dịch vụ. Đặt ở phần RÀNG BUỘC cố định bên dưới nên
@@ -222,7 +226,7 @@ ${calendarBlock ? `\n${calendarBlock}\n` : ""}
 ${constraints}
 
 ${antiDriftBlock}
-
+${commonScriptBlock ? `\n${commonScriptBlock}\n` : ""}
 ${rulesBlock}
 
 DỮ LIỆU STUDIO, BẢNG GIÁ, LINK & CONCEPT:
@@ -269,7 +273,7 @@ RÀNG BUỘC (Giai đoạn 1 — chỉ tư vấn, chưa chốt):
 - Việc phức tạp / khiếu nại / chốt cọc: mời để lại số điện thoại, sẽ có người hỗ trợ.
 
 ${antiDriftBlock}
-
+${commonScriptBlock ? `\n${commonScriptBlock}\n` : ""}
 ${rulesBlock}
 
 DỮ LIỆU STUDIO, BẢNG GIÁ, LINK & CONCEPT:
@@ -308,6 +312,7 @@ export async function askClaudeForReply(input: AskClaudeInput): Promise<ClaudeRe
     input.settings,
     input.scheduleContext,
     input.brainRules,
+    input.commonScript,
     input.history,
     input.customerMessage,
   );

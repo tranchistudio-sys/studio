@@ -10,7 +10,7 @@ describe("formatCommonSaleScript", () => {
     ]);
     expect(result).toContain("BƯỚC CHUNG B1");
     expect(result).toContain("Anh đang quan tâm dịch vụ nào ạ?");
-    expect(result).toContain("Chuyển sang đúng kịch bản riêng");
+    expect(result).toContain("chuyển sang đúng kịch bản riêng");
     expect(result).toContain("không được dùng để tự tạo giá");
   });
 

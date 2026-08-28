@@ -2773,11 +2773,12 @@ function ShowFormPanel({
         </div>
         {/* Toggle Báo giá tạm — luôn thao tác được (edit: admin), không bao giờ khóa. */}
         {(!isEdit || isAdmin) && (
-          <label className="flex items-center gap-2 flex-shrink-0 cursor-pointer select-none">
-            <span className={`text-xs font-medium ${tempQuoteMode ? "text-purple-600" : "text-muted-foreground"}`}>
+          <label className={`flex min-h-11 items-center gap-3 flex-shrink-0 cursor-pointer select-none rounded-xl border px-3 py-2 transition-colors ${tempQuoteMode ? "border-purple-300 bg-purple-50" : "border-border bg-muted/40"}`}>
+            <span className={`text-sm font-bold whitespace-nowrap ${tempQuoteMode ? "text-purple-600" : "text-foreground"}`}>
               {tempQuoteMode ? "Báo giá tạm tính" : "Booking chính thức"}
             </span>
             <Switch
+              className="scale-125 origin-right"
               checked={tempQuoteMode}
               disabled={saving}
               onCheckedChange={(checked) => {

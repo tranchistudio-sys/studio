@@ -18,6 +18,7 @@ import {
 } from "../lib/sale-script-registry";
 import { evaluateSaleWorkflow } from "../lib/sale-workflow";
 import type { SaleHistoryItem } from "../lib/sale-price-sheet";
+import { loadWeddingGiftProgram } from "../lib/sale-wedding-gifts";
 import {
   getSaleScriptDraftStore,
   withSaleScriptQuestionAnswerSheet,
@@ -250,7 +251,10 @@ function sheetRowsFromRequest(
     ];
   });
   if (invalidRoutingRow) return null;
-  return rows.slice(0, 100);
+  // Giới hạn cho toàn bộ sheet của một nhóm (gồm cả 9 bước), không phải từng bước.
+  // Bước 1 có thể có khoảng 100 câu nên mức 100 cũ làm mất dữ liệu các bước sau
+  // mỗi khi admin bấm Lưu bước.
+  return rows.slice(0, 500);
 }
 
 async function requireStaff(
@@ -587,6 +591,8 @@ router.get("/sale-scripts/:serviceGroupId", async (req, res) => {
       };
     });
     const item = dashboardGroup(group, draft);
+    const giftProgram = await loadWeddingGiftProgram();
+    const giftActive = giftProgram.enabled && giftProgram.source === "database";
     res.json({
       group: item,
       script: {
@@ -605,9 +611,10 @@ router.get("/sale-scripts/:serviceGroupId", async (req, res) => {
       },
       pricing,
       promotion: {
-        configured: false,
-        message:
-          "Chua co chuong trinh khuyen mai duoc kich hoat trong Kich ban Sale.",
+        configured: giftActive,
+        message: giftActive
+          ? `${giftProgram.name} · quà theo mốc 2–3–4–5 dịch vụ cưới · không cộng dồn mốc · Beauty không tính.`
+          : "Chưa có chương trình quà được kích hoạt trong Kịch bản Sale.",
       },
       liveRepliesEnabled: false,
     });

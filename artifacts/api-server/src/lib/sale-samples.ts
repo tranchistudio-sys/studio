@@ -325,7 +325,8 @@ const STYLE_TAGS = [
   "nhe nhang", "sang trong", "nang tho", "ngot ngao", "sexy", "quyen ru",
   "ca tinh", "ngau", "toi gian", "han quoc", "co dien", "truyen thong",
   "viet phuc", "co trang", "tinh te", "tu nhien", "hien dai", "luxury",
-  "cool boy", "cool girl",
+  "cool boy", "cool girl", "tre trung", "fashion", "editorial", "nen sang",
+  "nen toi", "nhieu hoa", "it hoa", "trang tinh", "de thuong",
 ];
 
 function requestedStyleTags(messageText: string): string[] {
@@ -672,7 +673,7 @@ type ResolvedSampleImages = {
  * (caller sẽ fallback sang text/link — KHÔNG bịa ảnh).
  */
 async function resolveSampleImagesWithMeta(opts: ResolveSampleImagesOpts): Promise<ResolvedSampleImages> {
-  const maxTotal = Math.max(1, Math.min(2, opts.maxTotal ?? 2));
+  const maxTotal = Math.max(1, Math.min(3, opts.maxTotal ?? 2));
   const messageText = opts.messageText ?? "";
   const gender = opts.gender ?? null;
   const requested = requestedStyleTags(messageText);
@@ -762,6 +763,15 @@ const STYLE_LABELS: Record<string, string> = {
   "han quoc": "Hàn Quốc",
   "co dien": "cổ điển",
   "truyen thong": "truyền thống",
+  "tre trung": "trẻ trung",
+  "fashion": "fashion",
+  "editorial": "editorial",
+  "nen sang": "nền sáng",
+  "nen toi": "nền tối",
+  "nhieu hoa": "nhiều hoa",
+  "it hoa": "ít hoa",
+  "trang tinh": "trắng tinh",
+  "de thuong": "dễ thương",
 };
 
 /** Shared text for Brain Lab and Messenger after gallery selection. */

@@ -4,6 +4,7 @@ vi.mock("@workspace/db", () => ({ pool: { query: vi.fn() } }));
 
 import { pool } from "@workspace/db";
 import {
+  buildPackageComparisonReply,
   buildPriceSheetReply,
   isPriceSheetRequest,
   resolvePriceSheetRequest,
@@ -69,6 +70,14 @@ describe("price-sheet request classifier", () => {
       { direction: "outgoing", message: "Nhóm chụp cổng có nhiều gói." },
     ])).toEqual({ key: "wedding_gate", ambiguous: false });
   });
+
+  it("uses the most recent service for a context-only price question", () => {
+    expect(resolveServiceKeyFromConversation("Giá sao?", [
+      { direction: "incoming", message: "Chụp cổng bao nhiêu?" },
+      { direction: "outgoing", message: "Bảng giá cổng đây nha." },
+      { direction: "incoming", message: "Bên mình có album không?" },
+    ])).toEqual({ key: "wedding_album", ambiguous: false });
+  });
 });
 
 describe("price-sheet resolver", () => {
@@ -124,7 +133,7 @@ describe("price-sheet resolver", () => {
     const result = await resolvePriceSheetRequest({ message: "Cho minh bang gia chup cong" });
     const reply = buildPriceSheetReply(result).join("\n");
 
-    expect(reply).toContain("\n\n");
+    expect(reply).toContain("\n•");
     expect(reply).toContain("1.900.000");
     expect(reply).toContain("3.900.000");
     expect(reply).not.toMatch(/bao\s+gom\s*:/i);
@@ -143,8 +152,42 @@ describe("price-sheet resolver", () => {
     const reply = buildPriceSheetReply(result).join("\n");
 
     expect(reply).toContain("Danh cho cap doi muon bo anh chin chu");
-    expect(reply).toContain("2 sare + 2 ao vest");
+    expect(reply).not.toContain("2 sare + 2 ao vest");
     expect(reply).not.toContain("Danh Cho Cap Doi Muon Bo Anh Chin Chu");
+  });
+
+  it("compares only verified package deltas and recommends from conversation context", async () => {
+    mockCatalog([gateGroup], [
+      { ...gatePackages[1], description: "1 sare + 1 vest; Photo chuyên viên; Makeup chuyên viên; 1 hình cổng 60x90 ép gỗ in lụa; 5 hình nhỏ 13x18 chưa khung; tặng file gốc." },
+      { ...gatePackages[2], description: "2 sare + 1 áo vest; Photo chuyên viên; Makeup chuyên viên; 1 hình cổng 60x90 ép gỗ in lụa; 10 hình nhỏ 13x18 chưa khung; tặng file gốc." },
+      { id: 48, group_id: 12, group_name: gateGroup.name, pkg_name: "Chụp cổng Premium", code: "CG-PREMIUM", price: "3900000", description: "2 sare + 2 áo vest; Photo chuyên viên; Makeup chuyên viên; 2 hình cổng 60x90 mica gương; 10 hình nhỏ 13x18 chưa khung; tặng file gốc." },
+      { id: 49, group_id: 12, group_name: gateGroup.name, pkg_name: "Chụp cổng Luxury", code: "CG-LUXURY", price: "5900000", description: "2 sare + 2 áo vest; Photo Master; Makeup Master; 2 hình cổng 60x90 mica gương; 10 hình khung 15x21 ép gỗ cao cấp có khung; tặng file gốc." },
+    ]);
+    const resolution = await resolvePriceSheetRequest({ message: "Chụp cổng bao nhiêu?" });
+    const basicPremium = buildPackageComparisonReply(resolution, "Basic với Premium khác gì?", [
+      { direction: "incoming", message: "Em cần 2 cổng mica." },
+    ]);
+    expect(basicPremium).toContain("chênh 1.000.000đ");
+    expect(basicPremium).toContain("2 cổng mica gương");
+    expect(basicPremium).toContain("nghiêng Premium");
+
+    const premiumLuxury = buildPackageComparisonReply(resolution, "Premium với Luxury khác gì?", [
+      { direction: "incoming", message: "Em chỉ cần 2 cổng mica." },
+    ]);
+    expect(premiumLuxury).toContain("chênh 2.000.000đ");
+    expect(premiumLuxury).toContain("Photo từ chuyên viên lên Master");
+    expect(premiumLuxury).toContain("Makeup từ chuyên viên lên Master");
+    expect(premiumLuxury).toContain("Premium đã đáp ứng đúng");
+  });
+
+  it("keeps package makeup wording inside the current gate service", () => {
+    const prior = [
+      { direction: "incoming" as const, message: "Chụp cổng bao nhiêu?" },
+      { direction: "outgoing" as const, message: "Premium dùng Makeup chuyên viên, Luxury dùng Makeup Master." },
+    ];
+    expect(resolveServiceKeyFromConversation("Premium mắc quá.", prior)).toEqual({ key: "wedding_gate", ambiguous: false });
+    expect(resolveServiceKeyFromConversation("Chú rể có makeup không?", prior)).toEqual({ key: "wedding_gate", ambiguous: false });
+    expect(resolveServiceKeyFromConversation("Cho chị dịch vụ makeup riêng", prior)).toEqual({ key: "makeup", ambiguous: false });
   });
 });
 

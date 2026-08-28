@@ -192,10 +192,49 @@ const WEDDING_GATE_NODES: SaleScriptNode[] = [
     stepNumber: 5,
     stage: "PROMOTION",
     title: "Kiem tra uu dai hien hanh",
-    replyTemplate: "{{PROMOTION_REPLY}}",
+    replyTemplate: "Dạ bên em có chương trình quà riêng cho dâu rể từ 2 dịch vụ cưới trở lên nha 😄 Mình nói em các hạng mục đang tính làm, em kiểm tra đúng mốc cho mình luôn ạ.",
     requiredSlots: ["service_intent"],
     dataSources: ["wedding_gift_programs", "service_groups.discount_*", "service_packages.discount_*"],
     validators: ["promotion_is_current", "service_is_eligible"],
+    status: "active",
+  },
+  {
+    nodeKey: "WEDDING_GATE.COMPARE.PACKAGES",
+    scriptKey: WEDDING_GATE_SCRIPT_KEY,
+    version: WEDDING_GATE_SCRIPT_VERSION,
+    stepNumber: 4,
+    stage: "EXPLAIN_PACKAGES",
+    title: "So sanh goi theo quyen loi that",
+    replyTemplate: "Dạ mình đang cân nhắc hai gói nào ạ? Em đối chiếu ngắn gọn giá và quyền lợi để mình dễ chọn nha.",
+    requiredSlots: ["service_intent"],
+    dataSources: ["service_packages", "pricing_snapshot"],
+    validators: ["not_owned_by_price_step", "verified_package_data_only"],
+    status: "active",
+  },
+  {
+    nodeKey: "WEDDING_GATE.OBJECTION.PRICE",
+    scriptKey: WEDDING_GATE_SCRIPT_KEY,
+    version: WEDDING_GATE_SCRIPT_VERSION,
+    stepNumber: 6,
+    stage: "RECOMMEND_PACKAGE",
+    title: "Xu ly khi khach thay gia cao",
+    replyTemplate: "Dạ em hiểu phần ngân sách của mình. Em sẽ lùi về gói vừa nhu cầu nhất và giữ đúng các quyền lợi mình cần, không cố đẩy mình lên gói cao nha.",
+    requiredSlots: ["service_intent"],
+    dataSources: ["conversation_state", "service_packages"],
+    validators: ["not_owned_by_price_step", "no_pressure_sale"],
+    status: "active",
+  },
+  {
+    nodeKey: "WEDDING_GATE.DECISION.PACKAGE_SELECTED",
+    scriptKey: WEDDING_GATE_SCRIPT_KEY,
+    version: WEDDING_GATE_SCRIPT_VERSION,
+    stepNumber: 7,
+    stage: "CLOSE_OR_HANDOFF",
+    title: "Ghi nhan goi khach da chon",
+    replyTemplate: "Dạ em ghi nhận gói mình chọn rồi nha. Mình cho em xin thông tin liên hệ và ngày dự kiến để bên em kiểm tra lịch giúp mình ạ.",
+    requiredSlots: ["service_intent"],
+    dataSources: ["conversation_state", "service_packages"],
+    validators: ["package_named_by_customer", "no_repeat_price_sheet"],
     status: "active",
   },
   {
@@ -312,7 +351,7 @@ const COMMON_NODES: SaleScriptNode[] = [
     stepNumber: 1,
     stage: "IDENTIFY_SERVICE",
     title: "Chuyển sang kịch bản dịch vụ",
-    replyTemplate: "Dạ được ạ, em ghi nhận mình đang quan tâm {{SERVICE_NAME}} và chuyển sang đúng phần tư vấn cho mình nha.",
+    replyTemplate: "Dạ được mình nha 😊 Mình đang quan tâm {{SERVICE_NAME}} đúng không ạ? Mình cho em xin thêm nhu cầu cụ thể để em tư vấn sát hơn nha.",
     requiredSlots: ["service_type"],
     dataSources: ["conversation_state.service_type", "conversation_state.current_script_group"],
     validators: ["service_route_exists", "no_repeat_service_question", "preserve_customer_context"],
@@ -460,7 +499,7 @@ function matchableText(value: string): string {
     .trim();
 }
 
-function questionAnswerScore(message: string, question: string): number {
+function singleQuestionAnswerScore(message: string, question: string): number {
   const normalizedMessage = matchableText(message);
   const normalizedQuestion = matchableText(question);
   if (!normalizedMessage || !normalizedQuestion) return 0;
@@ -483,6 +522,17 @@ function questionAnswerScore(message: string, question: string): number {
     return messageTokens.length <= 3 ? 0.84 : 0.68;
   }
   return Math.min(0.93, questionCoverage * 0.72 + messageCoverage * 0.23 + (inOrder ? 0.05 : 0));
+}
+
+function questionAnswerScore(message: string, question: string): number {
+  // Admin thường gom các cách nói đồng nghĩa trong một ô Excel bằng dấu “/”.
+  // Mỗi vế là một utterance của cùng intent, không phải một câu dài bắt khách
+  // phải nói đủ toàn bộ nội dung trong ô.
+  const variants = question
+    .split(/\s*(?:\/|\||\n)\s*/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  return Math.max(0, ...variants.map((variant) => singleQuestionAnswerScore(message, variant)));
 }
 
 function bestQuestionAnswerMatch(
@@ -577,7 +627,7 @@ function isClarification(text: string): boolean {
 }
 
 function isPromotionRequest(text: string): boolean {
-  return /\b(khuyen mai|uu dai|giam gia|qua tang)\b/.test(normalize(text));
+  return /\b(khuyen mai|uu dai|giam gia|qua tang|co qua|qua gi|moc may|moc nao|cong don|quy doi qua|doi qua.*tien)\b|\b[2345]\s*(?:dich vu|goi)\b.{0,24}\b(?:duoc gi|qua|tang)\b|\bbeauty\b.{0,24}\b(?:tinh|cong)\b/.test(normalize(text));
 }
 
 function phoneFrom(text: string): string | null {
@@ -718,12 +768,13 @@ export function selectSaleScriptResponse(input: {
     input.message,
     commonQuestionAnswerRows(input.questionAnswerSheets, "COMMON.SERVICE_ROUTING"),
   );
-  const greetingQuestionAnswer = routing.selected || routing.reason !== "unknown"
-    ? null
-    : bestQuestionAnswerMatch(
-      input.message,
-      commonQuestionAnswerRows(input.questionAnswerSheets, "COMMON.GREETING"),
-    );
+  // A manually taught sentence is an explicit answer rule. Keep it available
+  // even when conversation history already carries a service intent; otherwise
+  // a stale intent (for example wedding_gate) can mask an exact greeting row.
+  const greetingQuestionAnswer = bestQuestionAnswerMatch(
+    input.message,
+    commonQuestionAnswerRows(input.questionAnswerSheets, "COMMON.GREETING"),
+  );
 
   if (routingQuestionAnswer) {
     const { row, score } = routingQuestionAnswer;
@@ -792,6 +843,16 @@ export function selectSaleScriptResponse(input: {
     });
   }
 
+  if (input.workflow.reason === "owner_gate_step_5_promotion" || isPromotionRequest(text)) {
+    return makeTrace({
+      selected: node("WEDDING_GATE.PROMOTION.CHECK_ELIGIBILITY", input.overrides),
+      stateBefore: before,
+      stateAfter: { ...after, currentStep: 5 },
+      workflow: input.workflow,
+      decisionRule: "promotion_question_owned_by_step_5",
+    });
+  }
+
   if (!routing.selected) {
     const serviceCandidates = routing.candidates.map((candidate) => candidate.serviceType);
     const alreadyAsked = before.askedServiceQuestion || input.workflow.askedQuestionKeys.includes("service_type");
@@ -821,7 +882,7 @@ export function selectSaleScriptResponse(input: {
         },
         workflow: input.workflow,
         decisionRule: "multiple_services_ask_which_to_view_first",
-        renderedText: "Dạ mình đang quan tâm nhiều dịch vụ. Mình muốn xem dịch vụ nào trước để em hỗ trợ đúng phần đó ạ?",
+        renderedText: "Dạ mình đang quan tâm nhiều dịch vụ 😊 Mình muốn xem dịch vụ nào trước để em tư vấn kỹ cho mình nha?",
         variables: {},
       });
     }
@@ -874,7 +935,7 @@ export function selectSaleScriptResponse(input: {
       stateAfter,
       workflow: input.workflow,
       decisionRule: "service_identified_route_directly",
-      renderedText: `Dạ được ạ, em ghi nhận mình đang quan tâm ${routing.selected.label.toLocaleLowerCase("vi")} và chuyển sang đúng phần tư vấn cho mình nha.`,
+      renderedText: `Dạ được mình nha 😊 Mình đang quan tâm ${routing.selected.label.toLocaleLowerCase("vi")} đúng không ạ? Mình cho em xin thêm nhu cầu cụ thể để em tư vấn sát hơn nha.`,
       variables: { SERVICE_NAME: routing.selected.label },
     });
   }
@@ -883,11 +944,40 @@ export function selectSaleScriptResponse(input: {
   if (phone) {
     return makeTrace({ selected: node("WEDDING_GATE.CLOSING.COLLECT_PHONE", input.overrides), stateBefore: before, stateAfter: { ...after, humanHandoff: true }, workflow: input.workflow, decisionRule: "phone_detected_for_wedding_gate" });
   }
+
+  if (input.workflow.reason === "common_clarify_outdoor") {
+    return makeTrace({
+      selected: node("COMMON.SERVICE_ROUTING", input.overrides),
+      stateBefore: before,
+      stateAfter: after,
+      workflow: input.workflow,
+      decisionRule: "ambiguous_outdoor_requires_clarification",
+      renderedText: "Dạ mình đang hỏi gói cổng có chụp thêm ngoại cảnh, hay mình muốn tham khảo riêng album ngoại cảnh ạ?",
+      variables: {},
+    });
+  }
+  if (input.workflow.reason === "common_clarify_dress") {
+    return makeTrace({
+      selected: node("COMMON.SERVICE_ROUTING", input.overrides),
+      stateBefore: before,
+      stateAfter: after,
+      workflow: input.workflow,
+      decisionRule: "ambiguous_dress_requires_clarification",
+      renderedText: "Dạ mình đang hỏi váy có trong gói chụp cổng, hay mình muốn thuê váy riêng ạ?",
+      variables: {},
+    });
+  }
   if (input.workflow.action === "SEND_PRICE_SHEET") {
     return makeTrace({ selected: node("WEDDING_GATE.PRICING.SEND_RETAIL_PRICE", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 4, priceSheetSent: true }, workflow: input.workflow, decisionRule: "direct_or_confirmed_price_request" });
   }
-  if (isPromotionRequest(text)) {
-    return makeTrace({ selected: node("WEDDING_GATE.PROMOTION.CHECK_ELIGIBILITY", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 5 }, workflow: input.workflow, decisionRule: "promotion_request" });
+  if (input.workflow.reason === "owner_gate_step_4_compare") {
+    return makeTrace({ selected: node("WEDDING_GATE.COMPARE.PACKAGES", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 4 }, workflow: input.workflow, decisionRule: "compare_packages_owned_by_step_4" });
+  }
+  if (input.workflow.reason === "owner_gate_step_6_objection") {
+    return makeTrace({ selected: node("WEDDING_GATE.OBJECTION.PRICE", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 6 }, workflow: input.workflow, decisionRule: "price_objection_owned_by_step_6" });
+  }
+  if (input.workflow.reason === "owner_gate_step_7_decision") {
+    return makeTrace({ selected: node("WEDDING_GATE.DECISION.PACKAGE_SELECTED", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 7 }, workflow: input.workflow, decisionRule: "package_decision_owned_by_step_7" });
   }
   if (input.workflow.action === "EXPLAIN_PENDING" || (isClarification(text) && before.pendingQuestion)) {
     return makeTrace({ selected: node("WEDDING_GATE.DISCOVERY.EXPLAIN_PENDING", input.overrides), stateBefore: before, stateAfter: after, workflow: input.workflow, decisionRule: "clarify_current_pending_question" });

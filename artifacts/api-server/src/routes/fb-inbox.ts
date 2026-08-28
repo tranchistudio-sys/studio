@@ -43,12 +43,13 @@ import {
   HOLD_MESSAGE, imageEscalationReason, upsertOpenHumanReview, markHoldSent,
 } from "../lib/sale-human-review";
 import {
+  buildPackageComparisonReply,
   buildPriceSheetReply,
   PRICE_SHEET_SEND_FAILED_MESSAGE,
   resolvePriceSheetRequest,
 } from "../lib/sale-price-sheet";
 import { buildSaleWorkflowBlock, evaluateSaleWorkflow } from "../lib/sale-workflow";
-import { buildWeddingGiftPromptBlock, evaluateWeddingGiftTrace, loadWeddingGiftProgram } from "../lib/sale-wedding-gifts";
+import { buildWeddingGiftPromptBlock, buildWeddingGiftReply, evaluateWeddingGiftTrace, loadWeddingGiftProgram } from "../lib/sale-wedding-gifts";
 import { emitNotification } from "./notifications";
 import multer from "multer";
 import { randomUUID } from "crypto";
@@ -898,6 +899,13 @@ async function handleClaudeSaleReply(
     saleWorkflow,
     saleWorkflow.action === "SEND_SAMPLE" ? false : undefined,
   );
+  if (saleWorkflow.reason === "owner_gate_step_5_promotion") {
+    controlledWorkflowReply = buildWeddingGiftReply({
+      message: text,
+      trace: weddingGiftTrace,
+      program: weddingGiftProgram,
+    });
+  }
 
   const priceSheet = await resolvePriceSheetRequest({
     message: text,
@@ -962,6 +970,19 @@ async function handleClaudeSaleReply(
     }
     const textSent = await sendChunksWithTyping(psid, cfg.pageAccessToken, priceReplies, "claude_price_sheet_replied");
     await markIncoming(textSent ? "claude_price_sheet_replied" : "claude_price_sheet_text_failed");
+    return;
+  }
+
+  if (saleWorkflow.stage === "EXPLAIN_PACKAGES" && saleWorkflow.serviceKey === "wedding_gate") {
+    const comparisonData = await resolvePriceSheetRequest({
+      message: text,
+      prior: history,
+      force: true,
+      serviceKey: "wedding_gate",
+    });
+    const comparisonReply = buildPackageComparisonReply(comparisonData, text, history);
+    const sent = await sendChunksWithTyping(psid, cfg.pageAccessToken, [comparisonReply], "claude_package_comparison");
+    await markIncoming(sent ? "claude_package_comparison" : "claude_package_comparison_failed");
     return;
   }
 

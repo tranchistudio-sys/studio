@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@workspace/db", () => ({ pool: { query: vi.fn(async () => ({ rows: [] })) } }));
 import {
+  buildWeddingGiftReply,
   evaluateWeddingGiftTrace,
   WEDDING_GIFT_PROGRAM_TEMPLATE,
   type WeddingGiftProgramConfig,
@@ -60,6 +61,75 @@ describe("wedding gift program", () => {
     expect(trace.giftTier).toBe(3);
     expect(trace.giftOptions).toHaveLength(3);
     expect(trace.chooseCount).toBe(1);
+  });
+
+  it("counts two explicitly separate wedding-party services but excludes Beauty", () => {
+    const trace = evaluateWeddingGiftTrace({
+      message: "Chị chốt 2 gói tiệc cưới và chụp thêm Beauty.",
+      prior: [
+        ...quoted,
+        { direction: "incoming", message: "Chị chốt chụp cổng." },
+      ],
+      program: ACTIVE_PROGRAM,
+      now: new Date("2026-08-28T00:00:00.000Z"),
+    });
+    expect(trace.confirmedWeddingServices).toEqual(["wedding_gate", "wedding_party", "wedding_party"]);
+    expect(trace.eligibleServiceCount).toBe(3);
+    expect(trace.giftTier).toBe(3);
+  });
+
+  it("keeps the conversation tier at 2 after Beauty, then raises it to 3 after wedding party", () => {
+    const prior = [
+      ...quoted,
+      { direction: "incoming" as const, message: "Chị chốt chụp cổng với album studio." },
+      { direction: "incoming" as const, message: "Chị chốt chụp thêm Beauty." },
+    ];
+    const afterBeauty = evaluateWeddingGiftTrace({
+      message: "Vậy giờ mốc mấy?",
+      prior,
+      currentServiceKey: "beauty",
+      program: ACTIVE_PROGRAM,
+      now: new Date("2026-08-28T00:00:00.000Z"),
+    });
+    expect(afterBeauty.eligibleServiceCount).toBe(2);
+    expect(afterBeauty.giftTier).toBe(2);
+
+    const afterParty = evaluateWeddingGiftTrace({
+      message: "Vậy giờ mốc mấy?",
+      prior: [...prior, { direction: "incoming", message: "Chị chốt chụp tiệc cưới." }],
+      currentServiceKey: "wedding_party",
+      program: ACTIVE_PROGRAM,
+      now: new Date("2026-08-28T00:00:00.000Z"),
+    });
+    expect(afterParty.eligibleServiceCount).toBe(3);
+    expect(afterParty.giftTier).toBe(3);
+  });
+
+  it("answers with the highest reached tier and explicitly rejects accumulation", () => {
+    const trace = evaluateWeddingGiftTrace({
+      message: "5 dịch vụ là được luôn quà mốc 2, 3, 4, 5 hả?",
+      prior: quoted,
+      program: ACTIVE_PROGRAM,
+      now: new Date("2026-08-28T00:00:00.000Z"),
+    });
+    const reply = buildWeddingGiftReply({ message: "5 dịch vụ là được luôn quà mốc 2, 3, 4, 5 hả?", trace, program: ACTIVE_PROGRAM });
+    expect(reply).toContain("không cộng dồn");
+    expect(reply).toContain("mốc cao nhất");
+  });
+
+  it("renders exact tier 2 gifts and never counts Beauty", () => {
+    const trace = evaluateWeddingGiftTrace({
+      message: "Chốt 2 dịch vụ được quà gì?",
+      prior: quoted,
+      program: ACTIVE_PROGRAM,
+      now: new Date("2026-08-28T00:00:00.000Z"),
+    });
+    const reply = buildWeddingGiftReply({ message: "Chốt 2 dịch vụ được quà gì?", trace, program: ACTIVE_PROGRAM });
+    expect(reply).toContain("10 khung hình mica để bàn");
+    expect(reply).toContain("2 tranh cao cấp 60 × 90cm");
+
+    const beautyReply = buildWeddingGiftReply({ message: "Beauty có tính thêm một dịch vụ không?", trace, program: ACTIVE_PROGRAM });
+    expect(beautyReply).toContain("không được tính");
   });
 
   it("recalculates the tier when the customer removes a service", () => {

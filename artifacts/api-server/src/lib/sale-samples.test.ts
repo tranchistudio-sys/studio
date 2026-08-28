@@ -511,6 +511,26 @@ describe("sale-samples: CMS tag fallback and conversation dedupe", () => {
     ])).toEqual(["https://cdn.example/gate-1.jpg", "https://cdn.example/gate-2.jpg"]);
   });
 
+  it("supports three real Gate images and exact expanded style tags", async () => {
+    mockGallery([
+      { id: 1, name: "Gate editorial 1", slug: "gate-editorial-1", tags_text: "editorial, cuoi, studio", category_id: 38, cover_image_url: null, first_photo: "/objects/gate-editorial-1", sort_order: 1 },
+      { id: 2, name: "Gate editorial 2", slug: "gate-editorial-2", tags_text: "editorial, cuoi, studio", category_id: 38, cover_image_url: null, first_photo: "/objects/gate-editorial-2", sort_order: 2 },
+      { id: 3, name: "Gate editorial 3", slug: "gate-editorial-3", tags_text: "editorial, cuoi, studio", category_id: 38, cover_image_url: null, first_photo: "/objects/gate-editorial-3", sort_order: 3 },
+    ]);
+
+    const result = await selectSampleImages({
+      sampleRequested: true,
+      sampleIntents: ["wedding_gate"],
+      intentLocked: true,
+      messageText: "Cho minh xem 3 mau chup cong editorial.",
+      maxTotal: 3,
+    });
+
+    expect(result.images).toHaveLength(3);
+    expect(result.styleMatched).toBe(true);
+    expect(result.requestedStyleTags).toEqual(["editorial"]);
+  });
+
   it("switches from Beauty to Gate and then to Album Studio without reusing the old Gate asset", async () => {
     mockGallery([
       { id: 1, name: "Beauty", slug: "beauty", tags_text: "beauty, sexy", category_id: 33, cover_image_url: null, first_photo: "/objects/beauty", sort_order: 1 },

@@ -18,6 +18,7 @@ export type WeddingGiftProgramConfig = {
   eligibleServiceKeys: string[];
   eligibleGroupIds: number[];
   tiers: WeddingGiftTier[];
+  accumulationPolicy: "highest_tier_only";
   source: "database" | "structured_template_pending_migration" | "database_not_configured";
 };
 
@@ -42,52 +43,56 @@ const TEMPLATE_TIERS: WeddingGiftTier[] = [
   {
     id: -2,
     minimumServiceCount: 2,
-    name: "Chot tu 2 dich vu",
+    name: "Mốc 2 dịch vụ cưới",
     chooseCount: 1,
     options: [
-      { id: -21, name: "10 khung hinh mica de ban", description: null },
-      { id: -22, name: "2 tranh mica cao cap 60 x 90cm", description: null },
+      { id: -21, name: "10 khung hình mica để bàn", description: null },
+      { id: -22, name: "2 tranh cao cấp 60 × 90cm", description: null },
     ],
   },
   {
     id: -3,
     minimumServiceCount: 3,
-    name: "Chot tu 3 dich vu",
+    name: "Mốc 3 dịch vụ cưới",
     chooseCount: 1,
     options: [
-      { id: -31, name: "1 ao di ban tri gia 1.200.000d", description: null },
-      { id: -32, name: "Ao dai danh cho chu re", description: null },
-      { id: -33, name: "6 ao dai qua nam", description: null },
+      { id: -31, name: "1 áo đi bàn trị giá 1.200.000đ", description: null },
+      { id: -32, name: "Áo dài dành cho chú rể", description: null },
+      { id: -33, name: "6 áo dài quả nam", description: null },
     ],
   },
   {
     id: -4,
     minimumServiceCount: 4,
-    name: "Chot tu 4 dich vu",
+    name: "Mốc 4 dịch vụ cưới",
     chooseCount: 1,
-    options: [{ id: -41, name: "1 anh mica cao cap 60 x 120cm", description: null }],
+    options: [{ id: -41, name: "1 ảnh 60 × 120cm chất liệu mica cao cấp", description: null }],
   },
   {
     id: -5,
     minimumServiceCount: 5,
-    name: "Chot tu 5 dich vu",
+    name: "Mốc 5 dịch vụ cưới",
     chooseCount: 1,
     options: [
-      { id: -51, name: "May moi 1 cap ao dai theo mau va size dau re", description: null },
-      { id: -52, name: "May moi 1 bo saree theo size co dau", description: null },
+      { id: -51, name: "May mới 1 cặp áo dài theo mẫu, đúng size dâu rể", description: null },
+      { id: -52, name: "May mới 1 bộ saree theo size cô dâu", description: null },
     ],
   },
 ];
 
 export const WEDDING_GIFT_PROGRAM_TEMPLATE: WeddingGiftProgramConfig = {
   id: null,
-  name: "Chuong trinh qua tang dac biet - Amazing Studio",
+  name: "Chương trình quà tặng đặc biệt - Amazing Studio",
   enabled: false,
   startsAt: null,
   endsAt: null,
-  eligibleServiceKeys: ["wedding_gate", "album_studio", "album_outdoor", "wedding_party"],
-  eligibleGroupIds: [12, 11, 10, 17],
+  eligibleServiceKeys: [
+    "wedding_gate", "album_studio", "album_outdoor", "wedding_party",
+    "wedding_video", "wedding_combo", "wedding_outfit", "bridal_makeup",
+  ],
+  eligibleGroupIds: [10, 11, 12, 13, 14, 16, 17, 19, 22, 23, 24],
   tiers: TEMPLATE_TIERS,
+  accumulationPolicy: "highest_tier_only",
   source: "structured_template_pending_migration",
 };
 
@@ -107,6 +112,10 @@ const WEDDING_SERVICE_PATTERNS: Array<{ key: string; re: RegExp }> = [
   { key: "album_studio", re: /\b(album tai studio|album studio|chup cuoi studio)\b/ },
   { key: "album_outdoor", re: /\b(album ngoai canh|ngoai canh cuoi|chup cuoi ngoai canh)\b/ },
   { key: "wedding_party", re: /\b(chup tiec|tiec cuoi|phong su cuoi|dai tiec)\b/ },
+  { key: "wedding_video", re: /\b(quay phim cuoi|quay ngay cuoi|video cuoi)\b/ },
+  { key: "wedding_combo", re: /\b(combo cuoi|goi ngay cuoi|tron goi cuoi)\b/ },
+  { key: "wedding_outfit", re: /\b(thue vay cuoi|vay cuoi|ao dai cuoi|vest cuoi|trang phuc cuoi)\b/ },
+  { key: "bridal_makeup", re: /\b(makeup co dau|makeup cuoi|trang diem co dau)\b/ },
 ];
 
 export function weddingServiceKeysInText(message: string): string[] {
@@ -123,28 +132,36 @@ export function reconstructWeddingServiceState(input: {
   currentServiceKey?: string | null;
 }): { interested: string[]; confirmed: string[] } {
   const interested = new Set<string>();
-  const confirmed = new Set<string>();
+  let confirmed: string[] = [];
   const incoming = [
-    ...(input.prior ?? []).filter((item) => item.direction === "incoming").map((item) => item.message),
-    input.message,
+    ...(input.prior ?? []).filter((item) => item.direction === "incoming").map((item) => ({ raw: item.message, isCurrent: false })),
+    { raw: input.message, isCurrent: true },
   ];
 
-  for (const raw of incoming) {
+  for (const { raw, isCurrent } of incoming) {
     const text = norm(raw);
     let keys = weddingServiceKeysInText(raw);
-    if (keys.length === 0 && input.currentServiceKey && WEDDING_GIFT_PROGRAM_TEMPLATE.eligibleServiceKeys.includes(input.currentServiceKey)) {
+    if (isCurrent && keys.length === 0 && input.currentServiceKey && WEDDING_GIFT_PROGRAM_TEMPLATE.eligibleServiceKeys.includes(input.currentServiceKey)) {
       keys = [input.currentServiceKey];
     }
     for (const key of keys) interested.add(key);
     if (REMOVE_SERVICE_RE.test(text)) {
-      for (const key of keys) confirmed.delete(key);
+      for (const key of keys) {
+        const index = confirmed.lastIndexOf(key);
+        if (index >= 0) confirmed.splice(index, 1);
+      }
       continue;
     }
     if (CONFIRM_SERVICE_RE.test(text)) {
-      for (const key of keys) confirmed.add(key);
+      for (const key of keys) confirmed.push(key);
+      // Hai gói/ngày tiệc riêng biệt trong cùng hợp đồng được chủ studio xác nhận
+      // là hai dịch vụ. Chỉ nhân số khi khách nói rõ số lượng.
+      if (keys.includes("wedding_party") && /\b(2|hai)\s+(?:goi|ngay|buoi)\b/.test(text)) {
+        confirmed.push("wedding_party");
+      }
     }
   }
-  return { interested: [...interested], confirmed: [...confirmed] };
+  return { interested: [...interested], confirmed };
 }
 
 function programStatus(program: WeddingGiftProgramConfig, now: Date): WeddingGiftTrace["programStatus"] {
@@ -176,7 +193,7 @@ export function evaluateWeddingGiftTrace(input: {
   const prior = input.prior ?? [];
   const state = reconstructWeddingServiceState(input);
   const eligibleConfirmed = state.confirmed.filter((key) => input.program.eligibleServiceKeys.includes(key));
-  const count = new Set(eligibleConfirmed).size;
+  const count = eligibleConfirmed.length;
   const tier = [...input.program.tiers]
     .filter((item) => item.minimumServiceCount <= count)
     .sort((a, b) => b.minimumServiceCount - a.minimumServiceCount)[0] ?? null;
@@ -270,7 +287,9 @@ export async function loadWeddingGiftProgram(): Promise<WeddingGiftProgramConfig
       enabled: program.enabled,
       startsAt: program.starts_at,
       endsAt: program.ends_at,
-      eligibleServiceKeys: (eligibleRes.rows as EligibleRow[]).map((row) => row.service_key),
+      eligibleServiceKeys: [...new Set((eligibleRes.rows as EligibleRow[]).map((row) =>
+        row.service_key.startsWith("wedding_combo_") ? "wedding_combo" : row.service_key,
+      ))],
       eligibleGroupIds: (eligibleRes.rows as EligibleRow[]).map((row) => row.group_id),
       tiers: tierRows.map((row) => ({
         id: row.id,
@@ -283,6 +302,7 @@ export async function loadWeddingGiftProgram(): Promise<WeddingGiftProgramConfig
           description: option.description,
         })),
       })),
+      accumulationPolicy: "highest_tier_only",
       source: "database",
     };
     cachedProgram = { value, expiresAt: Date.now() + 60_000 };
@@ -293,6 +313,63 @@ export async function loadWeddingGiftProgram(): Promise<WeddingGiftProgramConfig
     cachedProgram = { value: WEDDING_GIFT_PROGRAM_TEMPLATE, expiresAt: Date.now() + 60_000 };
     return WEDDING_GIFT_PROGRAM_TEMPLATE;
   }
+}
+
+function tierByCount(program: WeddingGiftProgramConfig, count: number): WeddingGiftTier | null {
+  return [...program.tiers]
+    .filter((tier) => tier.minimumServiceCount <= count)
+    .sort((a, b) => b.minimumServiceCount - a.minimumServiceCount)[0] ?? null;
+}
+
+function tierText(tier: WeddingGiftTier): string {
+  const options = tier.options.map((option) => option.name);
+  if (options.length === 1) return `Mốc ${tier.minimumServiceCount} dịch vụ cưới được tặng ${options[0]} nha mình 😄`;
+  return `Mốc ${tier.minimumServiceCount} dịch vụ cưới mình được chọn 1 trong ${options.length}: ${options.join("; ")} nha mình 😄`;
+}
+
+/** Câu Step 5 cố định từ policy có cấu trúc; không giao AI tự bịa quyền lợi. */
+export function buildWeddingGiftReply(input: {
+  message: string;
+  trace: WeddingGiftTrace;
+  program: WeddingGiftProgramConfig;
+}): string {
+  const text = norm(input.message);
+  const { trace, program } = input;
+  if (trace.programStatus !== "active") {
+    return "Dạ chương trình quà hiện chưa được bật nên em chưa dám hứa sai quyền lợi cho mình ạ.";
+  }
+  if (/beauty|ca nhan|fashion|chup bau|gia dinh|sinh nhat/.test(text) && /tinh|cong|dich vu|qua/.test(text)) {
+    return "Dạ Beauty và các dịch vụ cá nhân ngoài cưới không được tính vào chương trình quà cưới nha mình ạ.";
+  }
+  if (/cong don|duoc luon|tat ca.*moc|moc 2.*moc 3|2.*3.*4.*5/.test(text)) {
+    return "Dạ quà không cộng dồn tất cả các mốc nha mình. Hợp đồng hiện có bao nhiêu dịch vụ cưới đủ điều kiện thì mình áp đúng phần quà của mốc cao nhất đang đạt ạ.";
+  }
+  if (/doi.*tien|quy doi.*tien|lay tien/.test(text)) {
+    return "Dạ chương trình hiện áp dụng theo quà tặng, không quy đổi thành tiền mặt nha mình ạ.";
+  }
+  if (/duoc chon|studio chon|tu chon|ai chon/.test(text)) {
+    return "Dạ đúng rồi mình nha 😄 Những mốc ghi ‘chọn 1 trong…’ thì dâu rể tự chọn món hợp nhu cầu, bên em không chọn giùm ạ.";
+  }
+  if (/dich vu nao|nhung gi.*tinh|tinh.*dich vu/.test(text)) {
+    return "Dạ chương trình tính các hạng mục cưới như chụp cổng, album/prewedding, ngày cưới, tiệc cưới, quay phim, combo, makeup và trang phục cưới đủ điều kiện. Beauty và dịch vụ cá nhân ngoài cưới không tính ạ.";
+  }
+  if (/co nen|lay them|them mot.*len moc|chay qua/.test(text)) {
+    return "Dạ nếu mình vốn đã cần thêm hạng mục cưới thì làm chung sẽ lợi hơn nha 😄 Còn nếu không cần thì em không khuyên mình lấy thêm chỉ để chạy quà đâu ạ.";
+  }
+  if (/day du|toan bo|tat ca.*chuong trinh/.test(text)) {
+    return `Dạ em gửi mình chương trình đầy đủ nha 💕 ${program.tiers.map(tierText).join(" ")} Beauty và dịch vụ ngoài cưới không tính; quà áp theo mốc cao nhất hiện đạt và không cộng dồn các mốc ạ.`;
+  }
+  const explicitTier = [5, 4, 3, 2].find((count) => new RegExp(`\\b${count}\\s*(?:dich vu|goi)|moc\\s*${count}\\b`).test(text));
+  if (explicitTier) {
+    const tier = program.tiers.find((item) => item.minimumServiceCount === explicitTier);
+    if (tier) return tierText(tier);
+  }
+  if (/moc nao|moc may|duoc gi|co qua khong|qua gi/.test(text) && trace.eligibleServiceCount > 0) {
+    const current = tierByCount(program, trace.eligibleServiceCount);
+    if (current) return `Dạ hiện hợp đồng mình có ${trace.eligibleServiceCount} dịch vụ cưới đủ điều kiện nên đang ở mốc ${current.minimumServiceCount} nha 😄 ${tierText(current)}`;
+    return `Dạ hiện mình có ${trace.eligibleServiceCount} dịch vụ cưới đủ điều kiện. Chương trình bắt đầu có quà từ 2 dịch vụ nha mình.`;
+  }
+  return "Dạ bên em có chương trình quà riêng cho dâu rể từ 2 dịch vụ cưới trở lên nha 😄 Quà tăng theo mốc 2–3–4–5 dịch vụ. Mình nói em các hạng mục đang tính làm, em kiểm tra đúng mốc cho mình luôn ạ.";
 }
 
 export function buildWeddingGiftPromptBlock(trace: WeddingGiftTrace): string {

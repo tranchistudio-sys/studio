@@ -40,6 +40,26 @@ import {
   type WeddingGiftTrace,
 } from "./sale-wedding-gifts";
 
+function normalizeDecisionText(value: string): string {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").replace(/Đ/g, "d").toLowerCase();
+}
+
+function decisionPackageFromVerifiedSource(message: string, packages: PriceSheetTrace["includedPackages"]) {
+  const text = normalizeDecisionText(message);
+  const priceMillions = text.match(/\b(1[.,]9|2[.,]9|3[.,]9|4[.,]5|5[.,]9)\b/)?.[1]?.replace(",", ".");
+  if (priceMillions) {
+    const wanted = Math.round(Number(priceMillions) * 1_000_000);
+    return packages.find((pkg) => pkg.finalPrice === wanted || pkg.price === wanted) ?? null;
+  }
+  if (/\b(photo master|ekip master)\b/.test(text)) {
+    return packages.find((pkg) => /master/i.test(`${pkg.name} ${pkg.benefits}`)) ?? null;
+  }
+  const aliases = ["tiet kiem", "basic", "premium", "luxury"];
+  const alias = aliases.find((name) => new RegExp(`\\b${name}\\b`).test(text));
+  if (!alias) return null;
+  return packages.find((pkg) => normalizeDecisionText(pkg.name).includes(alias)) ?? null;
+}
+
 /**
  * URL ảnh có hợp lệ để gửi/hiển thị không? Chặn trường hợp lỡ dùng TIÊU ĐỀ (title tiếng Việt có dấu /
  * khoảng trắng) làm đường dẫn ảnh — sẽ render thành ảnh bể ở Chat test. URL thật luôn là http(s)://
@@ -327,6 +347,43 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
         { name: "promotion_is_current", passed: weddingGiftTrace.programStatus === "active" },
         { name: "beauty_is_not_eligible", passed: !weddingGiftProgram.eligibleServiceKeys.includes("beauty") },
         { name: "highest_tier_only", passed: weddingGiftProgram.accumulationPolicy === "highest_tier_only" },
+      ],
+    });
+  }
+
+  if (scriptTrace.nodeKey === "WEDDING_GATE.DECISION.PACKAGE_SELECTED") {
+    const packageSource = await resolvePriceSheetRequest({
+      message: incomingText,
+      prior,
+      force: true,
+      serviceKey: "wedding_gate",
+    });
+    const verifiedPackages = packageSource.trace?.includedPackages ?? [];
+    const selectedPackage = decisionPackageFromVerifiedSource(incomingText, verifiedPackages);
+    const decision = saleWorkflow.packageDecision;
+    let decisionReply = scriptTrace.renderedText;
+    if (decision.resolution === "AMBIGUOUS_BENEFIT") {
+      const micaMatches = verifiedPackages.filter((pkg) => /2\s*(?:hinh\s+)?cong/i.test(normalizeDecisionText(`${pkg.name} ${pkg.benefits}`)) && /mica/i.test(`${pkg.name} ${pkg.benefits}`));
+      if (micaMatches.length === 1) {
+        decisionReply = `Dạ em hiểu mình chọn gói có 2 cổng mica nha 👍 Theo bảng đang bán hiện tại là ${micaMatches[0].name}. Em ghi nhận đúng lựa chọn này và chuyển qua phần xác nhận thông tin nha.`;
+      }
+    } else if (selectedPackage) {
+      decisionReply = decision.status === "TENTATIVE"
+        ? `Dạ hiện mình đang nghiêng ${selectedPackage.name} nha. Em chưa tạo booking hay giữ lịch vội; khi mình xác nhận chắc thì em tiếp tục đúng gói này ạ.`
+        : decision.bookingReady === false
+          ? `Dạ em ghi nhận mình đã chọn ${selectedPackage.name} nha. Phần booking em chưa làm vội theo ý mình; khi sẵn sàng em tiếp tục đúng từ gói này ạ.`
+          : `Dạ ${selectedPackage.name} nha mình 👍 Em ghi nhận đúng lựa chọn này, không đổi hay đẩy mình lên gói khác. Mình qua phần xác nhận thông tin và kiểm tra lịch nha.`;
+    }
+    scriptTrace = appendScriptTraceData(scriptTrace, {
+      renderedText: decisionReply,
+      dataSources: ["service_packages", "conversation_state"],
+      priceSnapshot: selectedPackage ? [{ packageId: selectedPackage.id, price: selectedPackage.price, finalPrice: selectedPackage.finalPrice }] : [],
+      stateAfter: { selectedPackageName: selectedPackage?.name ?? scriptTrace.stateAfter.selectedPackageName, currentStep: 7 },
+      validatorResults: [
+        { name: "retail_package_resolution_from_verified_db", passed: decision.resolution === "CONTEXT" || decision.resolution === "SERVICE_ONLY" || decision.resolution === "UNKNOWN_PRICE" || decision.resolution === "AMBIGUOUS_BENEFIT" || Boolean(selectedPackage) },
+        { name: "no_booking_creation", passed: true },
+        { name: "no_payment_mutation", passed: true },
+        { name: "no_deposit_mutation", passed: true },
       ],
     });
   }

@@ -31,7 +31,7 @@ describe("SALE_WEDDING_GATE v1", () => {
     const script = getScriptCatalog().find((item) => item.scriptKey === "SALE_WEDDING_GATE");
 
     expect(script).toBeDefined();
-    expect(new Set(script?.nodes.map((node) => node.stepNumber))).toEqual(new Set([1, 2, 3, 4, 5, 6, 7]));
+    expect(new Set(script?.nodes.map((node) => node.stepNumber))).toEqual(new Set([1, 2, 3, 4, 5, 6, 7, 8]));
     expect(script?.nodes.find((node) => node.stepNumber === 1)?.nodeKey).toBe("COMMON.GREETING");
   });
 

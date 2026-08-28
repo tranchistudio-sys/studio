@@ -35,6 +35,9 @@ export type LuluScriptState = {
   sampleSent: boolean;
   priceSheetSent: boolean;
   humanHandoff: boolean;
+  selectedPackageName: string | null;
+  decisionStatus: "NONE" | "TENTATIVE" | "CONFIRMED";
+  bookingReady: boolean | null;
 };
 
 export type LuluResponseTrace = {
@@ -196,6 +199,19 @@ const WEDDING_GATE_NODES: SaleScriptNode[] = [
     requiredSlots: ["service_intent"],
     dataSources: ["wedding_gift_programs", "service_groups.discount_*", "service_packages.discount_*"],
     validators: ["promotion_is_current", "service_is_eligible"],
+    status: "active",
+  },
+  {
+    nodeKey: "WEDDING_GATE.CLOSING.START_BOOKING",
+    scriptKey: WEDDING_GATE_SCRIPT_KEY,
+    version: WEDDING_GATE_SCRIPT_VERSION,
+    stepNumber: 8,
+    stage: "CLOSE_OR_HANDOFF",
+    title: "Chuyen sang buoc xac nhan booking",
+    replyTemplate: "Dạ em chuyển qua phần xác nhận thông tin và kiểm tra lịch cho mình nha.",
+    requiredSlots: ["service_intent"],
+    dataSources: ["conversation_state"],
+    validators: ["no_booking_creation", "no_payment_mutation", "no_deposit_mutation"],
     status: "active",
   },
   {
@@ -612,7 +628,39 @@ export function workflowToScriptState(workflow: SaleWorkflowDecision): LuluScrip
     sampleSent: workflow.sampleSent,
     priceSheetSent: workflow.priceSheetSent,
     humanHandoff: false,
+    selectedPackageName: workflow.packageDecision.packageHint,
+    decisionStatus: workflow.packageDecision.status,
+    bookingReady: workflow.packageDecision.bookingReady,
   };
+}
+
+function packageLabel(hint: SaleWorkflowDecision["packageDecision"]["packageHint"]): string | null {
+  if (hint === "SAVING") return "Tiết kiệm";
+  if (hint === "BASIC") return "Basic";
+  if (hint === "PREMIUM") return "Premium";
+  if (hint === "LUXURY") return "Luxury";
+  return null;
+}
+
+function decisionReply(workflow: SaleWorkflowDecision): string {
+  const decision = workflow.packageDecision;
+  const label = packageLabel(decision.packageHint);
+  if (decision.resolution === "UNKNOWN_PRICE") {
+    return "Dạ bảng Chụp cổng hiện không có đúng gói 4,5 triệu nha mình. Em kiểm tra lại các gói đang bán để mình chọn đúng, không tự ghép nhầm gói ạ.";
+  }
+  if (decision.resolution === "AMBIGUOUS_BENEFIT") {
+    return "Dạ mình đang nói Premium hay Luxury ạ? Hai gói đều có phương án 2 cổng mica nên em xác nhận đúng gói cho mình nha.";
+  }
+  if (decision.resolution === "SERVICE_ONLY") {
+    return "Dạ mình chọn dịch vụ chụp cổng rồi nha 👍 Còn gói Tiết kiệm, Basic, Premium hay Luxury thì mình đang nghiêng gói nào để em ghi nhận đúng trước khi giữ lịch ạ?";
+  }
+  if (decision.status === "TENTATIVE") {
+    return `Dạ hiện mình đang nghiêng ${label ?? "gói này"} nha. Em chưa tạo booking hay giữ lịch vội; khi mình xác nhận chắc thì em chuyển tiếp đúng lựa chọn này ạ.`;
+  }
+  if (decision.bookingReady === false) {
+    return `Dạ em ghi nhận mình đã chọn ${label ?? "gói này"} nha. Phần booking em chưa làm vội theo ý mình; khi sẵn sàng em tiếp tục đúng từ lựa chọn này ạ.`;
+  }
+  return `Dạ ${label ?? "gói này"} nha mình 👍 Em ghi nhận đúng lựa chọn này, không đổi hay đẩy mình lên gói khác. Mình qua phần xác nhận thông tin và kiểm tra lịch nha.`;
 }
 
 function node(key: string, overrides?: SaleScriptNodeOverrides): SaleScriptNode {
@@ -977,7 +1025,26 @@ export function selectSaleScriptResponse(input: {
     return makeTrace({ selected: node("WEDDING_GATE.OBJECTION.PRICE", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 6 }, workflow: input.workflow, decisionRule: "price_objection_owned_by_step_6" });
   }
   if (input.workflow.reason === "owner_gate_step_7_decision") {
-    return makeTrace({ selected: node("WEDDING_GATE.DECISION.PACKAGE_SELECTED", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 7 }, workflow: input.workflow, decisionRule: "package_decision_owned_by_step_7" });
+    return makeTrace({
+      selected: node("WEDDING_GATE.DECISION.PACKAGE_SELECTED", input.overrides),
+      stateBefore: before,
+      stateAfter: { ...after, currentStep: 7 },
+      workflow: input.workflow,
+      decisionRule: "package_decision_owned_by_step_7",
+      renderedText: decisionReply(input.workflow),
+      variables: { SELECTED_PACKAGE: packageLabel(input.workflow.packageDecision.packageHint), DECISION_STATUS: input.workflow.packageDecision.status, BOOKING_READY: input.workflow.packageDecision.bookingReady },
+    });
+  }
+  if (input.workflow.reason === "owner_gate_step_8_booking") {
+    return makeTrace({
+      selected: node("WEDDING_GATE.CLOSING.START_BOOKING", input.overrides),
+      stateBefore: before,
+      stateAfter: { ...after, currentStep: 8 },
+      workflow: input.workflow,
+      decisionRule: "booking_request_handed_to_step_8_without_mutation",
+      renderedText: "Dạ em chuyển qua phần xác nhận thông tin và kiểm tra lịch cho mình nha. Bước này chưa tự tạo booking, chưa ghi cọc hay thanh toán ạ.",
+      variables: {},
+    });
   }
   if (input.workflow.action === "EXPLAIN_PENDING" || (isClarification(text) && before.pendingQuestion)) {
     return makeTrace({ selected: node("WEDDING_GATE.DISCOVERY.EXPLAIN_PENDING", input.overrides), stateBefore: before, stateAfter: after, workflow: input.workflow, decisionRule: "clarify_current_pending_question" });

@@ -87,13 +87,51 @@ describe("SALE_WEDDING_GATE v1", () => {
   it.each([
     ["Basic với Premium khác gì?", "WEDDING_GATE.COMPARE.PACKAGES"],
     ["Mắc quá em.", "WEDDING_GATE.OBJECTION.PRICE"],
-    ["Chị lấy Premium.", "WEDDING_GATE.DECISION.PACKAGE_SELECTED"],
+    ["Chị lấy Premium.", "WEDDING_GATE.CLOSING.COLLECT_MISSING"],
   ])("keeps non-price intents out of Step 3: %s", (message, nodeKey) => {
     const prior: SaleHistoryItem[] = [
       { direction: "incoming", message: "Chụp cổng bao nhiêu?" },
       { direction: "outgoing", message: "[image:/objects/gate-price]", aiDecision: "price_sheet" },
     ];
     expect(trace(message, prior).result.nodeKey).toBe(nodeKey);
+  });
+
+  it("collects one missing booking field at a time and only hands off when minimum information is complete", () => {
+    const base: SaleHistoryItem[] = [
+      { direction: "incoming", message: "Mình cần chụp cổng" },
+      { direction: "incoming", message: "Chị lấy Premium" },
+    ];
+    const askDate = trace("Chốt gói này nha", base).result;
+    expect(askDate.nodeKey).toBe("WEDDING_GATE.CLOSING.COLLECT_MISSING");
+    expect(askDate.renderedText).toContain("dự kiến chụp ngày nào");
+    expect(askDate.stateAfter.humanHandoff).toBe(false);
+
+    const withDate = [...base, { direction: "incoming" as const, message: "Chụp ngày 12/09/2026" }];
+    const askPhone = trace("Dạ đúng rồi", withDate).result;
+    expect(askPhone.renderedText).toContain("số điện thoại");
+    expect(askPhone.stateAfter.humanHandoff).toBe(false);
+
+    const complete = trace("0385621612", withDate).result;
+    expect(complete.nodeKey).toBe("WEDDING_GATE.CLOSING.HUMAN_HANDOFF");
+    expect(complete.renderedText).toContain("chưa giữ lịch hay tạo booking");
+    expect(complete.stateAfter.humanHandoff).toBe(true);
+
+    const completeInOneMessage = trace("Chị chốt Premium, chụp 12/09/2026, số 0385621612", [
+      { direction: "incoming", message: "Mình cần chụp cổng" },
+    ]).result;
+    expect(completeInOneMessage.nodeKey).toBe("WEDDING_GATE.CLOSING.HUMAN_HANDOFF");
+    expect(completeInOneMessage.renderedText).toContain("0385621612");
+  });
+
+  it("hands deposit and bank-account requests to a human without writing payment", () => {
+    const prior: SaleHistoryItem[] = [
+      { direction: "incoming", message: "Mình cần chụp cổng" },
+      { direction: "incoming", message: "Chị lấy Premium ngày 12/09/2026" },
+    ];
+    const result = trace("Cho chị xin tài khoản cọc", prior).result;
+    expect(result.nodeKey).toBe("WEDDING_GATE.CLOSING.HUMAN_HANDOFF");
+    expect(result.renderedText).toContain("chưa tự ghi cọc");
+    expect(result.validatorResults.some((item) => item.name === "no_payment_mutation" && item.passed)).toBe(true);
   });
 
   it.each([

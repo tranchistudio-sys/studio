@@ -522,6 +522,10 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
         });
       }
     }
+    const deterministicHandoff = scriptTrace.stateAfter.humanHandoff;
+    const deterministicEscalationReason = deterministicHandoff
+      ? `sale_script_handoff:${scriptTrace.nodeKey}`
+      : null;
     return {
       reply: [scriptTrace.renderedText],
       chunks: [{ text: scriptTrace.renderedText, delayMs: 900 }],
@@ -529,12 +533,12 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
       model,
       responseTimeMs: Date.now() - startedAt,
       replyDelayMs: computeReplyDelayMs(incomingText, settings),
-      escalation: sampleImages.length === 0 && scriptTrace.nodeKey === "WEDDING_GATE.SAMPLE.SEND_MATCHED" ? "sample_asset_unavailable" : null,
+      escalation: deterministicEscalationReason ?? (sampleImages.length === 0 && scriptTrace.nodeKey === "WEDDING_GATE.SAMPLE.SEND_MATCHED" ? "sample_asset_unavailable" : null),
       learnedName: null,
-      escalated: false,
-      escalationReason: null,
-      holdMessage: null,
-      botPaused: false,
+      escalated: deterministicHandoff,
+      escalationReason: deterministicEscalationReason,
+      holdMessage: deterministicHandoff ? HOLD_MESSAGE : null,
+      botPaused: deterministicHandoff,
       detectedIntent: saleWorkflow.serviceKey,
       priceImages: [],
       priceSheetTrace: null,

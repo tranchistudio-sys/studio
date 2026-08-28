@@ -354,6 +354,55 @@ describe("intent ownership and contextual routing", () => {
     expect(decide("Vậy chị lấy Basic.", pricedGate).reason).toBe("owner_gate_step_7_decision");
   });
 
+  it.each([
+    ["Anh lấy gói 1.9.", "CONFIRMED", "SAVING", "EXACT"],
+    ["Chị lấy Basic.", "CONFIRMED", "BASIC", "EXACT"],
+    ["Premium nha.", "CONFIRMED", "PREMIUM", "EXACT"],
+    ["Chọn Luxury.", "CONFIRMED", "LUXURY", "EXACT"],
+    ["Lấy gói 3.9.", "CONFIRMED", "PREMIUM", "EXACT"],
+    ["Lấy gói 2 cổng mica.", "NONE", null, "AMBIGUOUS_BENEFIT"],
+    ["Lấy gói có Photo Master.", "CONFIRMED", "LUXURY", "EXACT"],
+    ["Chắc chị lấy Premium.", "TENTATIVE", "PREMIUM", "EXACT"],
+    ["Ừ Premium luôn.", "CONFIRMED", "PREMIUM", "EXACT"],
+    ["Thôi đổi sang Basic.", "CONFIRMED", "BASIC", "EXACT"],
+    ["Thôi Premium đi.", "CONFIRMED", "PREMIUM", "EXACT"],
+    ["Basic hợp chị hơn.", "CONFIRMED", "BASIC", "EXACT"],
+    ["Vậy Tiết kiệm thôi.", "CONFIRMED", "SAVING", "EXACT"],
+    ["Chị chọn Premium nhưng chưa đặt lịch.", "CONFIRMED", "PREMIUM", "EXACT"],
+    ["Chị lấy gói 4.5.", "NONE", null, "UNKNOWN_PRICE"],
+    ["Chị lấy chụp cổng.", "NONE", null, "SERVICE_ONLY"],
+  ])("classifies Step 7 decision safely: %s", (message, status, packageHint, resolution) => {
+    const result = decide(message, pricedGate);
+    expect(result.reason).toBe("owner_gate_step_7_decision");
+    expect(result.packageDecision).toMatchObject({ status, packageHint, resolution });
+  });
+
+  it("resolves 'gói này' from the latest focused package", () => {
+    const result = decide("Ừ gói này được.", [
+      ...pricedGate,
+      { direction: "outgoing", message: "Với nhu cầu này em đang đề xuất Premium." },
+    ]);
+    expect(result.packageDecision).toMatchObject({ status: "CONFIRMED", packageHint: "PREMIUM", resolution: "CONTEXT" });
+  });
+
+  it("keeps a selected package out of booking/payment/deposit state", () => {
+    const selected = decide("Chị lấy Premium.", pricedGate);
+    expect(selected.packageDecision).toMatchObject({ status: "CONFIRMED", packageHint: "PREMIUM", bookingReady: true });
+    const waiting = decide("Chị chọn Premium nhưng chưa đặt lịch.", pricedGate);
+    expect(waiting.packageDecision.bookingReady).toBe(false);
+    const booking = decide("Giờ đặt lịch sao?", [
+      ...pricedGate,
+      { direction: "incoming", message: "Chị lấy Premium." },
+    ]);
+    expect(booking.reason).toBe("owner_gate_step_8_booking");
+  });
+
+  it("returns a tentative expensive choice to Step 6", () => {
+    const result = decide("Chắc Premium nhưng vẫn thấy hơi mắc.", pricedGate);
+    expect(result.reason).toBe("owner_gate_step_6_objection");
+    expect(result.packageDecision.status).toBe("TENTATIVE");
+  });
+
   it("keeps promotion in Step 5 before routing a later price objection to Step 6", () => {
     expect(decide("Có khuyến mãi không?", pricedGate).reason).toBe("owner_gate_step_5_promotion");
     expect(decide("Không có giảm thêm hả, chị thấy hơi cao.", pricedGate).reason).toBe("owner_gate_step_6_objection");

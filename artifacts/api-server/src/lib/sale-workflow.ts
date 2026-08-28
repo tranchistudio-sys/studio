@@ -59,6 +59,12 @@ export type SaleWorkflowDecision = {
   answeredSlots: string[];
   selectedAction: SaleWorkflowAction;
   actionPriorityReason: string;
+  packageDecision: {
+    status: "NONE" | "TENTATIVE" | "CONFIRMED";
+    packageHint: "SAVING" | "BASIC" | "PREMIUM" | "LUXURY" | null;
+    resolution: "EXACT" | "CONTEXT" | "AMBIGUOUS_BENEFIT" | "UNKNOWN_PRICE" | "SERVICE_ONLY" | null;
+    bookingReady: boolean | null;
+  };
 };
 
 type SlotConfig = { key: string; label: string };
@@ -309,7 +315,55 @@ const PACKAGE_COMPARE_EXTENDED_RE = /(?:\b1[.,]9\b|\b2[.,]9\b|\b3[.,]9\b|\b5[.,]
 const PACKAGE_ADVICE_AFTER_PRICE_RE = /\bgoi nao\b.{0,24}\b(?:dang tien|ngon nhat|hop|nen chon|nhieu nguoi chon)\b|\b(?:chi can|can)\s+(?:dung\s+)?(?:mot|hai|1|2)\s+cong\b|\b(?:muon|thich|uu tien)\b.{0,20}\b(?:mica|san pham|ekip|tho chup|makeup)\b|\b(?:co can|nen)\b.{0,12}\blen luxury\b|\bmaster\b.{0,20}\b(?:dang|can|khac)\b|\bbasic\b.{0,12}\bvan on\b|\btoi da\s+\d+(?:[.,]\d+)?\s*(?:trieu|tr)\b/;
 const PROMOTION_RE = /\b(khuyen mai|uu dai|giam gia|qua tang|co qua|qua gi|moc may|moc nao|cong don|quy doi qua|doi qua.*tien)\b|\b[2345]\s*(?:dich vu|goi)\b.{0,24}\b(?:duoc gi|qua|tang)\b|\bbeauty\b.{0,24}\b(?:tinh|cong)\b/;
 const GATE_OBJECTION_RE = /\b(mac qua|cao qua|gia cao|hoi cao|vuot ngan sach|khong du ngan sach|ngan sach.*khong toi|goi.*re hon|re hon khong|bot duoc|giam (?:chi|em|minh)|giam them|gia chot|cho khac re hon|studio khac|tham khao.*studio|de .*suy nghi|suy nghi.*ngay|ngay.*suy nghi|hoi chong|hoi vo|hoi me|hoi gia dinh|chua muon coc|chua du tien coc|so phat sinh|so chup khong dep|chup chac khong dep|em map|em thap|mat tron|khong thich chup|khong co thoi gian|ban qua|chua chot ngay|du quyen loi|khong dung het|bo bot.*giam|cat bot.*giam|khong giong mau|co chinh hinh|chinh hinh dep|co dang tien|dang tien khong|khong chup nua|chon studio khac|khong con nhu cau)\b/;
-const PACKAGE_DECISION_RE = /\b(chot|lay|chon)\s+(?:goi\s+)?(tiet kiem|basic|premium|luxury)\b/;
+const PACKAGE_DECISION_RE = /\b(chot|lay|chon|quyet|lam|doi sang)\b.{0,24}\b(tiet kiem|basic|premium|luxury)\b|\b(tiet kiem|basic|premium|luxury)\b\s*(?:nha|nhe|luon|di|thoi|la duoc|hop .+ hon)\b|\b(?:lay|chon|chot)\s+(?:goi\s+)?(?:1[.,]9|2[.,]9|3[.,]9|5[.,]9)\b|\b(?:lay|chon)\b.{0,20}\b(?:photo master|2 cong mica|goi nay|cai nay)\b/;
+const BOOKING_PROCEED_RE = /\b(dat lich|giu lich|gio chot sao|lam sao dat lich|coc|tai khoan|chuyen khoan)\b/;
+const NOT_READY_TO_BOOK_RE = /\b(chua dat lich|chua giu lich|chua booking|chua coc)\b/;
+const TENTATIVE_DECISION_RE = /\b(chac|co le|nghieng|tam chon|de tam|gan chon)\b/;
+const DECISION_CONCERN_RE = /\b(van|nhung)\b.{0,30}\b(mac|cao|ngan sach|khong du)\b/;
+
+function packageHintFromText(text: string): SaleWorkflowDecision["packageDecision"]["packageHint"] {
+  if (/\b(?:tiet kiem|1[.,]9|goi thap nhat)\b/.test(text)) return "SAVING";
+  if (/\b(?:basic|2[.,]9)\b/.test(text)) return "BASIC";
+  if (/\b(?:premium|3[.,]9)\b/.test(text)) return "PREMIUM";
+  if (/\b(?:luxury|5[.,]9|photo master|ekip master)\b/.test(text)) return "LUXURY";
+  return null;
+}
+
+function lastPackageHint(prior: SaleHistoryItem[]): SaleWorkflowDecision["packageDecision"]["packageHint"] {
+  for (let index = prior.length - 1; index >= 0; index--) {
+    const hint = packageHintFromText(norm(prior[index].message));
+    if (hint) return hint;
+  }
+  return null;
+}
+
+function classifyPackageDecision(message: string, prior: SaleHistoryItem[]): SaleWorkflowDecision["packageDecision"] {
+  const text = norm(message);
+  const tentative = TENTATIVE_DECISION_RE.test(text);
+  const notReady = NOT_READY_TO_BOOK_RE.test(text);
+  const explicitHint = packageHintFromText(text);
+  const contextReference = /\b(goi nay|cai nay|goi do|cai do)\b/.test(text);
+  const unknownPrice = /\b(?:lay|chon|chot)\b.{0,16}\b4[.,]5\b/.test(text);
+  const ambiguousBenefit = /\b2 cong mica\b/.test(text);
+  const serviceOnly = /\b(?:lay|chon|chot)\s+(?:dich vu\s+)?chup cong\b/.test(text) && !explicitHint;
+  const decisionWording = PACKAGE_DECISION_RE.test(text) || contextReference || (tentative && Boolean(explicitHint));
+  const packageHint = explicitHint ?? (contextReference ? lastPackageHint(prior) : null);
+  const resolution = unknownPrice ? "UNKNOWN_PRICE"
+    : ambiguousBenefit ? "AMBIGUOUS_BENEFIT"
+      : serviceOnly ? "SERVICE_ONLY"
+        : explicitHint ? "EXACT"
+          : contextReference && packageHint ? "CONTEXT"
+            : null;
+  const status = decisionWording && !unknownPrice && !ambiguousBenefit && !serviceOnly
+    ? (tentative ? "TENTATIVE" : "CONFIRMED")
+    : "NONE";
+  return {
+    status,
+    packageHint,
+    resolution,
+    bookingReady: notReady ? false : status === "CONFIRMED" ? true : null,
+  };
+}
 const AMBIGUOUS_OUTDOOR_RE = /^\s*(co\s+)?ngoai canh\s*(khong|ko|hong)?\s*\??\s*$/;
 const AMBIGUOUS_DRESS_RE = /^\s*(co\s+)?vay\s*(khong|ko|hong)?\s*\??\s*$/;
 
@@ -394,6 +448,7 @@ function selectDecision(
 
 export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHistoryItem[] }): SaleWorkflowDecision {
   const prior = input.prior ?? [];
+  const packageDecision = classifyPackageDecision(input.message, prior);
   const service = resolveServiceKeyFromConversation(input.message, prior);
   const serviceKey = service.ambiguous ? null : service.key;
   const evidence = allEvidence(input.message, prior);
@@ -462,6 +517,7 @@ export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHisto
     askedQuestionKeys: questions.keys,
     lastAskedQuestionKey: questions.last,
     answeredSlots: filledSlots.map((slot) => slot.key),
+    packageDecision,
   });
 
   const asksAnotherDecisionMaker = /hỏi\s+(?:chồng|vợ|mẹ|gia đình)/i.test(input.message)
@@ -471,6 +527,9 @@ export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHisto
   // and even when the question mentions Beauty only to ask if it is eligible.
   if (intentOwner === "GATE_STEP_5_PROMOTION") {
     return selectDecision(base, "FOLLOW_UP", "CONTINUE_CONVERSATION", "owner_gate_step_5_promotion", null);
+  }
+  if (DECISION_CONCERN_RE.test(norm(input.message)) && packageDecision.status !== "NONE") {
+    return selectDecision(base, "RECOMMEND_PACKAGE", "CONTINUE_CONVERSATION", "owner_gate_step_6_objection", null);
   }
   // "hỏi gia đình" không phải yêu cầu báo giá dịch vụ Gia đình. Giữ owner Step 6
   // theo ngữ cảnh chụp cổng trước đó, trước khi bộ nhận diện giá chạy.
@@ -514,6 +573,12 @@ export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHisto
   }
   if (serviceKey === "wedding_gate" && intentOwner === "GATE_STEP_7_DECISION") {
     return selectDecision(base, "CLOSE_OR_HANDOFF", "CONTINUE_CONVERSATION", "owner_gate_step_7_decision", null);
+  }
+  if (serviceKey === "wedding_gate" && packageDecision.resolution) {
+    return selectDecision(base, "CLOSE_OR_HANDOFF", "CONTINUE_CONVERSATION", "owner_gate_step_7_decision", null);
+  }
+  if (serviceKey === "wedding_gate" && BOOKING_PROCEED_RE.test(norm(input.message))) {
+    return selectDecision(base, "CLOSE_OR_HANDOFF", "CONTINUE_CONVERSATION", "owner_gate_step_8_booking", null);
   }
   if (priceSheet.sent) {
     return selectDecision(base, "RECOMMEND_PACKAGE", "CONTINUE_CONVERSATION", "price_sheet_already_sent_follow_latest_preference", null);

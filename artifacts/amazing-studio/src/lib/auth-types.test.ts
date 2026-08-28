@@ -4,6 +4,7 @@ import {
   authNeedsStudioSelection,
   canManageTenantMembers,
   legacyViewerCanAdmin,
+  isCollaboratorTenant,
   normalizeAuthResponse,
   resolveAuthClientScope,
   resolveAuthClientState,
@@ -42,6 +43,18 @@ describe("auth types", () => {
     expect(canManageTenantMembers("OWNER")).toBe(true);
     expect(canManageTenantMembers("ADMIN")).toBe(true);
     expect(canManageTenantMembers("STAFF")).toBe(false);
+  });
+
+  it("chỉ nhận collaborator từ permission preset authoritative", () => {
+    expect(isCollaboratorTenant({
+      ...tenant("active", "STAFF"),
+      permissions: { accessPreset: "COLLABORATOR" },
+    })).toBe(true);
+    expect(isCollaboratorTenant(tenant("active", "STAFF"))).toBe(false);
+    expect(isCollaboratorTenant({
+      ...tenant("active", "ADMIN"),
+      permissions: { accessPreset: "COLLABORATOR" },
+    })).toBe(true);
   });
 
   it("never lets a legacy admin role override an authoritative STAFF membership", () => {

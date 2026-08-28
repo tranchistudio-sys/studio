@@ -29,6 +29,7 @@ sudo -n test -r "$PLATFORM_OVERRIDE_FILE" || die "Thiếu platform-auth.override
 
 # shellcheck disable=SC1090
 source "$CONFIG_FILE"
+: "${DEPLOY_APP_DIR:?Thiếu DEPLOY_APP_DIR}"
 : "${DEPLOY_COMPOSE_FILE:?Thiếu DEPLOY_COMPOSE_FILE}"
 : "${DEPLOY_RELEASES_DIR:?Thiếu DEPLOY_RELEASES_DIR}"
 : "${DEPLOY_HEALTH_URL:?Thiếu DEPLOY_HEALTH_URL}"
@@ -69,8 +70,6 @@ while IFS= read -r service; do
 done < <(compose_production config --services)
 
 [ -n "$API_SERVICE" ] && [ -n "$API_CID" ] || die "Không xác định được container API."
-sudo -n docker compose -f "$RELEASE_COMPOSE" config --services | grep -Fxq "$API_SERVICE" || \
-  die "Release không có service API $API_SERVICE."
 
 PREVIOUS_API_IMAGE_ID=$(sudo -n docker inspect "$API_CID" --format '{{.Image}}')
 API_IMAGE_NAME=$(sudo -n docker inspect "$API_CID" --format '{{.Config.Image}}')
@@ -143,7 +142,13 @@ trap 'rollback 143' TERM
 trap 'rollback 129' HUP
 
 echo "[deploy-api] Build API từ release $TARGET_SHA"
-sudo -n docker compose -f "$RELEASE_COMPOSE" build "$API_SERVICE"
+if sudo -n docker compose -f "$RELEASE_COMPOSE" config --services | grep -Fxq "$API_SERVICE"; then
+  sudo -n docker compose -f "$RELEASE_COMPOSE" build "$API_SERVICE"
+else
+  API_DOCKERFILE="$DEPLOY_APP_DIR/06_vps_deployment/Dockerfile.api"
+  [ -r "$API_DOCKERFILE" ] || die "Thiếu Dockerfile API production."
+  sudo -n docker build -f "$API_DOCKERFILE" -t "$API_IMAGE_NAME" "$DEPLOY_RELEASES_DIR/$TARGET_SHA"
+fi
 
 sudo -n install -m 600 -o root -g root "$ENV_CANDIDATE" "$PLATFORM_ENV_FILE"
 ENV_CHANGED=1

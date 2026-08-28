@@ -7,6 +7,8 @@ import { Layout } from "@/components/layout";
 import { PublicLayout } from "@/components/PublicLayout";
 import Dashboard from "@/pages/dashboard";
 import CalendarPage from "@/pages/calendar";
+import CollaboratorCalendarPage from "@/pages/collaborator-calendar";
+import CollaboratorProfilePage from "@/pages/collaborator-profile";
 import TasksPage from "@/pages/tasks";
 import CustomersPage from "@/pages/customers";
 import ServicesPage from "@/pages/services";
@@ -181,6 +183,16 @@ function StaffRoute() {
   return <StaffPage />;
 }
 
+function CalendarAccessPage() {
+  const { isCollaborator } = useStaffAuth();
+  return isCollaborator ? <CollaboratorCalendarPage /> : <CalendarPage />;
+}
+
+function ProfileAccessPage() {
+  const { isCollaborator } = useStaffAuth();
+  return isCollaborator ? <CollaboratorProfilePage /> : <MyProfilePage />;
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -267,7 +279,7 @@ function InternalRouter() {
     <Layout>
       <Switch>
         <Route path="/dashboard" component={() => <AdminRoute component={Dashboard} />} />
-        <Route path="/calendar" component={CalendarPage} />
+        <Route path="/calendar" component={CalendarAccessPage} />
         <Route path="/tasks" component={TasksPage} />
         <Route path="/customers" component={CustomersPage} />
         <Route path="/pricing" component={PricingPage} />
@@ -290,7 +302,7 @@ function InternalRouter() {
         <Route path="/contracts/:id" component={ContractDetailPage} />
         <Route path="/contracts" component={() => <AdminRoute component={ContractsPage} />} />
         <Route path="/reports" component={() => <AdminRoute component={ReportsPage} />} />
-        <Route path="/my-profile" component={MyProfilePage} />
+        <Route path="/my-profile" component={ProfileAccessPage} />
         <Route path="/photoshop-jobs" component={PhotoshopJobsPage} />
         <Route path="/attendance/check-in" component={AttendanceCheckinPage} />
         <Route path="/attendance" component={AttendancePage} />
@@ -373,7 +385,7 @@ function RootLandingRedirect() {
 }
 
 function RouterRoot() {
-  const { viewer, platformUser, authenticated, authChecked, activeTenant, memberships, requiresTenantSelection } = useStaffAuth();
+  const { viewer, platformUser, authenticated, authChecked, activeTenant, memberships, requiresTenantSelection, isCollaborator } = useStaffAuth();
   const [location, setLocation] = useLocation();
   const needsTenant = authNeedsStudioSelection({
     requiresTenantSelection, platformUser, activeTenant, memberships,
@@ -427,6 +439,9 @@ function RouterRoot() {
   if (isInternalPath(location)) {
     if (!authenticated) return <RedirectToLogin from={location} />;
     if (needsTenant) return <Redirect to="/select-studio" />;
+    if (isCollaborator && location !== "/calendar" && location !== "/my-profile") {
+      return <Redirect to="/calendar" />;
+    }
     return <InternalRouter />;
   }
 

@@ -6,6 +6,7 @@ import {
   canManageTenantMembers,
   authRuntimeScopeKey,
   legacyViewerCanAdmin,
+  isCollaboratorTenant,
   normalizeAuthResponse,
   resolveAuthClientScope,
   resolveAuthClientState,
@@ -42,6 +43,7 @@ interface StaffAuthContextValue {
   logoutAll: () => Promise<void>;
   canViewProfile: (staffId: number) => boolean;
   canManageMembers: boolean;
+  isCollaborator: boolean;
   isAdmin: boolean;
   viewMode: ViewMode;
   setViewMode: (m: ViewMode) => void;
@@ -68,6 +70,7 @@ const StaffAuthContext = createContext<StaffAuthContextValue>({
   logoutAll: async () => {},
   canViewProfile: () => false,
   canManageMembers: false,
+  isCollaborator: false,
   isAdmin: false,
   viewMode: "admin",
   setViewMode: () => {},
@@ -308,8 +311,9 @@ export function StaffAuthProvider({ children }: { children: React.ReactNode }) {
     activeTenant,
   }), [activeTenant, platformUser, viewer]);
   const runtimeScopeKey = authRuntimeScopeKey({ platformUser, viewer, activeTenant });
-  const tenantManager = canManageTenantMembers(activeTenant?.role);
-  const isAdmin = resolveTenantAdmin(activeTenant, viewer);
+  const isCollaborator = isCollaboratorTenant(activeTenant);
+  const tenantManager = !isCollaborator && canManageTenantMembers(activeTenant?.role);
+  const isAdmin = !isCollaborator && resolveTenantAdmin(activeTenant, viewer);
   const effectiveIsAdmin = isAdmin && viewMode === "admin" && !simulateRole;
   const canViewProfile = (staffId: number) => isAdmin || viewer?.id === staffId;
 
@@ -342,6 +346,7 @@ export function StaffAuthProvider({ children }: { children: React.ReactNode }) {
     logoutAll: () => endSession(true),
     canViewProfile,
     canManageMembers: tenantManager,
+    isCollaborator,
     isAdmin,
     viewMode,
     setViewMode,
@@ -350,7 +355,7 @@ export function StaffAuthProvider({ children }: { children: React.ReactNode }) {
     effectiveIsAdmin,
   }), [
     activeTenant, authChecked, authenticated, clientScope, completeLogin, csrfToken, effectiveIsAdmin,
-    endSession, isAdmin, memberships, platformUser, refreshAuth, requiresTenantSelection,
+    endSession, isAdmin, isCollaborator, memberships, platformUser, refreshAuth, requiresTenantSelection,
     selectTenant, simulateRole, tenantManager, token, viewer, viewMode,
   ]);
 

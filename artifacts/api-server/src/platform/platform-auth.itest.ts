@@ -52,6 +52,7 @@ async function createTenantIsolationTables(target: pg.Pool): Promise<void> {
       avatar TEXT,
       username TEXT,
       password_hash TEXT,
+      staff_type TEXT NOT NULL DEFAULT 'official',
       is_active INTEGER NOT NULL DEFAULT 1
     );
     CREATE TABLE IF NOT EXISTS services (

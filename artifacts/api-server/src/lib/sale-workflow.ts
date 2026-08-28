@@ -308,7 +308,7 @@ const PACKAGE_COMPARE_RE = /\b(?:basic|premium|luxury|tiet kiem)\b.{0,28}\b(?:kh
 const PACKAGE_COMPARE_EXTENDED_RE = /(?:\b1[.,]9\b|\b2[.,]9\b|\b3[.,]9\b|\b5[.,]9\b).{0,28}(?:\bvoi\b|\bva\b).{0,28}(?:\b1[.,]9\b|\b2[.,]9\b|\b3[.,]9\b|\b5[.,]9\b)|\b(?:tiet kiem|basic|premium|luxury)\b.{0,18}\b(?:hay|voi|va)\b.{0,18}\b(?:tiet kiem|basic|premium|luxury)\b|\bgoi thap nhat\b.{0,24}\bgoi cao nhat\b|\b(?:them|chenh)\s+\d+(?:[.,]\d+)?\s*(?:trieu|tr)\b.{0,18}\b(?:duoc gi|de lam gi)\b|\bgoi cang cao\b.{0,24}\b(?:hon|khac|duoc)\b|\bdoc bang\b.{0,30}\bkhong hieu\b/;
 const PACKAGE_ADVICE_AFTER_PRICE_RE = /\bgoi nao\b.{0,24}\b(?:dang tien|ngon nhat|hop|nen chon|nhieu nguoi chon)\b|\b(?:chi can|can)\s+(?:dung\s+)?(?:mot|hai|1|2)\s+cong\b|\b(?:muon|thich|uu tien)\b.{0,20}\b(?:mica|san pham|ekip|tho chup|makeup)\b|\b(?:co can|nen)\b.{0,12}\blen luxury\b|\bmaster\b.{0,20}\b(?:dang|can|khac)\b|\bbasic\b.{0,12}\bvan on\b|\btoi da\s+\d+(?:[.,]\d+)?\s*(?:trieu|tr)\b/;
 const PROMOTION_RE = /\b(khuyen mai|uu dai|giam gia|qua tang|co qua|qua gi|moc may|moc nao|cong don|quy doi qua|doi qua.*tien)\b|\b[2345]\s*(?:dich vu|goi)\b.{0,24}\b(?:duoc gi|qua|tang)\b|\bbeauty\b.{0,24}\b(?:tinh|cong)\b/;
-const PRICE_OBJECTION_RE = /\b(mac qua|cao qua|gia cao|hoi cao|vuot ngan sach|khong du ngan sach)\b/;
+const GATE_OBJECTION_RE = /\b(mac qua|cao qua|gia cao|hoi cao|vuot ngan sach|khong du ngan sach|ngan sach.*khong toi|goi.*re hon|re hon khong|bot duoc|giam (?:chi|em|minh)|giam them|gia chot|cho khac re hon|studio khac|tham khao.*studio|de .*suy nghi|suy nghi.*ngay|ngay.*suy nghi|hoi chong|hoi vo|hoi me|hoi gia dinh|chua muon coc|chua du tien coc|so phat sinh|so chup khong dep|chup chac khong dep|em map|em thap|mat tron|khong thich chup|khong co thoi gian|ban qua|chua chot ngay|du quyen loi|khong dung het|bo bot.*giam|cat bot.*giam|khong giong mau|co chinh hinh|chinh hinh dep|co dang tien|dang tien khong|khong chup nua|chon studio khac|khong con nhu cau)\b/;
 const PACKAGE_DECISION_RE = /\b(chot|lay|chon)\s+(?:goi\s+)?(tiet kiem|basic|premium|luxury)\b/;
 const AMBIGUOUS_OUTDOOR_RE = /^\s*(co\s+)?ngoai canh\s*(khong|ko|hong)?\s*\??\s*$/;
 const AMBIGUOUS_DRESS_RE = /^\s*(co\s+)?vay\s*(khong|ko|hong)?\s*\??\s*$/;
@@ -316,8 +316,8 @@ const AMBIGUOUS_DRESS_RE = /^\s*(co\s+)?vay\s*(khong|ko|hong)?\s*\??\s*$/;
 export function contextualIntentOwner(message: string): string | null {
   const text = norm(message);
   if (PACKAGE_COMPARE_RE.test(text) || PACKAGE_COMPARE_EXTENDED_RE.test(text)) return "GATE_STEP_4_COMPARE";
+  if (GATE_OBJECTION_RE.test(text)) return "GATE_STEP_6_OBJECTION";
   if (PROMOTION_RE.test(text)) return "GATE_STEP_5_PROMOTION";
-  if (PRICE_OBJECTION_RE.test(text)) return "GATE_STEP_6_OBJECTION";
   if (PACKAGE_DECISION_RE.test(text)) return "GATE_STEP_7_DECISION";
   if (AMBIGUOUS_OUTDOOR_RE.test(text)) return "COMMON_CLARIFY_OUTDOOR";
   if (AMBIGUOUS_DRESS_RE.test(text)) return "COMMON_CLARIFY_DRESS";
@@ -464,10 +464,21 @@ export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHisto
     answeredSlots: filledSlots.map((slot) => slot.key),
   });
 
+  const asksAnotherDecisionMaker = /hỏi\s+(?:chồng|vợ|mẹ|gia đình)/i.test(input.message)
+    || /\bhoi\s+(?:chong|vo|me|gia dinh)\b/.test(norm(input.message));
+  const priorMentionsWeddingGate = prior.some((item) => /\b(chup cong|cong cuoi|hinh cong|anh cong)\b/.test(norm(item.message)));
   // Promotion policy is owned by Step 5 even before a service has been chosen,
   // and even when the question mentions Beauty only to ask if it is eligible.
   if (intentOwner === "GATE_STEP_5_PROMOTION") {
     return selectDecision(base, "FOLLOW_UP", "CONTINUE_CONVERSATION", "owner_gate_step_5_promotion", null);
+  }
+  // "hỏi gia đình" không phải yêu cầu báo giá dịch vụ Gia đình. Giữ owner Step 6
+  // theo ngữ cảnh chụp cổng trước đó, trước khi bộ nhận diện giá chạy.
+  if (
+    (intentOwner === "GATE_STEP_6_OBJECTION" || asksAnotherDecisionMaker)
+    && (serviceKey === "wedding_gate" || previousService === "wedding_gate" || (asksAnotherDecisionMaker && priorMentionsWeddingGate))
+  ) {
+    return selectDecision(base, "RECOMMEND_PACKAGE", "CONTINUE_CONVERSATION", "owner_gate_step_6_objection", null);
   }
   if (!serviceKey) {
     return selectDecision(base, greeted ? "IDENTIFY_SERVICE" : "GREETING", "ASK_SERVICE", service.ambiguous ? "multiple_services" : "service_unknown", null);
@@ -485,6 +496,8 @@ export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHisto
   if (clarificationRequested && base.nextSlot) {
     return selectDecision(base, "DISCOVERY", "EXPLAIN_PENDING", `clarify_pending_slot:${base.nextSlot.key}`);
   }
+  // Step 6 xử lý sự phân vân ngay tại lượt hiện tại. Nếu khách thật sự cần thời
+  // gian, câu trả lời Step 6 sẽ tôn trọng và lưu ngữ cảnh để Step 9 chăm sau.
   if (customerDefers) {
     return selectDecision(base, "FOLLOW_UP", "CONTINUE_CONVERSATION", "customer_wants_time_to_consider", null);
   }
@@ -498,9 +511,6 @@ export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHisto
   // package ở Album/Beauty vô tình bị kéo ngược về workflow Chụp cổng.
   if (serviceKey === "wedding_gate" && (intentOwner === "GATE_STEP_4_COMPARE" || adviceAfterPrice)) {
     return selectDecision(base, "EXPLAIN_PACKAGES", "CONTINUE_CONVERSATION", "owner_gate_step_4_compare", null);
-  }
-  if (serviceKey === "wedding_gate" && intentOwner === "GATE_STEP_6_OBJECTION") {
-    return selectDecision(base, "RECOMMEND_PACKAGE", "CONTINUE_CONVERSATION", "owner_gate_step_6_objection", null);
   }
   if (serviceKey === "wedding_gate" && intentOwner === "GATE_STEP_7_DECISION") {
     return selectDecision(base, "CLOSE_OR_HANDOFF", "CONTINUE_CONVERSATION", "owner_gate_step_7_decision", null);

@@ -1633,16 +1633,27 @@ router.put("/bookings/:id", async (req, res) => {
     // ── 7. Toggle Báo giá tạm: flip CẢ GIA ĐÌNH trong cùng transaction ──
     // Booking chính đã được UPDATE ở bước 4; đây là phần cha + anh em còn lại.
     // Chỉ UPDATE status — không đụng khách/dịch vụ/giá/ngày/payment/occurrence.
+    // Ngoài parent_id, dùng thêm mã hợp đồng gốc (BGxxxx + BGxxxx-n) làm lưới
+    // an toàn cho dữ liệu cũ từng bị lệch liên kết: cùng khách + cùng mã hợp đồng
+    // vẫn phải bật/tắt đồng bộ, không được xanh một dịch vụ và tím dịch vụ khác.
     if (crossesTempBoundary) {
       const rootId = oldBooking.parentId ?? id;
+      const rootCode = String(oldBooking.orderCode || "").replace(/-\d+$/, "");
+      const familyWhere = `
+        (id = $1 OR parent_id = $1
+          OR ($4 <> '' AND customer_id = $5
+            AND (order_code = $4 OR order_code LIKE ($4 || '-%'))))
+        AND id <> $2
+        AND deleted_at IS NULL
+        AND COALESCE(status, '') <> 'cancelled'`;
       if (willTempQuote) {
         // BẬT: cả nhà về temp_quote (trừ đơn đã hủy/đã xóa — giữ nguyên trạng thái đó).
         const r = await client.query<{ id: number }>(
           `UPDATE bookings SET status = 'temp_quote'
-           WHERE (id = $1 OR parent_id = $1) AND id <> $2
-             AND deleted_at IS NULL AND COALESCE(status, '') NOT IN ('cancelled', 'temp_quote')
+           WHERE ${familyWhere}
+             AND COALESCE(status, '') <> 'temp_quote'
            RETURNING id`,
-          [rootId, id]
+          [rootId, id, "temp_quote", rootCode, oldBooking.customerId]
         );
         tempToggledFamilyIds = r.rows.map((x) => x.id);
       } else {
@@ -1650,10 +1661,10 @@ router.put("/bookings/:id", async (req, res) => {
         // countable trở lại một lần, deterministic.
         const r = await client.query<{ id: number }>(
           `UPDATE bookings SET status = $3
-           WHERE (id = $1 OR parent_id = $1) AND id <> $2
-             AND deleted_at IS NULL AND status = 'temp_quote'
+           WHERE ${familyWhere}
+             AND status = 'temp_quote'
            RETURNING id`,
-          [rootId, id, newStatusRaw]
+          [rootId, id, newStatusRaw, rootCode, oldBooking.customerId]
         );
         tempToggledFamilyIds = r.rows.map((x) => x.id);
       }

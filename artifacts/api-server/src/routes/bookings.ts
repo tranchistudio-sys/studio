@@ -1641,8 +1641,7 @@ router.put("/bookings/:id", async (req, res) => {
       const rootCode = String(oldBooking.orderCode || "").replace(/-\d+$/, "");
       const familyWhere = `
         (id = $1 OR parent_id = $1
-          OR ($4 <> '' AND customer_id = $5
-            AND (order_code = $4 OR order_code LIKE ($4 || '-%'))))
+          OR ($4 <> '' AND (order_code = $4 OR order_code LIKE ($4 || '-%'))))
         AND id <> $2
         AND deleted_at IS NULL
         AND COALESCE(status, '') <> 'cancelled'`;
@@ -1653,7 +1652,7 @@ router.put("/bookings/:id", async (req, res) => {
            WHERE ${familyWhere}
              AND COALESCE(status, '') <> 'temp_quote'
            RETURNING id`,
-          [rootId, id, "temp_quote", rootCode, oldBooking.customerId]
+          [rootId, id, "temp_quote", rootCode]
         );
         tempToggledFamilyIds = r.rows.map((x) => x.id);
       } else {
@@ -1664,7 +1663,7 @@ router.put("/bookings/:id", async (req, res) => {
            WHERE ${familyWhere}
              AND status = 'temp_quote'
            RETURNING id`,
-          [rootId, id, newStatusRaw, rootCode, oldBooking.customerId]
+          [rootId, id, newStatusRaw, rootCode]
         );
         tempToggledFamilyIds = r.rows.map((x) => x.id);
       }

@@ -49,6 +49,34 @@ describe("sample confirmation workflow", () => {
     expect(result.forcedPrice).toBe(true);
     expect(result.action).toBe("SEND_PRICE_SHEET");
   });
+
+  it.each([
+    "Chị thích tấm thứ 2.",
+    "Cái đầu đẹp.",
+    "Cái giữa á.",
+    "Cái cuối.",
+    "Ừ kiểu này được.",
+  ])("treats a concrete sample choice as ready for Step 3: %s", (message) => {
+    const result = decide(message, [
+      { direction: "incoming", message: "Chị hỏi chụp cổng." },
+      { direction: "outgoing", message: "[image:/objects/gate-1]", aiDecision: "claude_sample_img0" },
+      { direction: "outgoing", message: "[image:/objects/gate-2]", aiDecision: "claude_sample_img1" },
+    ]);
+    expect(result.sampleConfirmed).toBe(true);
+    expect(result.action).toBe("SEND_PRICE_SHEET");
+  });
+
+  it.each([
+    ["Em thích Hàn Quốc.", "han quoc"],
+    ["Em muốn tối giản.", "toi gian"],
+    ["Có kiểu fashion hơn không?", "fashion"],
+    ["Em thích nhẹ nhàng nền sáng.", "nhe nhang"],
+  ])("remembers the requested sample style: %s", (message, style) => {
+    const result = decide(message, [
+      { direction: "incoming", message: "Chị hỏi chụp cổng." },
+    ]);
+    expect(result.style).toBe(style);
+  });
 });
 
 describe("direct action priority and repeat-question regression", () => {
@@ -196,6 +224,96 @@ describe("direct action priority and repeat-question regression", () => {
     expect(result.stage).toBe("FOLLOW_UP");
     expect(result.action).toBe("CONTINUE_CONVERSATION");
     expect(result.actionPriorityReason).toBe("customer_wants_time_to_consider");
+  });
+});
+
+describe("intent ownership and contextual routing", () => {
+  const pricedGate: Turn[] = [
+    { direction: "incoming", message: "Chụp cổng bao nhiêu?" },
+    { direction: "outgoing", message: "[image:/objects/gate-price]", aiDecision: "price_sheet" },
+  ];
+
+  it.each([
+    ["Basic với Premium khác gì?", "EXPLAIN_PACKAGES", "owner_gate_step_4_compare"],
+    ["Có khuyến mãi không?", "FOLLOW_UP", "owner_gate_step_5_promotion"],
+    ["Mắc quá em.", "RECOMMEND_PACKAGE", "owner_gate_step_6_objection"],
+    ["Chị lấy Premium.", "CLOSE_OR_HANDOFF", "owner_gate_step_7_decision"],
+  ])("routes %s to its single owner", (message, stage, reason) => {
+    const result = decide(message, pricedGate);
+    expect(result.stage).toBe(stage);
+    expect(result.reason).toBe(reason);
+    expect(result.action).not.toBe("SEND_PRICE_SHEET");
+  });
+
+  it.each([
+    "Beauty có tính thêm một dịch vụ không?",
+    "Quà có cộng dồn không?",
+    "Chốt 2 dịch vụ được quà gì?",
+  ])("keeps promotion eligibility in Step 5 even when another service is mentioned: %s", (message) => {
+    const result = decide(message, []);
+    expect(result.stage).toBe("FOLLOW_UP");
+    expect(result.reason).toBe("owner_gate_step_5_promotion");
+  });
+
+  it.each([
+    ["Có ngoại cảnh không?", "common_clarify_outdoor"],
+    ["Có váy không?", "common_clarify_dress"],
+  ])("clarifies ambiguous contextual request: %s", (message, reason) => {
+    const result = decide(message, pricedGate);
+    expect(result.serviceKey).toBe("wedding_gate");
+    expect(result.reason).toBe(reason);
+  });
+
+  it("keeps a package-rights dress question in gate but switches an explicit rental request", () => {
+    expect(decide("Gói cổng này có váy không?", pricedGate).serviceKey).toBe("wedding_gate");
+    expect(decide("Bên em cho thuê váy riêng không?", pricedGate).serviceKey).toBe("rental_outfit");
+  });
+
+  it("does not let gate intent owners capture another service", () => {
+    const albumContext: Turn[] = [
+      { direction: "incoming", message: "Chị muốn chụp album studio." },
+      { direction: "outgoing", message: "Em đang tư vấn album studio cho chị nha." },
+    ];
+    const result = decide("Gói Premium khác gì?", albumContext);
+    expect(result.serviceKey).toBe("album_studio");
+    expect(result.reason).not.toBe("owner_gate_step_4_compare");
+  });
+
+  it.each([
+    "1.9 với 2.9 khác gì?",
+    "Basic với Premium khác nhau sao?",
+    "Premium với Luxury khác gì?",
+    "1.9 với 3.9 khác nhiều không?",
+    "2.9 với 5.9 khác gì?",
+    "Gói thấp nhất với gói cao nhất khác gì?",
+    "Gói nào đáng tiền?",
+    "Em chỉ cần một cổng.",
+    "Em cần hai cổng.",
+    "Em muốn mica.",
+    "Có cần lên Luxury không?",
+    "Master có đáng không?",
+    "Thêm 1 triệu được gì?",
+    "Basic vẫn ổn chứ?",
+    "Em tối đa 4 triệu.",
+    "Em ưu tiên sản phẩm.",
+    "Em ưu tiên ekip.",
+    "Gói càng cao hơn ở đâu?",
+    "Basic hay Premium?",
+    "Chị đọc bảng mà không hiểu.",
+  ])("routes Step 4 comparison coverage: %s", (message) => {
+    const result = decide(message, pricedGate);
+    expect(result.stage).toBe("EXPLAIN_PACKAGES");
+    expect(result.reason).toBe("owner_gate_step_4_compare");
+  });
+
+  it.each([
+    ["Giá Premium bao nhiêu?", "SEND_PRICE_SHEET"],
+    ["Premium mắc quá.", "owner_gate_step_6_objection"],
+    ["Premium có khuyến mãi không?", "owner_gate_step_5_promotion"],
+    ["Chị lấy Premium.", "owner_gate_step_7_decision"],
+  ])("keeps Step 4 boundary owner for %s", (message, expected) => {
+    const result = decide(message, pricedGate);
+    expect(result.action === expected || result.reason === expected).toBe(true);
   });
 });
 

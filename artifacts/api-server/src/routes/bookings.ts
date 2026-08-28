@@ -972,6 +972,11 @@ router.put("/bookings/:id", async (req, res) => {
   if (includedRetouchedPhotosSnapshot !== undefined) updateData.includedRetouchedPhotosSnapshot = parseInt(String(includedRetouchedPhotosSnapshot)) || 0;
   if (servicePackageId !== undefined) updateData.servicePackageId = servicePackageId ? parseInt(String(servicePackageId)) : null;
 
+  // Công tắc "Báo giá tạm tính" dùng duy nhất bookings.status làm nguồn dữ liệu.
+  // Khi status vượt ranh giới temp_quote <-> booking thường, phải đổi đồng bộ
+  // toàn bộ hợp đồng gộp trong cùng transaction, không tạo/xóa record.
+  const newStatusRaw = status !== undefined ? String(status) : undefined;
+
   // Check booking exists. Đọc đầy đủ field để diff trước/sau, ghi lịch sử sửa đơn.
   const [oldBooking] = await db
     .select({
@@ -993,6 +998,10 @@ router.put("/bookings/:id", async (req, res) => {
     .where(eq(bookingsTable.id, id));
   if (!oldBooking) return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
   const oldStatus = oldBooking.status;
+  const wasTempQuote = oldStatus === "temp_quote";
+  const willTempQuote = newStatusRaw !== undefined ? newStatusRaw === "temp_quote" : wasTempQuote;
+  const crossesTempBoundary = newStatusRaw !== undefined && wasTempQuote !== willTempQuote;
+  let tempToggledFamilyIds: number[] = [];
 
   // A8: parent contracts ignore client totalAmount — derived from Σ children
   if (oldBooking.isParentContract) {
@@ -1230,6 +1239,31 @@ router.put("/bookings/:id", async (req, res) => {
       return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
     }
 
+    // Bật/tắt Báo giá tạm cho cả cha + các dịch vụ con. Chỉ đổi status;
+    // khách, gói, giá, ngày, phiếu thu và lịch sử hợp đồng được giữ nguyên.
+    if (crossesTempBoundary) {
+      const rootId = oldBooking.parentId ?? id;
+      if (willTempQuote) {
+        const r = await client.query<{ id: number }>(
+          `UPDATE bookings SET status = 'temp_quote'
+           WHERE (id = $1 OR parent_id = $1) AND id <> $2
+             AND deleted_at IS NULL AND COALESCE(status, '') NOT IN ('cancelled', 'temp_quote')
+           RETURNING id`,
+          [rootId, id]
+        );
+        tempToggledFamilyIds = r.rows.map(x => x.id);
+      } else {
+        const r = await client.query<{ id: number }>(
+          `UPDATE bookings SET status = $3
+           WHERE (id = $1 OR parent_id = $1) AND id <> $2
+             AND deleted_at IS NULL AND status = 'temp_quote'
+           RETURNING id`,
+          [rootId, id, newStatusRaw]
+        );
+        tempToggledFamilyIds = r.rows.map(x => x.id);
+      }
+    }
+
     await client.query("COMMIT");
 
     const customerId = updateResult.rows[0].customer_id;
@@ -1237,6 +1271,22 @@ router.put("/bookings/:id", async (req, res) => {
     // Post-production: tạo job mới nếu gói yêu cầu hậu kỳ (không sửa job cũ nếu không đủ điều kiện)
     if (items !== undefined || servicePackageId !== undefined) {
       await maybeCreatePhotoshopJobForBooking(id).catch(err => console.warn("[bookings] maybeCreatePhotoshopJob PUT failed:", err));
+    }
+
+    // Khôi phục các side-effect vốn có khi đổi qua lại Báo giá tạm.
+    // Bật: dọn earning pending; tắt: tạo hậu kỳ nếu gói đủ điều kiện.
+    if (crossesTempBoundary) {
+      const affectedIds = [id, ...tempToggledFamilyIds];
+      for (const bid of affectedIds) {
+        if (willTempQuote) {
+          computeBookingEarnings(bid).catch(err => console.warn("[bookings] earnings cleanup (temp_quote on) failed:", err));
+        } else {
+          await maybeCreatePhotoshopJobForBooking(bid).catch(err => console.warn("[bookings] maybeCreatePhotoshopJob (temp_quote off) failed:", err));
+          if (newStatusRaw === "completed") {
+            computeBookingEarnings(bid).catch(err => console.warn("[bookings] earnings compute (temp_quote off) failed:", err));
+          }
+        }
+      }
     }
 
     // Task #316: Sync photoshop_jobs.total_photos when booking snapshot changes

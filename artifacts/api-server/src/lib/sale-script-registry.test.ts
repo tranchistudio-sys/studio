@@ -84,6 +84,38 @@ describe("SALE_WEDDING_GATE v1", () => {
     expect(samples.result.dataSources).toContain("image_store:wedding_gate");
   });
 
+  it.each([
+    ["Basic với Premium khác gì?", "WEDDING_GATE.COMPARE.PACKAGES"],
+    ["Mắc quá em.", "WEDDING_GATE.OBJECTION.PRICE"],
+    ["Chị lấy Premium.", "WEDDING_GATE.DECISION.PACKAGE_SELECTED"],
+  ])("keeps non-price intents out of Step 3: %s", (message, nodeKey) => {
+    const prior: SaleHistoryItem[] = [
+      { direction: "incoming", message: "Chụp cổng bao nhiêu?" },
+      { direction: "outgoing", message: "[image:/objects/gate-price]", aiDecision: "price_sheet" },
+    ];
+    expect(trace(message, prior).result.nodeKey).toBe(nodeKey);
+  });
+
+  it.each([
+    "Beauty có tính thêm một dịch vụ không?",
+    "Quà có cộng dồn không?",
+    "Chốt 2 dịch vụ được quà gì?",
+  ])("routes promotion policy to Step 5 before service routing: %s", (message) => {
+    const result = trace(message).result;
+    expect(result.nodeKey).toBe("WEDDING_GATE.PROMOTION.CHECK_ELIGIBILITY");
+    expect(result.stepNumber).toBe(5);
+  });
+
+  it.each([
+    ["Có ngoại cảnh không?", "gói cổng có chụp thêm ngoại cảnh"],
+    ["Có váy không?", "váy có trong gói chụp cổng"],
+  ])("asks one short clarification for %s", (message, expected) => {
+    const prior: SaleHistoryItem[] = [{ direction: "incoming", message: "Chụp cổng bao nhiêu?" }];
+    const result = trace(message, prior).result;
+    expect(result.nodeKey).toBe("COMMON.SERVICE_ROUTING");
+    expect(result.renderedText).toContain(expected);
+  });
+
   it("routes every recognized service without asking the service question again", () => {
     const album = trace("cho mình hỏi album studio");
     expect(album.result.status).toBe("MAPPED");
@@ -159,6 +191,52 @@ describe("SALE_WEDDING_GATE v1", () => {
     expect(matched.result.status).toBe("MAPPED");
     expect(matched.result.renderedText).toBe("Dạ em nghe mình nè.");
     expect(matched.result.nodeKey).toBe("COMMON.GREETING");
+  });
+
+  it.each([
+    "Mình hỏi chút được không?",
+    "Cho em hỏi xíu",
+  ])("treats slash-separated greeting text as variants of one intent: %s", (message) => {
+    const sheets: SaleScriptQuestionAnswerSheets = {
+      "COMMON.GREETING": [{
+        id: "greeting-ask-permission",
+        stepId: 1,
+        question: "Mình hỏi chút được không? / Cho em hỏi xíu",
+        answer: "Dạ được mình nha 😊 Mình cứ nói sơ nhu cầu, em hỗ trợ đúng phần cho mình ạ.",
+        source: "manual",
+        updatedAt: "2026-08-28T00:00:00.000Z",
+      }],
+    };
+    const matched = trace(message, [
+      { direction: "incoming", message: "Alo" },
+      { direction: "outgoing", message: "Dạ em chào mình ạ.", aiDecision: "COMMON.GREETING" },
+    ], sheets);
+    expect(matched.result.nodeKey).toBe("COMMON.GREETING");
+    expect(matched.result.renderedText).toContain("Mình cứ nói sơ nhu cầu");
+    expect(matched.result.decisionRule).toContain("question_answer_greeting_match:greeting-ask-permission");
+  });
+
+  it("lets an exact taught greeting override a stale service intent from chat history", () => {
+    const sheets: SaleScriptQuestionAnswerSheets = {
+      "COMMON.GREETING": [{
+        id: "greeting-ask-permission",
+        stepId: 1,
+        question: "Mình hỏi chút được không? / Cho em hỏi xíu",
+        answer: "Dạ được mình nha 😊 Mình cứ nói sơ nhu cầu, em hỗ trợ đúng phần cho mình ạ.",
+        source: "manual",
+        updatedAt: "2026-08-28T00:00:00.000Z",
+      }],
+    };
+    const prior: SaleHistoryItem[] = [
+      { direction: "incoming", message: "Chụp cổng bao nhiêu?" },
+      { direction: "outgoing", message: "Dạ mình dự định chụp một cổng hay hai cổng ạ?", aiDecision: "WEDDING_GATE.DISCOVERY.COLLECT_NEXT_SLOT" },
+    ];
+
+    const matched = trace("Mình hỏi chút được không?", prior, sheets);
+    expect(matched.workflow.serviceKey).toBe("wedding_gate");
+    expect(matched.result.nodeKey).toBe("COMMON.GREETING");
+    expect(matched.result.renderedText).toContain("Mình cứ nói sơ nhu cầu");
+    expect(matched.result.decisionRule).toContain("question_answer_greeting_match:greeting-ask-permission");
   });
 
   it("uses the saved routing row answer and configured route", () => {

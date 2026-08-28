@@ -1472,10 +1472,11 @@ function ShowFormPanel({
   const [error, setError] = useState("");
   const [proofWarning, setProofWarning] = useState("");
   const [saving, setSaving] = useState(false);
-  // ── Báo giá tạm tính (chỉ khi tạo mới) ─────────────────────────────────────
-  // Bật lên thì form chỉ dùng để TÍNH GIÁ cho khách xem: không gọi save(),
-  // không POST/PUT customers/bookings/payments — không ghi gì vào DB.
-  const [tempQuoteMode, setTempQuoteMode] = useState(false);
+  // ── Báo giá tạm tính — MỘT toggle duy nhất, nguồn chân lý = bookings.status.
+  // Tạo mới: bật để lưu thành báo giá. Sửa: admin bật/tắt bất kỳ lúc nào;
+  // backend chỉ đổi status và đồng bộ cả hợp đồng gộp, không tạo/xóa dữ liệu.
+  const [tempQuoteMode, setTempQuoteMode] = useState(booking?.status === "temp_quote");
+  const initialTempQuoteRef = useRef(booking?.status === "temp_quote");
   const { toast } = useToast();
   // ── Lưới an toàn upload ảnh ──────────────────────────────────────────────────
   // Đếm số ảnh đang tải ở các dòng dịch vụ (ảnh concept). Khi > 0 thì KHOÁ nút Lưu
@@ -2119,6 +2120,11 @@ function ShowFormPanel({
               packageType: subDrafts.map(s => s.serviceLabel || "Dịch vụ").join(" + "),
               // Only send assignedStaff when non-empty to avoid wiping item-level photographer/makeup
               ...(editMultiAssignedStaff.length > 0 ? { assignedStaff: editMultiAssignedStaff } : {}),
+              // Chỉ gửi status khi người dùng thật sự bật/tắt công tắc.
+              // Backend sẽ đồng bộ cả cha + con trong một transaction.
+              ...(tempQuoteMode !== initialTempQuoteRef.current
+                ? { status: tempQuoteMode ? "temp_quote" : "confirmed" }
+                : {}),
             }),
           });
         }
@@ -2268,7 +2274,7 @@ function ShowFormPanel({
             : `${validLines[0].serviceName || "Dịch vụ"} (+${validLines.length - 1})`)
         : "Chưa chốt dịch vụ";
 
-      const finalStatus = hasServices ? status : (status === "confirmed" || status === "in_progress" || status === "completed" ? status : "pending_service");
+      const finalStatus = hasServices ? status : (status === "confirmed" || status === "in_progress" || status === "completed" || status === "temp_quote" ? status : "pending_service");
       const finalTotal = totalAmount;
       const finalDeposit = hasServices ? depositNum : 0;
 
@@ -2418,13 +2424,20 @@ function ShowFormPanel({
             {format(shootDateObj, "EEEE, dd/MM/yyyy", { locale: vi })} · {subDrafts[0]?.shootTime ?? initialTime}
           </p>
         </div>
-        {!isEdit && (
-          <label className="flex items-center gap-2 flex-shrink-0 cursor-pointer select-none">
-            <span className={`text-xs font-medium ${tempQuoteMode ? "text-amber-600" : "text-muted-foreground"}`}>Báo giá tạm tính</span>
+        {/* Công tắc Báo giá tạm tính dùng được cả khi tạo mới và khi sửa show. */}
+        {(!isEdit || isAdmin) && (
+          <label className={`flex min-h-11 items-center gap-3 flex-shrink-0 cursor-pointer select-none rounded-xl border px-3 py-2 transition-colors ${tempQuoteMode ? "border-purple-300 bg-purple-50" : "border-border bg-muted/40"}`}>
+            <span className={`text-sm font-bold whitespace-nowrap ${tempQuoteMode ? "text-purple-600" : "text-foreground"}`}>
+              Báo giá tạm tính
+            </span>
             <Switch
+              className="scale-125 origin-right"
               checked={tempQuoteMode}
               disabled={saving}
-              onCheckedChange={(checked) => setTempQuoteMode(checked)}
+              onCheckedChange={(checked) => {
+                setTempQuoteMode(checked);
+                setStatus(prev => checked ? "temp_quote" : (prev === "temp_quote" ? "confirmed" : prev));
+              }}
             />
           </label>
         )}
@@ -2592,7 +2605,7 @@ function ShowFormPanel({
               </div>
               <div>
                 <label className="text-[10px] text-muted-foreground mb-1 block">Trạng thái</label>
-                <select className="w-full h-9 border border-input rounded-lg px-2 text-sm bg-background" value={status} onChange={e => setStatus(e.target.value)}>
+                <select className="w-full h-9 border border-input rounded-lg px-2 text-sm bg-background" value={status} onChange={e => { const v = e.target.value; setStatus(v); setTempQuoteMode(v === "temp_quote"); }}>
                   <option value="draft">📋 Lịch tạm</option>
                   <option value="pending_service">⏳ Chưa chốt dịch vụ</option>
                   <option value="pending">🟡 Chờ xác nhận</option>

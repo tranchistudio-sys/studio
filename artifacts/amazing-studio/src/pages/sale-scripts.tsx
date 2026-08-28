@@ -808,6 +808,9 @@ type SheetRow = {
 
 function saleStepForNode(node: ScriptNode): number {
   if (node.scriptKey === "SALE_COMMON") return 1;
+  if (node.nodeKey === "WEDDING_GATE.COMPARE.PACKAGES") return 4;
+  if (node.nodeKey === "WEDDING_GATE.OBJECTION.PRICE") return 6;
+  if (node.nodeKey === "WEDDING_GATE.DECISION.PACKAGE_SELECTED") return 7;
   if (node.stepNumber === 2) return 1;
   if (node.stepNumber === 3) return 2;
   if (node.stepNumber === 4) return 3;
@@ -1348,12 +1351,14 @@ function StepQuestionAnswerSheet({
       <div className="hidden overflow-x-auto md:block">
         <table className="min-w-[900px] w-full table-fixed border-collapse text-sm">
           <colgroup>
+            <col className="w-12" />
             <col className="w-[34%]" />
             <col />
             <col className="w-[210px]" />
           </colgroup>
           <thead className="bg-emerald-50 text-left text-xs font-bold uppercase tracking-wide text-emerald-950">
             <tr>
+              <th className="border-b border-r px-1 py-3 text-center" aria-label="Số thứ tự" />
               <th className="border-b border-r px-3 py-3">Khách có thể nói</th>
               <th className="border-b border-r px-3 py-3">Lulu trả lời</th>
               <th className="border-b px-3 py-3 text-center">Thao tác</th>
@@ -1367,6 +1372,9 @@ function StepQuestionAnswerSheet({
                   key={row.id}
                   className={`align-top ${locked ? "bg-slate-50" : "hover:bg-emerald-50/40"}`}
                 >
+                  <td className="border-b border-r bg-slate-50 px-1 text-center align-middle font-semibold tabular-nums text-slate-500">
+                    {index + 1}
+                  </td>
                   <td className="border-b border-r p-0">
                     <textarea
                       id={`question-desktop-${step.id}-${index}`}

@@ -85,11 +85,15 @@ const SERVICE_PATTERNS: Array<{ key: string; re: RegExp }> = [
   { key: "maternity", re: /\b(chup bau|me bau|mang thai|thai ky|maternity)\b/ },
   { key: "beauty", re: /\b(beauty|beaty|cool boy|cool girl|thoi trang|chan dung|ca nhan)\b/ },
   { key: "family", re: /\b(chup gia dinh|gia dinh)\b/ },
-  { key: "makeup", re: /\b(makeup|make up|trang diem)\b/ },
+  // Chỉ đổi service khi khách gọi rõ dịch vụ makeup riêng. Từ "makeup" trần
+  // thường chỉ là quyền lợi nằm trong gói Chụp cổng/Album và không được phép
+  // làm mất current service.
+  { key: "makeup", re: /\b(?:dich vu\s+)?(?:makeup|make up|trang diem)\s+(?:le|rieng|don le)\b|\b(?:thue|dat)\s+(?:makeup|make up|trang diem)\b/ },
   { key: "video", re: /\b(quay phim|quay phong su|flycam)\b/ },
   { key: "printing", re: /\b(in anh|in hinh)\b/ },
   { key: "rental_outfit", re: /\b(cho thue|thue vay|thue ao dai|thue vest|thue do)\b/ },
   { key: "wedding_album", re: /\b(album cuoi|chup cuoi|anh cuoi)\b/ },
+  { key: "wedding_album", re: /\b(album)\b/ },
 ];
 
 function serviceKeysInText(message: string): string[] {
@@ -108,9 +112,11 @@ export function resolveServiceKeyFromConversation(message: string, prior: SaleHi
   if (current.length > 1) return { key: null, ambiguous: true };
   if (current.length === 1) return { key: current[0], ambiguous: false };
 
-  const incoming = prior.filter((item) => item.direction === "incoming").reverse();
-  const outgoing = prior.filter((item) => item.direction === "outgoing").reverse();
-  for (const item of [...incoming, ...outgoing]) {
+  // Lịch sử đã theo thứ tự thời gian. Quét ngược toàn bộ chuỗi để câu chung
+  // như “giá sao?” bám dịch vụ được nhắc gần nhất, bất kể lượt đó là khách
+  // hay Lulu xác nhận route. Không gom incoming/outgoing riêng vì sẽ làm một
+  // dịch vụ cũ của khách lấn dịch vụ mới vừa được bot xác nhận.
+  for (const item of [...prior].reverse()) {
     const keys = Array.from(new Set(serviceKeysInText(item.message)));
     if (keys.length === 1) return { key: keys[0], ambiguous: false };
     if (keys.length > 1) return { key: null, ambiguous: true };
@@ -366,6 +372,142 @@ function packageHighlights(pkg: PriceSheetPackageTrace): string[] {
   }).slice(0, 4);
 }
 
+type ComparablePackageFacts = {
+  gateCount: number | null;
+  gateMaterial: string | null;
+  smallPrintCount: number | null;
+  smallPrintSize: string | null;
+  smallPrintFramed: boolean | null;
+  photoLevel: "Master" | "chuyên viên" | null;
+  makeupLevel: "Master" | "chuyên viên" | null;
+  outfits: string | null;
+};
+
+function comparableFacts(pkg: PriceSheetPackageTrace): ComparablePackageFacts {
+  const text = norm(pkg.benefits);
+  const gateCount = Number(text.match(/\b([12])\s+(?:hinh|anh|tam)\s+cong\b/)?.[1] ?? 0) || null;
+  const small = text.match(/\b(\d+)\s+(?:hinh|anh)\s+(?:nho|khung|ban)?\s*(\d{2})\s*[xX]\s*(\d{2})/i);
+  const outfits = pkg.benefits.match(/\b\d+\s+(?:saree?|soiree?|soire|váy|vay)(?:\s*\+\s*\d+\s+(?:áo\s+)?vest)?/i)?.[0] ?? null;
+  return {
+    gateCount,
+    gateMaterial: /mica guong/.test(text) ? "mica gương" : /(ep go|in lua)/.test(text) ? "ép gỗ/in lụa" : null,
+    smallPrintCount: small ? Number(small[1]) : null,
+    smallPrintSize: small ? `${small[2]}x${small[3]}cm` : null,
+    smallPrintFramed: /(?:co khung|có khung)/i.test(pkg.benefits) ? true : /(?:chua khung|không khung|khong khung)/i.test(pkg.benefits) ? false : null,
+    photoLevel: /photo master/.test(text) ? "Master" : /photo chuyen vien/.test(text) ? "chuyên viên" : null,
+    makeupLevel: /make ?up master/.test(text) ? "Master" : /make ?up chuyen vien/.test(text) ? "chuyên viên" : null,
+    outfits,
+  };
+}
+
+function packageAlias(pkg: PriceSheetPackageTrace): string {
+  const text = norm(`${pkg.name} ${pkg.code ?? ""}`);
+  if (text.includes("tiet kiem") || pkg.finalPrice === 1_900_000) return "Tiết kiệm";
+  if (text.includes("basic") || pkg.finalPrice === 2_900_000) return "Basic";
+  if (text.includes("premium") || pkg.finalPrice === 3_900_000) return "Premium";
+  if (text.includes("luxury") || pkg.finalPrice === 5_900_000) return "Luxury";
+  return cleanPackageLabel(pkg.name);
+}
+
+function packagesMentioned(message: string, packages: PriceSheetPackageTrace[]): PriceSheetPackageTrace[] {
+  const text = norm(message);
+  const aliases: Array<[RegExp, string]> = [
+    [/\b(?:tiet kiem|1[.,]9|1900000)\b/, "Tiết kiệm"],
+    [/\b(?:basic|2[.,]9|2900000)\b/, "Basic"],
+    [/\b(?:premium|3[.,]9|3900000)\b/, "Premium"],
+    [/\b(?:luxury|5[.,]9|5900000)\b/, "Luxury"],
+  ];
+  if (/goi thap nhat/.test(text) && /goi cao nhat/.test(text)) return [packages[0], packages[packages.length - 1]].filter(Boolean);
+  return aliases.flatMap(([re, alias]) => re.test(text) ? packages.filter((pkg) => packageAlias(pkg) === alias) : []);
+}
+
+function comparisonDelta(lower: PriceSheetPackageTrace, higher: PriceSheetPackageTrace): string[] {
+  const a = comparableFacts(lower);
+  const b = comparableFacts(higher);
+  const changes: string[] = [];
+  if (a.outfits && b.outfits && norm(a.outfits) !== norm(b.outfits)) changes.push(`trang phục từ ${a.outfits} lên ${b.outfits}`);
+  if (a.gateCount !== b.gateCount || a.gateMaterial !== b.gateMaterial) {
+    const before = [a.gateCount ? `${a.gateCount} cổng` : null, a.gateMaterial].filter(Boolean).join(" ");
+    const after = [b.gateCount ? `${b.gateCount} cổng` : null, b.gateMaterial].filter(Boolean).join(" ");
+    if (before && after) changes.push(`phần cổng từ ${before} lên ${after}`);
+  }
+  if (a.photoLevel && b.photoLevel && a.photoLevel !== b.photoLevel) changes.push(`Photo từ ${a.photoLevel} lên ${b.photoLevel}`);
+  if (a.makeupLevel && b.makeupLevel && a.makeupLevel !== b.makeupLevel) changes.push(`Makeup từ ${a.makeupLevel} lên ${b.makeupLevel}`);
+  if (a.smallPrintCount !== b.smallPrintCount || a.smallPrintSize !== b.smallPrintSize || a.smallPrintFramed !== b.smallPrintFramed) {
+    const before = [a.smallPrintCount ? `${a.smallPrintCount} ảnh nhỏ` : null, a.smallPrintSize, a.smallPrintFramed === true ? "có khung" : a.smallPrintFramed === false ? "chưa khung" : null].filter(Boolean).join(" ");
+    const after = [b.smallPrintCount ? `${b.smallPrintCount} ảnh nhỏ` : null, b.smallPrintSize, b.smallPrintFramed === true ? "có khung" : b.smallPrintFramed === false ? "chưa khung" : null].filter(Boolean).join(" ");
+    if (before && after) changes.push(`sản phẩm phụ từ ${before} lên ${after}`);
+  }
+  return changes;
+}
+
+function recentCustomerContext(prior: SaleHistoryItem[]): string {
+  return norm(prior.filter((item) => item.direction === "incoming").slice(-8).map((item) => item.message).join(" "));
+}
+
+/** So sánh package từ snapshot DB đã xác minh; không đọc lại catalogue và không mặc định upsell. */
+export function buildPackageComparisonReply(
+  resolution: PriceSheetResolution,
+  customerMessage: string,
+  prior: SaleHistoryItem[] = [],
+): string {
+  const packages = [...(resolution.trace?.includedPackages ?? [])].sort((a, b) => a.finalPrice - b.finalPrice);
+  if (packages.length < 2) return "Dạ em chưa đủ dữ liệu package đã xác minh để so chính xác, em chuyển nhân viên kiểm tra giúp mình nha.";
+  const text = norm(customerMessage);
+  const context = `${recentCustomerContext(prior)} ${text}`;
+  let mentioned = packagesMentioned(customerMessage, packages);
+  if (mentioned.length < 2 && /(?:them|chenh)\s+\d/.test(text)) {
+    const current = packagesMentioned(recentCustomerContext(prior), packages).at(-1) ?? packages[0];
+    const index = packages.findIndex((pkg) => pkg.id === current.id);
+    if (index >= 0 && packages[index + 1]) mentioned = [current, packages[index + 1]];
+  }
+  if (mentioned.length >= 2) {
+    const [lower, higher] = mentioned.slice(0, 2).sort((a, b) => a.finalPrice - b.finalPrice);
+    const difference = higher.finalPrice - lower.finalPrice;
+    const changes = comparisonDelta(lower, higher);
+    const higherFacts = comparableFacts(higher);
+    const lowerFacts = comparableFacts(lower);
+    const needsTwoMica = /(?:hai|2)\s+cong|mica/.test(context);
+    const needsMaster = /master|ekip|tho chup|makeup/.test(context);
+    const lowerMeetsTwoMica = (lowerFacts.gateCount ?? 0) >= 2 && lowerFacts.gateMaterial === "mica gương";
+    const higherMeetsTwoMica = (higherFacts.gateCount ?? 0) >= 2 && higherFacts.gateMaterial === "mica gương";
+    const lowerMeetsMaster = lowerFacts.photoLevel === "Master" || lowerFacts.makeupLevel === "Master";
+    const higherMeetsMaster = higherFacts.photoLevel === "Master" || higherFacts.makeupLevel === "Master";
+    const recommendHigher = (needsTwoMica && !lowerMeetsTwoMica && higherMeetsTwoMica)
+      || (needsMaster && !lowerMeetsMaster && higherMeetsMaster);
+    const lowerAlreadyFits = (needsTwoMica && lowerMeetsTwoMica) || (needsMaster && lowerMeetsMaster);
+    const lowerEnough = /(?:mot|1)\s+cong|don gian|tiet kiem/.test(context)
+      && (lowerFacts.gateCount ?? 1) <= 1;
+    const recommendation = recommendHigher
+      ? `Với nhu cầu mình đã nói, em nghiêng ${packageAlias(higher)} vì mình dùng đúng phần quyền lợi tăng thêm.`
+      : lowerAlreadyFits
+        ? `${packageAlias(lower)} đã đáp ứng đúng phần mình cần rồi, không nhất thiết nâng lên ${packageAlias(higher)} để dư quyền lợi nha 😄`
+      : lowerEnough
+        ? `Nhu cầu mình đang gọn thì ${packageAlias(lower)} đã vừa đẹp, không cần nâng chỉ để dư quyền lợi nha 😄`
+        : `Nếu mình dùng đúng các phần tăng thêm thì ${packageAlias(higher)} đáng cân; còn không thì ${packageAlias(lower)} vẫn rất ổn.`;
+    return `Dạ ${packageAlias(lower)} ${formatVnd(lower.finalPrice)} lên ${packageAlias(higher)} ${formatVnd(higher.finalPrice)} chênh ${formatVnd(difference)} nha mình. ${changes.length ? `Phần chênh nằm ở ${changes.slice(0, 3).join(", ")}.` : "Em chỉ đối chiếu những quyền lợi đang có trong package hiện hành."} ${recommendation}`;
+  }
+  const oneGate = /(?:mot|1)\s+cong/.test(context);
+  const twoGates = /(?:hai|2)\s+cong/.test(context);
+  const wantsMica = /mica/.test(context);
+  const prioritizesTeam = /(?:uu tien|quan trong).{0,20}(?:ekip|tho chup|makeup)|master/.test(context);
+  const prioritizesProducts = /(?:uu tien|quan trong).{0,20}(?:san pham|anh cong)/.test(context);
+  const budget = Number(text.match(/(?:toi da|khoang|tam)\s*(\d+(?:[.,]\d+)?)\s*(?:trieu|tr)/)?.[1]?.replace(",", ".") ?? 0) * 1_000_000;
+  const affordable = budget ? packages.filter((pkg) => pkg.finalPrice <= budget) : packages;
+  let recommendation = affordable[0] ?? packages[0];
+  if (prioritizesTeam) recommendation = affordable.findLast((pkg) => {
+    const facts = comparableFacts(pkg); return facts.photoLevel === "Master" || facts.makeupLevel === "Master";
+  }) ?? affordable.at(-1) ?? recommendation;
+  else if (twoGates || wantsMica || prioritizesProducts) recommendation = affordable.find((pkg) => {
+    const facts = comparableFacts(pkg); return (facts.gateCount ?? 0) >= 2 && (!wantsMica || facts.gateMaterial === "mica gương");
+  }) ?? affordable.at(-1) ?? recommendation;
+  else if (oneGate) recommendation = affordable.find((pkg) => (comparableFacts(pkg).gateCount ?? 1) === 1) ?? recommendation;
+  else recommendation = affordable[Math.min(1, affordable.length - 1)] ?? recommendation;
+  if (/nhieu nguoi chon/.test(text)) return `Dạ em không nói đại gói nào nhiều người chọn nhất khi chưa có số booking xác minh nha 😄 Theo nhu cầu hiện tại, em nghiêng ${packageAlias(recommendation)} ở mức ${formatVnd(recommendation.finalPrice)}.`;
+  if (/doc bang/.test(text)) return "Dạ để em nói kiểu dễ hiểu nha 😄 Các gói khác nhau chủ yếu ở trang phục, số/chất liệu cổng, sản phẩm đi kèm và cấp ekip. Mình đang ngắm hai gói nào, em bóc đúng phần chênh trong vài dòng thôi.";
+  return `Dạ theo nhu cầu mình đã nói, em nghiêng ${packageAlias(recommendation)} ở mức ${formatVnd(recommendation.finalPrice)} nha. Đây là gói dùng đúng quyền lợi mình cần; không nhất thiết lấy gói cao nhất mới là tốt nhất 😄`;
+}
+
 export function buildPriceSheetReply(resolution: PriceSheetResolution, customerMessage = ""): string[] {
   if (!resolution.group || !resolution.trace?.validator.passed) return [];
   const packages = resolution.trace.includedPackages;
@@ -387,8 +529,17 @@ export function buildPriceSheetReply(resolution: PriceSheetResolution, customerM
     ? `Nếu mình chưa có yêu cầu đặc biệt, em đề xuất ${cleanPackageLabel(recommendation.name)} ở mức ${formatVnd(recommendation.finalPrice)} để cân bằng chi phí và sản phẩm.`
     : "";
   if (resolution.trace.serviceKey === "wedding_gate") {
+    // Ảnh bảng giá luôn được gửi trước bởi sale-brain-runner. Phần chữ chỉ tóm
+    // tắt đúng trọng tâm, không lặp lại cả catalogue dài bên dưới ảnh.
+    const concise = packages.map((pkg) => {
+      const price = pkg.finalPrice < pkg.price
+        ? `${formatVnd(pkg.finalPrice)} (gốc ${formatVnd(pkg.price)})`
+        : formatVnd(pkg.price);
+      const highlight = packageHighlights(pkg)[0];
+      return `• ${cleanPackageLabel(pkg.name)} – ${price}${highlight ? `: ${highlight}` : ""}`;
+    });
     return [
-      `Dạ em gửi mình bảng giá chụp cổng hiện tại nha.\n\nBên em đang có các gói dành cho khách lẻ:\n\n${blocks.join("\n\n")}\n\nMỗi gói sẽ khác nhau về số lượng ảnh cổng, trang phục, makeup và sản phẩm đi kèm. Mình cần một cổng hay hai cổng để em chọn giúp mình gói vừa đủ nhất nha?`,
+      `Bảng đầy đủ của mình đây nha 😄\n${concise.join("\n")}\nMình ưu tiên ngân sách hay cần 2 cổng mica để em gợi đúng một gói nha?`,
     ];
   }
   return [

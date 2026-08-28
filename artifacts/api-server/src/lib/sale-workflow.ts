@@ -160,6 +160,7 @@ const STYLE_KEYWORDS = [
   "nhe nhang", "sang trong", "nang tho", "ngot ngao", "sexy", "quyen ru", "luxury",
   "cool boy", "cool girl", "ca tinh", "tu nhien", "han quoc", "co dien", "hien dai",
   "tinh te", "toi gian", "chinh chu", "cao cap", "premium", "viet phuc", "co trang", "truyen thong",
+  "tre trung", "fashion", "editorial", "nen sang", "nen toi", "nhieu hoa", "it hoa", "trang tinh", "de thuong",
 ];
 
 function styleSlot(texts: TextEvidence[]) {
@@ -299,10 +300,29 @@ function askedQuestionState(evidence: TextEvidence[], serviceStart: number): { k
 }
 
 const FORCE_PRICE_RE = /\b(cu|cho|gui)\b.{0,28}\b(bang gia|gia)\b.{0,18}\b(truoc|di)|\bkhong can hoi|cu xem gia/i;
-const SAMPLE_CONFIRM_RE = /\b(ung|thich|chon|dung gu|hop gu|mau nay ok|kieu nay ok|lay phong cach nay|bao gia di|gui bang gia)\b/;
+const SAMPLE_CONFIRM_RE = /\b(ung|thich|chon|dung gu|hop gu|mau nay ok|kieu nay ok|kieu nay duoc|cai nay duoc|lay phong cach nay|tam (?:so |thu )?[123]|cai dau|cai giua|cai cuoi|bao gia di|gui bang gia)\b/;
 const SAMPLE_REJECT_RE = /\b(khong ung|khong thich|chua ung|doi mau|mau khac|kieu khac|khong hop)\b/;
 const CUSTOMER_DEFERS_RE = /\b(de|cho)\s+(minh|anh|chi|em|toi)\s+(xem|coi|tham khao|suy nghi)(\s+them|\s+ky)?\b|\b(chua quyet dinh|chua chot|de tinh|suy nghi them|xem ky them)\b/;
 const CLARIFICATION_RE = /\b(nghia la sao|y la sao|la sao|giai thich)\b/;
+const PACKAGE_COMPARE_RE = /\b(?:basic|premium|luxury|tiet kiem)\b.{0,28}\b(?:khac gi|so voi|loi hon|hon nhau)\b|\bso sanh\b.{0,28}\bgoi\b/;
+const PACKAGE_COMPARE_EXTENDED_RE = /(?:\b1[.,]9\b|\b2[.,]9\b|\b3[.,]9\b|\b5[.,]9\b).{0,28}(?:\bvoi\b|\bva\b).{0,28}(?:\b1[.,]9\b|\b2[.,]9\b|\b3[.,]9\b|\b5[.,]9\b)|\b(?:tiet kiem|basic|premium|luxury)\b.{0,18}\b(?:hay|voi|va)\b.{0,18}\b(?:tiet kiem|basic|premium|luxury)\b|\bgoi thap nhat\b.{0,24}\bgoi cao nhat\b|\b(?:them|chenh)\s+\d+(?:[.,]\d+)?\s*(?:trieu|tr)\b.{0,18}\b(?:duoc gi|de lam gi)\b|\bgoi cang cao\b.{0,24}\b(?:hon|khac|duoc)\b|\bdoc bang\b.{0,30}\bkhong hieu\b/;
+const PACKAGE_ADVICE_AFTER_PRICE_RE = /\bgoi nao\b.{0,24}\b(?:dang tien|ngon nhat|hop|nen chon|nhieu nguoi chon)\b|\b(?:chi can|can)\s+(?:dung\s+)?(?:mot|hai|1|2)\s+cong\b|\b(?:muon|thich|uu tien)\b.{0,20}\b(?:mica|san pham|ekip|tho chup|makeup)\b|\b(?:co can|nen)\b.{0,12}\blen luxury\b|\bmaster\b.{0,20}\b(?:dang|can|khac)\b|\bbasic\b.{0,12}\bvan on\b|\btoi da\s+\d+(?:[.,]\d+)?\s*(?:trieu|tr)\b/;
+const PROMOTION_RE = /\b(khuyen mai|uu dai|giam gia|qua tang|co qua|qua gi|moc may|moc nao|cong don|quy doi qua|doi qua.*tien)\b|\b[2345]\s*(?:dich vu|goi)\b.{0,24}\b(?:duoc gi|qua|tang)\b|\bbeauty\b.{0,24}\b(?:tinh|cong)\b/;
+const PRICE_OBJECTION_RE = /\b(mac qua|cao qua|gia cao|hoi cao|vuot ngan sach|khong du ngan sach)\b/;
+const PACKAGE_DECISION_RE = /\b(chot|lay|chon)\s+(?:goi\s+)?(tiet kiem|basic|premium|luxury)\b/;
+const AMBIGUOUS_OUTDOOR_RE = /^\s*(co\s+)?ngoai canh\s*(khong|ko|hong)?\s*\??\s*$/;
+const AMBIGUOUS_DRESS_RE = /^\s*(co\s+)?vay\s*(khong|ko|hong)?\s*\??\s*$/;
+
+export function contextualIntentOwner(message: string): string | null {
+  const text = norm(message);
+  if (PACKAGE_COMPARE_RE.test(text) || PACKAGE_COMPARE_EXTENDED_RE.test(text)) return "GATE_STEP_4_COMPARE";
+  if (PROMOTION_RE.test(text)) return "GATE_STEP_5_PROMOTION";
+  if (PRICE_OBJECTION_RE.test(text)) return "GATE_STEP_6_OBJECTION";
+  if (PACKAGE_DECISION_RE.test(text)) return "GATE_STEP_7_DECISION";
+  if (AMBIGUOUS_OUTDOOR_RE.test(text)) return "COMMON_CLARIFY_OUTDOOR";
+  if (AMBIGUOUS_DRESS_RE.test(text)) return "COMMON_CLARIFY_DRESS";
+  return null;
+}
 
 function imageUrlFromMessage(message: string): string | null {
   return message.match(/^\s*\[image:(.+?)\]\s*$/)?.[1]?.trim() ?? null;
@@ -399,6 +419,8 @@ export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHisto
   const sampleConfirmedNow = sample.sent && SAMPLE_CONFIRM_RE.test(norm(input.message)) && !SAMPLE_REJECT_RE.test(norm(input.message));
   const customerDefers = CUSTOMER_DEFERS_RE.test(norm(input.message));
   const clarificationRequested = CLARIFICATION_RE.test(norm(input.message));
+  const intentOwner = contextualIntentOwner(input.message);
+  const adviceAfterPrice = priceSheet.sent && PACKAGE_ADVICE_AFTER_PRICE_RE.test(norm(input.message));
   const style = slots.find((slot) => slot.key === "style")?.value ?? null;
   const questions = askedQuestionState(evidence, serviceStart);
   const explicitCurrentService = resolveServiceKeyFromConversation(input.message, []);
@@ -442,6 +464,11 @@ export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHisto
     answeredSlots: filledSlots.map((slot) => slot.key),
   });
 
+  // Promotion policy is owned by Step 5 even before a service has been chosen,
+  // and even when the question mentions Beauty only to ask if it is eligible.
+  if (intentOwner === "GATE_STEP_5_PROMOTION") {
+    return selectDecision(base, "FOLLOW_UP", "CONTINUE_CONVERSATION", "owner_gate_step_5_promotion", null);
+  }
   if (!serviceKey) {
     return selectDecision(base, greeted ? "IDENTIFY_SERVICE" : "GREETING", "ASK_SERVICE", service.ambiguous ? "multiple_services" : "service_unknown", null);
   }
@@ -460,6 +487,23 @@ export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHisto
   }
   if (customerDefers) {
     return selectDecision(base, "FOLLOW_UP", "CONTINUE_CONVERSATION", "customer_wants_time_to_consider", null);
+  }
+  if (
+    (serviceKey === "wedding_gate" || !serviceKey)
+    && (intentOwner === "COMMON_CLARIFY_OUTDOOR" || intentOwner === "COMMON_CLARIFY_DRESS")
+  ) {
+    return selectDecision(base, "IDENTIFY_SERVICE", "CONTINUE_CONVERSATION", intentOwner.toLowerCase(), null);
+  }
+  // Các owner dưới đây chỉ thuộc kịch bản Chụp cổng. Không để một câu có tên
+  // package ở Album/Beauty vô tình bị kéo ngược về workflow Chụp cổng.
+  if (serviceKey === "wedding_gate" && (intentOwner === "GATE_STEP_4_COMPARE" || adviceAfterPrice)) {
+    return selectDecision(base, "EXPLAIN_PACKAGES", "CONTINUE_CONVERSATION", "owner_gate_step_4_compare", null);
+  }
+  if (serviceKey === "wedding_gate" && intentOwner === "GATE_STEP_6_OBJECTION") {
+    return selectDecision(base, "RECOMMEND_PACKAGE", "CONTINUE_CONVERSATION", "owner_gate_step_6_objection", null);
+  }
+  if (serviceKey === "wedding_gate" && intentOwner === "GATE_STEP_7_DECISION") {
+    return selectDecision(base, "CLOSE_OR_HANDOFF", "CONTINUE_CONVERSATION", "owner_gate_step_7_decision", null);
   }
   if (priceSheet.sent) {
     return selectDecision(base, "RECOMMEND_PACKAGE", "CONTINUE_CONVERSATION", "price_sheet_already_sent_follow_latest_preference", null);

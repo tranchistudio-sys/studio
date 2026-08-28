@@ -19,6 +19,7 @@ import { detectEscalation } from "./sale-lead-flags";
 import { HOLD_MESSAGE, imageEscalationReason } from "./sale-human-review";
 import {
   buildPriceSheetReply,
+  buildPackageComparisonReply,
   PRICE_SHEET_SEND_FAILED_MESSAGE,
   resolvePriceSheetRequest,
   type PriceSheetTrace,
@@ -32,6 +33,7 @@ import {
   type LuluResponseTrace,
 } from "./sale-script-registry";
 import {
+  buildWeddingGiftReply,
   buildWeddingGiftPromptBlock,
   evaluateWeddingGiftTrace,
   loadWeddingGiftProgram,
@@ -284,6 +286,49 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
       overrideApplied: false,
       responseMode: null,
     };
+  }
+
+  if (scriptTrace.nodeKey === "WEDDING_GATE.COMPARE.PACKAGES") {
+    const comparisonData = await resolvePriceSheetRequest({
+      message: incomingText,
+      prior,
+      force: true,
+      serviceKey: "wedding_gate",
+    });
+    const comparisonReply = buildPackageComparisonReply(comparisonData, incomingText, prior);
+    scriptTrace = appendScriptTraceData(scriptTrace, {
+      renderedText: comparisonReply,
+      dataSources: ["service_packages", "conversation_state"],
+      priceSnapshot: comparisonData.trace?.includedPackages.map((pkg) => ({
+        packageId: pkg.id,
+        price: pkg.price,
+        finalPrice: pkg.finalPrice,
+      })) ?? [],
+      stateAfter: { currentStep: 4 },
+      validatorResults: [{
+        name: "retail_package_comparison_from_verified_db",
+        passed: Boolean(comparisonData.trace?.validator.passed),
+        detail: comparisonData.trace?.validator.reasons.join(", ") || undefined,
+      }],
+    });
+  }
+
+  if (scriptTrace.nodeKey === "WEDDING_GATE.PROMOTION.CHECK_ELIGIBILITY") {
+    const promotionReply = buildWeddingGiftReply({
+      message: incomingText,
+      trace: weddingGiftTrace,
+      program: weddingGiftProgram,
+    });
+    scriptTrace = appendScriptTraceData(scriptTrace, {
+      renderedText: promotionReply,
+      dataSources: ["wedding_gift_programs", "wedding_gift_eligible_groups", "conversation_state"],
+      stateAfter: { currentStep: 5 },
+      validatorResults: [
+        { name: "promotion_is_current", passed: weddingGiftTrace.programStatus === "active" },
+        { name: "beauty_is_not_eligible", passed: !weddingGiftProgram.eligibleServiceKeys.includes("beauty") },
+        { name: "highest_tier_only", passed: weddingGiftProgram.accumulationPolicy === "highest_tier_only" },
+      ],
+    });
   }
 
   // The rebuilt script path is intentionally deterministic: no Claude prompt may fill a missing node.

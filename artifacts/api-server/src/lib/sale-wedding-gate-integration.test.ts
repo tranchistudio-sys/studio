@@ -110,6 +110,21 @@ describe("Wedding Gate pilot integration", () => {
     expect(restored.requestedAction).toBe("service_switch");
   });
 
+  it("does not repeat an unanswered discovery question and allows a provisional quote", () => {
+    const workflow = evaluateSaleWorkflow({
+      message: "Dạ cứ cho chị xem trước đi em.",
+      prior: [
+        { direction: "incoming", message: "Bên mình có chụp cổng không?" },
+        { direction: "outgoing", message: "Dạ mình cần một cổng hay hai cổng ạ?" },
+      ],
+    });
+
+    expect(workflow.serviceKey).toBe("wedding_gate");
+    expect(workflow.action).toBe("SEND_PRICE_SHEET");
+    expect(workflow.reason).toBe("discovery_question_skipped_provisional_quote:gate_count");
+    expect(workflow.nextSlot).toBeNull();
+  });
+
   it("blocks every unresolved raw placeholder before customer output", () => {
     const draft = route("Giá sao?", [
       { direction: "incoming", message: "Bên mình có chụp cổng không?" },

@@ -304,6 +304,12 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
       finalReply = [priceSheet.clarificationMessage ?? "Mình muốn xem bảng giá dịch vụ nào ạ?"];
     } else if (priceSheet.trace?.validator.passed) {
       finalReply = buildPriceSheetReply(priceSheet, incomingText);
+      if (saleWorkflow.reason.startsWith("discovery_question_skipped_provisional_quote:")) {
+        finalReply = [
+          "Dạ với thông tin mình đang có, em xin phép gửi báo giá tham khảo trước để mình xem nha.",
+          ...finalReply,
+        ];
+      }
     } else {
       finalReply = [PRICE_SHEET_SEND_FAILED_MESSAGE];
     }

@@ -19,7 +19,9 @@ import { detectEscalation } from "./sale-lead-flags";
 import { HOLD_MESSAGE, imageEscalationReason } from "./sale-human-review";
 import {
   buildPriceSheetReply,
+  buildPackageDetailReply,
   buildPackageComparisonReply,
+  hasVerifiedPackageData,
   PRICE_SHEET_SEND_FAILED_MESSAGE,
   resolvePriceSheetRequest,
   type PriceSheetTrace,
@@ -297,13 +299,29 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
     serviceKey: saleWorkflow.serviceKey,
   });
   if (saleWorkflow.action === "SEND_PRICE_SHEET" && priceSheet.requested) {
+    const packageCardPreviewAllowed = hasVerifiedPackageData(priceSheet);
+    const presentationAllowed = Boolean(priceSheet.trace?.validator.passed) || packageCardPreviewAllowed;
+    const priceSheetTrace: PriceSheetTrace | null = priceSheet.trace
+      ? {
+          ...priceSheet.trace,
+          deliveryMode: "BRAIN_LAB_PREVIEW",
+          simulationStatus: presentationAllowed ? "SIMULATED_PRICE_SHEET" : "PRICE_ASSET_MISSING",
+          actionOrder: presentationAllowed
+            ? [
+                ...(priceSheet.trace.validator.passed ? ["preview_official_asset"] : ["PRICE_ASSET_MISSING", "render_package_cards"]),
+                "SIMULATED_PRICE_SHEET",
+                "render_customer_text",
+              ]
+            : ["PRICE_ASSET_MISSING", "simulation_blocked_missing_package_data"],
+        }
+      : null;
     let finalReply: string[] = [];
     let quoteChunks: LuluChatChunk[] = [];
     let quoteRaw = "";
     if (priceSheet.needsClarification) {
       finalReply = [priceSheet.clarificationMessage ?? "Mình muốn xem bảng giá dịch vụ nào ạ?"];
-    } else if (priceSheet.trace?.validator.passed) {
-      finalReply = buildPriceSheetReply(priceSheet, incomingText);
+    } else if (presentationAllowed) {
+      finalReply = buildPriceSheetReply(priceSheet, incomingText, { allowPackageCardFallback: true });
       if (saleWorkflow.reason.startsWith("discovery_question_skipped_provisional_quote:")) {
         finalReply = [
           "Dạ với thông tin mình đang có, em xin phép gửi báo giá tham khảo trước để mình xem nha.",
@@ -321,7 +339,7 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
     })) ?? [];
     scriptTrace = appendScriptTraceData(scriptTrace, {
       renderedText: finalReply.join("\n\n"),
-      assetIds: priceSheet.trace?.assetId ? [priceSheet.trace.assetId] : [],
+      assetIds: priceSheet.trace?.validator.passed && priceSheet.trace.assetId ? [priceSheet.trace.assetId] : [],
       dataSources: ["service_groups", "service_packages", "service_groups.ai_image_url"],
       priceSnapshot,
       validatorResults: priceSheet.trace
@@ -330,16 +348,16 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
           { name: "asset_group_matches_service", passed: !priceSheet.trace.validator.reasons.includes("price_sheet_group_mismatch") },
           { name: "public_for_customer", passed: !priceSheet.trace.validator.reasons.includes("price_sheet_not_public") },
           { name: "retail_packages_only", passed: !priceSheet.trace.validator.reasons.includes("no_retail_packages") },
-          { name: "image_before_text", passed: priceSheet.trace.validator.passed },
+          { name: "brain_lab_price_preview", passed: presentationAllowed, detail: priceSheet.trace.validator.passed ? "official_asset_preview" : "verified_package_card_fallback" },
         ]
         : [{ name: "price_resolution", passed: false, detail: "missing_price_trace" }],
-      stateAfter: { priceSheetSent: !!priceSheet.trace?.validator.passed, currentStep: 3, pendingQuestion: "gate_count" },
+      stateAfter: { priceSheetSent: presentationAllowed, currentStep: 3, pendingQuestion: null },
     });
     scriptTrace = preventRawPlaceholderLeak(scriptTrace);
     const chunks = quoteChunks.length === finalReply.length
       ? quoteChunks
       : finalReply.map((text) => ({ text, delayMs: 900 }));
-    const escalated = !priceSheet.needsClarification && !priceSheet.trace?.validator.passed && settings.humanReviewEnabled;
+    const escalated = !priceSheet.needsClarification && !presentationAllowed && settings.humanReviewEnabled;
     return {
       reply: finalReply,
       chunks,
@@ -353,9 +371,9 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
       escalationReason: escalated ? priceSheet.escalationReason : null,
       holdMessage: escalated ? HOLD_MESSAGE : null,
       botPaused: escalated && settings.autoPauseThreadWhenEscalated,
-      detectedIntent: "price_sheet",
+      detectedIntent: saleWorkflow.detectedIntent,
       priceImages: priceSheet.trace?.validator.passed && priceSheet.assetUrl ? [priceSheet.assetUrl] : [],
-      priceSheetTrace: priceSheet.trace,
+      priceSheetTrace,
       saleWorkflow,
       scriptTrace,
       weddingGiftTrace,
@@ -366,6 +384,31 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
       overrideApplied: false,
       responseMode: null,
     };
+  }
+
+  if (saleWorkflow.reason === "owner_gate_step_3_package_detail") {
+    const packageSource = await resolvePriceSheetRequest({
+      message: incomingText,
+      prior,
+      force: true,
+      serviceKey: "wedding_gate",
+    });
+    const detailReply = buildPackageDetailReply(packageSource, incomingText);
+    scriptTrace = appendScriptTraceData(scriptTrace, {
+      renderedText: detailReply,
+      dataSources: ["service_packages", "conversation_state"],
+      priceSnapshot: packageSource.trace?.includedPackages.map((pkg) => ({
+        packageId: pkg.id,
+        price: pkg.price,
+        finalPrice: pkg.finalPrice,
+      })) ?? [],
+      stateAfter: { currentStep: 3, priceSheetSent: saleWorkflow.priceSheetSent },
+      validatorResults: [{
+        name: "package_detail_from_verified_db",
+        passed: hasVerifiedPackageData(packageSource),
+        detail: packageSource.trace?.validator.reasons.join(", ") || undefined,
+      }],
+    });
   }
 
   if (scriptTrace.nodeKey === "WEDDING_GATE.COMPARE.PACKAGES") {
@@ -387,7 +430,7 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
       stateAfter: { currentStep: 4 },
       validatorResults: [{
         name: "retail_package_comparison_from_verified_db",
-        passed: Boolean(comparisonData.trace?.validator.passed),
+        passed: hasVerifiedPackageData(comparisonData),
         detail: comparisonData.trace?.validator.reasons.join(", ") || undefined,
       }],
     });
@@ -429,7 +472,7 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
       },
       validatorResults: [
         { name: "one_primary_recommendation", passed: Boolean(recommendation.pkg) },
-        { name: "verified_package_data_only", passed: Boolean(packageSource.trace?.validator.passed) },
+        { name: "verified_package_data_only", passed: hasVerifiedPackageData(packageSource) },
         { name: "no_booking_creation", passed: true },
         { name: "no_pressure_sale", passed: true },
       ],
@@ -444,8 +487,12 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
       serviceKey: "wedding_gate",
     });
     const verifiedPackages = packageSource.trace?.includedPackages ?? [];
-    const selectedPackage = decisionPackageFromVerifiedSource(incomingText, verifiedPackages);
     const decision = saleWorkflow.packageDecision;
+    const selectedPackage = decisionPackageFromVerifiedSource(incomingText, verifiedPackages)
+      ?? decisionPackageFromVerifiedSource(decision.packageHint ?? "", verifiedPackages);
+    const closingConfirmed = saleWorkflow.reason === "owner_gate_step_8_booking"
+      && decision.status === "CONFIRMED"
+      && decision.bookingReady !== false;
     let decisionReply = scriptTrace.renderedText;
     if (decision.resolution === "AMBIGUOUS_BENEFIT") {
       const micaMatches = verifiedPackages.filter((pkg) => /2\s*(?:hinh\s+)?cong/i.test(normalizeDecisionText(`${pkg.name} ${pkg.benefits}`)) && /mica/i.test(`${pkg.name} ${pkg.benefits}`));
@@ -457,13 +504,17 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
         ? `Dạ hiện mình đang nghiêng ${selectedPackage.name} nha. Em chưa tạo booking hay giữ lịch vội; khi mình xác nhận chắc thì em tiếp tục đúng gói này ạ.`
         : decision.bookingReady === false
           ? `Dạ em ghi nhận mình đã chọn ${selectedPackage.name} nha. Phần booking em chưa làm vội theo ý mình; khi sẵn sàng em tiếp tục đúng từ gói này ạ.`
-          : `Dạ ${selectedPackage.name} nha mình 👍 Em ghi nhận đúng lựa chọn này, không đổi hay đẩy mình lên gói khác. Mình qua phần xác nhận thông tin và kiểm tra lịch nha.`;
+          : `Dạ em ghi nhận ${selectedPackage.name} nha mình 👍 Mình dự kiến chụp ngày nào để em kiểm tra lịch giúp mình ạ?`;
     }
     scriptTrace = appendScriptTraceData(scriptTrace, {
       renderedText: decisionReply,
       dataSources: ["service_packages", "conversation_state"],
       priceSnapshot: selectedPackage ? [{ packageId: selectedPackage.id, price: selectedPackage.price, finalPrice: selectedPackage.finalPrice }] : [],
-      stateAfter: { selectedPackageName: selectedPackage?.name ?? scriptTrace.stateAfter.selectedPackageName, currentStep: 8 },
+      stateAfter: {
+        selectedPackageName: selectedPackage?.name ?? scriptTrace.stateAfter.selectedPackageName,
+        currentStep: closingConfirmed ? 8 : 7,
+        pendingQuestion: closingConfirmed ? "wedding_date" : scriptTrace.stateAfter.pendingQuestion,
+      },
       validatorResults: [
         { name: "retail_package_resolution_from_verified_db", passed: decision.resolution === "CONTEXT" || decision.resolution === "SERVICE_ONLY" || decision.resolution === "UNKNOWN_PRICE" || decision.resolution === "AMBIGUOUS_BENEFIT" || Boolean(selectedPackage) },
         { name: "no_booking_creation", passed: true },
@@ -489,7 +540,7 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
       escalationReason: "UNMAPPED_RESPONSE",
       holdMessage: HOLD_MESSAGE,
       botPaused: false,
-      detectedIntent: saleWorkflow.serviceKey,
+      detectedIntent: saleWorkflow.detectedIntent,
       priceImages: [],
       priceSheetTrace: null,
       saleWorkflow,
@@ -566,7 +617,7 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
       escalationReason: deterministicEscalationReason,
       holdMessage: deterministicHandoff ? HOLD_MESSAGE : null,
       botPaused: deterministicHandoff,
-      detectedIntent: saleWorkflow.serviceKey,
+      detectedIntent: saleWorkflow.detectedIntent,
       priceImages: [],
       priceSheetTrace: null,
       saleWorkflow,
@@ -709,7 +760,8 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
   if (exactPinned) console.log(`[SaleBrain] responseMode=exact_reply (nói y chang câu admin, ${finalReply.length} bubble)`);
 
   const detectedIntent =
-    imageIntent?.service_intent
+    saleWorkflow.detectedIntent
+    || imageIntent?.service_intent
     || (reply.sampleIntents && reply.sampleIntents.length ? reply.sampleIntents[0] : null)
     || (sampleImages[0]?.serviceIntent ?? null)
     || saleWorkflow.serviceKey;

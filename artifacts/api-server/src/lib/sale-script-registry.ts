@@ -650,10 +650,12 @@ function stepFor(workflow: SaleWorkflowDecision): number {
   if (!workflow.serviceKey) return 1;
   if (workflow.action === "SEND_SAMPLE" || workflow.action === "ASK_SAMPLE_CONFIRMATION") return 2;
   if (workflow.action === "SEND_PRICE_SHEET") return 3;
+  if (workflow.reason === "owner_gate_step_3_package_detail") return 3;
   if (workflow.reason === "owner_gate_step_4_compare") return 4;
   if (workflow.reason === "owner_gate_step_5_promotion") return 5;
   if (workflow.reason === "owner_gate_step_6_objection") return 6;
   if (workflow.reason === "owner_gate_step_7_recommendation") return 7;
+  if (workflow.reason === "owner_gate_step_7_unresolved_decision") return 7;
   if (workflow.reason === "owner_gate_step_8_booking" || workflow.stage === "CLOSE_OR_HANDOFF") return 8;
   if (workflow.stage === "FOLLOW_UP") return 9;
   return 1;
@@ -1125,6 +1127,15 @@ export function selectSaleScriptResponse(input: {
   if (input.workflow.action === "SEND_PRICE_SHEET") {
     return makeTrace({ selected: node("WEDDING_GATE.PRICING.SEND_RETAIL_PRICE", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 3, priceSheetSent: true }, workflow: input.workflow, decisionRule: "direct_or_confirmed_price_request" });
   }
+  if (input.workflow.reason === "owner_gate_step_3_package_detail") {
+    return makeTrace({
+      selected: node("WEDDING_GATE.PRICING.SEND_RETAIL_PRICE", input.overrides),
+      stateBefore: before,
+      stateAfter: { ...after, currentStep: 3, priceSheetSent: true },
+      workflow: input.workflow,
+      decisionRule: "package_detail_owned_by_step_3",
+    });
+  }
   if (input.workflow.reason === "owner_gate_step_4_compare") {
     return makeTrace({ selected: node("WEDDING_GATE.COMPARE.PACKAGES", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 4 }, workflow: input.workflow, decisionRule: "compare_packages_owned_by_step_4" });
   }
@@ -1194,6 +1205,17 @@ export function selectSaleScriptResponse(input: {
       decisionRule: lead.availabilityRequested ? "availability_check_read_only_then_human_handoff" : "step_8_minimum_information_complete_human_handoff",
       renderedText: `Dạ em tóm tắt: ${packageName}, ngày dự kiến ${dateSummary}, số liên hệ ${lead.phone}. Em chuyển nhân viên kiểm tra và xác nhận lại nha; hiện em chưa giữ lịch hay tạo booking ạ.`,
       variables: { SELECTED_PACKAGE: packageName, PHONE: lead.phone, REQUESTED_DATE: dateSummary },
+    });
+  }
+  if (input.workflow.reason === "owner_gate_step_7_unresolved_decision") {
+    return makeTrace({
+      selected: node("WEDDING_GATE.DECISION.PACKAGE_SELECTED", input.overrides),
+      stateBefore: before,
+      stateAfter: { ...after, currentStep: 7 },
+      workflow: input.workflow,
+      decisionRule: "unresolved_package_choice_stays_before_closing",
+      renderedText: decisionReply(input.workflow),
+      variables: { SELECTED_PACKAGE: packageLabel(input.workflow.packageDecision.packageHint) },
     });
   }
   if (input.workflow.reason === "customer_wants_time_to_consider") {

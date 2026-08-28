@@ -41,6 +41,9 @@ export type PriceSheetTrace = {
   discount: { status: string; name: string | null; type: string | null; value: number | null };
   actionOrder: string[];
   validator: { passed: boolean; reasons: string[] };
+  /** Chỉ được gắn bởi Brain Lab. Production outbound vẫn dùng validator gốc. */
+  deliveryMode?: "PRODUCTION_OUTBOUND" | "BRAIN_LAB_PREVIEW";
+  simulationStatus?: "SIMULATED_PRICE_SHEET" | "PRICE_ASSET_MISSING" | null;
 };
 
 export type PriceSheetResolution = {
@@ -495,7 +498,7 @@ export function buildPackageComparisonReply(
   const budget = Number(text.match(/(?:toi da|khoang|tam)\s*(\d+(?:[.,]\d+)?)\s*(?:trieu|tr)/)?.[1]?.replace(",", ".") ?? 0) * 1_000_000;
   const affordable = budget ? packages.filter((pkg) => pkg.finalPrice <= budget) : packages;
   let recommendation = affordable[0] ?? packages[0];
-  if (prioritizesTeam) recommendation = affordable.findLast((pkg) => {
+  if (prioritizesTeam) recommendation = [...affordable].reverse().find((pkg) => {
     const facts = comparableFacts(pkg); return facts.photoLevel === "Master" || facts.makeupLevel === "Master";
   }) ?? affordable.at(-1) ?? recommendation;
   else if (twoGates || wantsMica || prioritizesProducts) recommendation = affordable.find((pkg) => {
@@ -508,8 +511,24 @@ export function buildPackageComparisonReply(
   return `Dạ theo nhu cầu mình đã nói, em nghiêng ${packageAlias(recommendation)} ở mức ${formatVnd(recommendation.finalPrice)} nha. Đây là gói dùng đúng quyền lợi mình cần; không nhất thiết lấy gói cao nhất mới là tốt nhất 😄`;
 }
 
-export function buildPriceSheetReply(resolution: PriceSheetResolution, customerMessage = ""): string[] {
-  if (!resolution.group || !resolution.trace?.validator.passed) return [];
+export function hasVerifiedPackageData(resolution: PriceSheetResolution): boolean {
+  const trace = resolution.trace;
+  if (!resolution.group || !trace || trace.includedPackages.length === 0) return false;
+  const unsafeReasons = trace.validator.reasons.filter((reason) => ![
+    "price_sheet_missing",
+    "price_sheet_asset_not_official_storage",
+    "price_sheet_not_public",
+  ].includes(reason));
+  return unsafeReasons.length === 0;
+}
+
+export function buildPriceSheetReply(
+  resolution: PriceSheetResolution,
+  customerMessage = "",
+  options: { allowPackageCardFallback?: boolean } = {},
+): string[] {
+  const packageFallback = options.allowPackageCardFallback && hasVerifiedPackageData(resolution);
+  if (!resolution.group || !resolution.trace || (!resolution.trace.validator.passed && !packageFallback)) return [];
   const packages = resolution.trace.includedPackages;
   const blocks = packages.map((pkg) => {
     const price = pkg.finalPrice < pkg.price
@@ -536,15 +555,44 @@ export function buildPriceSheetReply(resolution: PriceSheetResolution, customerM
         ? `${formatVnd(pkg.finalPrice)} (gốc ${formatVnd(pkg.price)})`
         : formatVnd(pkg.price);
       const highlight = packageHighlights(pkg)[0];
-      return `• ${cleanPackageLabel(pkg.name)} – ${price}${highlight ? `: ${highlight}` : ""}`;
+      return `• ${packageAlias(pkg)} – ${price}${highlight ? `: ${highlight}` : ""}`;
     });
     return [
-      `Bảng đầy đủ của mình đây nha 😄\n${concise.join("\n")}\nMình ưu tiên ngân sách hay cần 2 cổng mica để em gợi đúng một gói nha?`,
+      `Dạ em gửi bảng Chụp cổng bên em nha 😄\n${concise.join("\n")}\nMỗi gói tăng dần ở phần trang phục, sản phẩm và ekip. Mình đang nhắm khoảng ngân sách nào, em chỉ đúng gói đáng xem nhất cho mình nha?`,
     ];
   }
   return [
     `Dạ, ${titleCaseIfShouted(resolution.group.name)} hiện có các gói bán lẻ sau nha:\n\n${blocks.join("\n\n")}\n\n${recommendationText}\n\nMình ưu tiên tiết kiệm hay muốn hình ảnh chỉn chu hơn để em tư vấn sát hơn nha?`,
   ];
+}
+
+export function buildPackageDetailReply(
+  resolution: PriceSheetResolution,
+  customerMessage: string,
+): string {
+  if (!hasVerifiedPackageData(resolution)) {
+    return "Dạ em chưa đủ dữ liệu package đã xác minh để giải thích chính xác, em nhờ nhân viên kiểm tra giúp mình nha.";
+  }
+  const packages = resolution.trace?.includedPackages ?? [];
+  const selected = packagesMentioned(customerMessage, packages)[0]
+    ?? decisionPackageByAlias(customerMessage, packages);
+  if (!selected) {
+    return "Dạ mình đang hỏi gói Tiết kiệm, Basic, Premium hay Luxury ạ? Em giải thích đúng gói cho mình nha.";
+  }
+  const price = formatVnd(selected.finalPrice);
+  const highlights = packageHighlights(selected).slice(0, 3);
+  const detail = highlights.length ? ` ${highlights.join("; ")}.` : "";
+  return `Dạ ${packageAlias(selected)} hiện là ${price} nha mình.${detail} Mình muốn em nói kỹ thêm phần nào của gói này ạ?`;
+}
+
+function decisionPackageByAlias(message: string, packages: PriceSheetPackageTrace[]): PriceSheetPackageTrace | null {
+  const text = norm(message);
+  const alias = /\btiet kiem\b/.test(text) ? "Tiết kiệm"
+    : /\bbasic\b/.test(text) ? "Basic"
+      : /\bpremium\b/.test(text) ? "Premium"
+        : /\bluxury\b/.test(text) ? "Luxury"
+          : null;
+  return alias ? packages.find((pkg) => packageAlias(pkg) === alias) ?? null : null;
 }
 
 export function buildPriceSheetAiBlock(resolution: PriceSheetResolution): string {

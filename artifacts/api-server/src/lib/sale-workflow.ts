@@ -65,6 +65,15 @@ export type SaleWorkflowDecision = {
     resolution: "EXACT" | "CONTEXT" | "AMBIGUOUS_BENEFIT" | "UNKNOWN_PRICE" | "SERVICE_ONLY" | null;
     bookingReady: boolean | null;
   };
+  recommendationRequested: boolean;
+  bookingLead: {
+    phone: string | null;
+    customerName: string | null;
+    requestedDates: string[];
+    dateUncertain: boolean;
+    availabilityRequested: boolean;
+    paymentRequested: boolean;
+  };
 };
 
 type SlotConfig = { key: string; label: string };
@@ -317,9 +326,37 @@ const PROMOTION_RE = /\b(khuyen mai|uu dai|giam gia|qua tang|co qua|qua gi|moc m
 const GATE_OBJECTION_RE = /\b(mac qua|cao qua|gia cao|hoi cao|vuot ngan sach|khong du ngan sach|ngan sach.*khong toi|goi.*re hon|re hon khong|bot duoc|giam (?:chi|em|minh)|giam them|gia chot|cho khac re hon|studio khac|tham khao.*studio|de .*suy nghi|suy nghi.*ngay|ngay.*suy nghi|hoi chong|hoi vo|hoi me|hoi gia dinh|chua muon coc|chua du tien coc|so phat sinh|so chup khong dep|chup chac khong dep|em map|em thap|mat tron|khong thich chup|khong co thoi gian|ban qua|chua chot ngay|du quyen loi|khong dung het|bo bot.*giam|cat bot.*giam|khong giong mau|co chinh hinh|chinh hinh dep|co dang tien|dang tien khong|khong chup nua|chon studio khac|khong con nhu cau)\b/;
 const PACKAGE_DECISION_RE = /\b(chot|lay|chon|quyet|lam|doi sang)\b.{0,24}\b(tiet kiem|basic|premium|luxury)\b|\b(tiet kiem|basic|premium|luxury)\b\s*(?:nha|nhe|luon|di|thoi|la duoc|hop .+ hon)\b|\b(?:lay|chon|chot)\s+(?:goi\s+)?(?:1[.,]9|2[.,]9|3[.,]9|5[.,]9)\b|\b(?:lay|chon)\b.{0,20}\b(?:photo master|2 cong mica|goi nay|cai nay)\b/;
 const BOOKING_PROCEED_RE = /\b(dat lich|giu lich|gio chot sao|lam sao dat lich|coc|tai khoan|chuyen khoan)\b/;
+const AVAILABILITY_RE = /\b(con lich|trong lich|kiem tra lich|check lich|lich trong|ngay .* con khong)\b/;
+const PAYMENT_RE = /\b(coc|tien coc|tai khoan|so tai khoan|chuyen khoan|thanh toan)\b/;
 const NOT_READY_TO_BOOK_RE = /\b(chua dat lich|chua giu lich|chua booking|chua coc)\b/;
 const TENTATIVE_DECISION_RE = /\b(chac|co le|nghieng|tam chon|de tam|gan chon)\b/;
 const DECISION_CONCERN_RE = /\b(van|nhung)\b.{0,30}\b(mac|cao|ngan sach|khong du)\b/;
+const PACKAGE_RECOMMENDATION_RE = /\b(theo em|em thay|em chon giup|chon giup|nen lay|nen chon|hop (?:chi|anh|em|minh)|hop nhat|chua biet chon|khong biet chon|hieu roi|em thay sao lam vay|co can len goi cao|basic du khong|quan trong cong|quan trong san pham|quan trong tho chup|quan trong makeup)\b/;
+
+function bookingLeadFromEvidence(evidence: TextEvidence[]) {
+  const incoming = incomingTexts(evidence);
+  let phone: string | null = null;
+  let customerName: string | null = null;
+  const requestedDates: string[] = [];
+  let dateUncertain = false;
+  let availabilityRequested = false;
+  let paymentRequested = false;
+  for (const item of incoming) {
+    const raw = item.text.trim();
+    const text = norm(raw);
+    const phoneMatch = raw.match(/(?:\+?84|0)(?:[\s.-]*\d){8,10}\b/);
+    const digits = phoneMatch?.[0].replace(/\D/g, "") ?? "";
+    if (/^(?:0|84)\d{8,10}$/.test(digits)) phone = digits;
+    const nameMatch = raw.match(/(?:em|anh|chị|chi|mình|minh)\s+(?:tên|ten)\s+(?:là|la)\s+([\p{L}][\p{L}\s]{1,50})/iu);
+    if (nameMatch) customerName = nameMatch[1].trim().replace(/[.!?,]+$/, "");
+    const dates = raw.match(/\b(?:0?[1-9]|[12]\d|3[01])[\/-](?:0?[1-9]|1[0-2])(?:[\/-](?:20)?\d{2})?\b/g) ?? [];
+    for (const date of dates) if (!requestedDates.includes(date)) requestedDates.push(date);
+    if (/\b(chua biet ngay|chua chot ngay|chua co ngay|de xem ngay|khong biet ngay)\b/.test(text)) dateUncertain = true;
+    availabilityRequested ||= AVAILABILITY_RE.test(text);
+    paymentRequested ||= PAYMENT_RE.test(text);
+  }
+  return { phone, customerName, requestedDates, dateUncertain, availabilityRequested, paymentRequested };
+}
 
 function packageHintFromText(text: string): SaleWorkflowDecision["packageDecision"]["packageHint"] {
   if (/\b(?:tiet kiem|1[.,]9|goi thap nhat)\b/.test(text)) return "SAVING";
@@ -347,7 +384,10 @@ function classifyPackageDecision(message: string, prior: SaleHistoryItem[]): Sal
   const ambiguousBenefit = /\b2 cong mica\b/.test(text);
   const serviceOnly = /\b(?:lay|chon|chot)\s+(?:dich vu\s+)?chup cong\b/.test(text) && !explicitHint;
   const decisionWording = PACKAGE_DECISION_RE.test(text) || contextReference || (tentative && Boolean(explicitHint));
-  const packageHint = explicitHint ?? (contextReference ? lastPackageHint(prior) : null);
+  // Keep the customer's last explicit package choice available while Step 8
+  // collects date/contact details. This is conversation context only; it does
+  // not create or update a booking.
+  const packageHint = explicitHint ?? lastPackageHint(prior);
   const resolution = unknownPrice ? "UNKNOWN_PRICE"
     : ambiguousBenefit ? "AMBIGUOUS_BENEFIT"
       : serviceOnly ? "SERVICE_ONLY"
@@ -449,10 +489,12 @@ function selectDecision(
 export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHistoryItem[] }): SaleWorkflowDecision {
   const prior = input.prior ?? [];
   const packageDecision = classifyPackageDecision(input.message, prior);
+  const recommendationRequested = PACKAGE_RECOMMENDATION_RE.test(norm(input.message));
   const service = resolveServiceKeyFromConversation(input.message, prior);
   const serviceKey = service.ambiguous ? null : service.key;
   const evidence = allEvidence(input.message, prior);
   const serviceStart = serviceKey ? findServiceStartIndex(evidence, serviceKey) : 0;
+  const bookingLead = bookingLeadFromEvidence(evidence.filter((item) => item.index >= serviceStart));
   // A service switch starts a fresh discovery scope; never reuse a prior service's preferences.
   const texts = incomingTexts(evidence).filter((item) => item.index >= serviceStart);
   const configs = serviceKey ? (DISCOVERY_SLOTS[serviceKey] ?? [{ key: "primary_need", label: "nhu cau quan trong nhat" }]) : [];
@@ -518,6 +560,8 @@ export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHisto
     lastAskedQuestionKey: questions.last,
     answeredSlots: filledSlots.map((slot) => slot.key),
     packageDecision,
+    recommendationRequested,
+    bookingLead,
   });
 
   const asksAnotherDecisionMaker = /hỏi\s+(?:chồng|vợ|mẹ|gia đình)/i.test(input.message)
@@ -568,16 +612,22 @@ export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHisto
   }
   // Các owner dưới đây chỉ thuộc kịch bản Chụp cổng. Không để một câu có tên
   // package ở Album/Beauty vô tình bị kéo ngược về workflow Chụp cổng.
+  if (serviceKey === "wedding_gate" && recommendationRequested) {
+    return selectDecision(base, "RECOMMEND_PACKAGE", "CONTINUE_CONVERSATION", "owner_gate_step_7_recommendation", null);
+  }
   if (serviceKey === "wedding_gate" && (intentOwner === "GATE_STEP_4_COMPARE" || adviceAfterPrice)) {
     return selectDecision(base, "EXPLAIN_PACKAGES", "CONTINUE_CONVERSATION", "owner_gate_step_4_compare", null);
   }
   if (serviceKey === "wedding_gate" && intentOwner === "GATE_STEP_7_DECISION") {
-    return selectDecision(base, "CLOSE_OR_HANDOFF", "CONTINUE_CONVERSATION", "owner_gate_step_7_decision", null);
+    return selectDecision(base, "CLOSE_OR_HANDOFF", "CONTINUE_CONVERSATION", "owner_gate_step_8_booking", null);
   }
   if (serviceKey === "wedding_gate" && packageDecision.resolution) {
-    return selectDecision(base, "CLOSE_OR_HANDOFF", "CONTINUE_CONVERSATION", "owner_gate_step_7_decision", null);
+    return selectDecision(base, "CLOSE_OR_HANDOFF", "CONTINUE_CONVERSATION", "owner_gate_step_8_booking", null);
   }
   if (serviceKey === "wedding_gate" && BOOKING_PROCEED_RE.test(norm(input.message))) {
+    return selectDecision(base, "CLOSE_OR_HANDOFF", "CONTINUE_CONVERSATION", "owner_gate_step_8_booking", null);
+  }
+  if (serviceKey === "wedding_gate" && (bookingLead.phone || bookingLead.customerName || bookingLead.requestedDates.length > 0 || bookingLead.dateUncertain || bookingLead.availabilityRequested || bookingLead.paymentRequested)) {
     return selectDecision(base, "CLOSE_OR_HANDOFF", "CONTINUE_CONVERSATION", "owner_gate_step_8_booking", null);
   }
   if (priceSheet.sent) {

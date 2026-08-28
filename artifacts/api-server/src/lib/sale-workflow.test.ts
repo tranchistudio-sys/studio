@@ -237,7 +237,7 @@ describe("intent ownership and contextual routing", () => {
     ["Basic với Premium khác gì?", "EXPLAIN_PACKAGES", "owner_gate_step_4_compare"],
     ["Có khuyến mãi không?", "FOLLOW_UP", "owner_gate_step_5_promotion"],
     ["Mắc quá em.", "RECOMMEND_PACKAGE", "owner_gate_step_6_objection"],
-    ["Chị lấy Premium.", "CLOSE_OR_HANDOFF", "owner_gate_step_7_decision"],
+    ["Chị lấy Premium.", "CLOSE_OR_HANDOFF", "owner_gate_step_8_booking"],
   ])("routes %s to its single owner", (message, stage, reason) => {
     const result = decide(message, pricedGate);
     expect(result.stage).toBe(stage);
@@ -310,7 +310,7 @@ describe("intent ownership and contextual routing", () => {
     ["Giá Premium bao nhiêu?", "SEND_PRICE_SHEET"],
     ["Premium mắc quá.", "owner_gate_step_6_objection"],
     ["Premium có khuyến mãi không?", "owner_gate_step_5_promotion"],
-    ["Chị lấy Premium.", "owner_gate_step_7_decision"],
+    ["Chị lấy Premium.", "owner_gate_step_8_booking"],
   ])("keeps Step 4 boundary owner for %s", (message, expected) => {
     const result = decide(message, pricedGate);
     expect(result.action === expected || result.reason === expected).toBe(true);
@@ -351,7 +351,7 @@ describe("intent ownership and contextual routing", () => {
     expect(decide("Premium bao nhiêu?", pricedGate).action).toBe("SEND_PRICE_SHEET");
     expect(decide("Basic với Premium khác gì?", pricedGate).reason).toBe("owner_gate_step_4_compare");
     expect(decide("Nhưng 3.9 cao quá.", pricedGate).reason).toBe("owner_gate_step_6_objection");
-    expect(decide("Vậy chị lấy Basic.", pricedGate).reason).toBe("owner_gate_step_7_decision");
+    expect(decide("Vậy chị lấy Basic.", pricedGate).reason).toBe("owner_gate_step_8_booking");
   });
 
   it.each([
@@ -366,15 +366,20 @@ describe("intent ownership and contextual routing", () => {
     ["Ừ Premium luôn.", "CONFIRMED", "PREMIUM", "EXACT"],
     ["Thôi đổi sang Basic.", "CONFIRMED", "BASIC", "EXACT"],
     ["Thôi Premium đi.", "CONFIRMED", "PREMIUM", "EXACT"],
-    ["Basic hợp chị hơn.", "CONFIRMED", "BASIC", "EXACT"],
     ["Vậy Tiết kiệm thôi.", "CONFIRMED", "SAVING", "EXACT"],
     ["Chị chọn Premium nhưng chưa đặt lịch.", "CONFIRMED", "PREMIUM", "EXACT"],
     ["Chị lấy gói 4.5.", "NONE", null, "UNKNOWN_PRICE"],
     ["Chị lấy chụp cổng.", "NONE", null, "SERVICE_ONLY"],
   ])("classifies Step 7 decision safely: %s", (message, status, packageHint, resolution) => {
     const result = decide(message, pricedGate);
-    expect(result.reason).toBe("owner_gate_step_7_decision");
+    expect(result.reason).toBe("owner_gate_step_8_booking");
     expect(result.packageDecision).toMatchObject({ status, packageHint, resolution });
+  });
+
+  it("keeps a package-fit statement in Step 7 until the customer explicitly accepts", () => {
+    const result = decide("Basic hợp chị hơn.", pricedGate);
+    expect(result.reason).toBe("owner_gate_step_7_recommendation");
+    expect(result.packageDecision.packageHint).toBe("BASIC");
   });
 
   it("resolves 'gói này' from the latest focused package", () => {
@@ -383,6 +388,23 @@ describe("intent ownership and contextual routing", () => {
       { direction: "outgoing", message: "Với nhu cầu này em đang đề xuất Premium." },
     ]);
     expect(result.packageDecision).toMatchObject({ status: "CONFIRMED", packageHint: "PREMIUM", resolution: "CONTEXT" });
+  });
+
+  it.each([
+    "Vậy theo em chị nên lấy gói nào?",
+    "Em thấy gói nào hợp chị?",
+    "Giờ chị chưa biết chọn cái nào.",
+    "Ừ chị hiểu rồi.",
+    "Em chọn giúp chị trong ngân sách 3 triệu.",
+    "Chị quan trọng cổng với sản phẩm.",
+    "Chị quan trọng thợ chụp với makeup hơn.",
+    "Em thấy sao làm vậy đi.",
+    "Có cần lên gói cao hơn không em?",
+    "Basic đủ không em?",
+  ])("routes recommendation intent to Step 7: %s", (message) => {
+    const result = decide(message, pricedGate);
+    expect(result.reason).toBe("owner_gate_step_7_recommendation");
+    expect(result.stage).toBe("RECOMMEND_PACKAGE");
   });
 
   it("keeps a selected package out of booking/payment/deposit state", () => {

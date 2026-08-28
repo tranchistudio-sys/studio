@@ -38,6 +38,12 @@ export type LuluScriptState = {
   selectedPackageName: string | null;
   decisionStatus: "NONE" | "TENTATIVE" | "CONFIRMED";
   bookingReady: boolean | null;
+  recommendedPackageName: string | null;
+  recommendationReason: string | null;
+  bookingPhone: string | null;
+  bookingCustomerName: string | null;
+  requestedDates: string[];
+  dateUncertain: boolean;
 };
 
 export type LuluResponseTrace = {
@@ -215,6 +221,32 @@ const WEDDING_GATE_NODES: SaleScriptNode[] = [
     status: "active",
   },
   {
+    nodeKey: "WEDDING_GATE.CLOSING.COLLECT_MISSING",
+    scriptKey: WEDDING_GATE_SCRIPT_KEY,
+    version: WEDDING_GATE_SCRIPT_VERSION,
+    stepNumber: 8,
+    stage: "CLOSE_OR_HANDOFF",
+    title: "Thu tung thong tin con thieu",
+    replyTemplate: "Dạ em ghi nhận rồi nha. Em xin thêm đúng một thông tin còn thiếu để nhân viên kiểm tra lịch cho mình ạ.",
+    requiredSlots: ["service_intent"],
+    dataSources: ["conversation_state"],
+    validators: ["single_question", "no_booking_creation", "no_availability_claim", "no_payment_mutation"],
+    status: "active",
+  },
+  {
+    nodeKey: "WEDDING_GATE.CLOSING.HUMAN_HANDOFF",
+    scriptKey: WEDDING_GATE_SCRIPT_KEY,
+    version: WEDDING_GATE_SCRIPT_VERSION,
+    stepNumber: 8,
+    stage: "HUMAN_HANDOFF",
+    title: "Tom tat va chuyen nhan vien",
+    replyTemplate: "Dạ em đã ghi nhận đủ phần mình cung cấp. Em chuyển nhân viên phụ trách kiểm tra và xác nhận lại với mình nha.",
+    requiredSlots: ["service_intent"],
+    dataSources: ["conversation_state", "sale_calendar_read_only", "existing_human_handoff"],
+    validators: ["human_handoff", "no_booking_creation", "no_availability_claim", "no_payment_mutation", "no_deposit_mutation"],
+    status: "active",
+  },
+  {
     nodeKey: "WEDDING_GATE.COMPARE.PACKAGES",
     scriptKey: WEDDING_GATE_SCRIPT_KEY,
     version: WEDDING_GATE_SCRIPT_VERSION,
@@ -238,6 +270,19 @@ const WEDDING_GATE_NODES: SaleScriptNode[] = [
     requiredSlots: ["service_intent"],
     dataSources: ["conversation_state", "service_packages"],
     validators: ["not_owned_by_price_step", "no_pressure_sale"],
+    status: "active",
+  },
+  {
+    nodeKey: "WEDDING_GATE.DECISION.RECOMMEND_PACKAGE",
+    scriptKey: WEDDING_GATE_SCRIPT_KEY,
+    version: WEDDING_GATE_SCRIPT_VERSION,
+    stepNumber: 7,
+    stage: "RECOMMEND_PACKAGE",
+    title: "De xuat mot goi theo context",
+    replyTemplate: "Dạ em dựa đúng nhu cầu mình đã nói để chọn một gói phù hợp nhất nha. Nếu mình thấy ổn thì em chuyển qua kiểm tra lịch cho mình ạ?",
+    requiredSlots: ["service_intent"],
+    dataSources: ["conversation_state", "service_packages"],
+    validators: ["one_primary_recommendation", "verified_package_data_only", "no_booking_creation", "no_pressure_sale"],
     status: "active",
   },
   {
@@ -631,6 +676,12 @@ export function workflowToScriptState(workflow: SaleWorkflowDecision): LuluScrip
     selectedPackageName: workflow.packageDecision.packageHint,
     decisionStatus: workflow.packageDecision.status,
     bookingReady: workflow.packageDecision.bookingReady,
+    recommendedPackageName: null,
+    recommendationReason: null,
+    bookingPhone: workflow.bookingLead.phone,
+    bookingCustomerName: workflow.bookingLead.customerName,
+    requestedDates: workflow.bookingLead.requestedDates,
+    dateUncertain: workflow.bookingLead.dateUncertain,
   };
 }
 
@@ -676,11 +727,6 @@ function isClarification(text: string): boolean {
 
 function isPromotionRequest(text: string): boolean {
   return /\b(khuyen mai|uu dai|giam gia|qua tang|co qua|qua gi|moc may|moc nao|cong don|quy doi qua|doi qua.*tien)\b|\b[2345]\s*(?:dich vu|goi)\b.{0,24}\b(?:duoc gi|qua|tang)\b|\bbeauty\b.{0,24}\b(?:tinh|cong)\b/.test(normalize(text));
-}
-
-function phoneFrom(text: string): string | null {
-  const digits = text.replace(/\D/g, "");
-  return /^(0|84)\d{8,10}$/.test(digits) ? digits : null;
 }
 
 function nextQuestion(key: string | null): string {
@@ -988,11 +1034,6 @@ export function selectSaleScriptResponse(input: {
     });
   }
 
-  const phone = phoneFrom(text);
-  if (phone) {
-    return makeTrace({ selected: node("WEDDING_GATE.CLOSING.COLLECT_PHONE", input.overrides), stateBefore: before, stateAfter: { ...after, humanHandoff: true }, workflow: input.workflow, decisionRule: "phone_detected_for_wedding_gate" });
-  }
-
   if (input.workflow.reason === "common_clarify_outdoor") {
     return makeTrace({
       selected: node("COMMON.SERVICE_ROUTING", input.overrides),
@@ -1024,6 +1065,15 @@ export function selectSaleScriptResponse(input: {
   if (input.workflow.reason === "owner_gate_step_6_objection") {
     return makeTrace({ selected: node("WEDDING_GATE.OBJECTION.PRICE", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 6 }, workflow: input.workflow, decisionRule: "price_objection_owned_by_step_6" });
   }
+  if (input.workflow.reason === "owner_gate_step_7_recommendation") {
+    return makeTrace({
+      selected: node("WEDDING_GATE.DECISION.RECOMMEND_PACKAGE", input.overrides),
+      stateBefore: before,
+      stateAfter: { ...after, currentStep: 7 },
+      workflow: input.workflow,
+      decisionRule: "recommendation_owned_by_step_7",
+    });
+  }
   if (input.workflow.reason === "owner_gate_step_7_decision") {
     return makeTrace({
       selected: node("WEDDING_GATE.DECISION.PACKAGE_SELECTED", input.overrides),
@@ -1036,14 +1086,48 @@ export function selectSaleScriptResponse(input: {
     });
   }
   if (input.workflow.reason === "owner_gate_step_8_booking") {
+    const lead = input.workflow.bookingLead;
+    const packageName = packageLabel(input.workflow.packageDecision.packageHint) ?? after.selectedPackageName;
+    const hasDate = lead.requestedDates.length > 0 || Boolean(after.slots.wedding_date);
+    const stateAfter = { ...after, currentStep: 8 };
+    if (lead.paymentRequested) {
+      return makeTrace({
+        selected: node("WEDDING_GATE.CLOSING.HUMAN_HANDOFF", input.overrides),
+        stateBefore: before,
+        stateAfter: { ...stateAfter, humanHandoff: true },
+        workflow: input.workflow,
+        decisionRule: "payment_or_bank_request_requires_verified_human_handoff",
+        renderedText: "Dạ phần cọc hoặc tài khoản thanh toán em chuyển nhân viên phụ trách xác nhận đúng thông tin hiện hành cho mình nha. Em chưa tự ghi cọc hay tạo thanh toán ạ.",
+        variables: {},
+      });
+    }
+    if (!packageName) {
+      return makeTrace({
+        selected: node("WEDDING_GATE.CLOSING.COLLECT_MISSING", input.overrides), stateBefore: before, stateAfter, workflow: input.workflow,
+        decisionRule: "step_8_ask_only_missing_package", renderedText: "Dạ mình muốn chốt gói nào trong bảng Chụp cổng để em ghi nhận đúng ạ?", variables: {},
+      });
+    }
+    if (!hasDate && !lead.dateUncertain) {
+      return makeTrace({
+        selected: node("WEDDING_GATE.CLOSING.COLLECT_MISSING", input.overrides), stateBefore: before, stateAfter, workflow: input.workflow,
+        decisionRule: "step_8_ask_only_missing_requested_date", renderedText: "Dạ mình dự kiến chụp ngày nào để nhân viên kiểm tra lịch giúp mình ạ?", variables: { SELECTED_PACKAGE: packageName },
+      });
+    }
+    if (!lead.phone) {
+      return makeTrace({
+        selected: node("WEDDING_GATE.CLOSING.COLLECT_MISSING", input.overrides), stateBefore: before, stateAfter, workflow: input.workflow,
+        decisionRule: "step_8_ask_only_missing_contact", renderedText: "Dạ mình cho em xin số điện thoại liên hệ để nhân viên phản hồi kết quả kiểm tra lịch nha?", variables: { SELECTED_PACKAGE: packageName },
+      });
+    }
+    const dateSummary = lead.requestedDates.length > 0 ? lead.requestedDates.join(", ") : lead.dateUncertain ? "chưa chốt ngày" : (after.slots.wedding_date ?? "đã cung cấp");
     return makeTrace({
-      selected: node("WEDDING_GATE.CLOSING.START_BOOKING", input.overrides),
+      selected: node("WEDDING_GATE.CLOSING.HUMAN_HANDOFF", input.overrides),
       stateBefore: before,
-      stateAfter: { ...after, currentStep: 8 },
+      stateAfter: { ...stateAfter, humanHandoff: true },
       workflow: input.workflow,
-      decisionRule: "booking_request_handed_to_step_8_without_mutation",
-      renderedText: "Dạ em chuyển qua phần xác nhận thông tin và kiểm tra lịch cho mình nha. Bước này chưa tự tạo booking, chưa ghi cọc hay thanh toán ạ.",
-      variables: {},
+      decisionRule: lead.availabilityRequested ? "availability_check_read_only_then_human_handoff" : "step_8_minimum_information_complete_human_handoff",
+      renderedText: `Dạ em tóm tắt: ${packageName}, ngày dự kiến ${dateSummary}, số liên hệ ${lead.phone}. Em chuyển nhân viên kiểm tra và xác nhận lại nha; hiện em chưa giữ lịch hay tạo booking ạ.`,
+      variables: { SELECTED_PACKAGE: packageName, PHONE: lead.phone, REQUESTED_DATE: dateSummary },
     });
   }
   if (input.workflow.action === "EXPLAIN_PENDING" || (isClarification(text) && before.pendingQuestion)) {

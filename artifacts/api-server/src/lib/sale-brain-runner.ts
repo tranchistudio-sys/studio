@@ -60,6 +60,41 @@ function decisionPackageFromVerifiedSource(message: string, packages: PriceSheet
   return packages.find((pkg) => normalizeDecisionText(pkg.name).includes(alias)) ?? null;
 }
 
+function recommendPackageFromVerifiedSource(
+  message: string,
+  prior: ClaudeHistoryItem[],
+  packages: PriceSheetTrace["includedPackages"],
+): { pkg: PriceSheetTrace["includedPackages"][number] | null; reason: string } {
+  const sorted = [...packages].sort((a, b) => a.finalPrice - b.finalPrice);
+  const context = normalizeDecisionText([...prior.map((item) => item.message), message].join("\n"));
+  const details = (pkg: PriceSheetTrace["includedPackages"][number]) => normalizeDecisionText(`${pkg.name} ${pkg.benefits}`);
+  const wantsMaster = /\b(photo master|makeup master|ekip master|tho chup.*master|uu tien.*(?:tho chup|makeup|ekip))\b/.test(context);
+  if (wantsMaster) {
+    const master = sorted.find((pkg) => /master/.test(details(pkg)));
+    if (master) return { pkg: master, reason: "đúng ưu tiên ekip Master của mình" };
+  }
+  const wantsTwoGates = /\b(2|hai)\s*(?:hinh\s+)?cong\b/.test(context);
+  const wantsMica = /\bmica\b/.test(context);
+  if (wantsTwoGates || wantsMica) {
+    const matched = sorted.find((pkg) => (!wantsTwoGates || /\b(2|hai)\s*(?:hinh\s+)?cong\b/.test(details(pkg))) && (!wantsMica || /mica/.test(details(pkg))));
+    if (matched) return { pkg: matched, reason: wantsTwoGates && wantsMica ? "đúng nhu cầu 2 cổng mica" : wantsTwoGates ? "đúng nhu cầu 2 cổng" : "đúng phần sản phẩm mica mình ưu tiên" };
+  }
+  const budgetMatch = context.match(/(?:ngan sach|tam|khoang|toi da|trong muc)\D{0,12}(\d+(?:[.,]\d+)?)\s*(?:trieu|tr)/);
+  const budget = budgetMatch ? Math.round(Number(budgetMatch[1].replace(",", ".")) * 1_000_000) : null;
+  const oneGate = /\b(1|mot)\s*(?:hinh\s+)?cong\b/.test(context);
+  const simpleNeed = /\b(gon|don gian|tiet kiem|khong can nhieu|ngan sach thap)\b/.test(context);
+  if (budget) {
+    const affordable = sorted.filter((pkg) => pkg.finalPrice <= budget);
+    if (affordable.length > 0) {
+      const chosen = simpleNeed ? affordable[0] : oneGate && affordable.length > 1 ? affordable[1] : affordable[affordable.length - 1];
+      return { pkg: chosen, reason: `vừa ngân sách khoảng ${budgetMatch?.[1]} triệu và không mua dư quyền lợi` };
+    }
+  }
+  if (simpleNeed && sorted[0]) return { pkg: sorted[0], reason: "nhu cầu của mình gọn và ưu tiên tiết kiệm" };
+  const lastFocused = [...prior].reverse().map((item) => decisionPackageFromVerifiedSource(item.message, sorted)).find(Boolean) ?? null;
+  return lastFocused ? { pkg: lastFocused, reason: "khớp nhất với phần mình vừa cân nhắc" } : { pkg: null, reason: "chưa đủ một tiêu chí để chọn duy nhất" };
+}
+
 /**
  * URL ảnh có hợp lệ để gửi/hiển thị không? Chặn trường hợp lỡ dùng TIÊU ĐỀ (title tiếng Việt có dấu /
  * khoảng trắng) làm đường dẫn ảnh — sẽ render thành ảnh bể ở Chat test. URL thật luôn là http(s)://
@@ -347,6 +382,31 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
         { name: "promotion_is_current", passed: weddingGiftTrace.programStatus === "active" },
         { name: "beauty_is_not_eligible", passed: !weddingGiftProgram.eligibleServiceKeys.includes("beauty") },
         { name: "highest_tier_only", passed: weddingGiftProgram.accumulationPolicy === "highest_tier_only" },
+      ],
+    });
+  }
+
+  if (scriptTrace.nodeKey === "WEDDING_GATE.DECISION.RECOMMEND_PACKAGE") {
+    const packageSource = await resolvePriceSheetRequest({ message: incomingText, prior, force: true, serviceKey: "wedding_gate" });
+    const verifiedPackages = packageSource.trace?.includedPackages ?? [];
+    const recommendation = recommendPackageFromVerifiedSource(incomingText, prior, verifiedPackages);
+    const reply = recommendation.pkg
+      ? `Dạ với nhu cầu mình đã nói thì em nghiêng ${recommendation.pkg.name} nhất nha 😄 Gói này ${recommendation.reason}, nên chưa cần cố lên gói cao hơn. Nếu mình thấy ổn hướng này thì em chuyển qua kiểm tra lịch cho mình nha?`
+      : "Dạ em muốn chọn đúng một gói cho mình, nhưng hiện còn thiếu đúng một điểm phân định: mình chắc chắn cần một cổng hay hai cổng ạ? Có câu này em sẽ đề xuất một gói duy nhất, không đọc lại cả bảng giá nha.";
+    scriptTrace = appendScriptTraceData(scriptTrace, {
+      renderedText: reply,
+      dataSources: ["service_packages", "conversation_state"],
+      priceSnapshot: recommendation.pkg ? [{ packageId: recommendation.pkg.id, price: recommendation.pkg.price, finalPrice: recommendation.pkg.finalPrice }] : [],
+      stateAfter: {
+        currentStep: 7,
+        recommendedPackageName: recommendation.pkg?.name ?? null,
+        recommendationReason: recommendation.reason,
+      },
+      validatorResults: [
+        { name: "one_primary_recommendation", passed: Boolean(recommendation.pkg) },
+        { name: "verified_package_data_only", passed: Boolean(packageSource.trace?.validator.passed) },
+        { name: "no_booking_creation", passed: true },
+        { name: "no_pressure_sale", passed: true },
       ],
     });
   }

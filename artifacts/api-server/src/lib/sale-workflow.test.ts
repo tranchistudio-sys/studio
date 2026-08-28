@@ -114,7 +114,7 @@ describe("direct action priority and repeat-question regression", () => {
   it("lets a direct price request bypass the unanswered style slot", () => {
     const result = decide("báo giá", albumStart);
 
-    expect(result.detectedIntent).toBe("price_sheet");
+    expect(result.detectedIntent).toBe("ASK_PRICE");
     expect(result.priceRequested).toBe(true);
     expect(result.requestedAction).toBe("price_sheet");
     expect(result.action).toBe("SEND_PRICE_SHEET");
@@ -224,6 +224,51 @@ describe("direct action priority and repeat-question regression", () => {
     expect(result.stage).toBe("FOLLOW_UP");
     expect(result.action).toBe("CONTINUE_CONVERSATION");
     expect(result.actionPriorityReason).toBe("customer_wants_time_to_consider");
+  });
+});
+
+describe("wedding gate price-to-closing regression", () => {
+  const pricePresented: Turn[] = [
+    { direction: "incoming", message: "Chụp cổng giá nhiêu?" },
+    { direction: "outgoing", message: "Bảng giá Chụp cổng", aiDecision: "claude_price_sheet_replied" },
+  ];
+
+  it("wedding_gate_price_does_not_jump_to_closing", () => {
+    const result = decide("Chụp cổng giá nhiêu?");
+    expect(result.serviceKey).toBe("wedding_gate");
+    expect(result.detectedIntent).toBe("ASK_PRICE");
+    expect(result.action).toBe("SEND_PRICE_SHEET");
+    expect(result.reason).not.toBe("owner_gate_step_8_booking");
+  });
+
+  it("routes package understanding through Steps 3, 4, 6 and 7 before closing", () => {
+    expect(decide("Premium 3.9 hả?", pricePresented)).toMatchObject({ reason: "owner_gate_step_3_package_detail", detectedIntent: "ASK_PACKAGE" });
+    expect(decide("Basic với Premium sao?", pricePresented)).toMatchObject({ reason: "owner_gate_step_4_compare", detectedIntent: "COMPARE_PACKAGE" });
+    expect(decide("3.9 mắc quá.", pricePresented)).toMatchObject({ reason: "owner_gate_step_6_objection", detectedIntent: "PRICE_OBJECTION" });
+    expect(decide("Vậy theo em gói nào hợp?", pricePresented)).toMatchObject({ reason: "owner_gate_step_7_recommendation", detectedIntent: "ASK_RECOMMENDATION" });
+    expect(decide("Ừ Premium.", pricePresented)).toMatchObject({ reason: "owner_gate_step_8_booking", detectedIntent: "SELECT_PACKAGE" });
+  });
+
+  it("wedding_gate_date_answer_uses_pending_field and preserves the selected package", () => {
+    const result = decide("26/7", [
+      ...pricePresented,
+      { direction: "incoming", message: "Ừ Premium." },
+      { direction: "outgoing", message: "Mình dự kiến chụp ngày nào ạ?" },
+    ]);
+    expect(result).toMatchObject({
+      reason: "owner_gate_step_8_booking",
+      detectedIntent: "PROVIDE_SHOOT_DATE",
+      answeredPendingField: "wedding_date",
+      pendingField: "wedding_date",
+      packageDecision: { packageHint: "PREMIUM" },
+    });
+    expect(result.bookingLead.requestedDates).toContain("26/7");
+  });
+
+  it("does not treat a bare date as package selection before closing starts", () => {
+    const result = decide("26/7", pricePresented);
+    expect(result.reason).not.toBe("owner_gate_step_8_booking");
+    expect(result.packageDecision.packageHint).toBeNull();
   });
 });
 
@@ -355,24 +400,24 @@ describe("intent ownership and contextual routing", () => {
   });
 
   it.each([
-    ["Anh lấy gói 1.9.", "CONFIRMED", "SAVING", "EXACT"],
-    ["Chị lấy Basic.", "CONFIRMED", "BASIC", "EXACT"],
-    ["Premium nha.", "CONFIRMED", "PREMIUM", "EXACT"],
-    ["Chọn Luxury.", "CONFIRMED", "LUXURY", "EXACT"],
-    ["Lấy gói 3.9.", "CONFIRMED", "PREMIUM", "EXACT"],
-    ["Lấy gói 2 cổng mica.", "NONE", null, "AMBIGUOUS_BENEFIT"],
-    ["Lấy gói có Photo Master.", "CONFIRMED", "LUXURY", "EXACT"],
-    ["Chắc chị lấy Premium.", "TENTATIVE", "PREMIUM", "EXACT"],
-    ["Ừ Premium luôn.", "CONFIRMED", "PREMIUM", "EXACT"],
-    ["Thôi đổi sang Basic.", "CONFIRMED", "BASIC", "EXACT"],
-    ["Thôi Premium đi.", "CONFIRMED", "PREMIUM", "EXACT"],
-    ["Vậy Tiết kiệm thôi.", "CONFIRMED", "SAVING", "EXACT"],
-    ["Chị chọn Premium nhưng chưa đặt lịch.", "CONFIRMED", "PREMIUM", "EXACT"],
-    ["Chị lấy gói 4.5.", "NONE", null, "UNKNOWN_PRICE"],
-    ["Chị lấy chụp cổng.", "NONE", null, "SERVICE_ONLY"],
-  ])("classifies Step 7 decision safely: %s", (message, status, packageHint, resolution) => {
+    ["Anh lấy gói 1.9.", "CONFIRMED", "SAVING", "EXACT", "owner_gate_step_8_booking"],
+    ["Chị lấy Basic.", "CONFIRMED", "BASIC", "EXACT", "owner_gate_step_8_booking"],
+    ["Premium nha.", "CONFIRMED", "PREMIUM", "EXACT", "owner_gate_step_8_booking"],
+    ["Chọn Luxury.", "CONFIRMED", "LUXURY", "EXACT", "owner_gate_step_8_booking"],
+    ["Lấy gói 3.9.", "CONFIRMED", "PREMIUM", "EXACT", "owner_gate_step_8_booking"],
+    ["Lấy gói 2 cổng mica.", "NONE", null, "AMBIGUOUS_BENEFIT", "owner_gate_step_7_unresolved_decision"],
+    ["Lấy gói có Photo Master.", "CONFIRMED", "LUXURY", "EXACT", "owner_gate_step_8_booking"],
+    ["Chắc chị lấy Premium.", "TENTATIVE", "PREMIUM", "EXACT", "owner_gate_step_7_unresolved_decision"],
+    ["Ừ Premium luôn.", "CONFIRMED", "PREMIUM", "EXACT", "owner_gate_step_8_booking"],
+    ["Thôi đổi sang Basic.", "CONFIRMED", "BASIC", "EXACT", "owner_gate_step_8_booking"],
+    ["Thôi Premium đi.", "CONFIRMED", "PREMIUM", "EXACT", "owner_gate_step_8_booking"],
+    ["Vậy Tiết kiệm thôi.", "CONFIRMED", "SAVING", "EXACT", "owner_gate_step_8_booking"],
+    ["Chị chọn Premium nhưng chưa đặt lịch.", "CONFIRMED", "PREMIUM", "EXACT", "owner_gate_step_7_unresolved_decision"],
+    ["Chị lấy gói 4.5.", "NONE", null, "UNKNOWN_PRICE", "price_sheet_already_sent_follow_latest_preference"],
+    ["Chị lấy chụp cổng.", "NONE", null, "SERVICE_ONLY", "price_sheet_already_sent_follow_latest_preference"],
+  ])("classifies Step 7 decision safely: %s", (message, status, packageHint, resolution, expectedReason) => {
     const result = decide(message, pricedGate);
-    expect(result.reason).toBe("owner_gate_step_8_booking");
+    expect(result.reason).toBe(expectedReason);
     expect(result.packageDecision).toMatchObject({ status, packageHint, resolution });
   });
 

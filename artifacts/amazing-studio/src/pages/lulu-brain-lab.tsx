@@ -64,6 +64,8 @@ type PriceSheetTrace = {
   excludedPackages: Array<{ id: number; name: string; reason: string }>;
   discount: { status: string; name: string | null; type: string | null; value: number | null };
   actionOrder: string[]; validator: { passed: boolean; reasons: string[] };
+  deliveryMode?: "PRODUCTION_OUTBOUND" | "BRAIN_LAB_PREVIEW";
+  simulationStatus?: "SIMULATED_PRICE_SHEET" | "PRICE_ASSET_MISSING" | null;
 };
 type SaleWorkflowTrace = {
   stage: string; action: string; reason: string; greeted: boolean; serviceKey: string | null;
@@ -76,6 +78,7 @@ type SaleWorkflowTrace = {
   priceSheetSent?: boolean;
   detectedIntent?: string | null; requestedAction?: string; priceRequested?: boolean;
   askedQuestionKeys?: string[]; lastAskedQuestionKey?: string | null; answeredSlots?: string[];
+  pendingField?: string | null; answeredPendingField?: string | null;
   selectedAction?: string; actionPriorityReason?: string;
 };
 type ScriptResponseTrace = {
@@ -89,6 +92,9 @@ type ScriptResponseTrace = {
   stateBefore: { serviceIntent: string | null; currentStep: number; pendingQuestion: string | null; slots: Record<string, string | null>; sampleSent: boolean; priceSheetSent: boolean; humanHandoff: boolean };
   stateAfter: { serviceIntent: string | null; currentStep: number; pendingQuestion: string | null; slots: Record<string, string | null>; sampleSent: boolean; priceSheetSent: boolean; humanHandoff: boolean };
   decisionRule: string;
+  matchedIntent?: string | null;
+  matchedQuestionAnswerId?: string | null;
+  responseSource?: "STRUCTURAL_FALLBACK" | "SALE_SCRIPT_DRAFT_ROW";
   aiParaphrase: { used: false; changes: [] };
 };
 type ScriptNode = { nodeKey: string; scriptKey: string; version: number; stepNumber: number; stage: string; title: string; replyTemplate: string; requiredSlots: string[]; dataSources: string[]; validators: string[]; status: "draft" | "active" | "locked" };
@@ -113,6 +119,13 @@ type SimResult = {
   overrideApplied?: boolean;
   /** Cách lượt này dùng câu sửa tay admin: "exact_reply" = nói y chang; "learn_from_this" = AI học theo. */
   responseMode?: "exact_reply" | "learn_from_this" | null;
+  brainLabRuntime?: {
+    versionId: number | null; versionStatus: "draft"; sourceMode: "VERSION_2_DRAFT"; dryRun: true;
+    messengerOutbound: number; bookingsCreated: number; paymentsCreated: number;
+    depositsMutated: number; revenueMutated: number;
+    humanHandoff: { simulated: true; assignedProductionInbox: false } | null;
+    followUp: { simulated: true; schedulerInvoked: false; reason: string; stage: string; proposedTiming: null; stopCondition: string } | null;
+  };
 };
 // Ảnh trong kho (khớp ImageStoreItem ở backend).
 type StoreItem = { imageUrl: string; title: string; detailUrl?: string; sourceType: string; kind?: string; serviceIntent: string; albumName?: string; tags?: string; albumId?: number; publicForCustomer?: boolean };
@@ -269,9 +282,10 @@ function StatusBadge({ status }: { status: Status }) {
 
 function PriceSheetTracePanel({ trace }: { trace?: PriceSheetTrace | null }) {
   if (!trace) return null;
+  const simulated = trace.simulationStatus === "SIMULATED_PRICE_SHEET";
   return (
     <details className="border border-sky-200 bg-sky-50 rounded-lg px-2.5 py-2 text-[11px] text-sky-950">
-      <summary className="cursor-pointer font-semibold">Trace bảng giá · {trace.validator.passed ? "Đã xác minh" : "Đã chặn"}</summary>
+      <summary className="cursor-pointer font-semibold">Trace bảng giá · {simulated ? "Đã mô phỏng" : trace.validator.passed ? "Đã xác minh" : "Thiếu dữ liệu"}</summary>
       <div className="mt-2 space-y-1 break-words">
         <p>Intent: <b>{trace.intent}</b> · resource: <b>{trace.resourceType}</b> · service: <b>{trace.serviceKey ?? "chưa rõ"}</b></p>
         <p>Nhóm: <b>{trace.groupId ?? "-"}</b> · {trace.groupName ?? "chưa xác định"}</p>
@@ -280,9 +294,39 @@ function PriceSheetTracePanel({ trace }: { trace?: PriceSheetTrace | null }) {
         <p>Gói bị loại: {trace.excludedPackages.length ? trace.excludedPackages.map((p) => `#${p.id} ${p.name}: ${p.reason}`).join(" · ") : "không có"}</p>
         <p>Giảm giá nhóm: <b>{trace.discount.status}</b>{trace.discount.name ? ` · ${trace.discount.name}` : ""}</p>
         <p>Thứ tự: <b>{trace.actionOrder.join(" → ")}</b></p>
+        {trace.deliveryMode && <p>Chế độ: <b>{trace.deliveryMode}</b> · kết quả: <b>{trace.simulationStatus ?? "-"}</b></p>}
         <p>Validator: <b className={trace.validator.passed ? "text-emerald-700" : "text-rose-700"}>{trace.validator.passed ? "PASS" : `BLOCK · ${trace.validator.reasons.join(", ")}`}</b></p>
       </div>
     </details>
+  );
+}
+
+function packageDisplayName(pkg: PriceSheetTrace["includedPackages"][number]): string {
+  const text = `${pkg.name} ${pkg.code ?? ""}`.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  if (text.includes("tiet kiem") || pkg.finalPrice === 1_900_000) return "Tiết kiệm";
+  if (text.includes("basic") || pkg.finalPrice === 2_900_000) return "Basic";
+  if (text.includes("premium") || pkg.finalPrice === 3_900_000) return "Premium";
+  if (text.includes("luxury") || pkg.finalPrice === 5_900_000) return "Luxury";
+  return pkg.name;
+}
+
+function SimulatedPriceSheetCard({ trace, hasImage }: { trace?: PriceSheetTrace | null; hasImage: boolean }) {
+  if (hasImage || trace?.simulationStatus !== "SIMULATED_PRICE_SHEET" || trace.includedPackages.length === 0) return null;
+  return (
+    <div className="rounded-xl border-2 border-violet-200 bg-gradient-to-br from-violet-50 to-white p-3">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <p className="text-xs font-bold uppercase tracking-wide text-violet-800">Bảng giá Chụp cổng</p>
+        <span className="rounded-full bg-violet-100 px-2 py-0.5 text-[10px] font-semibold text-violet-700">Mô phỏng từ dữ liệu hiện hành</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {trace.includedPackages.map((pkg) => (
+          <div key={pkg.id} className="rounded-lg border bg-white p-2 shadow-sm">
+            <p className="text-xs font-semibold text-gray-800">{packageDisplayName(pkg)}</p>
+            <p className="text-sm font-bold text-violet-700">{pkg.finalPrice.toLocaleString("vi-VN")}đ</p>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -299,6 +343,7 @@ function SaleWorkflowTracePanel({ trace }: { trace?: SaleWorkflowTrace }) {
         <p>Tiếp theo: <b>{trace.nextSlot ? `${trace.nextSlot.key} (${trace.nextSlot.label})` : "không có"}</b></p>
         <p>Gu: <b>{trace.style ?? "chưa có"}</b> · mẫu: <b>{trace.sampleSent ? "đã gửi" : "chưa gửi"}</b> · xác nhận: <b>{trace.sampleConfirmed ? "đã ưng" : "chưa"}</b></p>
         <p>Đã hỏi: <b>{trace.askedQuestionKeys?.length ? trace.askedQuestionKeys.join(" · ") : "chưa có"}</b> · câu gần nhất: <b>{trace.lastAskedQuestionKey ?? "không có"}</b></p>
+        <p>Pending field: <b>{trace.pendingField ?? "không có"}</b> · vừa nhận: <b>{trace.answeredPendingField ?? "không có"}</b></p>
         <p>Price requested: <b>{trace.priceRequested ? "có" : "không"}</b> · price sent: <b>{trace.priceSheetSent ? "có" : "chưa"}</b> · selected action: <b>{trace.selectedAction ?? trace.action}</b></p>
         <p>Sample asset: <b>{trace.sampleAsset ?? "không có"}</b></p>
         <p>Lý do ưu tiên: <b>{trace.actionPriorityReason ?? trace.reason}</b>{trace.forcedPrice ? " · khách yêu cầu xem giá trước" : ""}</p>
@@ -307,7 +352,7 @@ function SaleWorkflowTracePanel({ trace }: { trace?: SaleWorkflowTrace }) {
   );
 }
 
-function ScriptTracePanel({ trace }: { trace?: ScriptResponseTrace }) {
+function ScriptTracePanel({ trace, runtime }: { trace?: ScriptResponseTrace; runtime?: SimResult["brainLabRuntime"] }) {
   if (!trace) return null;
   const blocked = trace.status === "UNMAPPED_RESPONSE";
   return (
@@ -317,6 +362,8 @@ function ScriptTracePanel({ trace }: { trace?: ScriptResponseTrace }) {
       </summary>
       <div className="mt-2 space-y-1 break-words">
         <p>Node: <b>{trace.nodeKey}</b> · stage: <b>{trace.stage}</b> · rule: <b>{trace.decisionRule}</b></p>
+        <p>Intent match: <b>{trace.matchedIntent ?? "chưa ghi"}</b> · dòng kịch bản: <b>{trace.matchedQuestionAnswerId ?? "structural fallback"}</b></p>
+        <p>Nguồn response: <b>{trace.responseSource ?? "STRUCTURAL_FALLBACK"}</b></p>
         <p>Câu gốc: <span className="whitespace-pre-wrap">{trace.originalTemplate}</span></p>
         <p>Biến: <b>{Object.keys(trace.variables).length ? JSON.stringify(trace.variables) : "không có"}</b></p>
         <p>Nguồn dữ liệu: <b>{trace.dataSources.length ? trace.dataSources.join(" · ") : "không có"}</b></p>
@@ -326,6 +373,12 @@ function ScriptTracePanel({ trace }: { trace?: ScriptResponseTrace }) {
         <p>State sau: <b>{JSON.stringify(trace.stateAfter)}</b></p>
         <p>Validator: {trace.validatorResults.map((item) => <span key={item.name} className={item.passed ? "text-emerald-700" : "text-rose-700"}>{item.passed ? "PASS" : "BLOCK"} {item.name}{item.detail ? ` (${item.detail})` : ""} · </span>)}</p>
         <p>AI diễn đạt lại: <b>không dùng</b>. Nội dung cuối: <span className="whitespace-pre-wrap">{trace.renderedText}</span></p>
+        {runtime && <>
+          <p>Version test: <b>#{runtime.versionId ?? "-"} · {runtime.sourceMode} · {runtime.versionStatus}</b></p>
+          <p>Dry-run: <b>{runtime.dryRun ? "BẬT" : "TẮT"}</b> · Messenger: <b>{runtime.messengerOutbound}</b> · booking: <b>{runtime.bookingsCreated}</b> · payment: <b>{runtime.paymentsCreated}</b> · deposit: <b>{runtime.depositsMutated}</b> · revenue: <b>{runtime.revenueMutated}</b></p>
+          {runtime.humanHandoff && <p>Handoff: <b>chỉ mô phỏng</b> · production inbox: <b>không assign</b></p>}
+          {runtime.followUp && <p>Follow-up: <b>chỉ mô phỏng</b> · reason: <b>{runtime.followUp.reason}</b> · scheduler: <b>không gọi</b></p>}
+        </>}
       </div>
     </details>
   );
@@ -454,6 +507,7 @@ function ReplyColumn({ title, accent, result }: { title: string; accent: string;
             {result.priceImages.map((p, i) => (
               <img key={`p${i}`} src={getImageSrc(p) ?? undefined} alt="bảng giá" className="max-w-[180px] rounded-lg border" />
             ))}
+            <SimulatedPriceSheetCard trace={result.priceSheetTrace} hasImage={result.priceImages.length > 0} />
             {result.reply.map((m, i) => (
               <div key={i} className="bg-gray-50 border rounded-lg px-3 py-2 whitespace-pre-wrap break-words">{m}</div>
             ))}
@@ -2115,6 +2169,7 @@ function FixTestTab({
                 {t.result.priceImages.map((p, i) => (
                   <img key={`p${i}`} src={getImageSrc(p) ?? undefined} alt="bảng giá" onError={onBrokenSampleImg} className="max-w-[200px] rounded-lg border" />
                 ))}
+                <SimulatedPriceSheetCard trace={t.result.priceSheetTrace} hasImage={t.result.priceImages.length > 0} />
                 {/* Câu trả lời — hé lộ từng bong bóng theo nhịp (human chat pacing) */}
                 {(() => {
                   const all = t.result.reply.length ? t.result.reply : [t.result.raw || "(Lulu không trả lời)"];
@@ -2137,7 +2192,7 @@ function FixTestTab({
                   );
                 })()}
                 {t.result.sampleNote && <p className="text-[11px] text-amber-600 italic">{t.result.sampleNote}</p>}
-                <ScriptTracePanel trace={t.result.scriptTrace} />
+                <ScriptTracePanel trace={t.result.scriptTrace} runtime={t.result.brainLabRuntime} />
                 <SaleWorkflowTracePanel trace={t.result.saleWorkflow} />
                 <PriceSheetTracePanel trace={t.result.priceSheetTrace} />
                 <WeddingGiftTracePanel trace={t.result.weddingGiftTrace} />

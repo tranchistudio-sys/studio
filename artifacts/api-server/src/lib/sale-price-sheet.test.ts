@@ -6,6 +6,7 @@ import { pool } from "@workspace/db";
 import {
   buildPackageComparisonReply,
   buildPriceSheetReply,
+  hasVerifiedPackageData,
   isPriceSheetRequest,
   resolvePriceSheetRequest,
   resolveServiceKeyFromConversation,
@@ -117,6 +118,29 @@ describe("price-sheet resolver", () => {
     expect(result.trace?.validator.passed).toBe(false);
     expect(result.trace?.validator.reasons).toContain("price_sheet_missing");
     expect(result.trace?.actionOrder).toEqual(["block", "escalate"]);
+  });
+
+  it("wedding_gate_brain_lab_simulates_price_sheet from verified package data when the image asset is missing", async () => {
+    const missingAssetGroup = { ...gateGroup, ai_image_url: null };
+    mockCatalog([missingAssetGroup], [
+      { ...gatePackages[1], group_name: missingAssetGroup.name },
+      { ...gatePackages[2], group_name: missingAssetGroup.name },
+      { id: 48, group_id: 12, group_name: missingAssetGroup.name, pkg_name: "Chụp cổng Premium", code: "CG-PREMIUM", price: "3900000", description: "2 cổng mica gương" },
+      { id: 49, group_id: 12, group_name: missingAssetGroup.name, pkg_name: "Chụp cổng Luxury", code: "CG-LUXURY", price: "5900000", description: "Photo Master, Makeup Master" },
+    ]);
+
+    const result = await resolvePriceSheetRequest({ message: "Chụp cổng giá nhiêu?" });
+    expect(result.trace?.validator.passed).toBe(false);
+    expect(result.trace?.validator.reasons).toContain("price_sheet_missing");
+    expect(hasVerifiedPackageData(result)).toBe(true);
+
+    const customerOutput = buildPriceSheetReply(result, "Chụp cổng giá nhiêu?", { allowPackageCardFallback: true }).join("\n");
+    expect(customerOutput).toContain("Tiết kiệm");
+    expect(customerOutput).toContain("Basic");
+    expect(customerOutput).toContain("Premium");
+    expect(customerOutput).toContain("Luxury");
+    expect(customerOutput).toContain("3.900.000đ");
+    expect(customerOutput).not.toMatch(/\{\{|SEND_PRICE_SHEET|RETAIL_PACKAGE_LIST|PRICE_ASSET_MISSING/);
   });
 
   it("asks one clarification question before sending an unspecified price sheet", async () => {

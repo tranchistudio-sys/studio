@@ -58,7 +58,7 @@ describe("SALE_WEDDING_GATE v1", () => {
     const price = trace("giá nhiêu ạ", history);
     expect(price.workflow.action).toBe("SEND_PRICE_SHEET");
     expect(price.result.nodeKey).toBe("WEDDING_GATE.PRICING.SEND_RETAIL_PRICE");
-    expect(price.result.stepNumber).toBe(4);
+    expect(price.result.stepNumber).toBe(3);
     history.push({ direction: "incoming", message: "giá nhiêu ạ" }, { direction: "outgoing", message: "[image:/objects/gate-price]", aiDecision: "price_sheet" }, { direction: "outgoing", message: "Bảng giá chụp cổng", aiDecision: "price_sheet" });
 
     const captureStyle = trace("tinh tế", history);
@@ -76,7 +76,7 @@ describe("SALE_WEDDING_GATE v1", () => {
   it("allows direct price and direct samples without letting a price turn select samples", () => {
     const price = trace("chụp cổng giá bao nhiêu?");
     expect(price.result.nodeKey).toBe("WEDDING_GATE.PRICING.SEND_RETAIL_PRICE");
-    expect(price.result.stepNumber).toBe(4);
+    expect(price.result.stepNumber).toBe(3);
     expect(price.result.renderedText).toContain("bảng giá chụp cổng");
 
     const samples = trace("chụp cổng cho xem mẫu");
@@ -135,13 +135,13 @@ describe("SALE_WEDDING_GATE v1", () => {
   });
 
   it.each([
-    ["Premium bao nhiêu nhỉ?", "WEDDING_GATE.PRICING.SEND_RETAIL_PRICE", 4],
+    ["Premium bao nhiêu nhỉ?", "WEDDING_GATE.PRICING.SEND_RETAIL_PRICE", 3],
     ["Basic với Premium khác gì?", "WEDDING_GATE.COMPARE.PACKAGES", 4],
     ["Có quà gì?", "WEDDING_GATE.PROMOTION.CHECK_ELIGIBILITY", 5],
     ["Vẫn mắc quá.", "WEDDING_GATE.OBJECTION.PRICE", 6],
     ["Theo em chị chọn gì?", "WEDDING_GATE.DECISION.RECOMMEND_PACKAGE", 7],
     ["Chốt Premium.", "WEDDING_GATE.CLOSING.COLLECT_MISSING", 8],
-    ["Cho xem mẫu.", "WEDDING_GATE.SAMPLE.SEND_MATCHED", 3],
+    ["Cho xem mẫu.", "WEDDING_GATE.SAMPLE.SEND_MATCHED", 2],
   ])("releases Step 9 ownership when customer returns: %s", (message, nodeKey, stepNumber) => {
     const prior: SaleHistoryItem[] = [
       { direction: "incoming", message: "Mình cần chụp cổng" },

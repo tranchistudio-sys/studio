@@ -78,6 +78,21 @@ describe("wedding gift program", () => {
     expect(trace.giftTier).toBe(3);
   });
 
+  it("does not count the same wedding service twice when the customer repeats it", () => {
+    const trace = evaluateWeddingGiftTrace({
+      message: "Dạ chị chốt chụp cổng nha.",
+      prior: [
+        ...quoted,
+        { direction: "incoming", message: "Chị chốt chụp cổng." },
+      ],
+      program: ACTIVE_PROGRAM,
+      now: new Date("2026-08-28T00:00:00.000Z"),
+    });
+    expect(trace.confirmedWeddingServices).toEqual(["wedding_gate"]);
+    expect(trace.eligibleServiceCount).toBe(1);
+    expect(trace.giftTier).toBeNull();
+  });
+
   it("keeps the conversation tier at 2 after Beauty, then raises it to 3 after wedding party", () => {
     const prior = [
       ...quoted,

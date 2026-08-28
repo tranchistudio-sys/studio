@@ -691,3 +691,9 @@ Rules:
 - Maternity uses neutral/female address; never address a pregnant customer as \"anh\".
 - Do not greet again when greeted=${decision.greeted}.`;
 }
+
+// Compatibility router retained from the production workflow foundation.
+// The newer draft evaluator above and the deterministic V1 router serve
+// different callers, so keep both exports available during the transition.
+export { routeSaleAction, SALE_PLAYBOOK_V1 } from "./sale-workflow-router-v1";
+export type { SaleAction, RouterInput, RouterDecision } from "./sale-workflow-router-v1";

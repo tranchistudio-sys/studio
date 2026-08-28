@@ -145,7 +145,7 @@ const RESET_PHRASES = [
 const OFF_INTENT_WORDS: Record<KnownIntent, string[]> = {
   wedding_gate: ["beauty", "gia dinh", "bau", "san pham", "doanh nhan"],
   wedding: ["beauty", "gia dinh", "bau", "san pham", "doanh nhan"],
-  beauty: ["chup cuoi", "album cuoi", "ngoai canh", "cong cuoi", "co dau", "chu re", "gia dinh", "bau", "thue vay"],
+  beauty: ["chup cuoi", "album cuoi", "ngoai canh", "cong cuoi", "co dau chu re", "gia dinh", "bau", "thue vay"],
   rental: ["beauty", "gia dinh", "bau", "chup cuoi", "san pham"],
   maternity: ["beauty", "chup cuoi", "gia dinh", "thue vay", "san pham"],
   family: ["beauty", "chup cuoi", "bau", "thue vay", "san pham"],

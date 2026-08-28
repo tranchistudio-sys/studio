@@ -315,6 +315,49 @@ describe("intent ownership and contextual routing", () => {
     const result = decide(message, pricedGate);
     expect(result.action === expected || result.reason === expected).toBe(true);
   });
+
+  it.each([
+    "Mắc quá em.",
+    "Ngân sách chị không tới.",
+    "Có gói nào rẻ hơn không?",
+    "Bớt được không em?",
+    "Chỗ khác rẻ hơn.",
+    "Chị đang tham khảo studio khác.",
+    "Để chị suy nghĩ.",
+    "Để hỏi chồng.",
+    "Để hỏi gia đình.",
+    "Em chưa muốn cọc.",
+    "Giờ em chưa đủ tiền cọc.",
+    "Em sợ phát sinh.",
+    "Em sợ chụp không đẹp.",
+    "Em mập, chụp chắc không đẹp.",
+    "Chồng chị không thích chụp.",
+    "Chị bận quá, không có thời gian.",
+    "Chị chưa chốt ngày cưới.",
+    "Premium dư quyền lợi, chị không dùng hết.",
+    "Bỏ bớt món rồi giảm giá được không?",
+    "Em sợ ảnh không giống mẫu.",
+    "Có chỉnh hình đẹp không?",
+    "Không biết gói này có đáng tiền không.",
+    "Cho chị vài ngày suy nghĩ.",
+    "Chị chọn studio khác rồi.",
+  ])("routes Step 6 objection coverage: %s", (message) => {
+    const result = decide(message, pricedGate);
+    expect(result.stage).toBe("RECOMMEND_PACKAGE");
+    expect(result.reason).toBe("owner_gate_step_6_objection");
+  });
+
+  it("keeps the Step 3 → 4 → 6 → 7 owner sequence", () => {
+    expect(decide("Premium bao nhiêu?", pricedGate).action).toBe("SEND_PRICE_SHEET");
+    expect(decide("Basic với Premium khác gì?", pricedGate).reason).toBe("owner_gate_step_4_compare");
+    expect(decide("Nhưng 3.9 cao quá.", pricedGate).reason).toBe("owner_gate_step_6_objection");
+    expect(decide("Vậy chị lấy Basic.", pricedGate).reason).toBe("owner_gate_step_7_decision");
+  });
+
+  it("keeps promotion in Step 5 before routing a later price objection to Step 6", () => {
+    expect(decide("Có khuyến mãi không?", pricedGate).reason).toBe("owner_gate_step_5_promotion");
+    expect(decide("Không có giảm thêm hả, chị thấy hơi cao.", pricedGate).reason).toBe("owner_gate_step_6_objection");
+  });
 });
 
 describe("album discovery", () => {

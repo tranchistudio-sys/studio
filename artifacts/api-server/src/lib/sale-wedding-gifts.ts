@@ -153,7 +153,11 @@ export function reconstructWeddingServiceState(input: {
       continue;
     }
     if (CONFIRM_SERVICE_RE.test(text)) {
-      for (const key of keys) confirmed.push(key);
+      // Một hạng mục bị khách nhắc lại nhiều lần vẫn chỉ là một dịch vụ.
+      // Riêng nhiều gói/ngày tiệc tách biệt chỉ được nhân khi khách nói rõ số lượng.
+      for (const key of keys) {
+        if (!confirmed.includes(key)) confirmed.push(key);
+      }
       // Hai gói/ngày tiệc riêng biệt trong cùng hợp đồng được chủ studio xác nhận
       // là hai dịch vụ. Chỉ nhân số khi khách nói rõ số lượng.
       if (keys.includes("wedding_party") && /\b(2|hai)\s+(?:goi|ngay|buoi)\b/.test(text)) {

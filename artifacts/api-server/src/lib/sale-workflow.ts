@@ -317,7 +317,7 @@ function askedQuestionState(evidence: TextEvidence[], serviceStart: number): { k
 const FORCE_PRICE_RE = /\b(cu|cho|gui)\b.{0,28}\b(bang gia|gia)\b.{0,18}\b(truoc|di)|\bkhong can hoi|cu xem gia/i;
 const SAMPLE_CONFIRM_RE = /\b(ung|thich|chon|dung gu|hop gu|mau nay ok|kieu nay ok|kieu nay duoc|cai nay duoc|lay phong cach nay|tam (?:so |thu )?[123]|cai dau|cai giua|cai cuoi|bao gia di|gui bang gia)\b/;
 const SAMPLE_REJECT_RE = /\b(khong ung|khong thich|chua ung|doi mau|mau khac|kieu khac|khong hop)\b/;
-const CUSTOMER_DEFERS_RE = /\b(de|cho)\s+(minh|anh|chi|em|toi)\s+(xem|coi|tham khao|suy nghi)(\s+them|\s+ky)?\b|\b(chua quyet dinh|chua chot|de tinh|suy nghi them|xem ky them)\b/;
+const CUSTOMER_DEFERS_RE = /\b(de|cho)\s+(minh|anh|chi|em|toi)\s+(xem|coi|tham khao|suy nghi)(\s+them|\s+ky)?\b|\b(chua quyet dinh|chua chot|de tinh|suy nghi them|xem ky them)\b|\b(?:lien he|nhan lai|goi lai).{0,24}(?:tuan sau|ngay mai|vai ngay nua|thu hai|thu ba|thu tu|thu nam|thu sau|thu bay|chu nhat)\b/;
 const CLARIFICATION_RE = /\b(nghia la sao|y la sao|la sao|giai thich)\b/;
 const PACKAGE_COMPARE_RE = /\b(?:basic|premium|luxury|tiet kiem)\b.{0,28}\b(?:khac gi|so voi|loi hon|hon nhau)\b|\bso sanh\b.{0,28}\bgoi\b/;
 const PACKAGE_COMPARE_EXTENDED_RE = /(?:\b1[.,]9\b|\b2[.,]9\b|\b3[.,]9\b|\b5[.,]9\b).{0,28}(?:\bvoi\b|\bva\b).{0,28}(?:\b1[.,]9\b|\b2[.,]9\b|\b3[.,]9\b|\b5[.,]9\b)|\b(?:tiet kiem|basic|premium|luxury)\b.{0,18}\b(?:hay|voi|va)\b.{0,18}\b(?:tiet kiem|basic|premium|luxury)\b|\bgoi thap nhat\b.{0,24}\bgoi cao nhat\b|\b(?:them|chenh)\s+\d+(?:[.,]\d+)?\s*(?:trieu|tr)\b.{0,18}\b(?:duoc gi|de lam gi)\b|\bgoi cang cao\b.{0,24}\b(?:hon|khac|duoc)\b|\bdoc bang\b.{0,30}\bkhong hieu\b/;
@@ -525,7 +525,9 @@ export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHisto
   const serviceSwitched = !explicitCurrentService.ambiguous && !!explicitCurrentService.key
     && !previousService.ambiguous && !!previousService.key && explicitCurrentService.key !== previousService.key;
   const answeredCurrentSlot = filledSlots.some((slot) => slot.source === "current_message");
-  const requestedAction: RequestedSaleAction = priceRequested
+  const requestedAction: RequestedSaleAction = serviceSwitched
+    ? "service_switch"
+    : priceRequested
     ? "price_sheet"
     : alternateSampleRequested
       ? "sample"
@@ -535,9 +537,7 @@ export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHisto
           ? "clarification"
         : answeredCurrentSlot
           ? "discovery_answer"
-          : serviceSwitched
-            ? "service_switch"
-            : "none";
+          : "none";
   const base = decisionBase({
     greeted,
     serviceKey,
@@ -569,7 +569,7 @@ export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHisto
   const priorMentionsWeddingGate = prior.some((item) => /\b(chup cong|cong cuoi|hinh cong|anh cong)\b/.test(norm(item.message)));
   // Promotion policy is owned by Step 5 even before a service has been chosen,
   // and even when the question mentions Beauty only to ask if it is eligible.
-  if (intentOwner === "GATE_STEP_5_PROMOTION") {
+  if (intentOwner === "GATE_STEP_5_PROMOTION" && !serviceSwitched) {
     return selectDecision(base, "FOLLOW_UP", "CONTINUE_CONVERSATION", "owner_gate_step_5_promotion", null);
   }
   if (DECISION_CONCERN_RE.test(norm(input.message)) && packageDecision.status !== "NONE") {
@@ -579,7 +579,7 @@ export function evaluateSaleWorkflow(input: { message: string; prior?: SaleHisto
   // theo ngữ cảnh chụp cổng trước đó, trước khi bộ nhận diện giá chạy.
   if (
     (intentOwner === "GATE_STEP_6_OBJECTION" || asksAnotherDecisionMaker)
-    && (serviceKey === "wedding_gate" || previousService === "wedding_gate" || (asksAnotherDecisionMaker && priorMentionsWeddingGate))
+    && (serviceKey === "wedding_gate" || previousService.key === "wedding_gate" || (asksAnotherDecisionMaker && priorMentionsWeddingGate))
   ) {
     return selectDecision(base, "RECOMMEND_PACKAGE", "CONTINUE_CONVERSATION", "owner_gate_step_6_objection", null);
   }

@@ -4,7 +4,7 @@ import { verifyToken } from "./auth";
 import { capLegacyAdmin } from "../lib/legacy-auth-token";
 import { callChat, resolveTestProviderOverride } from "../lib/ai-orchestrator";
 import { DEFAULT_BRAIN_RULES } from "../lib/claude-sale";
-import { simulateReply } from "../lib/sale-brain-runner";
+import { BRAIN_LAB_DRY_RUN_SIDE_EFFECTS, simulateReply } from "../lib/sale-brain-runner";
 import {
   ensureBrainLabTables, getActiveVersion, getVersion, listVersions, getOpenDraftVersion,
   createDraftVersion, updateDraftVersion, rejectVersion, rejectOtherDrafts, applyDraftVersion, rollbackToVersion,
@@ -546,6 +546,9 @@ router.post("/lulu-brain/test", async (req, res) => {
     if (b.draftVersionId) {
       const d = await getVersion(b.draftVersionId);
       if (!d) return res.status(404).json({ error: "Không tìm thấy bản nháp để test" });
+      if (d.status !== "draft") {
+        return res.status(409).json({ error: "Brain Lab chỉ cho phép test Version 2 ở trạng thái bản nháp." });
+      }
       draftRules = d.promptContent;
       draftVersionId = d.id;
       draftOverrides = parseImageOverrides(d.rulesJson);
@@ -580,7 +583,30 @@ router.post("/lulu-brain/test", async (req, res) => {
         scriptQuestionAnswerSheets: activeScriptQuestionAnswerSheets,
       }) : Promise.resolve(null),
     ]);
-    res.json({ draft, active, draftVersionId });
+    const draftWithRuntime = draft ? {
+      ...draft,
+      brainLabRuntime: {
+        versionId: draftVersionId,
+        versionStatus: "draft" as const,
+        sourceMode: "VERSION_2_DRAFT" as const,
+        dryRun: true,
+        ...BRAIN_LAB_DRY_RUN_SIDE_EFFECTS,
+        humanHandoff: draft.scriptTrace.stateAfter.humanHandoff
+          ? { simulated: true, assignedProductionInbox: false }
+          : null,
+        followUp: draft.saleWorkflow.stage === "FOLLOW_UP"
+          ? {
+              simulated: true,
+              schedulerInvoked: false,
+              reason: draft.saleWorkflow.reason,
+              stage: draft.saleWorkflow.stage,
+              proposedTiming: null,
+              stopCondition: "customer_reply_or_opt_out_or_conversion",
+            }
+          : null,
+      },
+    } : null;
+    res.json({ draft: draftWithRuntime, active, draftVersionId });
   } catch (err) {
     console.error("[BrainLab] test lỗi:", String(err).slice(0, 300));
     if (!res.headersSent) res.status(502).json({ error: `Test bị lỗi tạm thời, mình thử gửi lại nha. (${String((err as Error)?.message ?? err).slice(0, 150)})` });

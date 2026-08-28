@@ -78,7 +78,7 @@ export function isPriceSheetRequest(message: string): boolean {
 }
 
 const SERVICE_PATTERNS: Array<{ key: string; re: RegExp }> = [
-  { key: "wedding_gate", re: /\b(chup cong|cong cuoi|hinh cong|anh cong)\b/ },
+  { key: "wedding_gate", re: /\b(chup cong|cong cuoi|hinh cong|anh cong|goi cong)\b/ },
   { key: "wedding_party", re: /\b(chup tiec|tiec cuoi|phong su|dai tiec)\b/ },
   { key: "album_outdoor", re: /\b(album ngoai canh|ngoai canh cuoi|chup cuoi ngoai canh)\b/ },
   { key: "album_studio", re: /\b(album tai studio|album studio|chup cuoi studio)\b/ },

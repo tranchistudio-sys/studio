@@ -64,6 +64,9 @@ export type LuluResponseTrace = {
   stateBefore: LuluScriptState;
   stateAfter: LuluScriptState;
   decisionRule: string;
+  matchedIntent: string | null;
+  matchedQuestionAnswerId: string | null;
+  responseSource: "STRUCTURAL_FALLBACK" | "SALE_SCRIPT_DRAFT_ROW";
   aiParaphrase: { used: false; changes: [] };
 };
 
@@ -107,7 +110,7 @@ const WEDDING_GATE_NODES: SaleScriptNode[] = [
     nodeKey: "WEDDING_GATE.DISCOVERY.CONFIRM_SERVICE",
     scriptKey: WEDDING_GATE_SCRIPT_KEY,
     version: WEDDING_GATE_SCRIPT_VERSION,
-    stepNumber: 2,
+    stepNumber: 1,
     stage: "DISCOVERY",
     title: "Xac nhan dich vu chup cong",
     replyTemplate: "Dạ có mình nha. Bên em có chụp cổng tại studio với nhiều gói khác nhau. Mình dự định chụp một cổng hay hai cổng ạ?",
@@ -120,7 +123,7 @@ const WEDDING_GATE_NODES: SaleScriptNode[] = [
     nodeKey: "WEDDING_GATE.DISCOVERY.EXPLAIN_PENDING",
     scriptKey: WEDDING_GATE_SCRIPT_KEY,
     version: WEDDING_GATE_SCRIPT_VERSION,
-    stepNumber: 2,
+    stepNumber: 1,
     stage: "DISCOVERY",
     title: "Giai thich cau hoi dang cho",
     replyTemplate: "Dạ, em đang hỏi {{PENDING_QUESTION}} để chọn mẫu và gói sát nhu cầu của mình hơn. Mình dự định chụp một cổng hay hai cổng ạ?",
@@ -133,7 +136,7 @@ const WEDDING_GATE_NODES: SaleScriptNode[] = [
     nodeKey: "WEDDING_GATE.DISCOVERY.CAPTURE_STYLE",
     scriptKey: WEDDING_GATE_SCRIPT_KEY,
     version: WEDDING_GATE_SCRIPT_VERSION,
-    stepNumber: 2,
+    stepNumber: 1,
     stage: "DISCOVERY",
     title: "Ghi nhan phong cach",
     replyTemplate: "Dạ phong cách {{STYLE}} chụp cổng sẽ sang và lâu lỗi thời đó mình. Em ghi nhận gu này rồi nha. Mình dự định chụp một cổng hay hai cổng để em chọn mẫu phù hợp ạ?",
@@ -146,7 +149,7 @@ const WEDDING_GATE_NODES: SaleScriptNode[] = [
     nodeKey: "WEDDING_GATE.DISCOVERY.COLLECT_NEXT_SLOT",
     scriptKey: WEDDING_GATE_SCRIPT_KEY,
     version: WEDDING_GATE_SCRIPT_VERSION,
-    stepNumber: 2,
+    stepNumber: 1,
     stage: "DISCOVERY",
     title: "Hoi mot thong tin con thieu",
     replyTemplate: "{{NEXT_QUESTION}}",
@@ -159,7 +162,7 @@ const WEDDING_GATE_NODES: SaleScriptNode[] = [
     nodeKey: "WEDDING_GATE.SAMPLE.SEND_MATCHED",
     scriptKey: WEDDING_GATE_SCRIPT_KEY,
     version: WEDDING_GATE_SCRIPT_VERSION,
-    stepNumber: 3,
+    stepNumber: 2,
     stage: "SEND_SAMPLE",
     title: "Gui mau chup cong dung nhom",
     replyTemplate: "Dạ em gửi mình vài mẫu chụp cổng theo hướng {{STYLE}} để mình tham khảo nha. Mình thấy hướng nào hợp gu nhất thì nói em, em sẽ dựa vào đó để chọn gói phù hợp cho mình.",
@@ -172,7 +175,7 @@ const WEDDING_GATE_NODES: SaleScriptNode[] = [
     nodeKey: "WEDDING_GATE.SAMPLE.ASK_CONFIRMATION",
     scriptKey: WEDDING_GATE_SCRIPT_KEY,
     version: WEDDING_GATE_SCRIPT_VERSION,
-    stepNumber: 3,
+    stepNumber: 2,
     stage: "WAIT_SAMPLE_CONFIRMATION",
     title: "Hoi cam nhan sau khi gui mau",
     replyTemplate: "Dạ mình thấy các mẫu em vừa gửi có hợp gu không ạ? Mình ưng hướng nào thì nói em, em dựa vào đó tư vấn gói phù hợp cho mình nha.",
@@ -185,7 +188,7 @@ const WEDDING_GATE_NODES: SaleScriptNode[] = [
     nodeKey: "WEDDING_GATE.PRICING.SEND_RETAIL_PRICE",
     scriptKey: WEDDING_GATE_SCRIPT_KEY,
     version: WEDDING_GATE_SCRIPT_VERSION,
-    stepNumber: 4,
+    stepNumber: 3,
     stage: "SEND_PRICE_SHEET",
     title: "Gui bang gia le chinh thuc",
     replyTemplate: "Dạ em gửi mình bảng giá chụp cổng hiện tại nha. Bên em đang có các gói dành cho khách lẻ: {{RETAIL_PACKAGE_LIST}}. Mình cần một cổng hay hai cổng để em chọn giúp mình gói vừa đủ nhất nha?",
@@ -289,7 +292,7 @@ const WEDDING_GATE_NODES: SaleScriptNode[] = [
     nodeKey: "WEDDING_GATE.DECISION.PACKAGE_SELECTED",
     scriptKey: WEDDING_GATE_SCRIPT_KEY,
     version: WEDDING_GATE_SCRIPT_VERSION,
-    stepNumber: 7,
+    stepNumber: 8,
     stage: "CLOSE_OR_HANDOFF",
     title: "Ghi nhan goi khach da chon",
     replyTemplate: "Dạ em ghi nhận gói mình chọn rồi nha. Mình cho em xin thông tin liên hệ và ngày dự kiến để bên em kiểm tra lịch giúp mình ạ.",
@@ -302,7 +305,7 @@ const WEDDING_GATE_NODES: SaleScriptNode[] = [
     nodeKey: "WEDDING_GATE.CLOSING.CONFIRM_PACKAGE",
     scriptKey: WEDDING_GATE_SCRIPT_KEY,
     version: WEDDING_GATE_SCRIPT_VERSION,
-    stepNumber: 6,
+    stepNumber: 8,
     stage: "CLOSE_OR_HANDOFF",
     title: "Xac nhan goi truoc khi chuyen nhan vien",
     replyTemplate: "Dạ, em đã có phần thông tin mình vừa chọn. Mình dự định chụp một cổng hay hai cổng để em đề xuất đúng gói và kiểm tra lịch trước ạ?",
@@ -315,7 +318,7 @@ const WEDDING_GATE_NODES: SaleScriptNode[] = [
     nodeKey: "WEDDING_GATE.CLOSING.COLLECT_PHONE",
     scriptKey: WEDDING_GATE_SCRIPT_KEY,
     version: WEDDING_GATE_SCRIPT_VERSION,
-    stepNumber: 6,
+    stepNumber: 8,
     stage: "CLOSE_OR_HANDOFF",
     title: "Nhan so dien thoai va chuyen nhan vien",
     replyTemplate: "Dạ em đã nhận thông tin của mình. Em chuyển nhân viên phụ trách kiểm tra lịch và liên hệ lại cho mình nha.",
@@ -645,10 +648,15 @@ function slotMap(slots: SaleSlot[]): Record<string, string | null> {
 
 function stepFor(workflow: SaleWorkflowDecision): number {
   if (!workflow.serviceKey) return 1;
-  if (workflow.action === "SEND_SAMPLE") return 3;
-  if (workflow.action === "SEND_PRICE_SHEET") return 4;
-  if (workflow.stage === "CLOSE_OR_HANDOFF" || workflow.stage === "RECOMMEND_PACKAGE") return 6;
-  return 2;
+  if (workflow.action === "SEND_SAMPLE" || workflow.action === "ASK_SAMPLE_CONFIRMATION") return 2;
+  if (workflow.action === "SEND_PRICE_SHEET") return 3;
+  if (workflow.reason === "owner_gate_step_4_compare") return 4;
+  if (workflow.reason === "owner_gate_step_5_promotion") return 5;
+  if (workflow.reason === "owner_gate_step_6_objection") return 6;
+  if (workflow.reason === "owner_gate_step_7_recommendation") return 7;
+  if (workflow.reason === "owner_gate_step_8_booking" || workflow.stage === "CLOSE_OR_HANDOFF") return 8;
+  if (workflow.stage === "FOLLOW_UP") return 9;
+  return 1;
 }
 
 export function workflowToScriptState(workflow: SaleWorkflowDecision): LuluScriptState {
@@ -843,7 +851,65 @@ function makeTrace(input: {
     stateBefore: input.stateBefore,
     stateAfter: input.stateAfter,
     decisionRule: input.decisionRule,
+    matchedIntent: input.workflow.detectedIntent ?? input.workflow.reason ?? null,
+    matchedQuestionAnswerId: null,
+    responseSource: "STRUCTURAL_FALLBACK",
     aiParaphrase: { used: false, changes: [] },
+  };
+}
+
+function renderDraftRowTemplate(template: string, trace: LuluResponseTrace): string {
+  const variables: LuluResponseTrace["variables"] = {
+    ...trace.variables,
+    STYLE: trace.stateAfter.slots.style ?? trace.variables.STYLE ?? "phù hợp",
+    PENDING_QUESTION: trace.stateAfter.pendingQuestion ?? trace.variables.PENDING_QUESTION,
+    SELECTED_PACKAGE: trace.stateAfter.selectedPackageName ?? trace.variables.SELECTED_PACKAGE,
+    RECOMMENDED_PACKAGE: trace.stateAfter.recommendedPackageName ?? trace.variables.RECOMMENDED_PACKAGE,
+  };
+  return renderTemplate(template, variables).trim();
+}
+
+/**
+ * Bind câu trả lời Wedding Gate vào chính sheet SALE_WEDDING_GATE của version
+ * đang test. Hàm này chỉ đọc dữ liệu draft đã được route truyền vào; không có
+ * cache và không ghi DB. Các bước có renderer dữ liệu thật (ảnh/giá/so sánh/
+ * khuyến mãi/recommendation) vẫn giữ renderer đó, nhưng trace luôn chỉ ra dòng
+ * kịch bản nháp đã match thay vì giả vờ dùng một bộ câu hard-code khác.
+ */
+export function bindWeddingGateDraftRow(
+  trace: LuluResponseTrace,
+  message: string,
+  sheets?: SaleScriptQuestionAnswerSheets,
+): LuluResponseTrace {
+  if (trace.scriptKey !== WEDDING_GATE_SCRIPT_KEY) return trace;
+  const rows = (sheets?.[WEDDING_GATE_SCRIPT_KEY] ?? []).filter((row) => row.stepId === trace.stepNumber);
+  const matched = bestQuestionAnswerMatch(message, rows);
+  if (!matched) return trace;
+  const renderedDraft = renderDraftRowTemplate(matched.row.answer, trace);
+  const hasUnresolvedPlaceholder = /\{\{[A-Z0-9_]+\}\}/.test(renderedDraft);
+  const dynamicStep = [2, 3, 4, 5, 7].includes(trace.stepNumber);
+  return {
+    ...trace,
+    originalTemplate: matched.row.answer,
+    renderedText: dynamicStep || hasUnresolvedPlaceholder ? trace.renderedText : renderedDraft,
+    dataSources: Array.from(new Set([`sale_script_draft:${WEDDING_GATE_SCRIPT_KEY}`, ...trace.dataSources])),
+    decisionRule: `${trace.decisionRule};draft_row_match:${matched.row.id}:${matched.score.toFixed(2)}`,
+    matchedIntent: matched.row.routeKey ?? trace.nodeKey,
+    matchedQuestionAnswerId: matched.row.id,
+    responseSource: "SALE_SCRIPT_DRAFT_ROW",
+    validatorResults: hasUnresolvedPlaceholder
+      ? [...trace.validatorResults, { name: "draft_placeholder_resolved", passed: false, detail: "dynamic_renderer_required" }]
+      : trace.validatorResults,
+  };
+}
+
+export function preventRawPlaceholderLeak(trace: LuluResponseTrace): LuluResponseTrace {
+  if (!/\{\{[A-Z0-9_]+\}\}/.test(trace.renderedText)) return trace;
+  return {
+    ...trace,
+    renderedText: "Dạ phần này em chưa lấy đủ dữ liệu đã xác minh. Em chuyển nhân viên kiểm tra đúng thông tin cho mình nha.",
+    stateAfter: { ...trace.stateAfter, humanHandoff: true },
+    validatorResults: [...trace.validatorResults, { name: "no_raw_placeholder", passed: false, detail: "blocked_before_customer_output" }],
   };
 }
 
@@ -1057,7 +1123,7 @@ export function selectSaleScriptResponse(input: {
     });
   }
   if (input.workflow.action === "SEND_PRICE_SHEET") {
-    return makeTrace({ selected: node("WEDDING_GATE.PRICING.SEND_RETAIL_PRICE", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 4, priceSheetSent: true }, workflow: input.workflow, decisionRule: "direct_or_confirmed_price_request" });
+    return makeTrace({ selected: node("WEDDING_GATE.PRICING.SEND_RETAIL_PRICE", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 3, priceSheetSent: true }, workflow: input.workflow, decisionRule: "direct_or_confirmed_price_request" });
   }
   if (input.workflow.reason === "owner_gate_step_4_compare") {
     return makeTrace({ selected: node("WEDDING_GATE.COMPARE.PACKAGES", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 4 }, workflow: input.workflow, decisionRule: "compare_packages_owned_by_step_4" });
@@ -1078,7 +1144,7 @@ export function selectSaleScriptResponse(input: {
     return makeTrace({
       selected: node("WEDDING_GATE.DECISION.PACKAGE_SELECTED", input.overrides),
       stateBefore: before,
-      stateAfter: { ...after, currentStep: 7 },
+      stateAfter: { ...after, currentStep: 8 },
       workflow: input.workflow,
       decisionRule: "package_decision_owned_by_step_7",
       renderedText: decisionReply(input.workflow),
@@ -1130,21 +1196,32 @@ export function selectSaleScriptResponse(input: {
       variables: { SELECTED_PACKAGE: packageName, PHONE: lead.phone, REQUESTED_DATE: dateSummary },
     });
   }
+  if (input.workflow.reason === "customer_wants_time_to_consider") {
+    return makeTrace({
+      selected: node("WEDDING_GATE.FOLLOW_UP.COMPARE_PACKAGES", input.overrides),
+      stateBefore: before,
+      stateAfter: { ...after, currentStep: 9 },
+      workflow: input.workflow,
+      decisionRule: "follow_up_policy_simulation_only",
+      renderedText: "Dạ mình cứ xem kỹ và cân nhắc thoải mái nha. Khi cần em tiếp tục đúng phần chụp cổng mình đang xem ạ.",
+      variables: {},
+    });
+  }
   if (input.workflow.action === "EXPLAIN_PENDING" || (isClarification(text) && before.pendingQuestion)) {
     return makeTrace({ selected: node("WEDDING_GATE.DISCOVERY.EXPLAIN_PENDING", input.overrides), stateBefore: before, stateAfter: after, workflow: input.workflow, decisionRule: "clarify_current_pending_question" });
   }
   if (input.workflow.action === "SEND_SAMPLE") {
-    return makeTrace({ selected: node("WEDDING_GATE.SAMPLE.SEND_MATCHED", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 3 }, workflow: input.workflow, decisionRule: "customer_requested_samples_or_discovery_ready" });
+    return makeTrace({ selected: node("WEDDING_GATE.SAMPLE.SEND_MATCHED", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 2 }, workflow: input.workflow, decisionRule: "customer_requested_samples_or_discovery_ready" });
   }
   if (input.workflow.action === "ASK_SAMPLE_CONFIRMATION") {
-    return makeTrace({ selected: node("WEDDING_GATE.SAMPLE.ASK_CONFIRMATION", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 3 }, workflow: input.workflow, decisionRule: "sample_sent_wait_for_customer_confirmation" });
+    return makeTrace({ selected: node("WEDDING_GATE.SAMPLE.ASK_CONFIRMATION", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 2 }, workflow: input.workflow, decisionRule: "sample_sent_wait_for_customer_confirmation" });
   }
   const styleCapturedThisTurn = input.workflow.filledSlots.some((slot) => slot.key === "style" && slot.source === "current_message");
   if (styleCapturedThisTurn) {
-    return makeTrace({ selected: node("WEDDING_GATE.DISCOVERY.CAPTURE_STYLE", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 2, pendingQuestion: "gate_count" }, workflow: input.workflow, decisionRule: "style_captured_without_reasking_previous_question" });
+    return makeTrace({ selected: node("WEDDING_GATE.DISCOVERY.CAPTURE_STYLE", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 1, pendingQuestion: "gate_count" }, workflow: input.workflow, decisionRule: "style_captured_without_reasking_previous_question" });
   }
   if (input.workflow.action === "ASK_DISCOVERY" && !before.serviceIntent) {
-    return makeTrace({ selected: node("WEDDING_GATE.DISCOVERY.CONFIRM_SERVICE", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 2, pendingQuestion: "gate_count" }, workflow: input.workflow, decisionRule: "wedding_gate_service_confirmed" });
+    return makeTrace({ selected: node("WEDDING_GATE.DISCOVERY.CONFIRM_SERVICE", input.overrides), stateBefore: before, stateAfter: { ...after, currentStep: 1, pendingQuestion: "gate_count" }, workflow: input.workflow, decisionRule: "wedding_gate_service_confirmed" });
   }
   if (input.workflow.action === "ASK_DISCOVERY") {
     return makeTrace({ selected: node("WEDDING_GATE.DISCOVERY.COLLECT_NEXT_SLOT", input.overrides), stateBefore: before, stateAfter: after, workflow: input.workflow, decisionRule: "next_missing_discovery_slot" });

@@ -89,6 +89,9 @@ type ScriptResponseTrace = {
   stateBefore: { serviceIntent: string | null; currentStep: number; pendingQuestion: string | null; slots: Record<string, string | null>; sampleSent: boolean; priceSheetSent: boolean; humanHandoff: boolean };
   stateAfter: { serviceIntent: string | null; currentStep: number; pendingQuestion: string | null; slots: Record<string, string | null>; sampleSent: boolean; priceSheetSent: boolean; humanHandoff: boolean };
   decisionRule: string;
+  matchedIntent?: string | null;
+  matchedQuestionAnswerId?: string | null;
+  responseSource?: "STRUCTURAL_FALLBACK" | "SALE_SCRIPT_DRAFT_ROW";
   aiParaphrase: { used: false; changes: [] };
 };
 type ScriptNode = { nodeKey: string; scriptKey: string; version: number; stepNumber: number; stage: string; title: string; replyTemplate: string; requiredSlots: string[]; dataSources: string[]; validators: string[]; status: "draft" | "active" | "locked" };
@@ -113,6 +116,13 @@ type SimResult = {
   overrideApplied?: boolean;
   /** Cách lượt này dùng câu sửa tay admin: "exact_reply" = nói y chang; "learn_from_this" = AI học theo. */
   responseMode?: "exact_reply" | "learn_from_this" | null;
+  brainLabRuntime?: {
+    versionId: number | null; versionStatus: "draft"; sourceMode: "VERSION_2_DRAFT"; dryRun: true;
+    messengerOutbound: number; bookingsCreated: number; paymentsCreated: number;
+    depositsMutated: number; revenueMutated: number;
+    humanHandoff: { simulated: true; assignedProductionInbox: false } | null;
+    followUp: { simulated: true; schedulerInvoked: false; reason: string; stage: string; proposedTiming: null; stopCondition: string } | null;
+  };
 };
 // Ảnh trong kho (khớp ImageStoreItem ở backend).
 type StoreItem = { imageUrl: string; title: string; detailUrl?: string; sourceType: string; kind?: string; serviceIntent: string; albumName?: string; tags?: string; albumId?: number; publicForCustomer?: boolean };
@@ -307,7 +317,7 @@ function SaleWorkflowTracePanel({ trace }: { trace?: SaleWorkflowTrace }) {
   );
 }
 
-function ScriptTracePanel({ trace }: { trace?: ScriptResponseTrace }) {
+function ScriptTracePanel({ trace, runtime }: { trace?: ScriptResponseTrace; runtime?: SimResult["brainLabRuntime"] }) {
   if (!trace) return null;
   const blocked = trace.status === "UNMAPPED_RESPONSE";
   return (
@@ -317,6 +327,8 @@ function ScriptTracePanel({ trace }: { trace?: ScriptResponseTrace }) {
       </summary>
       <div className="mt-2 space-y-1 break-words">
         <p>Node: <b>{trace.nodeKey}</b> · stage: <b>{trace.stage}</b> · rule: <b>{trace.decisionRule}</b></p>
+        <p>Intent match: <b>{trace.matchedIntent ?? "chưa ghi"}</b> · dòng kịch bản: <b>{trace.matchedQuestionAnswerId ?? "structural fallback"}</b></p>
+        <p>Nguồn response: <b>{trace.responseSource ?? "STRUCTURAL_FALLBACK"}</b></p>
         <p>Câu gốc: <span className="whitespace-pre-wrap">{trace.originalTemplate}</span></p>
         <p>Biến: <b>{Object.keys(trace.variables).length ? JSON.stringify(trace.variables) : "không có"}</b></p>
         <p>Nguồn dữ liệu: <b>{trace.dataSources.length ? trace.dataSources.join(" · ") : "không có"}</b></p>
@@ -326,6 +338,12 @@ function ScriptTracePanel({ trace }: { trace?: ScriptResponseTrace }) {
         <p>State sau: <b>{JSON.stringify(trace.stateAfter)}</b></p>
         <p>Validator: {trace.validatorResults.map((item) => <span key={item.name} className={item.passed ? "text-emerald-700" : "text-rose-700"}>{item.passed ? "PASS" : "BLOCK"} {item.name}{item.detail ? ` (${item.detail})` : ""} · </span>)}</p>
         <p>AI diễn đạt lại: <b>không dùng</b>. Nội dung cuối: <span className="whitespace-pre-wrap">{trace.renderedText}</span></p>
+        {runtime && <>
+          <p>Version test: <b>#{runtime.versionId ?? "-"} · {runtime.sourceMode} · {runtime.versionStatus}</b></p>
+          <p>Dry-run: <b>{runtime.dryRun ? "BẬT" : "TẮT"}</b> · Messenger: <b>{runtime.messengerOutbound}</b> · booking: <b>{runtime.bookingsCreated}</b> · payment: <b>{runtime.paymentsCreated}</b> · deposit: <b>{runtime.depositsMutated}</b> · revenue: <b>{runtime.revenueMutated}</b></p>
+          {runtime.humanHandoff && <p>Handoff: <b>chỉ mô phỏng</b> · production inbox: <b>không assign</b></p>}
+          {runtime.followUp && <p>Follow-up: <b>chỉ mô phỏng</b> · reason: <b>{runtime.followUp.reason}</b> · scheduler: <b>không gọi</b></p>}
+        </>}
       </div>
     </details>
   );
@@ -2137,7 +2155,7 @@ function FixTestTab({
                   );
                 })()}
                 {t.result.sampleNote && <p className="text-[11px] text-amber-600 italic">{t.result.sampleNote}</p>}
-                <ScriptTracePanel trace={t.result.scriptTrace} />
+                <ScriptTracePanel trace={t.result.scriptTrace} runtime={t.result.brainLabRuntime} />
                 <SaleWorkflowTracePanel trace={t.result.saleWorkflow} />
                 <PriceSheetTracePanel trace={t.result.priceSheetTrace} />
                 <WeddingGiftTracePanel trace={t.result.weddingGiftTrace} />

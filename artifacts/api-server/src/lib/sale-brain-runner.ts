@@ -27,6 +27,8 @@ import {
 import { buildSaleWorkflowBlock, evaluateSaleWorkflow, type SaleWorkflowDecision } from "./sale-workflow";
 import {
   appendScriptTraceData,
+  bindWeddingGateDraftRow,
+  preventRawPlaceholderLeak,
   selectSaleScriptResponse,
   type SaleScriptQuestionAnswerSheets,
   type SaleScriptNodeOverrides,
@@ -177,6 +179,17 @@ export type SimulateInput = {
   scriptQuestionAnswerSheets?: SaleScriptQuestionAnswerSheets | null;
 };
 
+/** Contract an toàn của Brain Lab. Đây là invariant của runner mô phỏng, không
+ * phải số liệu suy đoán từ UI. Runner không import bất kỳ outbound sender hay
+ * booking/payment writer nào. */
+export const BRAIN_LAB_DRY_RUN_SIDE_EFFECTS = Object.freeze({
+  messengerOutbound: 0,
+  bookingsCreated: 0,
+  paymentsCreated: 0,
+  depositsMutated: 0,
+  revenueMutated: 0,
+});
+
 export type SimulateResult = {
   reply: string[];
   /** Bong bóng có nhịp (human chat pacing): text + delayMs từng bubble. reply = chunks.map(c=>c.text). */
@@ -227,6 +240,11 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
     overrides: input.scriptOverrides ?? undefined,
     questionAnswerSheets: input.scriptQuestionAnswerSheets ?? undefined,
   });
+  scriptTrace = bindWeddingGateDraftRow(
+    scriptTrace,
+    incomingText,
+    input.scriptQuestionAnswerSheets ?? undefined,
+  );
   const weddingGiftProgram = await loadWeddingGiftProgram();
   const weddingGiftTrace = evaluateWeddingGiftTrace({
     message: incomingText,
@@ -309,8 +327,9 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
           { name: "image_before_text", passed: priceSheet.trace.validator.passed },
         ]
         : [{ name: "price_resolution", passed: false, detail: "missing_price_trace" }],
-      stateAfter: { priceSheetSent: !!priceSheet.trace?.validator.passed, currentStep: 4, pendingQuestion: "gate_count" },
+      stateAfter: { priceSheetSent: !!priceSheet.trace?.validator.passed, currentStep: 3, pendingQuestion: "gate_count" },
     });
+    scriptTrace = preventRawPlaceholderLeak(scriptTrace);
     const chunks = quoteChunks.length === finalReply.length
       ? quoteChunks
       : finalReply.map((text) => ({ text, delayMs: 900 }));
@@ -438,7 +457,7 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
       renderedText: decisionReply,
       dataSources: ["service_packages", "conversation_state"],
       priceSnapshot: selectedPackage ? [{ packageId: selectedPackage.id, price: selectedPackage.price, finalPrice: selectedPackage.finalPrice }] : [],
-      stateAfter: { selectedPackageName: selectedPackage?.name ?? scriptTrace.stateAfter.selectedPackageName, currentStep: 7 },
+      stateAfter: { selectedPackageName: selectedPackage?.name ?? scriptTrace.stateAfter.selectedPackageName, currentStep: 8 },
       validatorResults: [
         { name: "retail_package_resolution_from_verified_db", passed: decision.resolution === "CONTEXT" || decision.resolution === "SERVICE_ONLY" || decision.resolution === "UNKNOWN_PRICE" || decision.resolution === "AMBIGUOUS_BENEFIT" || Boolean(selectedPackage) },
         { name: "no_booking_creation", passed: true },
@@ -450,6 +469,7 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
 
   // The rebuilt script path is intentionally deterministic: no Claude prompt may fill a missing node.
   if (scriptTrace.status === "UNMAPPED_RESPONSE") {
+    scriptTrace = preventRawPlaceholderLeak(scriptTrace);
     return {
       reply: [scriptTrace.renderedText],
       chunks: [{ text: scriptTrace.renderedText, delayMs: 900 }],
@@ -513,7 +533,7 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
         scriptTrace = appendScriptTraceData(scriptTrace, {
           assetIds: sampleImages.map((image) => image.imageUrl),
           dataSources: ["image_store:wedding_gate", "conversation_state.sent_assets"],
-          stateAfter: { sampleSent: true, currentStep: 3 },
+          stateAfter: { sampleSent: true, currentStep: 2 },
           validatorResults: [
             { name: "service_key_is_wedding_gate", passed: true },
             { name: "sample_asset_not_previously_sent", passed: true },
@@ -526,6 +546,7 @@ export async function simulateReply(input: SimulateInput): Promise<SimulateResul
     const deterministicEscalationReason = deterministicHandoff
       ? `sale_script_handoff:${scriptTrace.nodeKey}`
       : null;
+    scriptTrace = preventRawPlaceholderLeak(scriptTrace);
     return {
       reply: [scriptTrace.renderedText],
       chunks: [{ text: scriptTrace.renderedText, delayMs: 900 }],

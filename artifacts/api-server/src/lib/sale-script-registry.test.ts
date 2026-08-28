@@ -31,7 +31,7 @@ describe("SALE_WEDDING_GATE v1", () => {
     const script = getScriptCatalog().find((item) => item.scriptKey === "SALE_WEDDING_GATE");
 
     expect(script).toBeDefined();
-    expect(new Set(script?.nodes.map((node) => node.stepNumber))).toEqual(new Set([1, 2, 3, 4, 5, 6, 7, 8]));
+    expect(new Set(script?.nodes.map((node) => node.stepNumber))).toEqual(new Set([1, 2, 3, 4, 5, 6, 7, 8, 9]));
     expect(script?.nodes.find((node) => node.stepNumber === 1)?.nodeKey).toBe("COMMON.GREETING");
   });
 
@@ -132,6 +132,24 @@ describe("SALE_WEDDING_GATE v1", () => {
     expect(result.nodeKey).toBe("WEDDING_GATE.CLOSING.HUMAN_HANDOFF");
     expect(result.renderedText).toContain("chưa tự ghi cọc");
     expect(result.validatorResults.some((item) => item.name === "no_payment_mutation" && item.passed)).toBe(true);
+  });
+
+  it.each([
+    ["Premium bao nhiêu nhỉ?", "WEDDING_GATE.PRICING.SEND_RETAIL_PRICE", 4],
+    ["Basic với Premium khác gì?", "WEDDING_GATE.COMPARE.PACKAGES", 4],
+    ["Có quà gì?", "WEDDING_GATE.PROMOTION.CHECK_ELIGIBILITY", 5],
+    ["Vẫn mắc quá.", "WEDDING_GATE.OBJECTION.PRICE", 6],
+    ["Theo em chị chọn gì?", "WEDDING_GATE.DECISION.RECOMMEND_PACKAGE", 7],
+    ["Chốt Premium.", "WEDDING_GATE.CLOSING.COLLECT_MISSING", 8],
+    ["Cho xem mẫu.", "WEDDING_GATE.SAMPLE.SEND_MATCHED", 3],
+  ])("releases Step 9 ownership when customer returns: %s", (message, nodeKey, stepNumber) => {
+    const prior: SaleHistoryItem[] = [
+      { direction: "incoming", message: "Mình cần chụp cổng" },
+      { direction: "outgoing", message: "Dạ em ghé hỏi nhẹ mình chút nha", aiDecision: "auto_follow_up_step9_slot0" },
+    ];
+    const result = trace(message, prior).result;
+    expect(result.nodeKey).toBe(nodeKey);
+    expect(result.stepNumber).toBe(stepNumber);
   });
 
   it.each([

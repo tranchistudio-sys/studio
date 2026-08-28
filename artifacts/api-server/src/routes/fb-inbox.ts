@@ -49,6 +49,7 @@ import {
   resolvePriceSheetRequest,
 } from "../lib/sale-price-sheet";
 import { buildSaleWorkflowBlock, evaluateSaleWorkflow } from "../lib/sale-workflow";
+import { followUpControlFromMessage } from "../lib/sale-follow-up-policy";
 import { buildWeddingGiftPromptBlock, buildWeddingGiftReply, evaluateWeddingGiftTrace, loadWeddingGiftProgram } from "../lib/sale-wedding-gifts";
 import { emitNotification } from "./notifications";
 import multer from "multer";
@@ -581,7 +582,8 @@ async function processIncomingFacebookMessageNow(
     /không cần nữa/i, /thôi rồi/i, /đừng nhắn/i, /bỏ qua/i, /không liên hệ/i,
     /stop/i, /unsubscribe/i, /opt.?out/i, /xóa tôi/i, /xóa số/i,
   ];
-  const isRefusal = REFUSAL_PATTERNS.some((re) => re.test(text));
+  const followUpControl = followUpControlFromMessage(text);
+  const isRefusal = followUpControl.stop || REFUSAL_PATTERNS.some((re) => re.test(text));
 
   // Cập nhật follow-up log: last_customer_message_at = now
   if (isRefusal) {
@@ -591,7 +593,7 @@ async function processIncomingFacebookMessageNow(
        ON CONFLICT (psid) DO UPDATE SET last_customer_message_at = now(), is_opted_out = true`,
       [psid],
     );
-    console.log(`[AI] psid=${psid} opted-out phát hiện qua từ chối: "${text.slice(0, 60)}"`);
+    console.log(`[AI] psid=${psid} opted-out phát hiện qua từ chối (${followUpControl.stopReason ?? "legacy_refusal"}): "${text.slice(0, 60)}"`);
   } else {
     // Khách gửi tin mới → reset chu kỳ follow-up (slot index + count đều reset về 0)
     await pool.query(

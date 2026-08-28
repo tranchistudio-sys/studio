@@ -1,5 +1,6 @@
 import { pool } from "@workspace/db";
 import { getMasterEnabled } from "./lib/sale-master";
+import { followUpEligibility } from "./lib/sale-follow-up-policy";
 
 const DEFAULT_FOLLOW_UP_MSG = "Dạ bạn ơi, mình có thể hỗ trợ thêm gì không ạ? Amazing Studio luôn sẵn sàng giúp bạn ạ 😊";
 
@@ -124,10 +125,14 @@ async function processCandidate(
     current_sale_step: number | null;
     ai_mode: string | null;
   } | undefined;
-  if (lead?.customer_id) return;
-  // CẦU DAO RIÊNG TỪNG LEAD: nhân viên đang tiếp quản / tạm dừng → KHÔNG follow-up (mục 11/12).
-  if ((lead?.ai_mode ?? "active") !== "active") {
-    console.log(`[FollowUp] skip psid=${row.psid} reason=ai_mode_${lead?.ai_mode ?? "unknown"}`);
+  const eligibility = followUpEligibility({
+    optedOut: false,
+    aiMode: lead?.ai_mode ?? "active",
+    customerId: lead?.customer_id ?? null,
+    followUpCount: row.follow_up_count,
+  });
+  if (!eligibility.allowed) {
+    console.log(`[FollowUp] skip psid=${row.psid} reason=${eligibility.reason}`);
     return;
   }
   if (lead?.current_script_id == null) return;

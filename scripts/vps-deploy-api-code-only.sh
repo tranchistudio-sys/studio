@@ -69,7 +69,10 @@ while IFS= read -r service; do
 done < <(compose_production config --services)
 
 [ -n "$API_SERVICE" ] && [ -n "$API_CID" ] || die "Không xác định được container API."
-sudo -n docker compose -f "$RELEASE_COMPOSE" config --services | grep -Fxq "$API_SERVICE" || \
+# Do not use grep -q here: with pipefail, an early successful match can close the
+# pipe while docker compose is still writing, turning its SIGPIPE into a false
+# deployment failure.
+sudo -n docker compose -f "$RELEASE_COMPOSE" config --services | grep -Fx "$API_SERVICE" >/dev/null || \
   die "Release không có service API $API_SERVICE."
 
 PREVIOUS_API_IMAGE_ID=$(sudo -n docker inspect "$API_CID" --format '{{.Image}}')

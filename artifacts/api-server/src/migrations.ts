@@ -36,6 +36,28 @@ async function runMigrationsUnlocked() {
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS analytics_events_event_key_uidx ON analytics_events(event_key)`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS analytics_events_provider_name_event_id_uidx ON analytics_events(provider, event_name, event_id)`);
 
+    // Public CMS homepage reads these fields unconditionally. Production skips
+    // startup DDL, so keep the additive migration in the explicit runner too.
+    for (const column of [
+      "wedding_intro_image_1_url",
+      "wedding_intro_image_2_url",
+      "wedding_intro_image_3_url",
+      "wedding_intro_image_1_fit",
+      "wedding_intro_image_2_fit",
+      "wedding_intro_image_3_fit",
+      "wedding_intro_image_1_x",
+      "wedding_intro_image_1_y",
+      "wedding_intro_image_1_zoom",
+      "wedding_intro_image_2_x",
+      "wedding_intro_image_2_y",
+      "wedding_intro_image_2_zoom",
+      "wedding_intro_image_3_x",
+      "wedding_intro_image_3_y",
+      "wedding_intro_image_3_zoom",
+    ]) {
+      await client.query(`ALTER TABLE cms_home_settings ADD COLUMN IF NOT EXISTS ${column} TEXT`);
+    }
+
     // Task #363: phân loại chi phí theo mô hình tài chính (direct/operating/depreciation/interest/loan_principal)
     await client.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS cost_class TEXT NOT NULL DEFAULT 'operating'`);
     await client.query(`UPDATE expenses SET cost_class = 'direct' WHERE booking_id IS NOT NULL AND cost_class = 'operating'`);

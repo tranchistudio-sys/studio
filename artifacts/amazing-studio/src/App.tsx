@@ -79,6 +79,7 @@ import { WeddingMusicPlayer } from "@/components/wedding-card/WeddingMusicPlayer
 import { authNeedsStudioSelection } from "@/lib/auth-types";
 import { AnalyticsRouteTracker } from "@/analytics/AnalyticsRouteTracker";
 import { isAdvertisingTrackingAllowed } from "@/analytics/policy";
+import { hasActiveAnalyticsProviders } from "@/analytics/providers";
 
 // Register auth token getter once at app startup so all api-client-react hooks
 // (useListStaff, useListTasks, etc.) automatically include the auth header.
@@ -353,7 +354,15 @@ function LoginRoute() {
       onLogin={(response) => {
         completeLogin(response);
         const needsSelection = authNeedsStudioSelection(response);
-        setLocation(needsSelection ? "/select-studio" : popReturnTo());
+        const destination = needsSelection ? "/select-studio" : popReturnTo();
+        // Providers loaded on an anonymous public page cannot all be reliably
+        // unloaded. Reload once after login so internal routes start clean and
+        // the authenticated tracking policy prevents them from being injected.
+        if (hasActiveAnalyticsProviders()) {
+          window.location.assign(destination);
+          return;
+        }
+        setLocation(destination);
       }}
     />
   );

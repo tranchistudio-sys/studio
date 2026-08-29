@@ -11,6 +11,7 @@ declare global {
 }
 
 let initialized = false;
+let activeProviders = false;
 const debug = import.meta.env.VITE_ANALYTICS_DEBUG === "true";
 
 function appendScript(src: string, id: string) {
@@ -28,6 +29,7 @@ export function initializeProviders() {
 
   const pixelId = import.meta.env.VITE_META_PIXEL_ID?.trim();
   if (pixelId) {
+    activeProviders = true;
     const fbq = function (...args: unknown[]) { (fbq as any).callMethod ? (fbq as any).callMethod(...args) : (fbq as any).queue.push(args); } as any;
     fbq.queue = []; fbq.loaded = true; fbq.version = "2.0";
     window.fbq = fbq; window._fbq = fbq;
@@ -37,6 +39,7 @@ export function initializeProviders() {
 
   const gaId = import.meta.env.VITE_GA_MEASUREMENT_ID?.trim();
   if (gaId) {
+    activeProviders = true;
     window.dataLayer = window.dataLayer || [];
     window.gtag = (...args: unknown[]) => { window.dataLayer!.push(args); };
     window.gtag("js", new Date());
@@ -46,6 +49,7 @@ export function initializeProviders() {
 
   const gtmId = import.meta.env.VITE_GTM_ID?.trim();
   if (gtmId) {
+    activeProviders = true;
     window.dataLayer = window.dataLayer || [];
     window.dataLayer.push({ "gtm.start": Date.now(), event: "gtm.js" });
     appendScript(`https://www.googletagmanager.com/gtm.js?id=${encodeURIComponent(gtmId)}`, "gtm-script");
@@ -53,9 +57,14 @@ export function initializeProviders() {
 
   const clarityId = import.meta.env.VITE_CLARITY_PROJECT_ID?.trim();
   if (clarityId) {
+    activeProviders = true;
     window.clarity = window.clarity || function (...args: unknown[]) { ((window.clarity as any).q ||= []).push(args); };
     appendScript(`https://www.clarity.ms/tag/${encodeURIComponent(clarityId)}`, "clarity-script");
   }
+}
+
+export function hasActiveAnalyticsProviders() {
+  return activeProviders;
 }
 
 const gaNames: Record<AnalyticsEvent["name"], string> = {

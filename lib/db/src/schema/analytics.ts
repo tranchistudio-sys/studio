@@ -15,4 +15,7 @@ export const analyticsEventsTable = pgTable("analytics_events", {
   sentAt: timestamp("sent_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
-}, (table) => [uniqueIndex("analytics_events_event_key_uidx").on(table.eventKey)]);
+}, (table) => [
+  uniqueIndex("analytics_events_event_key_uidx").on(table.eventKey),
+  uniqueIndex("analytics_events_provider_name_event_id_uidx").on(table.provider, table.eventName, table.eventId),
+]);

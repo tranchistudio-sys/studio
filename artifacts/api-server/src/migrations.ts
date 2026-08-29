@@ -10,6 +10,32 @@ async function runMigrationsUnlocked() {
   try {
     await client.query("BEGIN");
 
+    // Analytics attribution + Meta CAPI idempotent outbox. This repository does
+    // not auto-load lib/db/migrations/*.sql; startup migrations are maintained
+    // here and run under the shared advisory lock + this transaction.
+    await client.query(`ALTER TABLE bookings ADD COLUMN IF NOT EXISTS attribution JSONB`);
+    await client.query(`ALTER TABLE customers ADD COLUMN IF NOT EXISTS attribution JSONB`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS analytics_events (
+        id serial PRIMARY KEY,
+        event_key text NOT NULL,
+        event_name text NOT NULL,
+        event_id text NOT NULL,
+        provider text NOT NULL DEFAULT 'meta_capi',
+        source_type text NOT NULL,
+        source_id text NOT NULL,
+        status text NOT NULL DEFAULT 'pending',
+        attempts integer NOT NULL DEFAULT 0,
+        payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+        last_error text,
+        sent_at timestamp,
+        created_at timestamp NOT NULL DEFAULT now(),
+        updated_at timestamp NOT NULL DEFAULT now()
+      )
+    `);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS analytics_events_event_key_uidx ON analytics_events(event_key)`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS analytics_events_provider_name_event_id_uidx ON analytics_events(provider, event_name, event_id)`);
+
     // Task #363: phân loại chi phí theo mô hình tài chính (direct/operating/depreciation/interest/loan_principal)
     await client.query(`ALTER TABLE expenses ADD COLUMN IF NOT EXISTS cost_class TEXT NOT NULL DEFAULT 'operating'`);
     await client.query(`UPDATE expenses SET cost_class = 'direct' WHERE booking_id IS NOT NULL AND cost_class = 'operating'`);

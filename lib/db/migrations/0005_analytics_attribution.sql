@@ -20,3 +20,5 @@ CREATE TABLE IF NOT EXISTS analytics_events (
 
 CREATE UNIQUE INDEX IF NOT EXISTS analytics_events_event_key_uidx
   ON analytics_events(event_key);
+CREATE UNIQUE INDEX IF NOT EXISTS analytics_events_provider_name_event_id_uidx
+  ON analytics_events(provider, event_name, event_id);

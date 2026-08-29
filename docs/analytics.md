@@ -6,12 +6,16 @@ The React application calls the business-level API in `src/analytics`. Providers
 
 Server conversions are emitted from persisted business results, not UI clicks. `Schedule` uses `schedule_<booking_id>` and `Purchase` uses `purchase_<payment_id>`. The `analytics_events.event_key` unique index provides idempotency.
 
+`Purchase.value` is the amount of the individual persisted payment/deposit, not the total contract value. A VND 2,000,000 deposit therefore sends `value: 2000000`, `currency: VND`.
+
 ## Routes and policy
 
 - Marketing: `/`, `/bo-anh`, `/bang-gia`, `/cho-thue-do`, `/san-pham`, `/y-tuong-chup-anh`, `/lien-he`, `/thiep-cuoi-online`.
 - Internal: `/calendar`, `/bookings`, `/payments`, `/customers`, `/staff`, `/cms` and every other `INTERNAL_PREFIXES` route in `App.tsx`.
 - Excluded even though publicly reachable: `/login`, public contract signing, public wedding-card guest pages.
 - Any authenticated session is excluded, including staff public-preview mode.
+
+The current authentication system is staff/owner/admin/collaborator-only. The authenticated-session exclusion must be changed to a role-based exclusion before introducing customer login.
 
 ## Events
 
@@ -29,6 +33,8 @@ Do not fire Lead when a form opens, Schedule when calendar is viewed, or Purchas
 ## Attribution
 
 The browser captures UTM fields, `fbclid`, `gclid`, landing page and referrer. First touch is immutable; last touch changes only when a new campaign identifier is present. Booking/customer schema supports JSON attribution snapshots so staff actions can be attributed back to the original customer journey.
+
+`fbc` is derived only when a real captured `fbclid` exists. The implementation does not invent `fbp`; it can be added later if the first-party `_fbp` value is explicitly persisted with consent.
 
 ## Environment
 
@@ -50,7 +56,11 @@ Never expose `META_CAPI_ACCESS_TOKEN` through a `VITE_` variable or commit real 
 
 ## Migration and rollback
 
-Apply `lib/db/migrations/0005_analytics_attribution.sql` before deploying code. It adds nullable attribution columns and an independent analytics outbox table. Existing booking/payment data is unchanged.
+The reviewed SQL is `lib/db/migrations/0005_analytics_attribution.sql`. This repository does **not** automatically load files from that folder. The same additive DDL is therefore registered in the actual runner, `artifacts/api-server/src/migrations.ts`, which runs inside one transaction and the shared PostgreSQL advisory lock.
+
+Production is fail-closed: startup DDL is skipped unless `ALLOW_STARTUP_DDL_IN_PRODUCTION=1`, and the VPS deploy path is code-only. Apply/review the migration in a controlled database step before deploying the code. Preview/dev can use the existing startup runner. The change adds nullable attribution columns and an independent analytics outbox table; existing booking/payment data is unchanged.
+
+Failed CAPI requests retain the complete hashed payload in the outbox. A tenant-aware scheduler retries failed records up to five attempts and recovers `sending` records stale for ten minutes. Unique constraints on both `event_key` and `(provider, event_name, event_id)` prevent logical duplicates.
 
 Rollback application code first. The new columns/table can safely remain unused. If removal is required after backup, drop the analytics index/table and the two nullable attribution columns in a separate reviewed migration.
 

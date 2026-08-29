@@ -11,6 +11,7 @@ import { emitNotification } from "./notifications";
 import { normalizeItemsAssignedStaffCast, buildPrevManualMap, sanitizeTopLevelAssignedStaffCast } from "../lib/resolve-staff-cast";
 import { maybeCreatePhotoshopJobForBooking } from "./photoshop-jobs";
 import { queuePurchaseForPayment, queueScheduleForBooking } from "../lib/analytics/meta-capi";
+import { sanitizeAttribution } from "../lib/analytics/analytics-data";
 import { getSchemaFlags, bookingColumnsCompat, type SchemaFlags } from "../lib/schema-compat";
 import { bookingRequiresPostProduction } from "../lib/post-production-eligibility";
 import {
@@ -627,7 +628,7 @@ router.post("/bookings", async (req, res) => {
         isParentContract: true,
         status: isTempQuote ? "temp_quote" : "confirmed",
         createdByStaffId: callerId,
-        attribution: req.body.attribution || null,
+        attribution: sanitizeAttribution(req.body.attribution),
         // Tương thích ngược: chỉ ghi cột setting nhắc khi DB đã migrate.
         ...((await getSchemaFlags()).dressWarnCols ? {
           dressWarnPickupDays: toWarnDays(req.body.dressWarnPickupDays),
@@ -796,7 +797,7 @@ router.post("/bookings", async (req, res) => {
       status: isTempQuote ? "temp_quote" : "pending",
       createdByStaffId: callerId,
       additionalServices: snapshotAdditionalServices,
-      attribution: req.body.attribution || null,
+      attribution: sanitizeAttribution(req.body.attribution),
       // Tương thích ngược: chỉ ghi cột setting nhắc khi DB đã migrate.
       ...((await getSchemaFlags()).dressWarnCols ? {
         dressWarnPickupDays: toWarnDays(req.body.dressWarnPickupDays),

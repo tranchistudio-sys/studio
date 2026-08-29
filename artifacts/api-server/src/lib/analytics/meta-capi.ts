@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, lt, or, sql } from "drizzle-orm";
 import { db } from "@workspace/db";
 import { analyticsEventsTable, bookingsTable, customersTable, paymentsTable } from "@workspace/db/schema";
+import { purchaseCustomData } from "./analytics-data";
 
-type AttributionTouch = { fbclid?: string; landingPage?: string };
+type AttributionTouch = { capturedAt?: string; fbclid?: string; landingPage?: string };
 type Attribution = { firstTouch?: AttributionTouch; lastTouch?: AttributionTouch };
 
 const sha256 = (value: string) => createHash("sha256").update(value.trim().toLowerCase()).digest("hex");
@@ -13,8 +14,11 @@ const normalizePhone = (value: string) => {
 };
 
 function fbcFrom(attribution: Attribution | null): string | undefined {
-  const fbclid = attribution?.lastTouch?.fbclid || attribution?.firstTouch?.fbclid;
-  return fbclid ? `fb.1.${Math.floor(Date.now() / 1000)}.${fbclid}` : undefined;
+  const touch = attribution?.lastTouch?.fbclid ? attribution.lastTouch : attribution?.firstTouch;
+  if (!touch?.fbclid) return undefined;
+  const captured = touch.capturedAt ? Date.parse(touch.capturedAt) : Number.NaN;
+  const timestamp = Number.isFinite(captured) ? Math.floor(captured / 1000) : Math.floor(Date.now() / 1000);
+  return `fb.1.${timestamp}.${touch.fbclid}`;
 }
 
 function absoluteSourceUrl(value?: string) {
@@ -39,11 +43,23 @@ async function sendEvent(input: {
 }) {
   if (!metaCapiConfigured()) return { disabled: true } as const;
   const eventKey = `meta_capi:${input.eventName}:${input.sourceType}:${input.sourceId}`;
+  const body: Record<string, unknown> = {
+    data: [{
+      event_name: input.eventName,
+      event_time: Math.floor(Date.now() / 1000),
+      event_id: input.eventId,
+      action_source: "website",
+      event_source_url: absoluteSourceUrl(input.sourceUrl),
+      user_data: input.userData,
+      custom_data: input.customData,
+    }],
+  };
+  if (process.env.META_CAPI_TEST_EVENT_CODE?.trim()) body.test_event_code = process.env.META_CAPI_TEST_EVENT_CODE.trim();
   const inserted = await db.insert(analyticsEventsTable).values({
     eventKey, eventName: input.eventName, eventId: input.eventId,
     sourceType: input.sourceType, sourceId: input.sourceId,
-    status: "sending", payload: { customData: input.customData },
-  }).onConflictDoNothing({ target: analyticsEventsTable.eventKey }).returning({ id: analyticsEventsTable.id });
+    status: "sending", payload: body,
+  }).onConflictDoNothing().returning({ id: analyticsEventsTable.id });
   let recordId = inserted[0]?.id;
   if (!recordId) {
     const [existing] = await db.select({ id: analyticsEventsTable.id, status: analyticsEventsTable.status })
@@ -57,32 +73,55 @@ async function sendEvent(input: {
     recordId = claimed.id;
   }
 
+  return deliverRecord(recordId, body);
+}
+
+async function deliverRecord(recordId: number, body: Record<string, unknown>) {
   const pixelId = process.env.META_PIXEL_ID!.trim();
   const version = (process.env.META_GRAPH_API_VERSION || "v23.0").trim();
-  const body: Record<string, unknown> = {
-    data: [{
-      event_name: input.eventName,
-      event_time: Math.floor(Date.now() / 1000),
-      event_id: input.eventId,
-      action_source: "website",
-      event_source_url: absoluteSourceUrl(input.sourceUrl),
-      user_data: input.userData,
-      custom_data: input.customData,
-    }],
-  };
-  if (process.env.META_CAPI_TEST_EVENT_CODE?.trim()) body.test_event_code = process.env.META_CAPI_TEST_EVENT_CODE.trim();
-
   try {
     const response = await fetch(`https://graph.facebook.com/${version}/${pixelId}/events?access_token=${encodeURIComponent(process.env.META_CAPI_ACCESS_TOKEN!.trim())}`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
     });
     if (!response.ok) throw new Error(`Meta CAPI HTTP ${response.status}: ${(await response.text()).slice(0, 500)}`);
-    await db.update(analyticsEventsTable).set({ status: "sent", attempts: 1, sentAt: new Date(), updatedAt: new Date() }).where(eq(analyticsEventsTable.id, recordId));
+    await db.update(analyticsEventsTable).set({
+      status: "sent", attempts: sql`${analyticsEventsTable.attempts} + 1`,
+      lastError: null, sentAt: new Date(), updatedAt: new Date(),
+    }).where(eq(analyticsEventsTable.id, recordId));
     return { sent: true } as const;
   } catch (error) {
-    await db.update(analyticsEventsTable).set({ status: "failed", attempts: 1, lastError: error instanceof Error ? error.message.slice(0, 1000) : "Unknown error", updatedAt: new Date() }).where(eq(analyticsEventsTable.id, recordId));
+    await db.update(analyticsEventsTable).set({
+      status: "failed", attempts: sql`${analyticsEventsTable.attempts} + 1`,
+      lastError: error instanceof Error ? error.message.slice(0, 1000) : "Unknown error", updatedAt: new Date(),
+    }).where(eq(analyticsEventsTable.id, recordId));
     throw error;
   }
+}
+
+export async function retryFailedMetaCapiEvents(limit = 20) {
+  if (!metaCapiConfigured()) return { disabled: true, retried: 0 } as const;
+  const staleBefore = new Date(Date.now() - 10 * 60_000);
+  const candidates = await db.select({ id: analyticsEventsTable.id, payload: analyticsEventsTable.payload, status: analyticsEventsTable.status })
+    .from(analyticsEventsTable)
+    .where(and(
+      eq(analyticsEventsTable.provider, "meta_capi"),
+      lt(analyticsEventsTable.attempts, 5),
+      or(
+        eq(analyticsEventsTable.status, "failed"),
+        and(eq(analyticsEventsTable.status, "sending"), lt(analyticsEventsTable.updatedAt, staleBefore)),
+      ),
+    ))
+    .limit(limit);
+  let retried = 0;
+  for (const candidate of candidates) {
+    const [claimed] = await db.update(analyticsEventsTable).set({ status: "sending", updatedAt: new Date() })
+      .where(and(eq(analyticsEventsTable.id, candidate.id), eq(analyticsEventsTable.status, candidate.status)))
+      .returning({ id: analyticsEventsTable.id });
+    if (!claimed) continue;
+    retried += 1;
+    await deliverRecord(candidate.id, candidate.payload as Record<string, unknown>).catch(() => undefined);
+  }
+  return { retried } as const;
 }
 
 export async function sendPurchaseForPayment(paymentId: number) {
@@ -104,7 +143,7 @@ export async function sendPurchaseForPayment(paymentId: number) {
     eventName: "Purchase", eventId: `purchase_${row.paymentId}`,
     sourceType: "payment", sourceId: String(row.paymentId),
     sourceUrl: attribution.lastTouch?.landingPage || attribution.firstTouch?.landingPage,
-    userData, customData: { value: Number(row.amount), currency: "VND", payment_id: String(row.paymentId), booking_id: String(row.bookingId) },
+    userData, customData: purchaseCustomData(row.amount, row.paymentId, row.bookingId),
   });
 }
 

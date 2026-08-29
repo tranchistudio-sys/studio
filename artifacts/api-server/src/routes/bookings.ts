@@ -10,6 +10,8 @@ import { computeBookingEarnings } from "./job-earnings";
 import { emitNotification } from "./notifications";
 import { normalizeItemsAssignedStaffCast, buildPrevManualMap, sanitizeTopLevelAssignedStaffCast } from "../lib/resolve-staff-cast";
 import { maybeCreatePhotoshopJobForBooking } from "./photoshop-jobs";
+import { queuePurchaseForPayment, queueScheduleForBooking } from "../lib/analytics/meta-capi";
+import { sanitizeAttribution } from "../lib/analytics/analytics-data";
 import { getSchemaFlags, bookingColumnsCompat, type SchemaFlags } from "../lib/schema-compat";
 import { bookingRequiresPostProduction } from "../lib/post-production-eligibility";
 import {
@@ -626,6 +628,7 @@ router.post("/bookings", async (req, res) => {
         isParentContract: true,
         status: isTempQuote ? "temp_quote" : "confirmed",
         createdByStaffId: callerId,
+        attribution: sanitizeAttribution(req.body.attribution),
         // Tương thích ngược: chỉ ghi cột setting nhắc khi DB đã migrate.
         ...((await getSchemaFlags()).dressWarnCols ? {
           dressWarnPickupDays: toWarnDays(req.body.dressWarnPickupDays),
@@ -633,11 +636,12 @@ router.post("/bookings", async (req, res) => {
         } : {}),
       })
       .returning();
+    if (!isTempQuote) queueScheduleForBooking(parent.id);
 
     // 2. Create deposit payment for the parent contract
     // (báo giá tạm KHÔNG tạo phiếu thu — chưa có tiền thật)
     if (!isTempQuote && depositAmount && parseFloat(String(depositAmount)) > 0) {
-      await db.insert(paymentsTable).values({
+      const [depositPayment] = await db.insert(paymentsTable).values({
         bookingId:     parent.id,
         amount:        String(depositAmount),
         paymentMethod: depMethod,
@@ -649,7 +653,8 @@ router.post("/bookings", async (req, res) => {
         paidDate:      depPaidDateResolved,
         ...(depositPaidAt ? { paidAt: new Date(depositPaidAt) } : {}),
         notes:         "Cọc giữ lịch",
-      });
+      }).returning({ id: paymentsTable.id });
+      if (depositPayment) queuePurchaseForPayment(depositPayment.id);
     }
 
     // 3. Create child service bookings
@@ -792,6 +797,7 @@ router.post("/bookings", async (req, res) => {
       status: isTempQuote ? "temp_quote" : "pending",
       createdByStaffId: callerId,
       additionalServices: snapshotAdditionalServices,
+      attribution: sanitizeAttribution(req.body.attribution),
       // Tương thích ngược: chỉ ghi cột setting nhắc khi DB đã migrate.
       ...((await getSchemaFlags()).dressWarnCols ? {
         dressWarnPickupDays: toWarnDays(req.body.dressWarnPickupDays),
@@ -799,12 +805,13 @@ router.post("/bookings", async (req, res) => {
       } : {}),
     })
     .returning();
+  if (!isTempQuote) queueScheduleForBooking(booking.id);
 
   const [customer] = await db.select().from(customersTable).where(eq(customersTable.id, customerId));
 
   // Báo giá tạm KHÔNG tạo phiếu thu — chưa có tiền thật
   if (!isTempQuote && depositAmount && parseFloat(String(depositAmount)) > 0) {
-    await db.insert(paymentsTable).values({
+    const [depositPayment] = await db.insert(paymentsTable).values({
       bookingId:     booking.id,
       amount:        String(depositAmount),
       paymentMethod: depMethod,
@@ -816,7 +823,8 @@ router.post("/bookings", async (req, res) => {
       paidDate:      depPaidDateResolved,
       ...(depositPaidAt ? { paidAt: new Date(depositPaidAt) } : {}),
       notes:         "Cọc giữ lịch",
-    });
+    }).returning({ id: paymentsTable.id });
+    if (depositPayment) queuePurchaseForPayment(depositPayment.id);
   }
 
   // Lookup tên người tạo đơn để hiện trong notification

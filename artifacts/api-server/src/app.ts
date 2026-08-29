@@ -13,6 +13,7 @@ import { startTestFollowUpScheduler } from "./test-follow-up-scheduler";
 import { startDeadlineChecker, startWeddingPrepReminder } from "./routes/notifications";
 import { startAutoPostScheduler } from "./autopost-scheduler";
 import { runBusinessJob } from "./lib/tenant-job-runner";
+import { startAnalyticsRetryScheduler } from "./analytics-retry-scheduler";
 
 export interface CreateAppOptions {
   startSchedulers?: boolean;
@@ -125,6 +126,7 @@ if (options.startSchedulers !== false) {
   startDeadlineChecker(runBusinessJob);
   startWeddingPrepReminder(runBusinessJob);
   startAutoPostScheduler(runBusinessJob);
+  startAnalyticsRetryScheduler(runBusinessJob);
 }
 
 return application;

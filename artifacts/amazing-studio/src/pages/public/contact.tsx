@@ -161,7 +161,7 @@ export default function PublicContactPage() {
         {/* Placeholder contact form */}
         <div className="bg-neutral-50 p-8">
           <h2 className="font-serif text-2xl mb-6">Gửi tin nhắn</h2>
-          <form className="space-y-4" onSubmit={(e) => e.preventDefault()}>
+          <form className="space-y-4" data-clarity-mask="true" onSubmit={(e) => e.preventDefault()}>
             <div>
               <label htmlFor="contact-name" className="block text-xs tracking-widest uppercase text-neutral-500 mb-2">
                 Họ và tên

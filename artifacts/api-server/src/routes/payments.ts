@@ -8,6 +8,7 @@ import { liveBookingSql, revenueCountableSql } from "../lib/booking-money";
 import { notEmptyParentSql } from "../lib/parent-contract";
 import { engineAllocationSnapshot, type AllocationSnapshot } from "../lib/finance/financial-engine";
 import { capLegacyAdmin } from "../lib/legacy-auth-token";
+import { queuePurchaseForPayment } from "../lib/analytics/meta-capi";
 
 const router: IRouter = Router();
 
@@ -483,7 +484,8 @@ router.post("/payments", async (req, res) => {
       bookingId: bookingId || undefined,
     });
   }
-  res.status(201).json({ ...payment, amount: parseFloat(payment.amount) });
+  if (effectivePaymentType !== "ad_hoc" && payment.bookingId) queuePurchaseForPayment(payment.id);
+  res.status(201).json({ ...payment, amount: parseFloat(payment.amount), analyticsEventId: `purchase_${payment.id}` });
   } catch (err) {
     console.error("POST /payments error:", err);
     res.status(500).json({ error: "Lỗi hệ thống khi tạo phiếu thu" });

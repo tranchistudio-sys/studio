@@ -38,6 +38,7 @@ const MIGRATION_ALLOWLIST = new Set([
   "0003_wedding_card_media_rsvp.sql",
   "0003_wedding_gift_programs.sql",
   "0004_seed_amazing_wedding_gifts.sql",
+  "0005_analytics_attribution.sql",
 ]);
 const DESTRUCTIVE_SQL =
   /\bDROP\s+(TABLE|COLUMN|CONSTRAINT|SCHEMA|INDEX|SEQUENCE|VIEW)\b|\bTRUNCATE\b|\bALTER\s+TABLE\b[^;]*\bDROP\b/i;

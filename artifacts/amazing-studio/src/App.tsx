@@ -77,6 +77,8 @@ import { Camera, Shirt } from "lucide-react";
 import { Toaster } from "@/components/ui/toaster";
 import { WeddingMusicPlayer } from "@/components/wedding-card/WeddingMusicPlayer";
 import { authNeedsStudioSelection } from "@/lib/auth-types";
+import { AnalyticsRouteTracker } from "@/analytics/AnalyticsRouteTracker";
+import { isAdvertisingTrackingAllowed } from "@/analytics/policy";
 
 // Register auth token getter once at app startup so all api-client-react hooks
 // (useListStaff, useListTasks, etc.) automatically include the auth header.
@@ -395,6 +397,14 @@ function RouterRoot() {
     return <LoginRoute />;
   }
 
+  const advertisingTrackingAllowed = isAdvertisingTrackingAllowed({
+    authenticated,
+    isPublicPath: isPublicPath(location),
+    path: location,
+  });
+
+  const analyticsTracker = <AnalyticsRouteTracker enabled={advertisingTrackingAllowed} />;
+
   if (location === "/select-studio") {
     if (!authenticated) return <RedirectToLogin from="/calendar" />;
     if (!requiresTenantSelection && activeTenant && memberships.length <= 1) return <Redirect to={popReturnTo()} />;
@@ -406,7 +416,7 @@ function RouterRoot() {
 
   // Preview mode: staff xem website khách (globe) — luôn hiện public, không vào app.
   if (publicPreview && isPublicPath(location)) {
-    return <PublicRouter />;
+    return <>{analyticsTracker}<PublicRouter /></>;
   }
 
   // Nhân viên/admin đã đăng nhập: vào "/" → Lịch Chụp.
@@ -420,7 +430,7 @@ function RouterRoot() {
     if (!rootLandingConsumed && (location === "/" || location === "/trang-chu")) {
       return <RootLandingRedirect />;
     }
-    return <PublicRouter />;
+    return <>{analyticsTracker}<PublicRouter /></>;
   }
 
   // Internal routes — require authentication, preserve return-to.

@@ -13,6 +13,7 @@ export const customersTable = pgTable("customers", {
   zalo: text("zalo"),
   address: text("address"),
   source: text("source").notNull().default("other"),
+  attribution: jsonb("attribution"),
   tags: jsonb("tags").notNull().default([]),
   avatar: text("avatar"),
   notes: text("notes"),

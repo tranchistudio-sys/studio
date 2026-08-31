@@ -7,6 +7,42 @@ ALTER TABLE plans ADD COLUMN IF NOT EXISTS monthly_price_amount BIGINT;
 ALTER TABLE plans ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'VND';
 ALTER TABLE plans ADD COLUMN IF NOT EXISTS features JSONB NOT NULL DEFAULT '{}'::jsonb;
 
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM plans WHERE code IS NOT NULL
+    GROUP BY upper(code) HAVING count(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'commercial preflight: duplicate plan codes must be resolved before migration';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM plans
+    WHERE upper(code) IN ('STANDARD', 'PRO') AND id <> lower(code)
+  ) THEN
+    RAISE EXCEPTION 'commercial preflight: canonical STANDARD/PRO code belongs to a non-canonical plan id';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM plans
+    WHERE id IN ('standard', 'pro') AND code IS NOT NULL AND upper(code) <> upper(id)
+  ) THEN
+    RAISE EXCEPTION 'commercial preflight: canonical plan id has a conflicting code';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM subscriptions
+    WHERE status IN ('trial', 'active', 'past_due', 'suspended')
+    GROUP BY tenant_id HAVING count(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'commercial preflight: tenant has multiple current subscriptions';
+  END IF;
+  IF EXISTS (
+    SELECT 1 FROM provisioning_jobs
+    WHERE status IN ('pending', 'running', 'cleanup_required')
+    GROUP BY tenant_id HAVING count(*) > 1
+  ) THEN
+    RAISE EXCEPTION 'commercial preflight: tenant has multiple open provisioning jobs';
+  END IF;
+END $$;
+
 CREATE UNIQUE INDEX IF NOT EXISTS plans_code_unique
   ON plans (upper(code)) WHERE code IS NOT NULL;
 

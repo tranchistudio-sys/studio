@@ -11,10 +11,13 @@ export function createLoginRateLimit(options?: {
   windowMs?: number;
   maxAttempts?: number;
   maxBuckets?: number;
+  bucketPrefix?: string;
+  errorMessage?: string;
 }): RequestHandler {
   const windowMs = options?.windowMs ?? 15 * 60_000;
   const maxAttempts = options?.maxAttempts ?? 10;
   const maxBuckets = Math.max(100, options?.maxBuckets ?? 10_000);
+  const bucketPrefix = options?.bucketPrefix ?? "login";
 
   return (req, res, next) => {
     const now = Date.now();
@@ -30,7 +33,7 @@ export function createLoginRateLimit(options?: {
         buckets.delete(oldestKey);
       }
     }
-    const key = req.ip || req.socket.remoteAddress || "unknown";
+    const key = `${bucketPrefix}:${req.ip || req.socket.remoteAddress || "unknown"}`;
     const existing = buckets.get(key);
     const bucket = !existing || existing.resetAt <= now
       ? { count: 0, resetAt: now + windowMs }
@@ -44,7 +47,7 @@ export function createLoginRateLimit(options?: {
 
     if (bucket.count > maxAttempts) {
       res.setHeader("Retry-After", String(Math.ceil((bucket.resetAt - now) / 1000)));
-      res.status(429).json({ error: "Bạn thử đăng nhập quá nhiều lần. Vui lòng chờ rồi thử lại." });
+      res.status(429).json({ error: options?.errorMessage ?? "Bạn thử đăng nhập quá nhiều lần. Vui lòng chờ rồi thử lại." });
       return;
     }
     next();

@@ -9,6 +9,11 @@ interface Props {
   onLogin: (response: AuthResponse) => void;
 }
 
+type PublicPlan = { code:"STANDARD"|"PRO"; name:string; setupFee:string|number; monthlyPrice:string|number; currency:string };
+const money = (value: string | number, currency: string) => new Intl.NumberFormat("vi-VN", {
+  style: "currency", currency, maximumFractionDigits: 0,
+}).format(Number(value));
+
 async function fetchAuthConfig(signal?: AbortSignal): Promise<AuthConfig> {
   const response = await fetch(`${API_BASE}/api/auth/config`, {
     credentials: "include",
@@ -49,6 +54,7 @@ export default function LoginPage({ onLogin }: Props) {
   const [studioSignupOpen, setStudioSignupOpen] = useState(false);
   const [studioSignupBusy, setStudioSignupBusy] = useState(false);
   const [studioSignupSuccess, setStudioSignupSuccess] = useState("");
+  const [publicPlans, setPublicPlans] = useState<PublicPlan[] | null>(null);
   const [studioSignup, setStudioSignup] = useState({ ownerName: "", studioName: "", phone: "", email: "", address: "", requestedSlug: "", requestedPlanCode: "STANDARD" });
   const submittingRef = useRef(false);
 
@@ -58,6 +64,16 @@ export default function LoginPage({ onLogin }: Props) {
       .then(value => setConfig(value))
       .catch(() => {})
       .finally(() => setConfigLoaded(true));
+    return () => controller.abort();
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(`${API_BASE}/api/studio-plans`, { signal: controller.signal })
+      .then(response => response.ok ? response.json() as Promise<PublicPlan[]> : Promise.reject())
+      .then(plans => { setPublicPlans(plans); setStudioSignup(value => plans.some(item=>item.code===value.requestedPlanCode)
+        ? value : { ...value, requestedPlanCode: plans[0]?.code ?? "STANDARD" }); })
+      .catch(() => setPublicPlans([]));
     return () => controller.abort();
   }, []);
 
@@ -308,9 +324,13 @@ export default function LoginPage({ onLogin }: Props) {
                 <select aria-label="Gói mong muốn" value={studioSignup.requestedPlanCode}
                   onChange={event => setStudioSignup(value => ({ ...value, requestedPlanCode: event.target.value }))}
                   className="h-10 w-full rounded-xl border bg-white px-3 text-sm">
-                  <option value="STANDARD">STANDARD — 500.000đ/tháng</option><option value="PRO">PRO — 1.000.000đ/tháng</option>
+                  {(publicPlans?.length ? publicPlans : [{ code:"STANDARD",name:"Standard" },{ code:"PRO",name:"Pro" }]).map(item =>
+                    <option key={item.code} value={item.code}>{item.code}{"monthlyPrice" in item ? ` — ${money(item.monthlyPrice,item.currency)}/tháng` : ""}</option>)}
                 </select>
-                <p className="text-xs text-muted-foreground">Phí khởi tạo: 900.000đ một lần. Giá được xác nhận khi liên hệ.</p>
+                <p className="text-xs text-muted-foreground">{publicPlans?.length ? (() => {
+                  const selected = publicPlans.find(item=>item.code===studioSignup.requestedPlanCode);
+                  return selected ? `Phí khởi tạo: ${money(selected.setupFee,selected.currency)} một lần.` : "Liên hệ để nhận báo giá hiện tại.";
+                })() : "Liên hệ để nhận báo giá hiện tại."}</p>
                 <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setStudioSignupOpen(false)} className="h-10 rounded-xl border bg-white text-sm">Hủy</button>
                   <button disabled={studioSignupBusy} className="h-10 rounded-xl bg-purple-600 text-sm font-semibold text-white">{studioSignupBusy ? "Đang gửi…" : "Gửi đăng ký"}</button></div>
               </form>}

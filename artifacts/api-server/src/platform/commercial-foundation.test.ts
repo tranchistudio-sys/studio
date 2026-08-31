@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { requirePlatformOwner } from "../middlewares/platform-owner";
 import { getTenantEntitlements, resolveEntitlements } from "./entitlements";
 import { assertTenantDatabaseMetadata, TenantDatabaseMetadataMismatchError } from "./tenant-database-metadata";
+// @ts-expect-error repository deploy guard utility is intentionally plain ESM
+import { containsDestructiveSql } from "../../../../scripts/deploy-guard-sql.mjs";
 
 function authorize(platformRole: "PLATFORM_OWNER" | "PLATFORM_ADMIN" | null, authenticated = true) {
   const status = vi.fn(); const json = vi.fn(); const next = vi.fn();
@@ -40,8 +42,15 @@ describe("commercial idempotency and isolation guards", () => {
   });
   it("scopes studio detail, payments and subscription actions by tenant id", () => {
     expect(routes).toContain("WHERE t.id=$1 LIMIT 1");
-    expect(routes).toContain("WHERE tenant_id=$1 AND payment_type='SETUP_FEE'");
+    expect(routes).toContain("WHERE s.tenant_id=$1 AND s.source='DIRECT'");
   });
+});
+
+describe("deploy guard destructive SQL detection", () => {
+  it.each(["DELETE FROM customers", "truncate table customers", "DROP TABLE customers", "ALTER TABLE customers DROP COLUMN name"])(
+    "blocks %s", sql => expect(containsDestructiveSql(sql)).toBe(true));
+  it.each(["-- DELETE FROM customers\nSELECT 1", "SELECT 'DELETE FROM customers'", "/* DELETE FROM customers */ SELECT 1"])(
+    "ignores comments and string literals", sql => expect(containsDestructiveSql(sql)).toBe(false));
 });
 
 describe("commercial entitlements", () => {
@@ -65,6 +74,10 @@ describe("commercial entitlements", () => {
   it("expired period is inactive", () => {
     expect(resolveEntitlements({ planCode: "PRO", status: "active", expiresAt: "2025-01-01",
       features: { core_management: true }, now }).active).toBe(false);
+  });
+  it("requires an explicit period for commercial plans but preserves legacy manual access", () => {
+    expect(resolveEntitlements({ planCode: "PRO", status: "active", features: { core_management:true }, now }).active).toBe(false);
+    expect(resolveEntitlements({ planCode: "LEGACY", status: "active", features: { core_management:true }, now }).active).toBe(true);
   });
   it("scopes subscription lookup to the requested tenant", async () => {
     const query = vi.fn().mockResolvedValue({ rows: [] });

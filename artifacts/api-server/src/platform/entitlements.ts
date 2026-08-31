@@ -26,7 +26,11 @@ export function resolveEntitlements(input: {
   const expiresAt = input.expiresAt ? new Date(input.expiresAt) : null;
   const graceUntil = input.graceUntil ? new Date(input.graceUntil) : null;
   const statusAllows = input.status === "active" || input.status === "trial" || input.status === "past_due";
-  const withinPeriod = !expiresAt || expiresAt > now || (input.status === "past_due" && Boolean(graceUntil && graceUntil > now));
+  // Legacy/manual subscriptions may not have a billing period. Commercial plans
+  // must always carry an explicit end date before their features become active.
+  const commercial = input.planCode === "STANDARD" || input.planCode === "PRO";
+  const withinPeriod = (!commercial && !expiresAt) || Boolean(expiresAt && expiresAt > now) ||
+    (input.status === "past_due" && Boolean(graceUntil && graceUntil > now));
   const active = statusAllows && withinPeriod;
   const features = { ...EMPTY_FEATURES };
   for (const key of Object.keys(features) as FeatureKey[]) features[key] = active && input.features?.[key] === true;

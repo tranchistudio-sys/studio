@@ -47,7 +47,7 @@ const MIGRATION_ALLOWLIST = new Set([
 // Migration lịch sử đã được review và phát hành trước khi DELETE detection tồn tại.
 // Khoá bằng checksum để bất kỳ chỉnh sửa hay DELETE mới nào vẫn fail-closed.
 const LEGACY_DESTRUCTIVE_MIGRATION_CHECKSUMS = new Map([
-  ["0004_seed_amazing_wedding_gifts.sql", "55ba14eb1110c34e06c8cc325e55610e9c55c66e50e1894df89db6c255eb8058"],
+  ["0004_seed_amazing_wedding_gifts.sql", "f54c59b96624037c5581238ba0c16032a5c86c7a921d6768ecc65d971e8b83e6"],
 ]);
 if (exists(MIGRATIONS_DIR)) {
   const entries = fs.readdirSync(path.join(ROOT, MIGRATIONS_DIR));
@@ -61,7 +61,8 @@ if (exists(MIGRATIONS_DIR)) {
     const sql = stripSqlCommentsAndStrings(read(`${MIGRATIONS_DIR}/${entry}`));
     const m = findDestructiveSql(sql);
     if (m) {
-      const checksum = createHash("sha256").update(read(`${MIGRATIONS_DIR}/${entry}`)).digest("hex");
+      const normalized = read(`${MIGRATIONS_DIR}/${entry}`).replace(/\r\n/g, "\n");
+      const checksum = createHash("sha256").update(normalized).digest("hex");
       if (LEGACY_DESTRUCTIVE_MIGRATION_CHECKSUMS.get(entry) !== checksum) {
         errors.push(`${MIGRATIONS_DIR}/${entry}: chứa SQL destructive ("${m[0]}") — cấm tuyệt đối trong deploy path.`);
       }

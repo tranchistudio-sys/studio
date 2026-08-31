@@ -40,6 +40,7 @@ const MIGRATION_ALLOWLIST = new Set([
   "0004_seed_amazing_wedding_gifts.sql",
   "0005_analytics_attribution.sql",
   "0006_cms_home_wedding_intro.sql",
+  "0007_tenant_metadata.sql",
 ]);
 const DESTRUCTIVE_SQL =
   /\bDROP\s+(TABLE|COLUMN|CONSTRAINT|SCHEMA|INDEX|SEQUENCE|VIEW)\b|\bTRUNCATE\b|\bALTER\s+TABLE\b[^;]*\bDROP\b/i;
@@ -71,6 +72,7 @@ const PLATFORM_MIGRATION_ALLOWLIST = new Set([
   "0002_membership_session_revocation.sql",
   "0003_tenant_database_registry_isolation.sql",
   "0004_staff_access_requests.sql",
+  "0005_commercial_saas_foundation.sql",
 ]);
 if (exists(PLATFORM_MIGRATIONS_DIR)) {
   const entries = fs.readdirSync(path.join(ROOT, PLATFORM_MIGRATIONS_DIR));

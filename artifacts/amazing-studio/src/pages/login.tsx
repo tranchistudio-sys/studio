@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
-import { ArrowLeft, Camera, CheckCircle2, Eye, EyeOff, Loader2, UserPlus } from "lucide-react";
+import { ArrowLeft, Building2, Camera, CheckCircle2, Eye, EyeOff, Loader2, UserPlus } from "lucide-react";
 import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton";
 import { API_BASE } from "@/lib/api-base";
 import { normalizeAuthResponse, type AuthConfig, type AuthResponse } from "@/lib/auth-types";
@@ -46,6 +46,10 @@ export default function LoginPage({ onLogin }: Props) {
   const [registerBusy, setRegisterBusy] = useState(false);
   const [registerSuccess, setRegisterSuccess] = useState("");
   const [registration, setRegistration] = useState({ fullName: "", phone: "", email: "", requestedPosition: "" });
+  const [studioSignupOpen, setStudioSignupOpen] = useState(false);
+  const [studioSignupBusy, setStudioSignupBusy] = useState(false);
+  const [studioSignupSuccess, setStudioSignupSuccess] = useState("");
+  const [studioSignup, setStudioSignup] = useState({ ownerName: "", studioName: "", phone: "", email: "", address: "", requestedSlug: "", requestedPlanCode: "STANDARD" });
   const submittingRef = useRef(false);
 
   useEffect(() => {
@@ -135,6 +139,26 @@ export default function LoginPage({ onLogin }: Props) {
     config?.platformEnabled && config.googleEnabled && config.googleClientId,
   );
   const loading = busyMethod !== null;
+
+  const handleStudioSignup = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (studioSignupBusy) return;
+    setStudioSignupBusy(true); setError(""); setStudioSignupSuccess("");
+    try {
+      let current = config;
+      if (!current?.loginCsrfToken) { current = await fetchAuthConfig(); setConfig(current); }
+      const send = (loginCsrfToken?: string) => fetch(`${API_BASE}/api/studio-signups`, {
+        method: "POST", credentials: "include", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...studioSignup, loginCsrfToken }),
+      });
+      let response = await send(current.loginCsrfToken);
+      if (response.status === 403) { current = await fetchAuthConfig(); setConfig(current); response = await send(current.loginCsrfToken); }
+      const payload = await response.json().catch(() => ({})) as { error?: string; message?: string };
+      if (!response.ok) throw new Error(payload.error || "Không gửi được đăng ký studio");
+      setStudioSignupSuccess(payload.message || "Đã gửi đăng ký studio.");
+    } catch (caught) { setError(caught instanceof Error ? caught.message : "Không gửi được đăng ký studio"); }
+    finally { setStudioSignupBusy(false); }
+  };
 
   return (
     <div className="relative min-h-[100dvh] overflow-y-auto bg-gradient-to-br from-rose-50 via-pink-50 to-purple-50 px-4 py-16 dark:from-slate-950 dark:via-slate-900 dark:to-purple-950 sm:py-10">
@@ -262,6 +286,35 @@ export default function LoginPage({ onLogin }: Props) {
             >
               <UserPlus className="h-4 w-4" /> Đăng ký thành viên mới
             </button>
+          )}
+
+          {!studioSignupOpen && !registerOpen && config?.platformEnabled && (
+            <button type="button" onClick={() => { setStudioSignupOpen(true); setError(""); }}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-purple-200 bg-purple-50/70 px-4 py-3 text-sm font-semibold text-purple-700 hover:bg-purple-100">
+              <Building2 className="h-4 w-4" /> Đăng ký studio mới
+            </button>
+          )}
+
+          {studioSignupOpen && (
+            <div className="mt-5 rounded-2xl border border-purple-200 bg-purple-50/50 p-4">
+              <h3 className="text-center font-semibold">Đăng ký Amazing Studio Manager</h3>
+              <p className="mb-4 mt-1 text-center text-xs text-muted-foreground">Gửi yêu cầu để Platform Owner liên hệ và kích hoạt.</p>
+              {studioSignupSuccess ? <div className="rounded-xl bg-emerald-50 p-4 text-center text-sm text-emerald-700"><CheckCircle2 className="mx-auto mb-2 h-6 w-6" />{studioSignupSuccess}</div> :
+              <form onSubmit={handleStudioSignup} className="space-y-3">
+                {([['ownerName','Tên chủ studio'],['studioName','Tên studio'],['phone','Số điện thoại'],['email','Email'],['address','Địa chỉ (không bắt buộc)'],['requestedSlug','Slug mong muốn, ví dụ abc-wedding']] as const).map(([key,label]) =>
+                  <input key={key} aria-label={label} placeholder={label} required={key !== 'address'} type={key === 'email' ? 'email' : 'text'}
+                    value={studioSignup[key]} onChange={event => setStudioSignup(value => ({ ...value, [key]: event.target.value }))}
+                    className="h-10 w-full rounded-xl border bg-white px-3 text-sm" />)}
+                <select aria-label="Gói mong muốn" value={studioSignup.requestedPlanCode}
+                  onChange={event => setStudioSignup(value => ({ ...value, requestedPlanCode: event.target.value }))}
+                  className="h-10 w-full rounded-xl border bg-white px-3 text-sm">
+                  <option value="STANDARD">STANDARD — 500.000đ/tháng</option><option value="PRO">PRO — 1.000.000đ/tháng</option>
+                </select>
+                <p className="text-xs text-muted-foreground">Phí khởi tạo: 900.000đ một lần. Giá được xác nhận khi liên hệ.</p>
+                <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setStudioSignupOpen(false)} className="h-10 rounded-xl border bg-white text-sm">Hủy</button>
+                  <button disabled={studioSignupBusy} className="h-10 rounded-xl bg-purple-600 text-sm font-semibold text-white">{studioSignupBusy ? "Đang gửi…" : "Gửi đăng ký"}</button></div>
+              </form>}
+            </div>
           )}
 
           {config?.registrationEnabled && registerOpen && (

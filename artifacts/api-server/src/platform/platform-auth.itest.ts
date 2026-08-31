@@ -96,6 +96,11 @@ async function createTenantIsolationTables(target: pg.Pool): Promise<void> {
     CREATE TABLE IF NOT EXISTS tenant_job_probe (
       id SERIAL PRIMARY KEY,
       observed_tenant_slug TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS tenant_metadata (
+      tenant_id UUID PRIMARY KEY,
+      schema_version TEXT NOT NULL,
+      provisioned_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
   `);
 }
@@ -223,12 +228,18 @@ async function addTenantForOwner(
 }
 
 async function addTenantB(owner: Awaited<ReturnType<typeof bootstrapOwner>>) {
-  return addTenantForOwner(owner, {
+  const tenant = await addTenantForOwner(owner, {
     slug: "studio-b",
     name: "Studio B",
     databaseUrl: tenantBUrl,
     secretEnv: "TENANT_B_DATABASE_URL",
   });
+  await tenantBPool.query("TRUNCATE TABLE tenant_metadata");
+  await tenantBPool.query(
+    `INSERT INTO tenant_metadata (tenant_id, schema_version) VALUES ($1, $2)`,
+    [tenant.tenantId, "platform-auth-itest"],
+  );
+  return tenant;
 }
 
 async function registerAmazingTenantMappingWithoutOwner(): Promise<void> {

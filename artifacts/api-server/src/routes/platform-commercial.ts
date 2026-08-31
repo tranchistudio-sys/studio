@@ -242,7 +242,8 @@ router.post("/platform-admin/api/studios/:tenantId/action", requirePlatformCsrf,
         if (activated.rows.length !== 1) throw new CommercialConflictError("Signup vừa được cập nhật bởi request khác");
       }
       await client.query(`INSERT INTO platform_audit_logs (id,actor_user_id,tenant_id,action,target_type,target_id,metadata)
-        VALUES ($1,$2,$3,$4,'tenant',$3::text,$5::jsonb)`, [randomUUID(), actor.userId, tenantId, `commercial.${action}`, JSON.stringify({ days: req.body?.days, planCode: req.body?.planCode })]);
+        VALUES ($1,$2,$3,$4,'tenant',$6,$5::jsonb)`, [randomUUID(), actor.userId, tenantId, `commercial.${action}`,
+        JSON.stringify({ days: req.body?.days, planCode: req.body?.planCode }), tenantId]);
       return { success: true };
     });
     res.json(result);

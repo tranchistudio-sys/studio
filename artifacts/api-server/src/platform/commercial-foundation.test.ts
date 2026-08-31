@@ -43,6 +43,7 @@ describe("commercial idempotency and isolation guards", () => {
   it("scopes studio detail, payments and subscription actions by tenant id", () => {
     expect(routes).toContain("WHERE t.id=$1 LIMIT 1");
     expect(routes).toContain("WHERE s.tenant_id=$1 AND s.source='DIRECT'");
+    expect(routes).toContain("$3::text");
   });
 });
 

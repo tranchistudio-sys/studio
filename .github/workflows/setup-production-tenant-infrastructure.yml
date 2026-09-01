@@ -24,13 +24,13 @@ jobs:
         image: postgres:18-alpine
         env:
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: tenant_schema_source
+          POSTGRES_DB: tenant_schema_source_staging
         ports: ["5432:5432"]
         options: >-
           --health-cmd "pg_isready -U postgres"
           --health-interval 5s --health-timeout 5s --health-retries 20
     env:
-      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_schema_source
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_schema_source_staging
       VPS_HOST: 160.250.128.162
       VPS_USER: deploy
       VPS_PORT: 22

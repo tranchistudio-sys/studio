@@ -6,6 +6,8 @@ const mocks = vi.hoisted(() => {
   const client = {
     query: vi.fn(async () => ({ rows: [] })),
     release: vi.fn(),
+    on: vi.fn(),
+    removeListener: vi.fn(),
   };
   return { client, connect: vi.fn(async () => client) };
 });
@@ -37,6 +39,8 @@ it("serializes local callers before they consume advisory-lock connections", asy
   releaseFirst();
   await Promise.all([first, second]);
   expect(mocks.connect).toHaveBeenCalledTimes(2);
+  expect(mocks.client.on).toHaveBeenCalledWith("error", expect.any(Function));
+  expect(mocks.client.removeListener).toHaveBeenCalledWith("error", expect.any(Function));
 });
 afterEach(() => {
   for (const k of ENV_KEYS) {

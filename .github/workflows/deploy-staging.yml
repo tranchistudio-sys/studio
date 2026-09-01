@@ -119,6 +119,7 @@ jobs:
           APP_ENV=staging STAGING_PROXY_APP="$FLY_DB_APP" DATABASE_URL="$schema_source_url" \
             pnpm --filter @workspace/db push-force
           APP_ENV=staging STAGING_PROXY_APP="$FLY_DB_APP" DATABASE_URL="$schema_source_url" \
+            TENANT_MIGRATIONS_DIR="$GITHUB_WORKSPACE/lib/db/migrations" \
             pnpm --filter @workspace/scripts exec tsx run-staging-tenant-migrations.mjs
           source_counts=$(psql "$schema_source_url" -Atqc "SELECT (SELECT count(*) FROM customers)+(SELECT count(*) FROM bookings)+(SELECT count(*) FROM payments)+(SELECT count(*) FROM expenses)+(SELECT count(*) FROM contracts)+(SELECT count(*) FROM staff)")
           test "$source_counts" = "0" || { echo "::error::Generated staging schema source contains business data"; exit 1; }

@@ -5,8 +5,19 @@ test "${FLY_DB_APP:-}" = "amazing-studio-staging-db"
 test -n "${FLY_API_TOKEN:-}" && test -n "${PGPASSWORD:-}" && test -n "${PILOT_EMAIL:-}"
 case "$FLY_DB_APP" in *production*|*prod*) exit 1;; esac
 
-flyctl proxy 15432:5432 --app "$FLY_DB_APP" >fly-proxy.log 2>&1 &
-proxy_pid=$!
+proxy_pid=""
+start_proxy() {
+  test -z "$proxy_pid" || kill "$proxy_pid" 2>/dev/null || true
+  test -z "$proxy_pid" || wait "$proxy_pid" 2>/dev/null || true
+  flyctl proxy 15432:5432 --app "$FLY_DB_APP" >fly-proxy.log 2>&1 &
+  proxy_pid=$!
+  for i in $(seq 1 30); do
+    pg_isready -h 127.0.0.1 -p 15432 -U postgres && return
+    sleep 2
+  done
+  exit 1
+}
+start_proxy
 restore_db="staging_pilot_restore_${GITHUB_RUN_ID:-local}_${GITHUB_RUN_ATTEMPT:-1}"
 backup_dir="${RUNNER_TEMP:-/tmp}"
 backup_file="$backup_dir/staging-pilot.dump"
@@ -21,13 +32,17 @@ SQL
   kill "$proxy_pid" 2>/dev/null || true
 }
 trap cleanup EXIT
-for i in $(seq 1 30); do
-  pg_isready -h 127.0.0.1 -p 15432 -U postgres && break
-  test "$i" != 30 || exit 1
-  sleep 2
-done
 root_url="postgresql://postgres@127.0.0.1:15432/postgres"
 platform_url="postgresql://postgres@127.0.0.1:15432/amazing_platform_staging"
+
+# Remove only disposable restore databases left by an interrupted staging drill.
+psql "$root_url" -v ON_ERROR_STOP=1 <<'SQL'
+SELECT pg_terminate_backend(a.pid)
+FROM pg_stat_activity a
+WHERE a.datname LIKE 'staging_pilot_restore_%' AND a.pid<>pg_backend_pid();
+SELECT format('DROP DATABASE %I', d.datname) FROM pg_database d
+WHERE d.datname LIKE 'staging_pilot_restore_%' \gexec
+SQL
 
 state=$(psql "$platform_url" -v ON_ERROR_STOP=1 -v email="$PILOT_EMAIL" -AtF '|' <<'SQL'
 SELECT t.id::text,t.status,signup.status,pay.status,pay.amount::text,(pay.paid_at IS NULL)::text,
@@ -97,15 +112,19 @@ duplicate_registry=$(psql "$platform_url" -v ON_ERROR_STOP=1 -Atqc "
   ) duplicates")
 test "$duplicate_registry" = "0"
 
+start_proxy
 docker run --rm --network host -e PGPASSWORD -v "$backup_dir:/backup" postgres:18 \
   pg_dump -h 127.0.0.1 -p 15432 -U postgres -d "$database_name" \
     --format=custom --no-owner --no-privileges -f /backup/staging-pilot.dump
+start_proxy
 psql "$root_url" -v ON_ERROR_STOP=1 -v restore_db="$restore_db" <<'SQL'
 SELECT format('CREATE DATABASE %I OWNER staging_provisioner TEMPLATE template0', :'restore_db') \gexec
 SQL
+start_proxy
 docker run --rm --network host -e PGPASSWORD -v "$backup_dir:/backup" postgres:18 \
   pg_restore -h 127.0.0.1 -p 15432 -U postgres -d "$restore_db" \
-    --no-owner --no-privileges --exit-on-error /backup/staging-pilot.dump
+    --jobs=4 --no-owner --no-privileges --exit-on-error /backup/staging-pilot.dump
+start_proxy
 restored=$(psql "postgresql://postgres@127.0.0.1:15432/${restore_db}" -v ON_ERROR_STOP=1 -v tenant_id="$tenant_id" -AtF '|' <<'SQL'
 SELECT
   ((SELECT count(*) FROM customers)+(SELECT count(*) FROM bookings)+

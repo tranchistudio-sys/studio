@@ -59,6 +59,7 @@ describe.runIf(enabled)("PostgresTenantDatabaseProvisioner on disposable Postgre
       signup.status signup_status,j.status job_status,j.step,j.failed_step,j.error_code,j.error_message,r.secret_ref,r.health_status
       FROM tenants t JOIN subscriptions s ON s.tenant_id=t.id JOIN studio_signup_requests signup ON signup.tenant_id=t.id
       JOIN provisioning_jobs j ON j.tenant_id=t.id LEFT JOIN tenant_database_registry r ON r.tenant_id=t.id WHERE t.id=$1`,[tenantId]);
+    if(state.rows[0]?.job_status!=="succeeded")throw new Error(`Provisioning state: ${JSON.stringify(state.rows[0])}`);
     expect(state.rows[0]).toMatchObject({tenant_status:"active",subscription_status:"active",signup_status:"ACTIVE",job_status:"succeeded",step:"COMPLETED",health_status:"healthy"});
     expect(state.rows[0].current_period_start).toBeTruthy();expect(state.rows[0].current_period_ends_at).toBeTruthy();createdSecretRef=state.rows[0].secret_ref;
     expect((await platform.query("SELECT tenant_role,status,tenant_staff_id FROM tenant_memberships WHERE tenant_id=$1",[tenantId])).rows[0]).toMatchObject({tenant_role:"OWNER",status:"active",tenant_staff_id:"1"});

@@ -258,3 +258,9 @@ jobs:
           done
           config=$(curl -fsS --max-time 15 "$STAGING_URL/api/auth/config")
           jq -e '.platformEnabled == true and .googleEnabled == true' >/dev/null <<<"$config"
+
+      - name: Verify configured first pilot end to end
+        env:
+          PGPASSWORD: ${{ secrets.STAGING_DB_ROOT_PASSWORD }}
+          PILOT_EMAIL: ${{ vars.STAGING_PILOT_EMAIL }}
+        run: bash scripts/verify-staging-pilot.sh

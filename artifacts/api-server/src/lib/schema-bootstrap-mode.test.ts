@@ -21,4 +21,3 @@ describe("isSchemaBootstrapOnly", () => {
     expect(isSchemaBootstrapOnly()).toBe(true);
   });
 });
-

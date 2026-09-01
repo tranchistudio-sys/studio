@@ -30,6 +30,7 @@ describe("Platform Admin authorization", () => {
 describe("commercial idempotency and isolation guards", () => {
   const migration = readFileSync(new URL("../../../../lib/platform-db/migrations/0005_commercial_saas_foundation.sql", import.meta.url), "utf8");
   const routes = readFileSync(new URL("../routes/platform-commercial.ts", import.meta.url), "utf8");
+  const provisioning = readFileSync(new URL("./tenant-provisioning-engine.ts", import.meta.url), "utf8");
   it("prevents duplicate current subscriptions, setup fees and open provisioning jobs", () => {
     expect(migration).toContain("subscriptions_one_current_per_tenant");
     expect(migration).toContain("platform_payments_setup_fee_tenant_unique");
@@ -46,6 +47,12 @@ describe("commercial idempotency and isolation guards", () => {
     expect(routes).toContain('action === "waive_setup_fee"');
     expect(routes).toContain('"transitioned_to_waived"');
     expect(routes).toContain("Setup fee đã PAID; không thể chuyển ngược sang WAIVED");
+  });
+  it("starts a one-month trial exactly once after commercial provisioning", () => {
+    expect(provisioning).toContain("SET status='trial'");
+    expect(provisioning).toContain("current_period_start=COALESCE(current_period_start,now())");
+    expect(provisioning).toContain("current_period_ends_at=COALESCE(current_period_ends_at");
+    expect(provisioning).toContain("interval '1 month'");
   });
   it("scopes studio detail, payments and subscription actions by tenant id", () => {
     expect(routes).toContain("WHERE t.id=$1 LIMIT 1");
@@ -124,6 +131,17 @@ describe("commercial entitlements", () => {
     const value = resolveEntitlements({ planCode: "PRO", status: "active", expiresAt: future,
       features: { core_management: true, website: true, ai_lulu: true, copilot: true }, now });
     expect(value.features).toMatchObject({ core_management: true, website: true, ai_lulu: true, copilot: true });
+  });
+  it("PRO trial exposes PRO features before expiry", () => {
+    const value = resolveEntitlements({ planCode: "PRO", status: "trial", expiresAt: future,
+      features: { core_management: true, website: true, ai_lulu: true, copilot: true }, now });
+    expect(value.active).toBe(true);
+    expect(value.features).toMatchObject({ core_management:true,website:true,ai_lulu:true,copilot:true });
+  });
+  it("expired trial is restricted without deleting tenant data", () => {
+    const value = resolveEntitlements({ planCode: "STANDARD", status: "trial", expiresAt: "2025-12-31T23:59:59Z",
+      features: { core_management:true }, now });
+    expect(value.active).toBe(false);expect(value.features.core_management).toBe(false);
   });
   it.each(["suspended", "cancelled"])("%s is inactive", status => {
     expect(resolveEntitlements({ planCode: "PRO", status, expiresAt: future,

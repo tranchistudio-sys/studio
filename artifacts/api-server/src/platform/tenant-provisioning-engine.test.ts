@@ -9,7 +9,7 @@ const userId="30000000-0000-4000-8000-000000000003";
 const reviewerId="40000000-0000-4000-8000-000000000004";
 const resources:TenantDatabaseResources={databaseRef:`tenant-${tenantId}`,hostRef:"test:5432",databaseName:"tenant_test",roleName:"tenant_test_role",secretRef:"platform-secret:50000000-0000-4000-8000-000000000005"};
 
-function fixture(){
+function fixture(planCode:"STANDARD"|"PRO"="STANDARD"){
   let claimed=false;const calls:string[]=[];
   const query=vi.fn(async(sql:string,_params?:unknown[])=>{
     calls.push(sql);
@@ -17,7 +17,7 @@ function fixture(){
     if(sql.includes("FROM studio_signup_requests WHERE tenant_id"))return {rows:[{id:"signup",owner_name:"Owner",email:"owner@example.com",phone:"0900000000",reviewed_by:reviewerId,status:"PROVISIONING"}]};
     if(sql.includes("FROM platform_users WHERE"))return {rows:[{id:userId}]};
     if(sql.includes("FROM auth_identities"))return {rows:[{one:1}]};
-    if(sql.includes("SELECT p.billing_period"))return {rows:[{billing_period:"month"}]};
+    if(sql.includes("plan_code FROM subscriptions"))return {rows:[{plan_code:planCode}]};
     return {rows:[],rowCount:1};
   });
   const client={query,release:vi.fn()};
@@ -40,6 +40,9 @@ describe("TenantProvisioningEngine",()=>{
       expect(f.provisioner[operation]).toHaveBeenCalledTimes(1);
     expect(f.calls.join("\n")).toContain("FOR UPDATE SKIP LOCKED");
     expect(f.calls.join("\n")).toContain("step='COMPLETED'");
+    expect(f.calls.join("\n")).toContain("SET status='trial'");
+    expect(f.calls.join("\n")).toContain("COALESCE(current_period_start,now())");
+    expect(f.calls.join("\n")).toContain("interval '1 month'");
   });
 
   it("fails closed with a sanitized error and never activates the tenant",async()=>{
@@ -47,7 +50,13 @@ describe("TenantProvisioningEngine",()=>{
     await new TenantProvisioningEngine(f.pool,f.provisioner).processNext();
     const failure=f.query.mock.calls.find(call=>String(call[0]).includes("status='failed'")&&String(call[0]).includes("claimed_by=$5"));
     expect(failure?.[1]?.[0]).toBe(jobId);expect(String(failure?.[1]?.[3])).not.toContain("secret@prod");
-    expect(f.calls.join("\n")).not.toContain("UPDATE subscriptions SET status='active'");
+    expect(f.calls.join("\n")).not.toContain("UPDATE subscriptions SET status='trial'");
     expect(f.provisioner.cleanupIncompleteProvisioning).toHaveBeenCalledWith(resources);
+  });
+
+  it("starts the same one-month trial for a newly provisioned PRO studio",async()=>{
+    const f=fixture("PRO");await new TenantProvisioningEngine(f.pool,f.provisioner).processNext();
+    expect(f.calls.join("\n")).toContain("SET status='trial'");
+    expect(f.calls.join("\n")).toContain("interval '1 month'");
   });
 });

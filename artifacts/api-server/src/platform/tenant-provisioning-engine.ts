@@ -100,17 +100,22 @@ export class TenantProvisioningEngine{
       VALUES($1,$2,$3,$4,$5,$6,'unknown')`,[tenantId,r.databaseRef,r.hostRef,r.databaseName,r.roleName,r.secretRef]);
   }
   private async complete(job:Job):Promise<void>{const client=await this.platform.connect();try{await client.query("BEGIN");
-    const billing=await client.query<{billing_period:string}>(`SELECT p.billing_period FROM subscriptions s JOIN plans p ON p.id=s.plan_id
+    const billing=await client.query<{plan_code:string}>(`SELECT upper(COALESCE(p.code,p.id)) plan_code FROM subscriptions s JOIN plans p ON p.id=s.plan_id
       JOIN platform_payments pay ON pay.subscription_id=s.id AND pay.payment_type='SETUP_FEE' AND pay.status IN('PAID','WAIVED')
       WHERE s.tenant_id=$1 AND s.status='suspended' FOR UPDATE OF s`,[job.tenant_id]);
-    const period=billing.rows[0]?.billing_period;if(period!=="month"&&period!=="year")throw new Error("Billing period không hỗ trợ activation");
-    const subscription=await client.query(`UPDATE subscriptions SET status='active',current_period_start=now(),current_period_ends_at=now()+CASE WHEN $2='month' THEN interval '1 month' ELSE interval '1 year' END,updated_at=now() WHERE tenant_id=$1 AND status='suspended' RETURNING id`,[job.tenant_id,period]);
+    const planCode=billing.rows[0]?.plan_code;if(planCode!=="STANDARD"&&planCode!=="PRO")throw new Error("Commercial plan không hỗ trợ trial");
+    const subscription=await client.query(`UPDATE subscriptions SET status='trial',
+      current_period_start=COALESCE(current_period_start,now()),
+      current_period_ends_at=COALESCE(current_period_ends_at,COALESCE(current_period_start,now())+interval '1 month'),
+      updated_at=now() WHERE tenant_id=$1 AND status='suspended' RETURNING id`,[job.tenant_id]);
     const tenant=await client.query("UPDATE tenants SET status='active',bootstrap_completed_at=now(),updated_at=now() WHERE id=$1 AND status='provisioning' RETURNING id",[job.tenant_id]);
     const signup=await client.query("UPDATE studio_signup_requests SET status='ACTIVE',updated_at=now() WHERE tenant_id=$1 AND status='PROVISIONING' RETURNING id",[job.tenant_id]);
     const registry=await client.query("UPDATE tenant_database_registry SET health_status='healthy',last_health_check_at=now(),updated_at=now() WHERE tenant_id=$1 RETURNING tenant_id",[job.tenant_id]);
     const completed=await client.query("UPDATE provisioning_jobs SET status='succeeded',step='COMPLETED',finished_at=now(),updated_at=now() WHERE id=$1 AND status='running' AND claimed_by=$2 RETURNING id",[job.id,this.workerId]);
     if([subscription,tenant,signup,registry,completed].some(result=>result.rowCount!==1))throw new Error("Provisioning completion state conflict");
-    await client.query(`INSERT INTO platform_audit_logs(id,tenant_id,action,target_type,target_id) VALUES($1,$2,'provisioning.completed','provisioning_job',$3)`,[randomUUID(),job.tenant_id,job.id]);await client.query("COMMIT");
+    await client.query(`INSERT INTO platform_audit_logs(id,tenant_id,action,target_type,target_id,metadata)
+      VALUES($1,$2,'provisioning.completed','provisioning_job',$3,$4::jsonb)`,
+      [randomUUID(),job.tenant_id,job.id,JSON.stringify({subscriptionStatus:"trial",trialDuration:"1 month",planCode})]);await client.query("COMMIT");
   }catch(error){await client.query("ROLLBACK").catch(()=>undefined);throw error;}finally{client.release();}}
   private async fail(job:Job,step:Step,error:unknown):Promise<void>{const safe=sanitized(error);const failed=await this.platform.query(`UPDATE provisioning_jobs SET status='failed',step='FAILED',failed_step=$2,error_code=$3,error_message=$4,finished_at=now(),updated_at=now() WHERE id=$1 AND status='running' AND claimed_by=$5 RETURNING id`,[job.id,step,safe.code,safe.message,this.workerId]);if(failed.rowCount!==1)return;await this.platform.query("UPDATE tenants SET status='provisioning_failed',updated_at=now() WHERE id=$1 AND status='provisioning'",[job.tenant_id]);await this.platform.query(`INSERT INTO platform_audit_logs(id,tenant_id,action,target_type,target_id,metadata) VALUES($1,$2,'provisioning.failed','provisioning_job',$3,$4::jsonb)`,[randomUUID(),job.tenant_id,job.id,JSON.stringify({failedStep:step,errorCode:safe.code})]);}
 }

@@ -59,14 +59,21 @@ describe.runIf(enabled)("PostgresTenantDatabaseProvisioner on disposable Postgre
     await platform.query("INSERT INTO provisioning_jobs(id,tenant_id,status,step) VALUES($1,$2,'pending','QUEUED')",[jobId,tenantId]);
     const store=new EncryptedPlatformTenantSecretStore(platform);
     const provisioner=new PostgresTenantDatabaseProvisioner(store,runTenantMigrationOrchestrator,provisionerUrl());
-    expect(await new TenantProvisioningEngine(platform,provisioner,"itest-worker").processNext()).toBe(true);
+    const engine=new TenantProvisioningEngine(platform,provisioner,"itest-worker");
+    expect(await engine.processNext()).toBe(true);
     const state=await platform.query(`SELECT t.status tenant_status,s.status subscription_status,s.current_period_start,s.current_period_ends_at,
       signup.status signup_status,j.status job_status,j.step,j.failed_step,j.error_code,j.error_message,r.secret_ref,r.health_status
       FROM tenants t JOIN subscriptions s ON s.tenant_id=t.id JOIN studio_signup_requests signup ON signup.tenant_id=t.id
       JOIN provisioning_jobs j ON j.tenant_id=t.id LEFT JOIN tenant_database_registry r ON r.tenant_id=t.id WHERE t.id=$1`,[tenantId]);
     if(state.rows[0]?.job_status!=="succeeded")throw new Error(`Provisioning state: ${JSON.stringify(state.rows[0])}`);
-    expect(state.rows[0]).toMatchObject({tenant_status:"active",subscription_status:"active",signup_status:"ACTIVE",job_status:"succeeded",step:"COMPLETED",health_status:"healthy"});
+    expect(state.rows[0]).toMatchObject({tenant_status:"active",subscription_status:"trial",signup_status:"ACTIVE",job_status:"succeeded",step:"COMPLETED",health_status:"healthy"});
     expect(state.rows[0].current_period_start).toBeTruthy();expect(state.rows[0].current_period_ends_at).toBeTruthy();createdSecretRef=state.rows[0].secret_ref;
+    const trialMs=new Date(state.rows[0].current_period_ends_at).getTime()-new Date(state.rows[0].current_period_start).getTime();
+    expect(trialMs).toBeGreaterThanOrEqual(28*24*60*60*1000);expect(trialMs).toBeLessThanOrEqual(31*24*60*60*1000);
+    expect(await engine.processNext()).toBe(false);
+    const unchanged=await platform.query("SELECT current_period_start,current_period_ends_at FROM subscriptions WHERE tenant_id=$1",[tenantId]);
+    expect(unchanged.rows[0].current_period_start).toEqual(state.rows[0].current_period_start);
+    expect(unchanged.rows[0].current_period_ends_at).toEqual(state.rows[0].current_period_ends_at);
     expect((await platform.query("SELECT tenant_role,status,tenant_staff_id FROM tenant_memberships WHERE tenant_id=$1",[tenantId])).rows[0]).toMatchObject({tenant_role:"OWNER",status:"active",tenant_staff_id:"1"});
     expect((await platform.query("SELECT status FROM tenant_invitations WHERE tenant_id=$1",[tenantId])).rows[0].status).toBe("pending");
     const tenant=new Pool({connectionString:await store.getTenantDatabaseSecret(createdSecretRef!),max:1});try{

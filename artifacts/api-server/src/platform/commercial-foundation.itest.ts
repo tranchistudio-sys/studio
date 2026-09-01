@@ -20,6 +20,7 @@ vi.mock("../middlewares/platform-auth", async importOriginal => {
 
 let server: http.Server;
 let baseUrl = "";
+let signupSequence = 0;
 const pool = getPlatformPool();
 const migrationUrls = [1,2,3,4,5,6].map(number => new URL(
   `../../../../lib/platform-db/migrations/000${number}_${[
@@ -36,12 +37,15 @@ async function api(path: string, body?: unknown) {
   });
 }
 
-async function createSignup(status = "PENDING") {
+async function createSignup(status = "PENDING", identity?: { email?:string; phone?:string; plan?:"STANDARD"|"PRO" }) {
   const id = randomUUID();
+  const sequence = ++signupSequence;
+  const email = identity?.email ?? `owner-${sequence}@example.com`;
+  const phone = identity?.phone ?? `09${String(sequence).padStart(8,"0")}`;
   await pool.query(`INSERT INTO studio_signup_requests
     (id,owner_name,studio_name,phone,email,requested_slug,requested_plan_code,status)
-    VALUES ($1,'Owner','Studio','0900000000','owner@example.com',$2,'STANDARD',$3)`,
-    [id, `studio-${id.slice(0, 8)}`, status]);
+    VALUES ($1,'Owner','Studio',$2,$3,$4,$5,$6)`,
+    [id,phone,email,`studio-${id.slice(0, 8)}`,identity?.plan??"STANDARD",status]);
   return id;
 }
 
@@ -88,6 +92,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  signupSequence = 0;
   await pool.query(`TRUNCATE TABLE platform_payments,tenant_branding,tenant_domains,studio_signup_requests,
     provisioning_jobs,tenant_database_secrets,subscriptions,tenant_database_registry,sessions,tenant_memberships,tenants,
     auth_identities,platform_users CASCADE`);
@@ -181,6 +186,17 @@ describe("commercial payment and activation invariants", () => {
     expect((await action(tenantId!, "activate")).status).toBe(200);
   });
 
+  it("blocks a repeated canonical owner trial until Platform Owner grants an audited override", async () => {
+    const identity={email:"repeat-owner@example.com",phone:"0909999999"};
+    const first=await approve(await createSignup("PENDING",identity));await makeCommercialActive(first.tenantId!);
+    const secondId=await createSignup("PENDING",identity);
+    expect((await approve(secondId)).response.status).toBe(409);
+    expect((await api(`/platform-admin/api/signups/${secondId}/trial_override`,{})).status).toBe(200);
+    const approved=await approve(secondId);expect(approved.response.status).toBe(200);expect(approved.tenantId).toBeTruthy();
+    const audit=await pool.query("SELECT metadata FROM platform_audit_logs WHERE action='signup.trial_override' AND target_id=$1",[secondId]);
+    expect(audit.rows[0].metadata).toMatchObject({manual:true,reason:"platform_owner_override"});
+  });
+
   it("does not downgrade a PAID setup fee to WAIVED", async () => {
     const id = await createSignup(); const { tenantId } = await approve(id);
     expect((await action(tenantId!, "mark_setup_paid")).status).toBe(200);
@@ -236,6 +252,17 @@ describe("commercial subscription isolation and state machine", () => {
     expect((await action(approved.tenantId!, "suspend")).status).toBe(200);
     expect((await action(approved.tenantId!, "reactivate")).status).toBe(200);
     expect((await pool.query("SELECT status FROM tenants WHERE id=$1", [approved.tenantId])).rows[0].status).toBe("active");
+  });
+
+  it("suspends and reactivates a trial without resetting its trial clock", async () => {
+    const approved=await approve(await createSignup());await makeCommercialActive(approved.tenantId!);
+    await pool.query("UPDATE subscriptions SET status='trial' WHERE tenant_id=$1",[approved.tenantId]);
+    const before=(await pool.query("SELECT current_period_start,current_period_ends_at FROM subscriptions WHERE tenant_id=$1",[approved.tenantId])).rows[0];
+    expect((await action(approved.tenantId!,"suspend")).status).toBe(200);
+    expect((await action(approved.tenantId!,"reactivate")).status).toBe(200);
+    const after=(await pool.query("SELECT status,current_period_start,current_period_ends_at FROM subscriptions WHERE tenant_id=$1",[approved.tenantId])).rows[0];
+    expect(after.status).toBe("trial");expect(after.current_period_start).toEqual(before.current_period_start);
+    expect(after.current_period_ends_at).toEqual(before.current_period_ends_at);
   });
 
   it("rejects reactivation after the subscription period expires", async () => {

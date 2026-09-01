@@ -16,7 +16,7 @@ Production is not a source, target, fallback, or rollback destination. The templ
 
 ## One-time prerequisites
 
-The GitHub environment `staging` must exist. The workflow fails when any required `STAGING_*` secret is absent. No external tenant schema URL is required: the workflow creates `tenant_schema_source_staging` on the dedicated staging cluster, applies the repository Drizzle schema only after an exact environment/host/database identity guard, adds reviewed schema-only prerequisites, runs the repository development runtime schema bootstrap against that exact disposable database, applies ordered tenant migrations, verifies all business tables are empty, and recreates the tenant template from a schema-only dump. Schema push is forbidden everywhere except this disposable staging source database.
+The GitHub environment `staging` must exist. The workflow fails when any required `STAGING_*` secret is absent. No external tenant schema URL is required: the workflow recreates `tenant_schema_source_staging` on the dedicated staging cluster, exports SQL directly from the repository Drizzle schema only after an exact environment/host/database identity guard, adds reviewed schema-only prerequisites, runs the repository development runtime schema bootstrap against that exact disposable database, applies ordered tenant migrations, verifies all business tables are empty, and recreates the tenant template from a schema-only dump. Database push is not used.
 
 In Google Cloud, add exactly this JavaScript origin to the existing web OAuth client:
 

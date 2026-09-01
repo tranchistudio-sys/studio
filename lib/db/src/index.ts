@@ -22,6 +22,14 @@ const legacyPool = new Pool({
   max: 10,
   application_name: "amazing-studio-legacy",
 });
+// node-postgres emits idle-client failures on the Pool itself. Without an
+// error listener, a transient proxy/network disconnect becomes an uncaught
+// EventEmitter error and terminates the whole process. Active query failures
+// still reject their caller normally; this only keeps idle connection churn
+// from crashing startup or the running API.
+legacyPool.on("error", (error) => {
+  console.error("[db] Unexpected idle client error; pool will replace the connection", error);
+});
 const legacyDb = drizzle(legacyPool, { schema });
 
 function platformModeEnabled(): boolean {

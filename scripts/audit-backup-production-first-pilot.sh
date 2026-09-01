@@ -74,6 +74,23 @@ sudo -n sha256sum "$target/runtime-config.tar.gz" | sudo -n tee "$target/runtime
 db_query(){ sudo -n docker run --rm --network "$network" -e TARGET_URL="$1" -e TARGET_QUERY="$2" "$pg_image" sh -c 'psql "$TARGET_URL" -v ON_ERROR_STOP=1 -Atqc "$TARGET_QUERY"'; }
 counts=$(db_query "$business_url" 'SELECT (SELECT count(*) FROM customers),(SELECT count(*) FROM bookings),(SELECT count(*) FROM payments),(SELECT count(*) FROM staff)')
 migrations=$(db_query "$platform_url" "SELECT coalesce(string_agg(filename,',' ORDER BY filename),'') FROM platform_schema_migrations")
+migration_inventory=$(db_query "$platform_url" "SELECT filename||'|'||coalesce(left(checksum_sha256,12),'NULL')||'|'||to_char(applied_at AT TIME ZONE 'UTC','YYYY-MM-DDTHH24:MI:SSZ') FROM platform_schema_migrations ORDER BY applied_at,filename")
+invitation_columns=$(db_query "$platform_url" "SELECT table_name||'.'||column_name||':'||data_type||':'||is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('tenant_invitations','tenant_memberships') ORDER BY table_name,ordinal_position")
+invitation_indexes=$(db_query "$platform_url" "SELECT indexname||':'||indexdef FROM pg_indexes WHERE schemaname='public' AND tablename IN ('tenant_invitations','tenant_memberships') ORDER BY indexname")
+invitation_constraints=$(db_query "$platform_url" "SELECT c.conname||':'||pg_get_constraintdef(c.oid) FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace WHERE n.nspname='public' AND t.relname IN ('tenant_invitations','tenant_memberships') ORDER BY c.conname")
+
+historical_name=0005_tenant_invitation_permissions.sql
+historical_checksum=$(db_query "$platform_url" "SELECT coalesce(checksum_sha256,'') FROM platform_schema_migrations WHERE filename='$historical_name'")
+recovered_path=""
+while IFS= read -r candidate; do
+  candidate_checksum=$(sudo -n sha256sum "$candidate" | awk '{print $1}')
+  if test -n "$historical_checksum" && test "$candidate_checksum" = "$historical_checksum"; then recovered_path="$candidate"; break; fi
+done < <(sudo -n find /opt/amazing-studio/releases /opt/amazing-studio/app -type f -path "*/lib/platform-db/migrations/$historical_name" 2>/dev/null)
+if test -n "$recovered_path"; then
+  sudo -n install -m 600 -o "$(id -un)" -g "$(id -gn)" "$recovered_path" "/tmp/$historical_name"
+  historical_recovered=YES
+else historical_recovered=NO
+fi
 
 env_exists(){ test -n "$(read_env "$1")" && echo EXISTS || echo MISSING; }
 health=$(curl -fsS --max-time 20 https://tranchistudio.com/api/healthz)
@@ -89,6 +106,12 @@ echo "BUSINESS_DB_NAME=$business_db"
 echo "PLATFORM_DB_HOST=$platform_host"
 echo "PLATFORM_DB_NAME=$platform_db"
 echo "PLATFORM_MIGRATIONS=$migrations"
+while IFS= read -r row; do echo "MIGRATION_INVENTORY=$row"; done <<<"$migration_inventory"
+while IFS= read -r row; do echo "INVITATION_COLUMN=$row"; done <<<"$invitation_columns"
+while IFS= read -r row; do echo "INVITATION_INDEX=$row"; done <<<"$invitation_indexes"
+while IFS= read -r row; do echo "INVITATION_CONSTRAINT=$row"; done <<<"$invitation_constraints"
+echo "HISTORICAL_0005_CHECKSUM_PREFIX=${historical_checksum:0:12}"
+echo "HISTORICAL_0005_RECOVERED=$historical_recovered"
 echo "TENANT_SECRET_MASTER_KEY=$(env_exists TENANT_SECRET_MASTER_KEY)"
 echo "TENANT_PROVISIONING_ADMIN_URL=$(env_exists TENANT_PROVISIONING_ADMIN_URL)"
 echo "TENANT_PROVISIONING_TEMPLATE_DATABASE=$(env_exists TENANT_PROVISIONING_TEMPLATE_DATABASE)"

@@ -194,6 +194,7 @@ router.post("/platform-admin/api/studios/:tenantId/action", requirePlatformCsrf,
       if (!tenant.rows[0]) throw new Error("Không tìm thấy studio");
       const signup = await getCommercialSignupForUpdate(client, tenantId);
       const subscription = await getCurrentCommercialSubscriptionForUpdate(client, tenantId);
+      let auditMetadata: Record<string, unknown> = { days: req.body?.days, planCode: req.body?.planCode };
       if (action === "suspend" || action === "reactivate") {
         requireState(signup.status, ["ACTIVE"], action === "suspend" ? "tạm khóa" : "mở lại");
         await requireProvisionedRegistry(client, tenantId);
@@ -234,15 +235,24 @@ router.post("/platform-admin/api/studios/:tenantId/action", requirePlatformCsrf,
         if (subscription.setup_fee_amount === null || !/^\d+$/.test(String(subscription.setup_fee_amount))) {
           throw new CommercialConflictError("Plan chưa cấu hình setup fee hợp lệ");
         }
-        await client.query(`INSERT INTO platform_payments
+        const beforePayment = await client.query<{ status:string }>(`SELECT status FROM platform_payments
+          WHERE tenant_id=$1 AND payment_type='SETUP_FEE' AND status<>'VOID' FOR UPDATE`, [tenantId]);
+        const payment = await client.query<{ status:"PAID"|"WAIVED" }>(`INSERT INTO platform_payments
           (id,tenant_id,signup_request_id,subscription_id,payment_type,amount,status,paid_at,created_by)
           VALUES ($1,$2,$3,$4,'SETUP_FEE',$5,'PAID',now(),$6)
           ON CONFLICT (tenant_id, payment_type) WHERE tenant_id IS NOT NULL AND payment_type='SETUP_FEE' AND status<>'VOID'
           DO UPDATE SET
             status=CASE WHEN platform_payments.status='WAIVED' THEN 'WAIVED' ELSE 'PAID' END,
             paid_at=CASE WHEN platform_payments.status='WAIVED' THEN platform_payments.paid_at ELSE COALESCE(platform_payments.paid_at,now()) END,
-            updated_at=now()`,
+            updated_at=now()
+          RETURNING status`,
           [randomUUID(),tenantId,signup.id,subscription.id,subscription.setup_fee_amount,actor.userId]);
+        const paymentStatus = payment.rows[0]!.status;
+        auditMetadata = {
+          paymentStatus,
+          paymentResult: paymentStatus === "WAIVED" ? "preserved_waived" :
+            beforePayment.rows[0]?.status === "PAID" ? "preserved_paid" : "transitioned_to_paid",
+        };
       } else if (action === "activate") {
         if (signup.status === "PROVISIONING") {
           const open = await client.query("SELECT id FROM provisioning_jobs WHERE tenant_id=$1 AND status IN ('pending','running','cleanup_required')", [tenantId]);
@@ -268,7 +278,7 @@ router.post("/platform-admin/api/studios/:tenantId/action", requirePlatformCsrf,
       }
       await client.query(`INSERT INTO platform_audit_logs (id,actor_user_id,tenant_id,action,target_type,target_id,metadata)
         VALUES ($1,$2,$3,$4,'tenant',$6,$5::jsonb)`, [randomUUID(), actor.userId, tenantId, `commercial.${action}`,
-        JSON.stringify({ days: req.body?.days, planCode: req.body?.planCode }), tenantId]);
+        JSON.stringify(auditMetadata), tenantId]);
       return { success: true };
     });
     res.json(result);

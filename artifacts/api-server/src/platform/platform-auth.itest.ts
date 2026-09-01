@@ -429,6 +429,42 @@ afterAll(async () => {
 });
 
 describe.sequential("platform auth PostgreSQL integration", () => {
+  it("commercial Platform Admin routes return 401 anonymously and allow PLATFORM_OWNER", async () => {
+    expect((await fetch(`${baseUrl}/api/platform-admin/api/dashboard`)).status).toBe(401);
+    expect((await fetch(`${baseUrl}/api/platform-admin/api/signups/not-a-uuid/approve`, { method:"POST" })).status).toBe(401);
+    const owner = await bootstrapOwner();
+    const cookie = `${session.PLATFORM_SESSION_COOKIE}=${owner.res.state.sessionCookie!}`;
+    expect((await fetch(`${baseUrl}/api/platform-admin/api/dashboard`, {
+      headers: authenticatedHeaders(cookie),
+    })).status).toBe(200);
+  });
+
+  it.each(["STAFF", "ADMIN", "OWNER"] as const)(
+    "commercial Platform Admin routes reject tenant %s with 403",
+    async tenantRole => {
+      const owner = await bootstrapOwner();
+      await platformDb.getPlatformPool().query("UPDATE platform_users SET platform_role=NULL WHERE id=$1", [owner.payload.platformUser.id]);
+      await platformDb.getPlatformPool().query("UPDATE tenant_memberships SET tenant_role=$2 WHERE id=$1", [
+        owner.payload.activeTenant!.membershipId, tenantRole,
+      ]);
+      const cookie = `${session.PLATFORM_SESSION_COOKIE}=${owner.res.state.sessionCookie!}`;
+      expect((await fetch(`${baseUrl}/api/platform-admin/api/dashboard`, {
+        headers: authenticatedHeaders(cookie),
+      })).status).toBe(403);
+    },
+  );
+
+  it("commercial mutations enforce CSRF and valid owner CSRF reaches route validation", async () => {
+    const owner = await bootstrapOwner();
+    const cookie = `${session.PLATFORM_SESSION_COOKIE}=${owner.res.state.sessionCookie!}`;
+    const url = `${baseUrl}/api/platform-admin/api/signups/not-a-uuid/approve`;
+    expect((await fetch(url, { method:"POST", headers: authenticatedHeaders(cookie) })).status).toBe(403);
+    expect((await fetch(url, { method:"POST", headers: {
+      ...authenticatedHeaders(cookie), "x-csrf-token":"invalid-csrf", origin:baseUrl,
+    } })).status).toBe(403);
+    expect((await fetch(url, { method:"POST", headers: authenticatedHeaders(cookie, owner.payload.csrfToken) })).status).toBe(400);
+  });
+
   it("bootstrap OWNER Amazing Studio đúng một lần, không copy tenant data", async () => {
     const { payload, res } = await bootstrapOwner();
 

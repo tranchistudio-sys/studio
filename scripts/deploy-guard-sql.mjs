@@ -8,6 +8,10 @@ export function stripSqlCommentsAndStrings(sql) {
   while (index < sql.length) {
     const current = sql[index]; const next = sql[index + 1];
     if (state === "normal") {
+      if ((current === "E" || current === "e") && next === "'" &&
+          (index === 0 || !/[A-Za-z0-9_$]/.test(sql[index - 1]))) {
+        state = "escape-string"; output += "  "; index += 2; continue;
+      }
       if (current === "'" || current === '"') {
         state = current === "'" ? "single" : "double"; output += " "; index += 1; continue;
       }
@@ -40,6 +44,17 @@ export function stripSqlCommentsAndStrings(sql) {
       if (sql.startsWith(dollarDelimiter, index)) {
         output += " ".repeat(dollarDelimiter.length); index += dollarDelimiter.length; state = "normal";
       } else { output += blank(current); index += 1; }
+      continue;
+    }
+    if (state === "escape-string") {
+      if (current === "\\") {
+        output += " "; index += 1;
+        if (index < sql.length) { output += blank(sql[index]); index += 1; }
+        continue;
+      }
+      if (current === "'" && next === "'") { output += "  "; index += 2; continue; }
+      output += blank(current); index += 1;
+      if (current === "'") state = "normal";
       continue;
     }
     const quote = state === "single" ? "'" : '"';

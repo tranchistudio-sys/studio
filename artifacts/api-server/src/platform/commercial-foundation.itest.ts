@@ -143,6 +143,10 @@ describe("commercial payment and activation invariants", () => {
     expect(responses.map(r => r.status)).toEqual([200,200]);
     const payments = await pool.query("SELECT amount,status FROM platform_payments WHERE tenant_id=$1", [tenantId]);
     expect(payments.rows).toEqual([{ amount:"900000", status:"PAID" }]);
+    const audit = await pool.query(`SELECT metadata FROM platform_audit_logs WHERE tenant_id=$1
+      AND action='commercial.mark_setup_paid' AND metadata->>'paymentResult'='transitioned_to_paid'`, [tenantId]);
+    expect(audit.rows).toHaveLength(1);
+    expect(audit.rows[0].metadata).toMatchObject({ paymentStatus:"PAID", paymentResult:"transitioned_to_paid" });
   });
 
   it("requires paid/waived setup and makes double activation one open job", async () => {
@@ -160,6 +164,8 @@ describe("commercial payment and activation invariants", () => {
     expect((await action(tenantId!, "mark_setup_paid")).status).toBe(200);
     expect((await pool.query("SELECT status,paid_at FROM platform_payments WHERE tenant_id=$1", [tenantId])).rows[0])
       .toMatchObject({ status:"WAIVED", paid_at:null });
+    const audit = await pool.query("SELECT metadata FROM platform_audit_logs WHERE tenant_id=$1 AND action='commercial.mark_setup_paid'", [tenantId]);
+    expect(audit.rows[0].metadata).toMatchObject({ paymentStatus:"WAIVED", paymentResult:"preserved_waived" });
     expect((await action(tenantId!, "activate")).status).toBe(200);
   });
 

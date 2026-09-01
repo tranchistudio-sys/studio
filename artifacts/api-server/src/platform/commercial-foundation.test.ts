@@ -65,6 +65,25 @@ describe("deploy guard destructive SQL detection", () => {
   ])("cannot mask destructive SQL with quoted/comment text: %s", sql => {
     expect(containsDestructiveSql(sql)).toBe(true);
   });
+  it.each([
+    String.raw`SELECT E'foo\' -- inside'; DROP TABLE customers;`,
+    String.raw`SELECT e'foo\' /* inside */'; DELETE FROM customers;`,
+    String.raw`SELECT E'abc\\def'; TRUNCATE customers;`,
+    String.raw`SELECT E'abc\'def'; DELETE FROM customers;`,
+    String.raw`SELECT E'abc\\\' -- inside'; ALTER TABLE customers DROP COLUMN name;`,
+  ])("blocks destructive SQL after PostgreSQL escape-string: %s", sql => {
+    expect(containsDestructiveSql(sql)).toBe(true);
+  });
+  it.each([
+    "SELECT E'DELETE FROM customers'",
+    "SELECT E'-- DROP TABLE customers'",
+    "SELECT E'/* TRUNCATE customers */'",
+    String.raw`SELECT E'abc\\def'`,
+    String.raw`SELECT E'abc\'def'`,
+    "SELECT e'ordinary text'",
+  ])("ignores content inside PostgreSQL escape-string: %s", sql => {
+    expect(containsDestructiveSql(sql)).toBe(false);
+  });
 });
 
 describe("locked legacy migration checksum", () => {

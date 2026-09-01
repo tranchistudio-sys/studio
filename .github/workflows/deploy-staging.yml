@@ -190,7 +190,7 @@ jobs:
           psql "$legacy_url" -v ON_ERROR_STOP=1 -c 'REASSIGN OWNED BY staging_provisioner TO staging_legacy'
           # REASSIGN OWNED also changes shared objects owned by the source role,
           # including the template database. Restore it before runtime provisioning.
-          psql "$root_url" -v ON_ERROR_STOP=1 -c 'ALTER DATABASE tenant_template_staging OWNER TO staging_provisioner'
+          psql "$root_url" -v ON_ERROR_STOP=1 -c 'ALTER DATABASE tenant_template_staging OWNER TO staging_provisioner; ALTER DATABASE tenant_template_staging ALLOW_CONNECTIONS false'
           psql "$legacy_url" -v ON_ERROR_STOP=1 -c 'GRANT USAGE ON SCHEMA public TO staging_legacy; GRANT ALL ON ALL TABLES IN SCHEMA public TO staging_legacy; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO staging_legacy; GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO staging_legacy'
           owner_id=$(psql "$legacy_url" -v ON_ERROR_STOP=1 -v email="$BOOTSTRAP_OWNER_EMAIL" -qAt <<'SQL'
           INSERT INTO staff(name,phone,email,role,roles,is_active)

@@ -26,6 +26,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Require staging-only secrets (no fallback)
+        if: vars.STAGING_VERIFY_ONLY != '1'
         env:
           FLY_TOKEN: ${{ secrets.FLY_API_TOKEN }}
           ROOT_PASSWORD: ${{ secrets.STAGING_DB_ROOT_PASSWORD }}
@@ -41,15 +42,18 @@ jobs:
           done
 
       - uses: pnpm/action-setup@v4
+        if: vars.STAGING_VERIFY_ONLY != '1'
         with:
           version: 10.34.5
       - uses: actions/setup-node@v4
+        if: vars.STAGING_VERIFY_ONLY != '1'
         with:
           node-version: 24
           cache: pnpm
       - uses: superfly/flyctl-actions/setup-flyctl@master
 
       - name: Install and verify before staging mutation
+        if: vars.STAGING_VERIFY_ONLY != '1'
         run: |
           pnpm install --frozen-lockfile
           node --test scripts/staging-schema-source-guard.test.mjs
@@ -58,6 +62,7 @@ jobs:
           pnpm run build:deploy
 
       - name: Create dedicated staging PostgreSQL cluster if absent
+        if: vars.STAGING_VERIFY_ONLY != '1'
         env:
           ROOT_PASSWORD: ${{ secrets.STAGING_DB_ROOT_PASSWORD }}
         run: |
@@ -71,6 +76,7 @@ jobs:
           fi
 
       - name: Bootstrap isolated platform, template, and legacy fixture databases
+        if: vars.STAGING_VERIFY_ONLY != '1'
         env:
           PGPASSWORD: ${{ secrets.STAGING_DB_ROOT_PASSWORD }}
           PROVISIONING_PASSWORD: ${{ secrets.STAGING_PROVISIONING_PASSWORD }}
@@ -238,6 +244,7 @@ jobs:
         id: databases
 
       - name: Apply platform migrations 0001 through 0006 twice
+        if: vars.STAGING_VERIFY_ONLY != '1'
         env:
           PGPASSWORD: ${{ secrets.STAGING_DB_ROOT_PASSWORD }}
           PLATFORM_PASSWORD: ${{ secrets.STAGING_PLATFORM_DB_PASSWORD }}
@@ -250,6 +257,7 @@ jobs:
           pnpm --filter @workspace/platform-db migrate
 
       - name: Create app and set staging-only runtime secrets
+        if: vars.STAGING_VERIFY_ONLY != '1'
         env:
           PROVISIONING_PASSWORD: ${{ secrets.STAGING_PROVISIONING_PASSWORD }}
           PLATFORM_PASSWORD: ${{ secrets.STAGING_PLATFORM_DB_PASSWORD }}
@@ -273,6 +281,7 @@ jobs:
             BOOTSTRAP_TENANT_STAFF_ID="$BOOTSTRAP_OWNER_ID"
 
       - name: Deploy permanent staging
+        if: vars.STAGING_VERIFY_ONLY != '1'
         run: flyctl deploy --app "$FLY_APP" --config fly.staging.toml --remote-only --ha=false --wait-timeout 300
 
       - name: Verify health and public auth configuration

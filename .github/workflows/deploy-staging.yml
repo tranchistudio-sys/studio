@@ -119,7 +119,7 @@ jobs:
             node artifacts/api-server/dist/index.mjs >schema-bootstrap.log 2>&1 &
           bootstrap_pid=$!
           schema_ready=""
-          for i in $(seq 1 90); do
+          for i in $(seq 1 180); do
             kill -0 "$bootstrap_pid" 2>/dev/null || {
               sed -n '1,200p' schema-bootstrap.log
               echo "::error::Repository runtime schema bootstrap exited early"
@@ -130,7 +130,7 @@ jobs:
                 EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='dresses' AND column_name='sell_price')
                 AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='service_packages' AND column_name='cms_status')
                 AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='gallery_albums')
-                AND NOT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND objid=88442201 AND granted)")
+                AND NOT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND objid=88442201 AND granted)" 2>/dev/null || true)
             test "$schema_ready" = "t" && break
             sleep 2
           done

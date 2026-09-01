@@ -21,10 +21,10 @@ vi.mock("../middlewares/platform-auth", async importOriginal => {
 let server: http.Server;
 let baseUrl = "";
 const pool = getPlatformPool();
-const migrationUrls = [1,2,3,4,5].map(number => new URL(
+const migrationUrls = [1,2,3,4,5,6].map(number => new URL(
   `../../../../lib/platform-db/migrations/000${number}_${[
     "platform_foundation", "membership_session_revocation", "tenant_database_registry_isolation",
-    "staff_access_requests", "commercial_saas_foundation",
+    "staff_access_requests", "commercial_saas_foundation", "tenant_provisioning_engine",
   ][number - 1]}.sql`, import.meta.url));
 const migrationSql = migrationUrls.map(url => readFileSync(url, "utf8"));
 
@@ -89,7 +89,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await pool.query(`TRUNCATE TABLE platform_payments,tenant_branding,tenant_domains,studio_signup_requests,
-    provisioning_jobs,subscriptions,tenant_database_registry,sessions,tenant_memberships,tenants,
+    provisioning_jobs,tenant_database_secrets,subscriptions,tenant_database_registry,sessions,tenant_memberships,tenants,
     auth_identities,platform_users CASCADE`);
   await pool.query(`INSERT INTO platform_users (id,display_name,status,platform_role)
     VALUES ($1,'Integration Owner','active','PLATFORM_OWNER')`, [auth.actorId]);
@@ -129,6 +129,15 @@ describe("commercial signup state machine over HTTP and PostgreSQL", () => {
 });
 
 describe("commercial payment and activation invariants", () => {
+  it("only retries a FAILED provisioning job and preserves its idempotency metadata", async () => {
+    const id=await createSignup();const {tenantId}=await approve(id);await action(tenantId!,"mark_setup_paid");await action(tenantId!,"activate");
+    await pool.query(`UPDATE provisioning_jobs SET status='failed',step='FAILED',failed_step='RUNNING_MIGRATIONS',safe_retry='{"databaseName":"tenant_safe"}'::jsonb WHERE tenant_id=$1`,[tenantId]);
+    await pool.query("UPDATE tenants SET status='provisioning_failed' WHERE id=$1",[tenantId]);
+    const response=await action(tenantId!,"retry_provisioning");expect(response.status).toBe(200);
+    const job=await pool.query("SELECT status,step,safe_retry FROM provisioning_jobs WHERE tenant_id=$1",[tenantId]);
+    expect(job.rows[0]).toMatchObject({status:"pending",step:"QUEUED",safe_retry:{databaseName:"tenant_safe"}});
+    expect((await action(tenantId!,"retry_provisioning")).status).toBe(409);
+  });
   it("fails mark_setup_paid when the plan has no configured setup fee", async () => {
     const id = await createSignup(); const { tenantId } = await approve(id);
     await pool.query("UPDATE plans SET setup_fee_amount=NULL WHERE id='standard'");

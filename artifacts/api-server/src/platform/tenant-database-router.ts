@@ -13,6 +13,7 @@ import {
   type TenantDatabaseRegistryRow,
 } from "./tenant-database-reference";
 import { assertTenantDatabaseMetadata } from "./tenant-database-metadata";
+import { EncryptedPlatformTenantSecretStore } from "./tenant-secret-store";
 
 const { Pool } = pg;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -108,11 +109,13 @@ function parseDatabaseReference(raw: string): ParsedDatabaseReference {
   };
 }
 
-function resolveSecret(record: RegistryRecord): string {
-  if (record.encrypted_secret || !record.secret_ref?.startsWith("env:")) {
-    // Encrypted/secret-manager values are introduced by provisioning PR 3.
-    throw new TenantDatabaseUnavailableError();
+async function resolveSecret(record: RegistryRecord): Promise<string> {
+  if (record.encrypted_secret || !record.secret_ref) throw new TenantDatabaseUnavailableError();
+  if (record.secret_ref.startsWith("platform-secret:")) {
+    try { return await new EncryptedPlatformTenantSecretStore(getPlatformPool()).getTenantDatabaseSecret(record.secret_ref); }
+    catch { throw new TenantDatabaseUnavailableError(); }
   }
+  if (!record.secret_ref.startsWith("env:")) throw new TenantDatabaseUnavailableError();
   const envName = record.secret_ref.slice(4);
   if (!ALLOWED_SECRET_ENV.test(envName)) throw new TenantDatabaseUnavailableError();
   const value = process.env[envName]?.trim();
@@ -200,7 +203,7 @@ async function resolveRegistry(tenantId: string): Promise<ResolvedRegistry> {
   if (!record || (record.tenant_status !== "active" && record.tenant_status !== "trial")) {
     throw new TenantDatabaseUnavailableError();
   }
-  const connectionString = resolveSecret(record);
+  const connectionString = await resolveSecret(record);
   assertRegistryMatchesSecret(record, connectionString);
   return {
     record,

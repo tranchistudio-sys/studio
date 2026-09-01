@@ -14,6 +14,7 @@ import { startDeadlineChecker, startWeddingPrepReminder } from "./routes/notific
 import { startAutoPostScheduler } from "./autopost-scheduler";
 import { runBusinessJob } from "./lib/tenant-job-runner";
 import { startAnalyticsRetryScheduler } from "./analytics-retry-scheduler";
+import { startTenantProvisioningWorker } from "./platform/tenant-provisioning-worker";
 
 export interface CreateAppOptions {
   startSchedulers?: boolean;
@@ -127,6 +128,7 @@ if (options.startSchedulers !== false) {
   startWeddingPrepReminder(runBusinessJob);
   startAutoPostScheduler(runBusinessJob);
   startAnalyticsRetryScheduler(runBusinessJob);
+  startTenantProvisioningWorker();
 }
 
 return application;

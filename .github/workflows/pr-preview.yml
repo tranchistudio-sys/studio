@@ -103,6 +103,9 @@ jobs:
       - name: TEST — Platform auth integration + HTTP E2E
         env:
           PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
+          TENANT_PROVISIONING_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
+          TENANT_SECRET_MASTER_KEY: BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=
+          RUN_PROVISIONING_ITEST: "1"
         run: pnpm --filter @workspace/api-server test:platform
 
       - name: TEST — Giao diện (vitest)

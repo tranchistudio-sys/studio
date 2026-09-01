@@ -30,7 +30,7 @@ root_url="postgresql://postgres@127.0.0.1:15432/postgres"
 platform_url="postgresql://postgres@127.0.0.1:15432/amazing_platform_staging"
 
 state=$(psql "$platform_url" -v ON_ERROR_STOP=1 -v email="$PILOT_EMAIL" -AtF '|' <<'SQL'
-SELECT t.id::text,t.status,signup.status,pay.status,pay.amount::text,
+SELECT t.id::text,t.status,signup.status,pay.status,pay.amount::text,(pay.paid_at IS NULL)::text,
   s.status,s.current_period_start::text,s.current_period_ends_at::text,
   (s.current_period_ends_at=s.current_period_start+interval '1 month')::text,
   r.health_status,r.database_name,r.role_name,
@@ -51,11 +51,12 @@ WHERE lower(signup.email)=lower(:'email');
 SQL
 )
 test -n "$state"
-IFS='|' read -r tenant_id tenant_status signup_status payment_status payment_amount \
+IFS='|' read -r tenant_id tenant_status signup_status payment_status payment_amount payment_uncollected \
   subscription_status period_start period_end exact_month registry_status database_name role_name \
   membership_status membership_role staff_id user_status job_status job_step attempt_count <<<"$state"
 test "$tenant_status" = "active" && test "$signup_status" = "ACTIVE"
-test "$payment_status" = "WAIVED" && test "$payment_amount" = "0"
+# WAIVED retains the nominal fee for audit/reporting; it records no collection.
+test "$payment_status" = "WAIVED" && test "$payment_amount" = "900000" && test "$payment_uncollected" = "true"
 test "$subscription_status" = "trial"
 test -n "$period_start" && test -n "$period_end" && test "$exact_month" = "true"
 test "$registry_status" = "healthy"

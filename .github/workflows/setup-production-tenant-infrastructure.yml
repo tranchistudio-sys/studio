@@ -81,10 +81,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cat > production-deploy.conf <<'EOF'
+          DEPLOY_APP_DIR=/opt/amazing-studio/app
+          DEPLOY_RELEASES_DIR=/opt/amazing-studio/releases
+          DEPLOY_COMPOSE_FILE=/opt/amazing-studio/app/06_vps_deployment/docker-compose.yml
+          DEPLOY_HEALTH_URL=https://tranchistudio.com/api/healthz
+          DEPLOY_WEB_URL=https://tranchistudio.com
+          EOF
           scp -P "$VPS_PORT" -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            tenant-template-schema.tar.gz scripts/setup-production-tenant-infrastructure.sh "$VPS_USER@$VPS_HOST:/tmp/"
+            tenant-template-schema.tar.gz production-deploy.conf scripts/setup-production-tenant-infrastructure.sh "$VPS_USER@$VPS_HOST:/tmp/"
           ssh -p "$VPS_PORT" -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" \
-            "bash /tmp/setup-production-tenant-infrastructure.sh /tmp/tenant-template-schema.tar.gz; status=\$?; rm -f /tmp/setup-production-tenant-infrastructure.sh /tmp/tenant-template-schema.tar.gz; exit \$status"
+            "AMAZING_DEPLOY_CONFIG=/tmp/production-deploy.conf bash /tmp/setup-production-tenant-infrastructure.sh /tmp/tenant-template-schema.tar.gz; status=\$?; rm -f /tmp/setup-production-tenant-infrastructure.sh /tmp/tenant-template-schema.tar.gz /tmp/production-deploy.conf; exit \$status"
       - name: Verify public health and registration
         run: |
           curl -fsS https://tranchistudio.com/api/healthz | grep '"status":"ok"'

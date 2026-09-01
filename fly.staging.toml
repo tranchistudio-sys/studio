@@ -1,0 +1,44 @@
+# Permanent, production-isolated staging environment. Production does not use this file.
+app = "amazing-studio-staging"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  NODE_ENV = "production"
+  APP_ENV = "staging"
+  PREVIEW_MODE = "0"
+  PUBLIC_APP_URL = "https://amazing-studio-staging.fly.dev"
+  CORS_ALLOWED_ORIGINS = "https://amazing-studio-staging.fly.dev"
+  PUBLIC_TENANT_SLUG = "amazing-studio"
+  LEGACY_LOGIN_TENANT_SLUG = "amazing-studio"
+  MCP_TENANT_SLUG = "amazing-studio"
+  STARTUP_TENANT_SLUG = "amazing-studio"
+  ENABLE_TENANT_PROVISIONING_WORKER = "1"
+  TENANT_PROVISIONING_LEASE_SECONDS = "120"
+  TENANT_PROVISIONING_TEMPLATE_DATABASE = "tenant_template_staging"
+  TENANT_PROVISIONING_HOST_ALLOWLIST = "amazing-studio-staging-db.internal"
+  PLATFORM_DB_POOL_MAX = "2"
+  TENANT_DB_POOL_MAX = "2"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "30s"
+    method = "GET"
+    path = "/api/healthz"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+  cpus = 1

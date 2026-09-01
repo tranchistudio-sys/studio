@@ -17,9 +17,11 @@ import { isPlatformDatabaseConfigured } from "@workspace/platform-db";
 
 // Số bất kỳ, chỉ cần duy nhất trong app cho nhóm khoá này.
 const STARTUP_DDL_LOCK_KEY = 88442201;
+const STARTUP_DDL_LOCK_HEARTBEAT_MS = 10_000;
 
 let loggedSkip = false;
 const deferredTenantDdl = new Set<() => Promise<unknown>>();
+let localDdlTail: Promise<void> = Promise.resolve();
 
 export function skipStartupDdl(): boolean {
   if (process.env.SKIP_STARTUP_MIGRATIONS === "1") {
@@ -63,20 +65,43 @@ export async function withStartupDdlLock<T>(fn: () => Promise<T>): Promise<T | u
     deferredTenantDdl.add(fn as () => Promise<unknown>);
     return undefined;
   }
-  const lock = await pool.connect();
+  const previous = localDdlTail;
+  let releaseLocalQueue!: () => void;
+  localDdlTail = new Promise<void>((resolve) => { releaseLocalQueue = resolve; });
+  await previous;
+  let lock: Awaited<ReturnType<typeof pool.connect>> | undefined;
   let unlockFailed = false;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let rejectLockLost: ((error: Error) => void) | undefined;
+  let handleLockError: ((error: Error) => void) | undefined;
   try {
+    lock = await pool.connect();
+    const lockLost = new Promise<never>((_resolve, reject) => { rejectLockLost = reject; });
+    handleLockError = (error: Error) => rejectLockLost?.(error);
+    lock.on("error", handleLockError);
     await lock.query("SELECT pg_advisory_lock($1)", [STARTUP_DDL_LOCK_KEY]);
-    return await fn();
+    // Fly's local proxy can reap a checked-out connection that is idle while
+    // the protected DDL uses other pool clients. Keep the lock session active;
+    // if it is ever lost, fail the protected work instead of continuing without
+    // the cross-process advisory lock.
+    heartbeat = setInterval(() => {
+      void lock?.query("SELECT 1").catch((error: Error) => rejectLockLost?.(error));
+    }, STARTUP_DDL_LOCK_HEARTBEAT_MS);
+    return await Promise.race([fn(), lockLost]);
   } finally {
-    try {
-      await lock.query("SELECT pg_advisory_unlock($1)", [STARTUP_DDL_LOCK_KEY]);
-    } catch {
-      // Unlock lỗi mà connection còn sống thì khoá vẫn bị giữ nếu trả về pool —
-      // huỷ hẳn connection để Postgres nhả khoá theo session.
-      unlockFailed = true;
+    if (heartbeat) clearInterval(heartbeat);
+    if (lock) {
+      try {
+        await lock.query("SELECT pg_advisory_unlock($1)", [STARTUP_DDL_LOCK_KEY]);
+      } catch {
+        // Unlock lỗi mà connection còn sống thì khoá vẫn bị giữ nếu trả về pool —
+        // huỷ hẳn connection để Postgres nhả khoá theo session.
+        unlockFailed = true;
+      }
+      if (handleLockError) lock.removeListener("error", handleLockError);
+      lock.release(unlockFailed);
     }
-    lock.release(unlockFailed);
+    releaseLocalQueue();
   }
 }
 

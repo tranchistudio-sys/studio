@@ -314,7 +314,7 @@ export default function LoginPage({ onLogin }: Props) {
           {studioSignupOpen && (
             <div className="mt-5 rounded-2xl border border-purple-200 bg-purple-50/50 p-4">
               <h3 className="text-center font-semibold">Đăng ký Amazing Studio Manager</h3>
-              <p className="mb-4 mt-1 text-center text-xs text-muted-foreground">Gửi yêu cầu để Platform Owner liên hệ và kích hoạt.</p>
+              <p className="mb-4 mt-1 text-center text-xs text-muted-foreground">Dùng thử miễn phí tháng đầu sau khi kích hoạt. Gửi yêu cầu để Platform Owner liên hệ và duyệt.</p>
               {studioSignupSuccess ? <div className="rounded-xl bg-emerald-50 p-4 text-center text-sm text-emerald-700"><CheckCircle2 className="mx-auto mb-2 h-6 w-6" />{studioSignupSuccess}</div> :
               <form onSubmit={handleStudioSignup} className="space-y-3">
                 {([['ownerName','Tên chủ studio'],['studioName','Tên studio'],['phone','Số điện thoại'],['email','Email'],['address','Địa chỉ (không bắt buộc)'],['requestedSlug','Slug mong muốn, ví dụ abc-wedding']] as const).map(([key,label]) =>
@@ -329,7 +329,7 @@ export default function LoginPage({ onLogin }: Props) {
                 </select>
                 <p className="text-xs text-muted-foreground">{publicPlans?.length ? (() => {
                   const selected = publicPlans.find(item=>item.code===studioSignup.requestedPlanCode);
-                  return selected ? `Phí khởi tạo: ${money(selected.setupFee,selected.currency)} một lần.` : "Liên hệ để nhận báo giá hiện tại.";
+                  return selected ? `Dùng thử miễn phí tháng đầu. Phí khởi tạo: ${money(selected.setupFee,selected.currency)} một lần.` : "Dùng thử miễn phí tháng đầu. Liên hệ để nhận báo giá hiện tại.";
                 })() : "Liên hệ để nhận báo giá hiện tại."}</p>
                 <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setStudioSignupOpen(false)} className="h-10 rounded-xl border bg-white text-sm">Hủy</button>
                   <button disabled={studioSignupBusy} className="h-10 rounded-xl bg-purple-600 text-sm font-semibold text-white">{studioSignupBusy ? "Đang gửi…" : "Gửi đăng ký"}</button></div>

@@ -3,11 +3,13 @@ import { PostgresTenantDatabaseProvisioner } from "./tenant-database-provisioner
 import { runTenantMigrationOrchestrator } from "./tenant-migration-orchestrator";
 import { TenantProvisioningEngine } from "./tenant-provisioning-engine";
 import { EncryptedPlatformTenantSecretStore } from "./tenant-secret-store";
+import { assertTenantProvisioningEnvironment } from "./tenant-provisioning-safety";
 
 let timer:NodeJS.Timeout|undefined;
 
 export function startTenantProvisioningWorker():void{
   if(process.env.ENABLE_TENANT_PROVISIONING_WORKER!=="1"||timer)return;
+  assertTenantProvisioningEnvironment();
   const pool=getPlatformPool();
   const engine=new TenantProvisioningEngine(pool,new PostgresTenantDatabaseProvisioner(
     new EncryptedPlatformTenantSecretStore(pool),runTenantMigrationOrchestrator));

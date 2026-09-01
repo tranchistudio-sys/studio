@@ -20,6 +20,7 @@ vi.mock("../middlewares/platform-auth", async importOriginal => {
 
 let server: http.Server;
 let baseUrl = "";
+let signupSequence = 0;
 const pool = getPlatformPool();
 const migrationUrls = [1,2,3,4,5,6].map(number => new URL(
   `../../../../lib/platform-db/migrations/000${number}_${[
@@ -36,12 +37,15 @@ async function api(path: string, body?: unknown) {
   });
 }
 
-async function createSignup(status = "PENDING") {
+async function createSignup(status = "PENDING", identity?: { email?:string; phone?:string; plan?:"STANDARD"|"PRO" }) {
   const id = randomUUID();
+  const sequence = ++signupSequence;
+  const email = identity?.email ?? `owner-${sequence}@example.com`;
+  const phone = identity?.phone ?? `09${String(sequence).padStart(8,"0")}`;
   await pool.query(`INSERT INTO studio_signup_requests
     (id,owner_name,studio_name,phone,email,requested_slug,requested_plan_code,status)
-    VALUES ($1,'Owner','Studio','0900000000','owner@example.com',$2,'STANDARD',$3)`,
-    [id, `studio-${id.slice(0, 8)}`, status]);
+    VALUES ($1,'Owner','Studio',$2,$3,$4,$5,$6)`,
+    [id,phone,email,`studio-${id.slice(0, 8)}`,identity?.plan??"STANDARD",status]);
   return id;
 }
 
@@ -58,7 +62,7 @@ async function action(tenantId: string, name: string, extra: Record<string, unkn
 async function makeCommercialActive(tenantId: string) {
   await pool.query("UPDATE studio_signup_requests SET status='ACTIVE' WHERE tenant_id=$1", [tenantId]);
   await pool.query("UPDATE tenants SET status='active' WHERE id=$1", [tenantId]);
-  await pool.query(`UPDATE subscriptions SET status='active',current_period_ends_at=now()+interval '30 days'
+  await pool.query(`UPDATE subscriptions SET status='active',current_period_start=now(),current_period_ends_at=now()+interval '30 days'
     WHERE tenant_id=$1 AND status IN ('trial','active','past_due','suspended')`, [tenantId]);
   await pool.query(`INSERT INTO tenant_database_registry
     (tenant_id,database_ref,host_ref,database_name,role_name,secret_ref,health_status)
@@ -88,6 +92,7 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  signupSequence = 0;
   await pool.query(`TRUNCATE TABLE platform_payments,tenant_branding,tenant_domains,studio_signup_requests,
     provisioning_jobs,tenant_database_secrets,subscriptions,tenant_database_registry,sessions,tenant_memberships,tenants,
     auth_identities,platform_users CASCADE`);
@@ -167,15 +172,37 @@ describe("commercial payment and activation invariants", () => {
     expect((await pool.query("SELECT count(*)::int count FROM provisioning_jobs WHERE tenant_id=$1", [tenantId])).rows[0].count).toBe(1);
   });
 
-  it("preserves WAIVED setup semantics and permits activation", async () => {
+  it("creates and preserves WAIVED setup semantics through the commercial API", async () => {
     const id = await createSignup(); const { tenantId } = await approve(id);
-    await pool.query("UPDATE platform_payments SET status='WAIVED',paid_at=NULL WHERE tenant_id=$1", [tenantId]);
+    expect((await action(tenantId!, "waive_setup_fee")).status).toBe(200);
     expect((await action(tenantId!, "mark_setup_paid")).status).toBe(200);
     expect((await pool.query("SELECT status,paid_at FROM platform_payments WHERE tenant_id=$1", [tenantId])).rows[0])
       .toMatchObject({ status:"WAIVED", paid_at:null });
-    const audit = await pool.query("SELECT metadata FROM platform_audit_logs WHERE tenant_id=$1 AND action='commercial.mark_setup_paid'", [tenantId]);
-    expect(audit.rows[0].metadata).toMatchObject({ paymentStatus:"WAIVED", paymentResult:"preserved_waived" });
+    const audit = await pool.query("SELECT action,metadata FROM platform_audit_logs WHERE tenant_id=$1 AND action IN ('commercial.waive_setup_fee','commercial.mark_setup_paid') ORDER BY created_at", [tenantId]);
+    expect(audit.rows).toEqual([
+      { action:"commercial.waive_setup_fee", metadata:expect.objectContaining({ paymentStatus:"WAIVED", paymentResult:"transitioned_to_waived" }) },
+      { action:"commercial.mark_setup_paid", metadata:expect.objectContaining({ paymentStatus:"WAIVED", paymentResult:"preserved_waived" }) },
+    ]);
     expect((await action(tenantId!, "activate")).status).toBe(200);
+  });
+
+  it("blocks a repeated canonical owner trial until Platform Owner grants an audited override", async () => {
+    const identity={email:"repeat-owner@example.com",phone:"0909999999"};
+    const first=await approve(await createSignup("PENDING",identity));await makeCommercialActive(first.tenantId!);
+    const secondId=await createSignup("PENDING",identity);
+    expect((await approve(secondId)).response.status).toBe(409);
+    expect((await api(`/platform-admin/api/signups/${secondId}/trial_override`,{})).status).toBe(200);
+    const approved=await approve(secondId);expect(approved.response.status).toBe(200);expect(approved.tenantId).toBeTruthy();
+    const audit=await pool.query("SELECT metadata FROM platform_audit_logs WHERE action='signup.trial_override' AND target_id=$1",[secondId]);
+    expect(audit.rows[0].metadata).toMatchObject({manual:true,reason:"platform_owner_override"});
+  });
+
+  it("does not downgrade a PAID setup fee to WAIVED", async () => {
+    const id = await createSignup(); const { tenantId } = await approve(id);
+    expect((await action(tenantId!, "mark_setup_paid")).status).toBe(200);
+    expect((await action(tenantId!, "waive_setup_fee")).status).toBe(409);
+    expect((await pool.query("SELECT status,paid_at FROM platform_payments WHERE tenant_id=$1", [tenantId])).rows[0])
+      .toMatchObject({ status:"PAID" });
   });
 
   it("rejects commercial mutations for a legacy tenant without signup", async () => {
@@ -185,9 +212,9 @@ describe("commercial payment and activation invariants", () => {
     const attempts = await Promise.all([
       action(tenantId, "extend", { days:30 }), action(tenantId, "change_plan", { planCode:"PRO" }),
       action(tenantId, "suspend"), action(tenantId, "reactivate"),
-      action(tenantId, "mark_setup_paid"), action(tenantId, "activate"),
+      action(tenantId, "mark_setup_paid"), action(tenantId, "waive_setup_fee"), action(tenantId, "activate"),
     ]);
-    expect(attempts.map(response => response.status)).toEqual([409,409,409,409,409,409]);
+    expect(attempts.map(response => response.status)).toEqual([409,409,409,409,409,409,409]);
     expect((await pool.query("SELECT status,plan_id FROM tenants WHERE id=$1", [tenantId])).rows[0]).toMatchObject({ status:"active", plan_id:"legacy" });
     expect((await pool.query("SELECT status,plan_id,current_period_ends_at FROM subscriptions WHERE tenant_id=$1", [tenantId])).rows[0])
       .toMatchObject({ status:"active", plan_id:"legacy", current_period_ends_at:null });
@@ -225,6 +252,17 @@ describe("commercial subscription isolation and state machine", () => {
     expect((await action(approved.tenantId!, "suspend")).status).toBe(200);
     expect((await action(approved.tenantId!, "reactivate")).status).toBe(200);
     expect((await pool.query("SELECT status FROM tenants WHERE id=$1", [approved.tenantId])).rows[0].status).toBe("active");
+  });
+
+  it("suspends and reactivates a trial without resetting its trial clock", async () => {
+    const approved=await approve(await createSignup());await makeCommercialActive(approved.tenantId!);
+    await pool.query("UPDATE subscriptions SET status='trial' WHERE tenant_id=$1",[approved.tenantId]);
+    const before=(await pool.query("SELECT current_period_start,current_period_ends_at FROM subscriptions WHERE tenant_id=$1",[approved.tenantId])).rows[0];
+    expect((await action(approved.tenantId!,"suspend")).status).toBe(200);
+    expect((await action(approved.tenantId!,"reactivate")).status).toBe(200);
+    const after=(await pool.query("SELECT status,current_period_start,current_period_ends_at FROM subscriptions WHERE tenant_id=$1",[approved.tenantId])).rows[0];
+    expect(after.status).toBe("trial");expect(after.current_period_start).toEqual(before.current_period_start);
+    expect(after.current_period_ends_at).toEqual(before.current_period_ends_at);
   });
 
   it("rejects reactivation after the subscription period expires", async () => {

@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { LazyImage, CMS_BASE } from "@/components/cms-shared";
 import { formatVND, cn } from "@/lib/utils";
+import { fetchJsonArray } from "@/lib/public-api";
 import { Sparkles, Shirt, X, Check } from "lucide-react";
 import {
   OUTFIT_TAGS,
@@ -222,18 +223,18 @@ export default function PublicRentalPage() {
     PublicCategory[]
   >({
     queryKey: ["public-categories-dress-tree"],
-    queryFn: () =>
-      fetch(`${CMS_BASE}/api/cms/public/categories/dress/tree`).then((r) =>
-        r.json(),
-      ),
+    queryFn: () => fetchJsonArray<PublicCategory>(
+      `${CMS_BASE}/api/cms/public/categories/dress/tree`,
+    ),
     staleTime: 5 * 60 * 1000,
   });
   const { data: dresses = [], isLoading: dressesLoading } = useQuery<
     PublicDress[]
   >({
     queryKey: ["public-dresses"],
-    queryFn: () =>
-      fetch(`${CMS_BASE}/api/cms/public/dresses`).then((r) => r.json()),
+    queryFn: () => fetchJsonArray<PublicDress>(
+      `${CMS_BASE}/api/cms/public/dresses`,
+    ),
     staleTime: 5 * 60 * 1000,
   });
 

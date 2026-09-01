@@ -15,6 +15,7 @@ import { startAutoPostScheduler } from "./autopost-scheduler";
 import { runBusinessJob } from "./lib/tenant-job-runner";
 import { startAnalyticsRetryScheduler } from "./analytics-retry-scheduler";
 import { startTenantProvisioningWorker } from "./platform/tenant-provisioning-worker";
+import { isSchemaBootstrapOnly } from "./lib/schema-bootstrap-mode";
 
 export interface CreateAppOptions {
   startSchedulers?: boolean;
@@ -134,5 +135,7 @@ if (options.startSchedulers !== false) {
 return application;
 }
 
-const app = createApp({ startSchedulers: process.env.NODE_ENV !== "test" });
+const app = createApp({
+  startSchedulers: process.env.NODE_ENV !== "test" && !isSchemaBootstrapOnly(),
+});
 export default app;

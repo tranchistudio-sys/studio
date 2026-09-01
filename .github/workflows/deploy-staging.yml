@@ -1,0 +1,303 @@
+name: Deploy Permanent Staging
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: permanent-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FLY_APP: amazing-studio-staging
+  FLY_DB_APP: amazing-studio-staging-db
+  STAGING_URL: https://amazing-studio-staging.fly.dev
+
+jobs:
+  deploy-staging:
+    environment: staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require staging-only secrets (no fallback)
+        if: vars.STAGING_VERIFY_ONLY != '1'
+        env:
+          FLY_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          ROOT_PASSWORD: ${{ secrets.STAGING_DB_ROOT_PASSWORD }}
+          PROVISIONING_PASSWORD: ${{ secrets.STAGING_PROVISIONING_PASSWORD }}
+          PLATFORM_PASSWORD: ${{ secrets.STAGING_PLATFORM_DB_PASSWORD }}
+          LEGACY_PASSWORD: ${{ secrets.STAGING_LEGACY_DB_PASSWORD }}
+          MASTER_KEY: ${{ secrets.STAGING_TENANT_SECRET_MASTER_KEY }}
+          SESSION_SECRET: ${{ secrets.STAGING_SESSION_SECRET }}
+        run: |
+          set -euo pipefail
+          for name in FLY_TOKEN ROOT_PASSWORD PROVISIONING_PASSWORD PLATFORM_PASSWORD LEGACY_PASSWORD MASTER_KEY SESSION_SECRET; do
+            if [ -z "${!name}" ]; then echo "::error::Missing required staging secret: $name"; exit 1; fi
+          done
+
+      - uses: pnpm/action-setup@v4
+        if: vars.STAGING_VERIFY_ONLY != '1'
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@v4
+        if: vars.STAGING_VERIFY_ONLY != '1'
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Install and verify before staging mutation
+        if: vars.STAGING_VERIFY_ONLY != '1'
+        run: |
+          pnpm install --frozen-lockfile
+          node --test scripts/staging-schema-source-guard.test.mjs
+          pnpm --filter @workspace/api-server exec vitest run src/platform/tenant-provisioning-safety.test.ts
+          pnpm --filter @workspace/platform-db typecheck
+          pnpm run build:deploy
+
+      - name: Create dedicated staging PostgreSQL cluster if absent
+        if: vars.STAGING_VERIFY_ONLY != '1'
+        env:
+          ROOT_PASSWORD: ${{ secrets.STAGING_DB_ROOT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if flyctl status --app "$FLY_DB_APP" >/dev/null 2>&1; then
+            echo "Dedicated staging database app already exists."
+          else
+            flyctl postgres create --name "$FLY_DB_APP" --org "${{ vars.FLY_ORG || 'personal' }}" \
+              --region sin --vm-size shared-cpu-1x --initial-cluster-size 1 --volume-size 10 \
+              --password "$ROOT_PASSWORD" --detach
+          fi
+
+      - name: Bootstrap isolated platform, template, and legacy fixture databases
+        if: vars.STAGING_VERIFY_ONLY != '1'
+        env:
+          PGPASSWORD: ${{ secrets.STAGING_DB_ROOT_PASSWORD }}
+          PROVISIONING_PASSWORD: ${{ secrets.STAGING_PROVISIONING_PASSWORD }}
+          PLATFORM_PASSWORD: ${{ secrets.STAGING_PLATFORM_DB_PASSWORD }}
+          LEGACY_PASSWORD: ${{ secrets.STAGING_LEGACY_DB_PASSWORD }}
+          BOOTSTRAP_OWNER_EMAIL: ${{ vars.STAGING_BOOTSTRAP_OWNER_EMAIL }}
+        run: |
+          set -euo pipefail
+          proxy_pid=""
+          bootstrap_pid=""
+          trap 'test -z "$bootstrap_pid" || kill "$bootstrap_pid" 2>/dev/null || true; test -z "$proxy_pid" || kill "$proxy_pid" 2>/dev/null || true' EXIT
+          start_proxy() {
+            test -z "$proxy_pid" || kill "$proxy_pid" 2>/dev/null || true
+            test -z "$proxy_pid" || wait "$proxy_pid" 2>/dev/null || true
+            flyctl proxy 15432:5432 --app "$FLY_DB_APP" >fly-proxy.log 2>&1 &
+            proxy_pid=$!
+            for i in $(seq 1 30); do
+              pg_isready -h 127.0.0.1 -p 15432 -U postgres && return
+              sleep 2
+            done
+            echo "::error::Could not establish staging database proxy"
+            exit 1
+          }
+          start_proxy
+          root_url="postgresql://postgres@127.0.0.1:15432/postgres"
+
+          psql "$root_url" -v ON_ERROR_STOP=1 \
+            -v provisioner_pass="$PROVISIONING_PASSWORD" -v platform_pass="$PLATFORM_PASSWORD" -v legacy_pass="$LEGACY_PASSWORD" <<'SQL'
+          SELECT format('CREATE ROLE staging_provisioner LOGIN CREATEDB CREATEROLE NOSUPERUSER PASSWORD %L', :'provisioner_pass')
+            WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname='staging_provisioner') \gexec
+          SELECT format('ALTER ROLE staging_provisioner LOGIN CREATEDB CREATEROLE NOSUPERUSER PASSWORD %L', :'provisioner_pass') \gexec
+          SELECT format('CREATE ROLE staging_platform LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD %L', :'platform_pass')
+            WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname='staging_platform') \gexec
+          SELECT format('ALTER ROLE staging_platform PASSWORD %L', :'platform_pass') \gexec
+          SELECT format('CREATE ROLE staging_legacy LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD %L', :'legacy_pass')
+            WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname='staging_legacy') \gexec
+          SELECT format('ALTER ROLE staging_legacy PASSWORD %L', :'legacy_pass') \gexec
+          SELECT 'CREATE DATABASE amazing_platform_staging OWNER staging_platform TEMPLATE template0'
+            WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='amazing_platform_staging') \gexec
+          SELECT 'CREATE DATABASE tenant_template_staging OWNER staging_provisioner TEMPLATE template0'
+            WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='tenant_template_staging') \gexec
+          SELECT 'CREATE DATABASE tenant_schema_source_staging OWNER staging_provisioner TEMPLATE template0'
+            WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='tenant_schema_source_staging') \gexec
+          SQL
+
+          schema_source_url="postgresql://staging_provisioner:${PROVISIONING_PASSWORD}@127.0.0.1:15432/tenant_schema_source_staging"
+          APP_ENV=staging STAGING_PROXY_APP="$FLY_DB_APP" DATABASE_URL="$schema_source_url" \
+            node scripts/staging-schema-source-guard.mjs
+          psql "$root_url" -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+            WHERE datname='tenant_schema_source_staging' AND pid <> pg_backend_pid();
+          DROP DATABASE tenant_schema_source_staging;
+          CREATE DATABASE tenant_schema_source_staging OWNER staging_provisioner TEMPLATE template0;
+          SQL
+          APP_ENV=staging STAGING_PROXY_APP="$FLY_DB_APP" DATABASE_URL="$schema_source_url" \
+            node scripts/staging-schema-source-guard.mjs
+          pnpm --filter @workspace/db exec drizzle-kit export \
+            --dialect postgresql --schema './src/schema/index.ts' | \
+            psql "$schema_source_url" -v ON_ERROR_STOP=1
+          psql "$schema_source_url" -v ON_ERROR_STOP=1 -f scripts/staging-schema-prerequisites.sql
+          schema_ready=""
+          for bootstrap_attempt in 1 2; do
+            APP_ENV=staging NODE_ENV=development SCHEMA_BOOTSTRAP_ONLY=1 PORT=5199 \
+              DATABASE_URL="$schema_source_url" DEFAULT_TENANT_DATABASE_URL="$schema_source_url" \
+              PLATFORM_DATABASE_URL="" \
+              node artifacts/api-server/dist/index.mjs >"schema-bootstrap-${bootstrap_attempt}.log" 2>&1 &
+            bootstrap_pid=$!
+            for i in $(seq 1 180); do
+              kill -0 "$bootstrap_pid" 2>/dev/null || break
+              schema_ready=$(psql "$schema_source_url" -Atqc "
+                SELECT
+                  EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='dresses' AND column_name='sell_price')
+                  AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='service_packages' AND column_name='cms_status')
+                  AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='gallery_albums')
+                  AND NOT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND objid=88442201 AND granted)" 2>/dev/null || true)
+              test "$schema_ready" = "t" && break
+              sleep 2
+            done
+            if test "$schema_ready" = "t"; then
+              kill "$bootstrap_pid" 2>/dev/null || true
+              wait "$bootstrap_pid" 2>/dev/null || true
+              bootstrap_pid=""
+              break
+            fi
+            sed -n '1,200p' "schema-bootstrap-${bootstrap_attempt}.log"
+            kill "$bootstrap_pid" 2>/dev/null || true
+            wait "$bootstrap_pid" 2>/dev/null || true
+            bootstrap_pid=""
+            test "$bootstrap_attempt" != 2 || {
+              echo "::error::Repository runtime schema bootstrap failed after one staging-only retry"
+              exit 1
+            }
+            echo "::warning::Transient staging bootstrap failure; retrying once"
+            sleep 5
+            start_proxy
+          done
+          migration_ready=""
+          for migration_attempt in 1 2; do
+            start_proxy
+            if APP_ENV=staging STAGING_PROXY_APP="$FLY_DB_APP" DATABASE_URL="$schema_source_url" \
+              TENANT_MIGRATIONS_DIR="$GITHUB_WORKSPACE/lib/db/migrations" \
+              pnpm --filter @workspace/scripts exec tsx run-staging-tenant-migrations.mjs; then
+              migration_ready="yes"
+              break
+            fi
+            test "$migration_attempt" != 2 || break
+            echo "::warning::Transient staging migration connection failure; retrying once"
+          done
+          test "$migration_ready" = "yes" || {
+            echo "::error::Staging tenant migrations failed after one proxy reconnect"
+            exit 1
+          }
+          start_proxy
+          source_counts=$(psql "$schema_source_url" -Atqc "SELECT (SELECT count(*) FROM customers)+(SELECT count(*) FROM bookings)+(SELECT count(*) FROM payments)+(SELECT count(*) FROM expenses)+(SELECT count(*) FROM contracts)+(SELECT count(*) FROM staff)")
+          test "$source_counts" = "0" || { echo "::error::Generated staging schema source contains business data"; exit 1; }
+
+          psql "$root_url" -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+            WHERE datname IN ('tenant_template_staging','tenant_amazing_staging') AND pid <> pg_backend_pid();
+          DROP DATABASE IF EXISTS tenant_amazing_staging;
+          DROP DATABASE IF EXISTS tenant_template_staging;
+          CREATE DATABASE tenant_template_staging OWNER staging_provisioner TEMPLATE template0;
+          ALTER DATABASE tenant_template_staging OWNER TO staging_provisioner;
+          GRANT CONNECT, TEMPORARY ON DATABASE tenant_template_staging TO staging_provisioner;
+          SQL
+          template_url="postgresql://postgres@127.0.0.1:15432/tenant_template_staging"
+          provisioner_template_url="postgresql://staging_provisioner:${PROVISIONING_PASSWORD}@127.0.0.1:15432/tenant_template_staging"
+          start_proxy
+          docker run --rm --network host \
+            -e PGPASSWORD="$PROVISIONING_PASSWORD" \
+            postgres:18 \
+            pg_dump \
+              --host=127.0.0.1 \
+              --port=15432 \
+              --username=staging_provisioner \
+              --dbname=tenant_schema_source_staging \
+              --schema-only \
+              --no-owner \
+              --no-privileges | psql "$provisioner_template_url" -v ON_ERROR_STOP=1
+          start_proxy
+          counts=$(psql "$template_url" -Atqc "SELECT (SELECT count(*) FROM customers)+(SELECT count(*) FROM bookings)+(SELECT count(*) FROM payments)+(SELECT count(*) FROM expenses)+(SELECT count(*) FROM contracts)+(SELECT count(*) FROM staff)")
+          test "$counts" = "0" || { echo "::error::Staging template contains business data"; exit 1; }
+
+          psql "$root_url" -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT pg_terminate_backend(pid)
+            FROM pg_stat_activity
+            WHERE datname='tenant_template_staging' AND pid <> pg_backend_pid();
+          CREATE DATABASE tenant_amazing_staging OWNER staging_legacy TEMPLATE tenant_template_staging;
+          SQL
+          legacy_url="postgresql://postgres@127.0.0.1:15432/tenant_amazing_staging"
+          psql "$legacy_url" -v ON_ERROR_STOP=1 -c 'REASSIGN OWNED BY staging_provisioner TO staging_legacy'
+          # REASSIGN OWNED also changes shared objects owned by the source role,
+          # including the template database. Restore it before runtime provisioning.
+          psql "$root_url" -v ON_ERROR_STOP=1 -c 'ALTER DATABASE tenant_template_staging OWNER TO staging_provisioner; ALTER DATABASE tenant_template_staging ALLOW_CONNECTIONS false'
+          psql "$legacy_url" -v ON_ERROR_STOP=1 -c 'GRANT USAGE ON SCHEMA public TO staging_legacy; GRANT ALL ON ALL TABLES IN SCHEMA public TO staging_legacy; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO staging_legacy; GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO staging_legacy'
+          owner_id=$(psql "$legacy_url" -v ON_ERROR_STOP=1 -v email="$BOOTSTRAP_OWNER_EMAIL" -qAt <<'SQL'
+          INSERT INTO staff(name,phone,email,role,roles,is_active)
+          VALUES('Staging Platform Owner','0000000000',:'email','admin','["admin"]'::jsonb,1)
+          ON CONFLICT DO NOTHING;
+          SELECT id FROM staff WHERE lower(email)=lower(:'email') ORDER BY id LIMIT 1;
+          SQL
+          )
+          test -n "$owner_id" || { echo "::error::Could not create staging owner fixture"; exit 1; }
+          echo "owner_id=$owner_id" >> "$GITHUB_OUTPUT"
+        id: databases
+
+      - name: Apply platform migrations 0001 through 0006 twice
+        if: vars.STAGING_VERIFY_ONLY != '1'
+        env:
+          PGPASSWORD: ${{ secrets.STAGING_DB_ROOT_PASSWORD }}
+          PLATFORM_PASSWORD: ${{ secrets.STAGING_PLATFORM_DB_PASSWORD }}
+        run: |
+          set -euo pipefail
+          flyctl proxy 15432:5432 --app "$FLY_DB_APP" >fly-proxy.log 2>&1 &
+          proxy_pid=$!; trap 'kill "$proxy_pid" 2>/dev/null || true' EXIT; sleep 3
+          export PLATFORM_DATABASE_URL="postgresql://staging_platform:${PLATFORM_PASSWORD}@127.0.0.1:15432/amazing_platform_staging"
+          pnpm --filter @workspace/platform-db migrate
+          pnpm --filter @workspace/platform-db migrate
+
+      - name: Create app and set staging-only runtime secrets
+        if: vars.STAGING_VERIFY_ONLY != '1'
+        env:
+          PROVISIONING_PASSWORD: ${{ secrets.STAGING_PROVISIONING_PASSWORD }}
+          PLATFORM_PASSWORD: ${{ secrets.STAGING_PLATFORM_DB_PASSWORD }}
+          LEGACY_PASSWORD: ${{ secrets.STAGING_LEGACY_DB_PASSWORD }}
+          MASTER_KEY: ${{ secrets.STAGING_TENANT_SECRET_MASTER_KEY }}
+          SESSION_SECRET: ${{ secrets.STAGING_SESSION_SECRET }}
+          GOOGLE_CLIENT_ID: ${{ vars.STAGING_GOOGLE_CLIENT_ID }}
+          BOOTSTRAP_OWNER_EMAIL: ${{ vars.STAGING_BOOTSTRAP_OWNER_EMAIL }}
+          BOOTSTRAP_OWNER_ID: ${{ steps.databases.outputs.owner_id }}
+        run: |
+          set -euo pipefail
+          flyctl status --app "$FLY_APP" >/dev/null 2>&1 || flyctl apps create "$FLY_APP" --org "${{ vars.FLY_ORG || 'personal' }}"
+          host="$FLY_DB_APP.internal"
+          flyctl secrets set --app "$FLY_APP" --stage \
+            DATABASE_URL="postgresql://staging_legacy:${LEGACY_PASSWORD}@${host}:5432/tenant_amazing_staging" \
+            DEFAULT_TENANT_DATABASE_URL="postgresql://staging_legacy:${LEGACY_PASSWORD}@${host}:5432/tenant_amazing_staging" \
+            PLATFORM_DATABASE_URL="postgresql://staging_platform:${PLATFORM_PASSWORD}@${host}:5432/amazing_platform_staging" \
+            TENANT_PROVISIONING_ADMIN_URL="postgresql://staging_provisioner:${PROVISIONING_PASSWORD}@${host}:5432/postgres" \
+            TENANT_SECRET_MASTER_KEY="$MASTER_KEY" SESSION_SECRET="$SESSION_SECRET" \
+            GOOGLE_CLIENT_ID="$GOOGLE_CLIENT_ID" BOOTSTRAP_OWNER_EMAIL="$BOOTSTRAP_OWNER_EMAIL" \
+            BOOTSTRAP_TENANT_STAFF_ID="$BOOTSTRAP_OWNER_ID"
+
+      - name: Deploy permanent staging
+        if: vars.STAGING_VERIFY_ONLY != '1'
+        run: flyctl deploy --app "$FLY_APP" --config fly.staging.toml --remote-only --ha=false --wait-timeout 300
+
+      - name: Verify health and public auth configuration
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 24); do
+            body=$(curl -fsS --max-time 15 "$STAGING_URL/api/healthz" || true)
+            case "$body" in *'"status":"ok"'*) break;; esac
+            test "$i" != 24 || { echo "::error::Staging health check failed"; exit 1; }
+            sleep 10
+          done
+          config=$(curl -fsS --max-time 15 "$STAGING_URL/api/auth/config")
+          jq -e '.platformEnabled == true and .googleEnabled == true' >/dev/null <<<"$config"
+
+      - name: Verify configured first pilot end to end
+        env:
+          PGPASSWORD: ${{ secrets.STAGING_DB_ROOT_PASSWORD }}
+          PILOT_EMAIL: ${{ vars.STAGING_PILOT_EMAIL }}
+        run: bash scripts/verify-staging-pilot.sh

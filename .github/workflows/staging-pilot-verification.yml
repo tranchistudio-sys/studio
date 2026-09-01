@@ -1,0 +1,52 @@
+name: Verify Staging Pilot
+
+on:
+  workflow_dispatch:
+    inputs:
+      pilot_email:
+        description: Approved staging pilot owner email
+        required: true
+        type: string
+
+concurrency:
+  group: staging-pilot-verification
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FLY_APP: amazing-studio-staging
+  FLY_DB_APP: amazing-studio-staging-db
+
+jobs:
+  verify:
+    environment: staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      PGPASSWORD: ${{ secrets.STAGING_DB_ROOT_PASSWORD }}
+      PILOT_EMAIL: ${{ inputs.pilot_email }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Enforce staging-only target
+        run: |
+          set -euo pipefail
+          test "$FLY_APP" = "amazing-studio-staging"
+          test "$FLY_DB_APP" = "amazing-studio-staging-db"
+          test -n "$FLY_API_TOKEN"
+          test -n "$PGPASSWORD"
+          test -n "$PILOT_EMAIL"
+          case "$FLY_APP $FLY_DB_APP" in *production*|*prod*) exit 1;; esac
+
+      - name: Verify lifecycle, isolation, backup, and isolated restore
+        run: bash scripts/verify-staging-pilot.sh
+
+      - name: Verify staging app health
+        run: |
+          set -euo pipefail
+          body=$(curl -fsS --max-time 20 https://amazing-studio-staging.fly.dev/api/healthz)
+          jq -e '.status == "ok"' <<<"$body" >/dev/null

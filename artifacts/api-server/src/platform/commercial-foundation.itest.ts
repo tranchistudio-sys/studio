@@ -58,7 +58,8 @@ async function action(tenantId: string, name: string, extra: Record<string, unkn
 async function makeCommercialActive(tenantId: string) {
   await pool.query("UPDATE studio_signup_requests SET status='ACTIVE' WHERE tenant_id=$1", [tenantId]);
   await pool.query("UPDATE tenants SET status='active' WHERE id=$1", [tenantId]);
-  await pool.query("UPDATE subscriptions SET status='active',current_period_ends_at=now()+interval '30 days' WHERE tenant_id=$1", [tenantId]);
+  await pool.query(`UPDATE subscriptions SET status='active',current_period_ends_at=now()+interval '30 days'
+    WHERE tenant_id=$1 AND status IN ('trial','active','past_due','suspended')`, [tenantId]);
   await pool.query(`INSERT INTO tenant_database_registry
     (tenant_id,database_ref,host_ref,database_name,role_name,secret_ref,health_status)
     VALUES ($1,$2,'test-host',$3,'test-role','test-secret','healthy')`,

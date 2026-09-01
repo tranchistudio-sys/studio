@@ -22,12 +22,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
 import { findDestructiveSql, stripSqlCommentsAndStrings } from "./deploy-guard-sql.mjs";
+import { verifyLockedMigration } from "./deploy-guard-policy.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const errors = [];
 const ok = [];
+const legacyExceptions = [];
 
 const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8");
 const exists = (p) => fs.existsSync(path.join(ROOT, p));
@@ -58,14 +59,17 @@ if (exists(MIGRATIONS_DIR)) {
       );
       continue;
     }
-    const sql = stripSqlCommentsAndStrings(read(`${MIGRATIONS_DIR}/${entry}`));
+    const raw = read(`${MIGRATIONS_DIR}/${entry}`);
+    const locked = verifyLockedMigration(entry, raw, LEGACY_DESTRUCTIVE_MIGRATION_CHECKSUMS);
+    if (locked.locked) {
+      if (!locked.valid) errors.push(`${MIGRATIONS_DIR}/${entry}: locked legacy migration checksum mismatch — bất kỳ thay đổi nội dung nào đều bị cấm.`);
+      else legacyExceptions.push(`${MIGRATIONS_DIR}/${entry}: locked legacy checksum verified`);
+      continue;
+    }
+    const sql = stripSqlCommentsAndStrings(raw);
     const m = findDestructiveSql(sql);
     if (m) {
-      const normalized = read(`${MIGRATIONS_DIR}/${entry}`).replace(/\r\n/g, "\n");
-      const checksum = createHash("sha256").update(normalized).digest("hex");
-      if (LEGACY_DESTRUCTIVE_MIGRATION_CHECKSUMS.get(entry) !== checksum) {
-        errors.push(`${MIGRATIONS_DIR}/${entry}: chứa SQL destructive ("${m[0]}") — cấm tuyệt đối trong deploy path.`);
-      }
+      errors.push(`${MIGRATIONS_DIR}/${entry}: chứa SQL destructive ("${m[0]}") — cấm tuyệt đối trong deploy path.`);
     }
   }
   if (!errors.length) ok.push(`migrations folder: ${entries.length} file, đúng allowlist, không destructive`);
@@ -176,3 +180,4 @@ if (errors.length) {
 }
 console.log("✅ [deploy-guard] PASS — deploy path sạch (code-only):");
 for (const line of ok) console.log("  ✓ " + line);
+for (const line of legacyExceptions) console.log("  ✓ " + line);

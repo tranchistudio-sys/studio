@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
 import express from "express";
+import type { PoolClient } from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getPlatformPool } from "@workspace/platform-db";
 
@@ -20,6 +21,12 @@ vi.mock("../middlewares/platform-auth", async importOriginal => {
 let server: http.Server;
 let baseUrl = "";
 const pool = getPlatformPool();
+const migrationUrls = [1,2,3,4,5].map(number => new URL(
+  `../../../../lib/platform-db/migrations/000${number}_${[
+    "platform_foundation", "membership_session_revocation", "tenant_database_registry_isolation",
+    "staff_access_requests", "commercial_saas_foundation",
+  ][number - 1]}.sql`, import.meta.url));
+const migrationSql = migrationUrls.map(url => readFileSync(url, "utf8"));
 
 async function api(path: string, body?: unknown) {
   return fetch(`${baseUrl}/api${path}`, {
@@ -46,6 +53,28 @@ async function approve(id: string) {
 
 async function action(tenantId: string, name: string, extra: Record<string, unknown> = {}) {
   return api(`/platform-admin/api/studios/${tenantId}/action`, { action: name, ...extra });
+}
+
+async function makeCommercialActive(tenantId: string) {
+  await pool.query("UPDATE studio_signup_requests SET status='ACTIVE' WHERE tenant_id=$1", [tenantId]);
+  await pool.query("UPDATE tenants SET status='active' WHERE id=$1", [tenantId]);
+  await pool.query("UPDATE subscriptions SET status='active',current_period_ends_at=now()+interval '30 days' WHERE tenant_id=$1", [tenantId]);
+  await pool.query(`INSERT INTO tenant_database_registry
+    (tenant_id,database_ref,host_ref,database_name,role_name,secret_ref,health_status)
+    VALUES ($1,$2,'test-host',$3,'test-role','test-secret','healthy')`,
+    [tenantId, `db-${tenantId}`, `tenant_${tenantId.replace(/-/g, "")}`]);
+}
+
+async function withMigrationSchema(run: (client: PoolClient) => Promise<void>) {
+  const client = await pool.connect();
+  const schema = `migration_test_${randomUUID().replace(/-/g, "")}`;
+  try {
+    await client.query("BEGIN");
+    await client.query(`CREATE SCHEMA "${schema}"`);
+    await client.query(`SET LOCAL search_path TO "${schema}"`);
+    for (const sql of migrationSql.slice(0, 4)) await client.query(sql);
+    await run(client);
+  } finally { await client.query("ROLLBACK"); client.release(); }
 }
 
 beforeAll(async () => {
@@ -81,9 +110,9 @@ describe("commercial signup state machine over HTTP and PostgreSQL", () => {
     expect(counts.rows[0]).toMatchObject({ tenants:1, subscriptions:1, payments:1, branding:1 });
   });
 
-  it("makes repeated approve idempotent without duplicate records", async () => {
-    const id = await createSignup(); const first = await approve(id); const second = await approve(id);
-    expect(first.response.status).toBe(200); expect(second.response.status).toBe(200);
+  it("serializes truly concurrent approve requests without duplicate records", async () => {
+    const id = await createSignup(); const [first, second] = await Promise.all([approve(id), approve(id)]);
+    expect([first.response.status, second.response.status]).toEqual([200,200]);
     expect(second.tenantId).toBe(first.tenantId);
     expect((await pool.query("SELECT count(*)::int count FROM subscriptions WHERE tenant_id=$1", [first.tenantId])).rows[0].count).toBe(1);
     expect((await pool.query("SELECT count(*)::int count FROM platform_payments WHERE tenant_id=$1", [first.tenantId])).rows[0].count).toBe(1);
@@ -124,12 +153,28 @@ describe("commercial payment and activation invariants", () => {
     expect((await pool.query("SELECT count(*)::int count FROM provisioning_jobs WHERE tenant_id=$1", [tenantId])).rows[0].count).toBe(1);
   });
 
+  it("preserves WAIVED setup semantics and permits activation", async () => {
+    const id = await createSignup(); const { tenantId } = await approve(id);
+    await pool.query("UPDATE platform_payments SET status='WAIVED',paid_at=NULL WHERE tenant_id=$1", [tenantId]);
+    expect((await action(tenantId!, "mark_setup_paid")).status).toBe(200);
+    expect((await pool.query("SELECT status,paid_at FROM platform_payments WHERE tenant_id=$1", [tenantId])).rows[0])
+      .toMatchObject({ status:"WAIVED", paid_at:null });
+    expect((await action(tenantId!, "activate")).status).toBe(200);
+  });
+
   it("rejects commercial mutations for a legacy tenant without signup", async () => {
     const tenantId = randomUUID();
     await pool.query("INSERT INTO tenants (id,name,slug,status,plan_id) VALUES ($1,'Legacy','legacy-test','active','legacy')", [tenantId]);
     await pool.query("INSERT INTO subscriptions (id,tenant_id,plan_id,status,source) VALUES ($1,$2,'legacy','active','DIRECT')", [randomUUID(),tenantId]);
-    expect((await action(tenantId, "mark_setup_paid")).status).toBe(409);
-    expect((await action(tenantId, "activate")).status).toBe(409);
+    const attempts = await Promise.all([
+      action(tenantId, "extend", { days:30 }), action(tenantId, "change_plan", { planCode:"PRO" }),
+      action(tenantId, "suspend"), action(tenantId, "reactivate"),
+      action(tenantId, "mark_setup_paid"), action(tenantId, "activate"),
+    ]);
+    expect(attempts.map(response => response.status)).toEqual([409,409,409,409,409,409]);
+    expect((await pool.query("SELECT status,plan_id FROM tenants WHERE id=$1", [tenantId])).rows[0]).toMatchObject({ status:"active", plan_id:"legacy" });
+    expect((await pool.query("SELECT status,plan_id,current_period_ends_at FROM subscriptions WHERE tenant_id=$1", [tenantId])).rows[0])
+      .toMatchObject({ status:"active", plan_id:"legacy", current_period_ends_at:null });
     expect((await pool.query("SELECT count(*)::int count FROM platform_payments WHERE tenant_id=$1", [tenantId])).rows[0].count).toBe(0);
     expect((await pool.query("SELECT count(*)::int count FROM provisioning_jobs WHERE tenant_id=$1", [tenantId])).rows[0].count).toBe(0);
   });
@@ -140,19 +185,38 @@ describe("commercial subscription isolation and state machine", () => {
     const a = await approve(await createSignup()); const b = await approve(await createSignup());
     const historicalId = randomUUID();
     await pool.query("INSERT INTO subscriptions (id,tenant_id,plan_id,status,source) VALUES ($1,$2,'standard','cancelled','DIRECT')", [historicalId,a.tenantId]);
-    await pool.query("UPDATE subscriptions SET status='active' WHERE tenant_id IN ($1,$2) AND status='suspended'", [a.tenantId,b.tenantId]);
+    await makeCommercialActive(a.tenantId!); await makeCommercialActive(b.tenantId!);
+    await pool.query("UPDATE subscriptions SET current_period_ends_at=NULL WHERE tenant_id=$1", [b.tenantId]);
     expect((await action(a.tenantId!, "extend", { days: 30 })).status).toBe(200);
     expect((await pool.query("SELECT current_period_ends_at FROM subscriptions WHERE tenant_id=$1 AND status='active'", [a.tenantId])).rows[0].current_period_ends_at).toBeTruthy();
     expect((await pool.query("SELECT current_period_ends_at FROM subscriptions WHERE tenant_id=$1 AND status='active'", [b.tenantId])).rows[0].current_period_ends_at).toBeNull();
     expect((await pool.query("SELECT status FROM subscriptions WHERE id=$1", [historicalId])).rows[0].status).toBe("cancelled");
   });
 
-  it("reactivates only SUSPENDED", async () => {
+  it("rejects reactivate for approved bootstrap and provisioning states", async () => {
     const approved = await approve(await createSignup());
-    expect((await action(approved.tenantId!, "reactivate")).status).toBe(200);
-    await pool.query("UPDATE subscriptions SET status='trial' WHERE tenant_id=$1", [approved.tenantId]);
+    expect((await action(approved.tenantId!, "extend", { days:30 })).status).toBe(409);
+    expect((await action(approved.tenantId!, "change_plan", { planCode:"PRO" })).status).toBe(409);
+    expect((await action(approved.tenantId!, "suspend")).status).toBe(409);
     expect((await action(approved.tenantId!, "reactivate")).status).toBe(409);
-    expect((await pool.query("SELECT status FROM subscriptions WHERE tenant_id=$1", [approved.tenantId])).rows[0].status).toBe("trial");
+    await pool.query("UPDATE studio_signup_requests SET status='PROVISIONING' WHERE tenant_id=$1", [approved.tenantId]);
+    expect((await action(approved.tenantId!, "reactivate")).status).toBe(409);
+    expect((await pool.query("SELECT status FROM tenants WHERE id=$1", [approved.tenantId])).rows[0].status).toBe("provisioning");
+  });
+
+  it("reactivates only a provisioned ACTIVE lifecycle with an unexpired period", async () => {
+    const approved = await approve(await createSignup()); await makeCommercialActive(approved.tenantId!);
+    expect((await action(approved.tenantId!, "suspend")).status).toBe(200);
+    expect((await action(approved.tenantId!, "reactivate")).status).toBe(200);
+    expect((await pool.query("SELECT status FROM tenants WHERE id=$1", [approved.tenantId])).rows[0].status).toBe("active");
+  });
+
+  it("rejects reactivation after the subscription period expires", async () => {
+    const approved = await approve(await createSignup()); await makeCommercialActive(approved.tenantId!);
+    expect((await action(approved.tenantId!, "suspend")).status).toBe(200);
+    await pool.query("UPDATE subscriptions SET current_period_ends_at=now()-interval '1 second' WHERE tenant_id=$1", [approved.tenantId]);
+    expect((await action(approved.tenantId!, "reactivate")).status).toBe(409);
+    expect((await pool.query("SELECT status FROM tenants WHERE id=$1", [approved.tenantId])).rows[0].status).toBe("suspended");
   });
 
   it("does not extend or resurrect SUSPENDED", async () => {
@@ -164,15 +228,53 @@ describe("commercial subscription isolation and state machine", () => {
 });
 
 describe("migration preflight", () => {
-  it("fails closed on duplicate current subscriptions before creating indexes", async () => {
-    const sql = readFileSync(new URL("../../../../lib/platform-db/migrations/0005_commercial_saas_foundation.sql", import.meta.url), "utf8");
-    const preflight = sql.match(/DO \$\$[\s\S]*?END \$\$;/)?.[0]; expect(preflight).toBeTruthy();
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN"); await client.query("SET LOCAL search_path TO pg_temp");
-      await client.query("CREATE TEMP TABLE plans(id text,code text); CREATE TEMP TABLE subscriptions(tenant_id text,status text); CREATE TEMP TABLE provisioning_jobs(tenant_id text,status text)");
-      await client.query("INSERT INTO subscriptions VALUES ('tenant-a','active'),('tenant-a','trial')");
-      await expect(client.query(preflight!)).rejects.toThrow(/multiple current subscriptions/);
-    } finally { await client.query("ROLLBACK"); client.release(); }
+  it("runs the complete 0005 migration on a clean schema and is idempotent", async () => {
+    await withMigrationSchema(async client => {
+      await client.query(migrationSql[4]!); await client.query(migrationSql[4]!);
+      expect((await client.query("SELECT code FROM plans WHERE id IN ('standard','pro') ORDER BY id")).rows).toEqual([{code:"PRO"},{code:"STANDARD"}]);
+    });
+  });
+
+  it.each([
+    ["multiple current subscriptions", async (client:any) => {
+      const tenant=randomUUID(); await client.query("INSERT INTO tenants(id,name,slug) VALUES($1,'T','t')",[tenant]);
+      await client.query("INSERT INTO subscriptions(id,tenant_id,plan_id,status) VALUES($1,$3,'legacy','active'),($2,$3,'legacy','trial')",[randomUUID(),randomUUID(),tenant]);
+    }],
+    ["multiple open provisioning jobs", async (client:any) => {
+      const tenant=randomUUID(); await client.query("INSERT INTO tenants(id,name,slug) VALUES($1,'T','t')",[tenant]);
+      await client.query("INSERT INTO provisioning_jobs(id,tenant_id,status) VALUES($1,$3,'pending'),($2,$3,'running')",[randomUUID(),randomUUID(),tenant]);
+    }],
+  ])("fails and rolls back the full migration for %s", async (message, arrange) => {
+    await withMigrationSchema(async client => {
+      await arrange(client); await client.query("SAVEPOINT before_migration");
+      await expect(client.query(migrationSql[4]!)).rejects.toThrow(new RegExp(message));
+      await client.query("ROLLBACK TO SAVEPOINT before_migration");
+      expect((await client.query("SELECT count(*)::int count FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='plans' AND column_name='code'")).rows[0].count).toBe(0);
+    });
+  });
+
+  it.each([
+    ["duplicate plan codes", "ALTER TABLE plans ADD COLUMN code text; INSERT INTO plans(id,name,code) VALUES('x','X','DUP'),('y','Y','dup')"],
+    ["non-canonical plan owner", "ALTER TABLE plans ADD COLUMN code text; INSERT INTO plans(id,name,code) VALUES('other','Other','STANDARD')"],
+    ["canonical conflicting code", "ALTER TABLE plans ADD COLUMN code text; INSERT INTO plans(id,name,code) VALUES('standard','Standard','PRO')"],
+  ])("rejects %s using the complete migration", async (name, fixture) => {
+    await withMigrationSchema(async client => {
+      await client.query(fixture); await client.query("SAVEPOINT before_migration");
+      await expect(client.query(migrationSql[4]!)).rejects.toThrow(/commercial preflight/);
+      await client.query("ROLLBACK TO SAVEPOINT before_migration");
+    });
+  });
+
+  it("preserves custom canonical pricing and features", async () => {
+    await withMigrationSchema(async client => {
+      await client.query(`ALTER TABLE plans ADD COLUMN code text; ALTER TABLE plans ADD COLUMN setup_fee_amount bigint;
+        ALTER TABLE plans ADD COLUMN monthly_price_amount bigint; ALTER TABLE plans ADD COLUMN currency text DEFAULT 'VND';
+        ALTER TABLE plans ADD COLUMN features jsonb DEFAULT '{}'::jsonb;
+        INSERT INTO plans(id,name,code,setup_fee_amount,monthly_price_amount,currency,features)
+        VALUES('standard','Custom','STANDARD',123,456,'USD','{"custom":true}')`);
+      await client.query(migrationSql[4]!);
+      expect((await client.query("SELECT setup_fee_amount,monthly_price_amount,currency,features FROM plans WHERE id='standard'")).rows[0])
+        .toMatchObject({ setup_fee_amount:"123", monthly_price_amount:"456", currency:"USD", features:{custom:true} });
+    });
   });
 });

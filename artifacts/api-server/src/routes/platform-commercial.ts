@@ -32,8 +32,8 @@ async function getCommercialSignupForUpdate(client: TransactionClient, tenantId:
 }
 
 async function getCurrentCommercialSubscriptionForUpdate(client: TransactionClient, tenantId: string) {
-  const result = await client.query<{ id:string; status:string; plan_id:string; setup_fee_amount:string|null }>(
-    `SELECT s.id,s.status,s.plan_id,p.setup_fee_amount
+  const result = await client.query<{ id:string; status:string; plan_id:string; setup_fee_amount:string|null; period_active:boolean }>(
+    `SELECT s.id,s.status,s.plan_id,p.setup_fee_amount,(s.current_period_ends_at > now()) AS period_active
        FROM subscriptions s JOIN plans p ON p.id=s.plan_id
       WHERE s.tenant_id=$1 AND s.source='DIRECT' AND s.status = ANY($2::text[])
       FOR UPDATE OF s`, [tenantId, CURRENT_SUBSCRIPTION_STATUSES]);
@@ -43,6 +43,11 @@ async function getCurrentCommercialSubscriptionForUpdate(client: TransactionClie
 
 function requireState(actual: string, allowed: readonly string[], action: string): void {
   if (!allowed.includes(actual)) throw new CommercialConflictError(`Không thể ${action} từ trạng thái ${actual}`);
+}
+
+async function requireProvisionedRegistry(client: TransactionClient, tenantId: string): Promise<void> {
+  const registry = await client.query("SELECT tenant_id FROM tenant_database_registry WHERE tenant_id=$1", [tenantId]);
+  if (registry.rows.length !== 1) throw new CommercialConflictError("Studio chưa hoàn tất tenant database provisioning");
 }
 
 router.get("/studio-plans", async (_req, res) => {
@@ -190,18 +195,34 @@ router.post("/platform-admin/api/studios/:tenantId/action", requirePlatformCsrf,
       const signup = await getCommercialSignupForUpdate(client, tenantId);
       const subscription = await getCurrentCommercialSubscriptionForUpdate(client, tenantId);
       if (action === "suspend" || action === "reactivate") {
-        if (action === "suspend") requireState(subscription.status, ["trial","active","past_due"], "tạm khóa");
-        else requireState(subscription.status, ["suspended"], "mở lại");
+        requireState(signup.status, ["ACTIVE"], action === "suspend" ? "tạm khóa" : "mở lại");
+        await requireProvisionedRegistry(client, tenantId);
+        if (action === "suspend") {
+          requireState(tenant.rows[0]!.status, ["active"], "tạm khóa");
+          requireState(subscription.status, ["active"], "tạm khóa");
+        } else {
+          requireState(tenant.rows[0]!.status, ["suspended"], "mở lại");
+          requireState(subscription.status, ["suspended"], "mở lại");
+          if (!subscription.period_active) {
+            throw new CommercialConflictError("Không thể mở lại khi subscription chưa có kỳ hạn còn hiệu lực");
+          }
+        }
         const status = action === "suspend" ? "suspended" : "active";
         await client.query("UPDATE tenants SET status=$2, updated_at=now() WHERE id=$1", [tenantId, status]);
         await client.query("UPDATE subscriptions SET status=$2, updated_at=now() WHERE id=$1", [subscription.id, status]);
       } else if (action === "extend") {
+        requireState(signup.status, ["ACTIVE"], "gia hạn");
+        requireState(tenant.rows[0]!.status, ["active"], "gia hạn");
+        await requireProvisionedRegistry(client, tenantId);
         requireState(subscription.status, ["trial","active","past_due"], "gia hạn");
         const days = Number(req.body?.days ?? 30); if (!Number.isInteger(days) || days < 1 || days > 730) throw new Error("Số ngày gia hạn không hợp lệ");
         await client.query(`UPDATE subscriptions SET current_period_start=COALESCE(current_period_start,now()),
           current_period_ends_at=GREATEST(COALESCE(current_period_ends_at,now()),now()) + ($2 || ' days')::interval,
           status='active', updated_at=now() WHERE id=$1`, [subscription.id, days]);
       } else if (action === "change_plan") {
+        requireState(signup.status, ["ACTIVE"], "đổi plan");
+        requireState(tenant.rows[0]!.status, ["active","suspended"], "đổi plan");
+        await requireProvisionedRegistry(client, tenantId);
         const code = plan(req.body?.planCode); if (!code) throw new Error("Plan không hợp lệ");
         const selectedPlan = await client.query<{ id:string }>("SELECT id FROM plans WHERE upper(code)=$1 AND is_active=true", [code]);
         if (selectedPlan.rows.length !== 1) throw new CommercialConflictError("Plan không tồn tại hoặc không hoạt động");
@@ -209,6 +230,7 @@ router.post("/platform-admin/api/studios/:tenantId/action", requirePlatformCsrf,
         await client.query("UPDATE tenants SET plan_id=$2,updated_at=now() WHERE id=$1", [tenantId,selectedPlan.rows[0]!.id]);
       } else if (action === "mark_setup_paid") {
         requireState(signup.status, ["APPROVED"], "xác nhận setup fee");
+        requireState(tenant.rows[0]!.status, ["provisioning"], "xác nhận setup fee");
         if (subscription.setup_fee_amount === null || !/^\d+$/.test(String(subscription.setup_fee_amount))) {
           throw new CommercialConflictError("Plan chưa cấu hình setup fee hợp lệ");
         }
@@ -216,7 +238,10 @@ router.post("/platform-admin/api/studios/:tenantId/action", requirePlatformCsrf,
           (id,tenant_id,signup_request_id,subscription_id,payment_type,amount,status,paid_at,created_by)
           VALUES ($1,$2,$3,$4,'SETUP_FEE',$5,'PAID',now(),$6)
           ON CONFLICT (tenant_id, payment_type) WHERE tenant_id IS NOT NULL AND payment_type='SETUP_FEE' AND status<>'VOID'
-          DO UPDATE SET status='PAID', paid_at=COALESCE(platform_payments.paid_at,now()), updated_at=now()`,
+          DO UPDATE SET
+            status=CASE WHEN platform_payments.status='WAIVED' THEN 'WAIVED' ELSE 'PAID' END,
+            paid_at=CASE WHEN platform_payments.status='WAIVED' THEN platform_payments.paid_at ELSE COALESCE(platform_payments.paid_at,now()) END,
+            updated_at=now()`,
           [randomUUID(),tenantId,signup.id,subscription.id,subscription.setup_fee_amount,actor.userId]);
       } else if (action === "activate") {
         if (signup.status === "PROVISIONING") {

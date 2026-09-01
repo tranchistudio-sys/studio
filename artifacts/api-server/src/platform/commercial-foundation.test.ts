@@ -5,6 +5,8 @@ import { getTenantEntitlements, resolveEntitlements } from "./entitlements";
 import { assertTenantDatabaseMetadata, TenantDatabaseMetadataMismatchError } from "./tenant-database-metadata";
 // @ts-expect-error repository deploy guard utility is intentionally plain ESM
 import { containsDestructiveSql } from "../../../../scripts/deploy-guard-sql.mjs";
+// @ts-expect-error repository deploy guard utility is intentionally plain ESM
+import { lockedMigrationChecksum, verifyLockedMigration } from "../../../../scripts/deploy-guard-policy.mjs";
 
 function authorize(platformRole: "PLATFORM_OWNER" | "PLATFORM_ADMIN" | null, authenticated = true) {
   const status = vi.fn(); const json = vi.fn(); const next = vi.fn();
@@ -52,6 +54,37 @@ describe("deploy guard destructive SQL detection", () => {
     "blocks %s", sql => expect(containsDestructiveSql(sql)).toBe(true));
   it.each(["-- DELETE FROM customers\nSELECT 1", "SELECT 'DELETE FROM customers'", "/* DELETE FROM customers */ SELECT 1"])(
     "ignores comments and string literals", sql => expect(containsDestructiveSql(sql)).toBe(false));
+  it.each([
+    "SELECT '--'; DROP TABLE customers",
+    "SELECT '/*'; DELETE FROM customers",
+    "SELECT 'it''s -- safe'; TRUNCATE customers",
+    'SELECT "--identifier"; ALTER TABLE customers DROP COLUMN name',
+    "DO $$ BEGIN RAISE NOTICE '--'; END $$; DROP INDEX customers_idx",
+    "DO $body$ BEGIN RAISE NOTICE '/*'; END $body$; DELETE FROM customers",
+    "/* outer /* nested */ comment */ DROP VIEW customer_view",
+  ])("cannot mask destructive SQL with quoted/comment text: %s", sql => {
+    expect(containsDestructiveSql(sql)).toBe(true);
+  });
+});
+
+describe("locked legacy migration checksum", () => {
+  const filename = "0004_seed_amazing_wedding_gifts.sql";
+  const expected = "f54c59b96624037c5581238ba0c16032a5c86c7a921d6768ecc65d971e8b83e6";
+  const original = readFileSync(new URL(`../../../../lib/db/migrations/${filename}`, import.meta.url), "utf8");
+  const checksums = new Map([[filename, expected]]);
+  it("accepts the exact locked file and treats CRLF/LF identically", () => {
+    expect(lockedMigrationChecksum(original)).toBe(expected);
+    expect(lockedMigrationChecksum(original.replace(/\r\n?/g, "\n").replace(/\n/g, "\r\n"))).toBe(expected);
+    expect(verifyLockedMigration(filename, original, checksums)).toMatchObject({ locked:true, valid:true });
+  });
+  it.each([
+    ["one token", (value:string) => value.replace(/DELETE/i, "UPDATE")],
+    ["remove DELETE and add UPDATE", (value:string) => value.replace(/DELETE\s+FROM/i, "UPDATE")],
+    ["comment", (value:string) => `${value}\n-- changed`],
+    ["whitespace", (value:string) => value.replace(" ", "  ")],
+  ])("rejects a %s change", (_name, mutate) => {
+    expect(verifyLockedMigration(filename, mutate(original), checksums)).toMatchObject({ locked:true, valid:false });
+  });
 });
 
 describe("commercial entitlements", () => {

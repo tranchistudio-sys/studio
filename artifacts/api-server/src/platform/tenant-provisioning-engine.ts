@@ -39,6 +39,8 @@ export class TenantProvisioningEngine{
   private async step(job:Job,step:Step):Promise<void>{
     const result=await this.platform.query(`UPDATE provisioning_jobs SET step=$2,last_heartbeat_at=now(),updated_at=now() WHERE id=$1 AND status='running' AND claimed_by=$3 RETURNING id`,[job.id,step,this.workerId]);
     if(result.rowCount!==1)throw new Error("Provisioning worker lease lost");
+    await this.platform.query(`INSERT INTO platform_audit_logs(id,tenant_id,action,target_type,target_id,metadata)
+      VALUES($1,$2,'provisioning.step','provisioning_job',$3,$4::jsonb)`,[randomUUID(),job.tenant_id,job.id,JSON.stringify({step,correlationId:job.id})]);
   }
   private async save(job:Job,resources:TenantDatabaseResources):Promise<void>{
     job.safe_retry={databaseRef:resources.databaseRef,hostRef:resources.hostRef,databaseName:resources.databaseName,roleName:resources.roleName,secretRef:resources.secretRef};
@@ -74,8 +76,12 @@ export class TenantProvisioningEngine{
     try{await client.query("BEGIN");await client.query("SELECT pg_advisory_xact_lock(hashtext($1))",[`owner:${email}`]);
       let user=(await client.query<{id:string}>("SELECT id FROM platform_users WHERE lower(canonical_email)=lower($1) ORDER BY created_at LIMIT 1",[email])).rows[0];
       if(!user){user=(await client.query<{id:string}>("INSERT INTO platform_users(id,canonical_email,display_name) VALUES($1,$2,$3) RETURNING id",[randomUUID(),email,owner.owner_name])).rows[0]!;}
-      await client.query(`INSERT INTO tenant_memberships(id,tenant_id,user_id,tenant_role,status,tenant_staff_id,invited_by)
-        VALUES($1,$2,$3,'OWNER','active',$4,$5) ON CONFLICT(tenant_id,user_id) DO UPDATE SET tenant_staff_id=COALESCE(tenant_memberships.tenant_staff_id,EXCLUDED.tenant_staff_id),updated_at=now()`,[randomUUID(),tenantId,user.id,staffId,owner.reviewed_by]);
+      const membership=await client.query("SELECT id FROM tenant_memberships WHERE tenant_id=$1 AND user_id=$2",[tenantId,user.id]);
+      if(membership.rows[0])await client.query("UPDATE tenant_memberships SET tenant_staff_id=COALESCE(tenant_staff_id,$3),updated_at=now() WHERE tenant_id=$1 AND user_id=$2",[tenantId,user.id,staffId]);
+      else{await client.query(`INSERT INTO tenant_memberships(id,tenant_id,user_id,tenant_role,status,tenant_staff_id,invited_by)
+        VALUES($1,$2,$3,'OWNER','active',$4,$5)`,[randomUUID(),tenantId,user.id,staffId,owner.reviewed_by]);
+        await client.query(`INSERT INTO platform_audit_logs(id,actor_user_id,tenant_id,action,target_type,target_id)
+          VALUES($1,$2,$3,'owner_membership.created','platform_user',$4)`,[randomUUID(),owner.reviewed_by,tenantId,user.id]);}
       const verified=await client.query("SELECT 1 FROM auth_identities WHERE user_id=$1",[user.id]);
       if(!verified.rows.length)await client.query(`INSERT INTO tenant_invitations(id,tenant_id,invited_email,invited_role,tenant_staff_id,target_user_id,expires_at,invited_by)
         VALUES($1,$2,$3,'OWNER',$4,$5,now()+interval '7 days',$6) ON CONFLICT DO NOTHING`,[randomUUID(),tenantId,email,staffId,user.id,owner.reviewed_by]);

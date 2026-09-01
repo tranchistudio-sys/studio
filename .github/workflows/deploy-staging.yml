@@ -129,7 +129,17 @@ jobs:
           initialized=$(psql "$template_url" -Atqc "SELECT to_regclass('public.staff') IS NOT NULL")
           if [ "$initialized" != "t" ]; then
             provisioner_template_url="postgresql://staging_provisioner:${PROVISIONING_PASSWORD}@127.0.0.1:15432/tenant_template_staging"
-            pg_dump "$schema_source_url" --schema-only --no-owner --no-privileges | psql "$provisioner_template_url" -v ON_ERROR_STOP=1
+            docker run --rm --network host \
+              -e PGPASSWORD="$PROVISIONING_PASSWORD" \
+              postgres:18 \
+              pg_dump \
+                --host=127.0.0.1 \
+                --port=15432 \
+                --username=staging_provisioner \
+                --dbname=tenant_schema_source_staging \
+                --schema-only \
+                --no-owner \
+                --no-privileges | psql "$provisioner_template_url" -v ON_ERROR_STOP=1
           fi
           counts=$(psql "$template_url" -Atqc "SELECT (SELECT count(*) FROM customers)+(SELECT count(*) FROM bookings)+(SELECT count(*) FROM payments)+(SELECT count(*) FROM expenses)+(SELECT count(*) FROM contracts)+(SELECT count(*) FROM staff)")
           test "$counts" = "0" || { echo "::error::Staging template contains business data"; exit 1; }

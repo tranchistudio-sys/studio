@@ -63,7 +63,7 @@ jobs:
             sleep 2
           done
           kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
-          APP_ENV=staging TENANT_MIGRATIONS_DIR="$GITHUB_WORKSPACE/lib/db/migrations" pnpm --filter @workspace/scripts exec tsx run-staging-tenant-migrations.mjs
+          CI=true TENANT_MIGRATIONS_DIR="$GITHUB_WORKSPACE/lib/db/migrations" pnpm --filter @workspace/scripts exec tsx run-ci-tenant-template-migrations.mjs
           counts=$(psql "$DATABASE_URL" -Atqc "SELECT (SELECT count(*) FROM customers),(SELECT count(*) FROM bookings),(SELECT count(*) FROM payments),(SELECT count(*) FROM expenses),(SELECT count(*) FROM contracts),(SELECT count(*) FROM staff)")
           [ "$counts" = "0|0|0|0|0|0" ]
           pg_dump "$DATABASE_URL" --schema-only --no-owner --no-privileges > tenant-template-schema.sql

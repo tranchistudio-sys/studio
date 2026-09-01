@@ -90,7 +90,7 @@ jobs:
             -v provisioner_pass="$PROVISIONING_PASSWORD" -v platform_pass="$PLATFORM_PASSWORD" -v legacy_pass="$LEGACY_PASSWORD" <<'SQL'
           SELECT format('CREATE ROLE staging_provisioner LOGIN CREATEDB CREATEROLE NOSUPERUSER PASSWORD %L', :'provisioner_pass')
             WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname='staging_provisioner') \gexec
-          SELECT format('ALTER ROLE staging_provisioner PASSWORD %L', :'provisioner_pass') \gexec
+          SELECT format('ALTER ROLE staging_provisioner LOGIN CREATEDB CREATEROLE NOSUPERUSER PASSWORD %L', :'provisioner_pass') \gexec
           SELECT format('CREATE ROLE staging_platform LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD %L', :'platform_pass')
             WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname='staging_platform') \gexec
           SELECT format('ALTER ROLE staging_platform PASSWORD %L', :'platform_pass') \gexec
@@ -161,6 +161,8 @@ jobs:
           DROP DATABASE IF EXISTS tenant_amazing_staging;
           DROP DATABASE IF EXISTS tenant_template_staging;
           CREATE DATABASE tenant_template_staging OWNER staging_provisioner TEMPLATE template0;
+          ALTER DATABASE tenant_template_staging OWNER TO staging_provisioner;
+          GRANT CONNECT, TEMPORARY ON DATABASE tenant_template_staging TO staging_provisioner;
           SQL
           template_url="postgresql://postgres@127.0.0.1:15432/tenant_template_staging"
           provisioner_template_url="postgresql://staging_provisioner:${PROVISIONING_PASSWORD}@127.0.0.1:15432/tenant_template_staging"

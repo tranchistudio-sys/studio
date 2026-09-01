@@ -1,0 +1,90 @@
+name: Setup Production Tenant Infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type SETUP_PRODUCTION_TENANTS
+        required: true
+
+concurrency:
+  group: amazing-studio-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-schema:
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: tenant_schema_source
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_schema_source
+      VPS_HOST: 160.250.128.162
+      VPS_USER: deploy
+      VPS_PORT: 22
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Confirm production tenant setup
+        run: test "${{ inputs.confirm }}" = "SETUP_PRODUCTION_TENANTS"
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build repository-derived empty tenant schema
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm --filter @workspace/db exec drizzle-kit export --dialect postgresql --schema './src/schema/index.ts' | psql "$DATABASE_URL" -v ON_ERROR_STOP=1
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/staging-schema-prerequisites.sql
+          pnpm --filter @workspace/api-server build
+          APP_ENV=staging NODE_ENV=development SCHEMA_BOOTSTRAP_ONLY=1 PORT=5199 PLATFORM_DATABASE_URL="" DEFAULT_TENANT_DATABASE_URL="$DATABASE_URL" \
+            node artifacts/api-server/dist/index.mjs >schema-bootstrap.log 2>&1 &
+          pid=$!
+          for i in $(seq 1 120); do
+            ready=$(psql "$DATABASE_URL" -Atqc "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name='gallery_albums') AND NOT EXISTS(SELECT 1 FROM pg_locks WHERE locktype='advisory' AND objid=88442201 AND granted)" || true)
+            [ "$ready" = "t" ] && break
+            kill -0 "$pid" 2>/dev/null || { sed -n '1,160p' schema-bootstrap.log; exit 1; }
+            [ "$i" != 120 ] || { sed -n '1,160p' schema-bootstrap.log; exit 1; }
+            sleep 2
+          done
+          kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true
+          APP_ENV=staging TENANT_MIGRATIONS_DIR="$GITHUB_WORKSPACE/lib/db/migrations" pnpm --filter @workspace/scripts exec tsx run-staging-tenant-migrations.mjs
+          counts=$(psql "$DATABASE_URL" -Atqc "SELECT (SELECT count(*) FROM customers),(SELECT count(*) FROM bookings),(SELECT count(*) FROM payments),(SELECT count(*) FROM expenses),(SELECT count(*) FROM contracts),(SELECT count(*) FROM staff)")
+          [ "$counts" = "0|0|0|0|0|0" ]
+          pg_dump "$DATABASE_URL" --schema-only --no-owner --no-privileges > tenant-template-schema.sql
+          tar -czf tenant-template-schema.tar.gz tenant-template-schema.sql
+      - name: Prepare SSH
+        shell: bash
+        run: |
+          test -n "$VPS_SSH_PRIVATE_KEY"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
+          ssh-keyscan -H -p "$VPS_PORT" "$VPS_HOST" > "$HOME/.ssh/known_hosts"
+      - name: Copy and run fail-closed production setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          scp -P "$VPS_PORT" -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            tenant-template-schema.tar.gz scripts/setup-production-tenant-infrastructure.sh "$VPS_USER@$VPS_HOST:/tmp/"
+          ssh -p "$VPS_PORT" -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" \
+            "bash /tmp/setup-production-tenant-infrastructure.sh /tmp/tenant-template-schema.tar.gz; status=\$?; rm -f /tmp/setup-production-tenant-infrastructure.sh /tmp/tenant-template-schema.tar.gz; exit \$status"
+      - name: Verify public health and registration
+        run: |
+          curl -fsS https://tranchistudio.com/api/healthz | grep '"status":"ok"'
+          curl -fsS https://tranchistudio.com/api/auth/config | grep '"registrationEnabled":true'

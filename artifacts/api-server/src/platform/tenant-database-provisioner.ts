@@ -67,8 +67,8 @@ export class PostgresTenantDatabaseProvisioner implements TenantDatabaseProvisio
       const targetPool=new Pool({connectionString:targetAdmin.toString(),max:1});
       try{
         const objects=await targetPool.query<{relkind:string;relname:string}>(`SELECT c.relkind,c.relname FROM pg_class c
-          JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind=ANY($1::"char"[])`,[["r","p","v","m","f","S"]]);
-        const commands:Record<string,string>={r:"TABLE",p:"TABLE",v:"VIEW",m:"MATERIALIZED VIEW",f:"FOREIGN TABLE",S:"SEQUENCE"};
+          JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind=ANY($1::"char"[])`,[["r","p","v","m","f"]]);
+        const commands:Record<string,string>={r:"TABLE",p:"TABLE",v:"VIEW",m:"MATERIALIZED VIEW",f:"FOREIGN TABLE"};
         for(const object of objects.rows)await targetPool.query(`ALTER ${commands[object.relkind]} public.${identifier(object.relname)} OWNER TO ${identifier(resources.roleName)}`);
       }
       finally{await targetPool.end();}

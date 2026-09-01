@@ -143,6 +143,7 @@ jobs:
             WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='tenant_amazing_staging') \gexec
           SQL
           legacy_url="postgresql://postgres@127.0.0.1:15432/tenant_amazing_staging"
+          psql "$legacy_url" -v ON_ERROR_STOP=1 -c 'REASSIGN OWNED BY staging_provisioner TO staging_legacy'
           psql "$legacy_url" -v ON_ERROR_STOP=1 -c 'GRANT USAGE ON SCHEMA public TO staging_legacy; GRANT ALL ON ALL TABLES IN SCHEMA public TO staging_legacy; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO staging_legacy; GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO staging_legacy'
           owner_id=$(psql "$legacy_url" -v ON_ERROR_STOP=1 -v email="$BOOTSTRAP_OWNER_EMAIL" -qAt <<'SQL'
           INSERT INTO staff(name,phone,email,role,roles,is_active)

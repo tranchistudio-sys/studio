@@ -78,6 +78,9 @@ migration_inventory=$(db_query "$platform_url" "SELECT filename||'|'||coalesce(l
 invitation_columns=$(db_query "$platform_url" "SELECT table_name||'.'||column_name||':'||data_type||':'||is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name IN ('tenant_invitations','tenant_memberships') ORDER BY table_name,ordinal_position")
 invitation_indexes=$(db_query "$platform_url" "SELECT indexname||':'||indexdef FROM pg_indexes WHERE schemaname='public' AND tablename IN ('tenant_invitations','tenant_memberships') ORDER BY indexname")
 invitation_constraints=$(db_query "$platform_url" "SELECT c.conname||':'||pg_get_constraintdef(c.oid) FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace WHERE n.nspname='public' AND t.relname IN ('tenant_invitations','tenant_memberships') ORDER BY c.conname")
+duplicate_subscriptions=$(db_query "$platform_url" "SELECT count(*) FROM (SELECT tenant_id FROM subscriptions WHERE status IN ('trial','active','past_due','suspended') GROUP BY tenant_id HAVING count(*)>1) d")
+duplicate_jobs=$(db_query "$platform_url" "SELECT count(*) FROM (SELECT tenant_id FROM provisioning_jobs WHERE status IN ('pending','running','cleanup_required') GROUP BY tenant_id HAVING count(*)>1) d")
+plan_conflicts=$(db_query "$platform_url" "SELECT count(*) FROM plans p WHERE upper(coalesce(to_jsonb(p)->>'code','')) IN ('STANDARD','PRO') AND id<>lower(to_jsonb(p)->>'code')")
 
 historical_name=0005_tenant_invitation_permissions.sql
 historical_checksum=$(db_query "$platform_url" "SELECT coalesce(checksum_sha256,'') FROM platform_schema_migrations WHERE filename='$historical_name'")
@@ -112,6 +115,9 @@ while IFS= read -r row; do echo "INVITATION_INDEX=$row"; done <<<"$invitation_in
 while IFS= read -r row; do echo "INVITATION_CONSTRAINT=$row"; done <<<"$invitation_constraints"
 echo "HISTORICAL_0005_CHECKSUM_PREFIX=${historical_checksum:0:12}"
 echo "HISTORICAL_0005_RECOVERED=$historical_recovered"
+echo "PREFLIGHT_DUPLICATE_SUBSCRIPTIONS=$duplicate_subscriptions"
+echo "PREFLIGHT_DUPLICATE_OPEN_JOBS=$duplicate_jobs"
+echo "PREFLIGHT_PLAN_CONFLICTS=$plan_conflicts"
 echo "TENANT_SECRET_MASTER_KEY=$(env_exists TENANT_SECRET_MASTER_KEY)"
 echo "TENANT_PROVISIONING_ADMIN_URL=$(env_exists TENANT_PROVISIONING_ADMIN_URL)"
 echo "TENANT_PROVISIONING_TEMPLATE_DATABASE=$(env_exists TENANT_PROVISIONING_TEMPLATE_DATABASE)"

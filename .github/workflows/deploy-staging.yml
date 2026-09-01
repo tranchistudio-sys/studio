@@ -34,10 +34,9 @@ jobs:
           LEGACY_PASSWORD: ${{ secrets.STAGING_LEGACY_DB_PASSWORD }}
           MASTER_KEY: ${{ secrets.STAGING_TENANT_SECRET_MASTER_KEY }}
           SESSION_SECRET: ${{ secrets.STAGING_SESSION_SECRET }}
-          SCHEMA_SOURCE_URL: ${{ secrets.STAGING_SCHEMA_SOURCE_DATABASE_URL }}
         run: |
           set -euo pipefail
-          for name in FLY_TOKEN ROOT_PASSWORD PROVISIONING_PASSWORD PLATFORM_PASSWORD LEGACY_PASSWORD MASTER_KEY SESSION_SECRET SCHEMA_SOURCE_URL; do
+          for name in FLY_TOKEN ROOT_PASSWORD PROVISIONING_PASSWORD PLATFORM_PASSWORD LEGACY_PASSWORD MASTER_KEY SESSION_SECRET; do
             if [ -z "${!name}" ]; then echo "::error::Missing required staging secret: $name"; exit 1; fi
           done
 
@@ -53,6 +52,7 @@ jobs:
       - name: Install and verify before staging mutation
         run: |
           pnpm install --frozen-lockfile
+          node --test scripts/staging-schema-source-guard.test.mjs
           pnpm --filter @workspace/api-server exec vitest run src/platform/tenant-provisioning-safety.test.ts
           pnpm --filter @workspace/platform-db typecheck
           pnpm run build:deploy
@@ -76,7 +76,6 @@ jobs:
           PROVISIONING_PASSWORD: ${{ secrets.STAGING_PROVISIONING_PASSWORD }}
           PLATFORM_PASSWORD: ${{ secrets.STAGING_PLATFORM_DB_PASSWORD }}
           LEGACY_PASSWORD: ${{ secrets.STAGING_LEGACY_DB_PASSWORD }}
-          SCHEMA_SOURCE_URL: ${{ secrets.STAGING_SCHEMA_SOURCE_DATABASE_URL }}
           BOOTSTRAP_OWNER_EMAIL: ${{ vars.STAGING_BOOTSTRAP_OWNER_EMAIL }}
         run: |
           set -euo pipefail
@@ -101,13 +100,25 @@ jobs:
             WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='amazing_platform_staging') \gexec
           SELECT 'CREATE DATABASE tenant_template_staging OWNER staging_provisioner TEMPLATE template0'
             WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='tenant_template_staging') \gexec
+          SELECT 'CREATE DATABASE tenant_schema_source_staging OWNER staging_provisioner TEMPLATE template0'
+            WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='tenant_schema_source_staging') \gexec
           SQL
+
+          schema_source_url="postgresql://staging_provisioner:${PROVISIONING_PASSWORD}@127.0.0.1:15432/tenant_schema_source_staging"
+          APP_ENV=staging STAGING_PROXY_APP="$FLY_DB_APP" DATABASE_URL="$schema_source_url" \
+            node scripts/staging-schema-source-guard.mjs
+          APP_ENV=staging STAGING_PROXY_APP="$FLY_DB_APP" DATABASE_URL="$schema_source_url" \
+            pnpm --filter @workspace/db push-force
+          APP_ENV=staging STAGING_PROXY_APP="$FLY_DB_APP" DATABASE_URL="$schema_source_url" \
+            pnpm --filter @workspace/scripts exec tsx run-staging-tenant-migrations.mjs
+          source_counts=$(psql "$schema_source_url" -Atqc "SELECT (SELECT count(*) FROM customers)+(SELECT count(*) FROM bookings)+(SELECT count(*) FROM payments)+(SELECT count(*) FROM expenses)+(SELECT count(*) FROM contracts)+(SELECT count(*) FROM staff)")
+          test "$source_counts" = "0" || { echo "::error::Generated staging schema source contains business data"; exit 1; }
 
           template_url="postgresql://postgres@127.0.0.1:15432/tenant_template_staging"
           initialized=$(psql "$template_url" -Atqc "SELECT to_regclass('public.staff') IS NOT NULL")
           if [ "$initialized" != "t" ]; then
             provisioner_template_url="postgresql://staging_provisioner:${PROVISIONING_PASSWORD}@127.0.0.1:15432/tenant_template_staging"
-            pg_dump "$SCHEMA_SOURCE_URL" --schema-only --no-owner --no-privileges | psql "$provisioner_template_url" -v ON_ERROR_STOP=1
+            pg_dump "$schema_source_url" --schema-only --no-owner --no-privileges | psql "$provisioner_template_url" -v ON_ERROR_STOP=1
           fi
           counts=$(psql "$template_url" -Atqc "SELECT (SELECT count(*) FROM customers)+(SELECT count(*) FROM bookings)+(SELECT count(*) FROM payments)+(SELECT count(*) FROM expenses)+(SELECT count(*) FROM contracts)+(SELECT count(*) FROM staff)")
           test "$counts" = "0" || { echo "::error::Staging template contains business data"; exit 1; }

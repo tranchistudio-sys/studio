@@ -62,9 +62,13 @@ export class PostgresTenantDatabaseProvisioner implements TenantDatabaseProvisio
       if (!exists.rows.length) await pool.query(`CREATE DATABASE ${identifier(resources.databaseName)} OWNER ${identifier(resources.roleName)} TEMPLATE ${identifier(template)}`);
     } finally { await pool.end(); }
     const targetAdmin=new URL(this.adminUrl!);targetAdmin.pathname=`/${resources.databaseName}`;
-    const adminRole=decodeURIComponent(targetAdmin.username);
     const targetPool=new Pool({connectionString:targetAdmin.toString(),max:1});
-    try{await targetPool.query(`REASSIGN OWNED BY ${identifier(adminRole)} TO ${identifier(resources.roleName)}`);}
+    try{
+      const objects=await targetPool.query<{relkind:string;relname:string}>(`SELECT c.relkind,c.relname FROM pg_class c
+        JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind=ANY($1::"char"[])`,[["r","p","v","m","S","f"]]);
+      const commands:Record<string,string>={r:"TABLE",p:"TABLE",v:"VIEW",m:"MATERIALIZED VIEW",S:"SEQUENCE",f:"FOREIGN TABLE"};
+      for(const object of objects.rows)await targetPool.query(`ALTER ${commands[object.relkind]} public.${identifier(object.relname)} OWNER TO ${identifier(resources.roleName)}`);
+    }
     finally{await targetPool.end();}
   }
   async registerSecret(resources:TenantDatabaseResources):Promise<void>{ await this.secrets.commitTenantDatabaseSecret(resources.secretRef); }

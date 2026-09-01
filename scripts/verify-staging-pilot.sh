@@ -111,7 +111,9 @@ test "$duplicate_registry" = "0"
 
 # Keep the full dump/restore stream inside the isolated staging DB machine.
 # The Fly proxy is intentionally used only for short verification queries.
+root_password_b64=$(printf '%s' "$PGPASSWORD" | base64 -w0)
 flyctl ssh console --app "$FLY_DB_APP" -C "sh -lc 'set -eu; \
+  export PGPASSWORD=\$(printf %s $root_password_b64 | base64 -d); \
   pg_dump -h 127.0.0.1 -U postgres -d $database_name --format=custom --no-owner --no-privileges -f /tmp/$restore_db.dump; \
   dropdb -h 127.0.0.1 --if-exists -U postgres $restore_db; \
   createdb -h 127.0.0.1 -U postgres -O staging_provisioner -T template0 $restore_db; \

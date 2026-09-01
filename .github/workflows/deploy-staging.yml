@@ -2,10 +2,6 @@ name: Deploy Permanent Staging
 
 on:
   workflow_dispatch:
-  # Bootstrap-only trigger for PR #182. Removed immediately after the first
-  # permanent staging deployment; the final workflow remains manual-only.
-  pull_request:
-    types: [synchronize]
 
 concurrency:
   group: permanent-staging
@@ -21,11 +17,6 @@ env:
 
 jobs:
   deploy-staging:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.pull_request.number == 182 &&
-       github.event.pull_request.head.ref == 'feature/platform-staging-pilot-readiness' &&
-       github.event.pull_request.head.repo.full_name == github.repository)
     environment: staging
     runs-on: ubuntu-latest
     timeout-minutes: 45

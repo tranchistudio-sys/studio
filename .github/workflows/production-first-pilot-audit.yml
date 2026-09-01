@@ -43,3 +43,18 @@ jobs:
             scripts/audit-backup-production-first-pilot.sh "$VPS_USER@$VPS_HOST:/tmp/audit-backup-production-first-pilot-$GITHUB_RUN_ID.sh"
           ssh -p "$VPS_PORT" -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$VPS_USER@$VPS_HOST" "bash /tmp/audit-backup-production-first-pilot-$GITHUB_RUN_ID.sh; status=\$?; rm -f /tmp/audit-backup-production-first-pilot-$GITHUB_RUN_ID.sh; exit \$status"
+      - name: Retrieve exact historical migration when recovered
+        if: success()
+        shell: bash
+        run: |
+          scp -P "$VPS_PORT" -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST:/tmp/0005_tenant_invitation_permissions.sql" "$RUNNER_TEMP/" || true
+          ssh -p "$VPS_PORT" -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" "rm -f /tmp/0005_tenant_invitation_permissions.sql"
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: recovered-historical-platform-migration
+          path: ${{ runner.temp }}/0005_tenant_invitation_permissions.sql
+          if-no-files-found: ignore
+          retention-days: 1

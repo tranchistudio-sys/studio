@@ -89,6 +89,41 @@ jobs:
           pnpm --filter @workspace/platform-db migrate
           pnpm --filter @workspace/platform-db migrate
 
+      - name: Production-like platform history compatibility
+        env:
+          PGPASSWORD: postgres
+        run: |
+          set -euo pipefail
+          history_db=amazing_platform_history_test
+          createdb -h 127.0.0.1 -U postgres "$history_db"
+          history_url="postgresql://postgres:postgres@127.0.0.1:5432/$history_db"
+          psql "$history_url" -v ON_ERROR_STOP=1 -c "CREATE TABLE platform_schema_migrations(filename TEXT PRIMARY KEY,checksum_sha256 TEXT,applied_at TIMESTAMPTZ NOT NULL DEFAULT now())"
+          for file in \
+            0001_platform_foundation.sql \
+            0002_membership_session_revocation.sql \
+            0003_tenant_database_registry_isolation.sql \
+            0004_staff_access_requests.sql \
+            0005_tenant_invitation_permissions.sql; do
+            path="lib/platform-db/migrations/$file"
+            psql "$history_url" -v ON_ERROR_STOP=1 -1 -f "$path"
+            checksum=$(sha256sum "$path" | awk '{print $1}')
+            psql "$history_url" -v ON_ERROR_STOP=1 -v filename="$file" -v checksum="$checksum" \
+              <<'SQL'
+          INSERT INTO platform_schema_migrations(filename,checksum_sha256)
+          VALUES(:'filename',:'checksum');
+          SQL
+          done
+          test "$(sha256sum lib/platform-db/migrations/0005_tenant_invitation_permissions.sql | awk '{print $1}')" = \
+            "686626a4dd8ee89ace055afdc2ad39471c87b7dbd20f0a46fa12d4c2daaf2dfa"
+          PLATFORM_DATABASE_URL="$history_url" pnpm --filter @workspace/platform-db migrate
+          PLATFORM_DATABASE_URL="$history_url" pnpm --filter @workspace/platform-db migrate
+          assertions=$(psql "$history_url" -v ON_ERROR_STOP=1 -Atqc "
+            SELECT count(*)=7 FROM platform_schema_migrations;
+            SELECT count(*)=2 FROM plans WHERE (code='STANDARD' AND monthly_price_amount=500000) OR (code='PRO' AND monthly_price_amount=1000000);
+            SELECT to_regclass('public.tenant_database_secrets') IS NOT NULL;
+            SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='tenant_invitations' AND column_name='permissions' AND data_type='jsonb');")
+          test "$assertions" = $'t\nt\nt\nt'
+
       - name: Typecheck platform database package
         run: pnpm --filter @workspace/platform-db typecheck
 

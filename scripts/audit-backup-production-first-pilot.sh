@@ -49,7 +49,8 @@ pg_image=postgres:17-alpine
 sudo -n docker image inspect "$pg_image" >/dev/null 2>&1 || sudo -n docker pull "$pg_image" >/dev/null
 
 backup_db(){
-  local label="$1" url="$2" tmp="/tmp/${label}-${stamp}.dump" final="$target/${label}.dump"
+  local label="$1" url="$2" tmp final
+  tmp="/tmp/${label}-${stamp}.dump"; final="$target/${label}.dump"
   sudo -n docker run --rm --network "$network" -e TARGET_URL="$url" "$pg_image" \
     sh -c 'pg_dump --format=custom --no-owner --no-acl "$TARGET_URL"' > "$tmp"
   test -s "$tmp" || die "$label backup empty"

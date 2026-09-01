@@ -19,6 +19,13 @@ start_proxy() {
 }
 start_proxy
 restore_db="staging_pilot_restore_${GITHUB_RUN_ID:-local}_${GITHUB_RUN_ATTEMPT:-1}"
+backup_dir="${RUNNER_TEMP:-/tmp}"
+backup_name="pilot-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$(date -u +%Y%m%dT%H%M%SZ).dump"
+backup_file="$backup_dir/$backup_name"
+checksum_file="$backup_file.sha256"
+local_container="pilot-restore-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
+local_port=25432
+local_password="ci_restore_only_${GITHUB_RUN_ID:-local}_${GITHUB_RUN_ATTEMPT:-1}"
 cleanup() {
   psql "postgresql://postgres@127.0.0.1:15432/postgres" -v ON_ERROR_STOP=1 \
     -v restore_db="$restore_db" <<'SQL' >/dev/null 2>&1 || true
@@ -26,6 +33,8 @@ SELECT pg_terminate_backend(pid) FROM pg_stat_activity
   WHERE datname=:'restore_db' AND pid<>pg_backend_pid();
 SELECT format('DROP DATABASE IF EXISTS %I', :'restore_db') \gexec
 SQL
+  docker rm -f "$local_container" >/dev/null 2>&1 || true
+  rm -f "$backup_file" "$checksum_file"
   kill "$proxy_pid" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -81,14 +90,17 @@ case "$role_name" in tenant_[0-9a-f]*_role) ;; *) exit 1;; esac
 tenant_url="postgresql://postgres@127.0.0.1:15432/${database_name}"
 tenant_state=$(psql "$tenant_url" -v ON_ERROR_STOP=1 -v tenant_id="$tenant_id" -AtF '|' <<'SQL'
 SELECT
-  ((SELECT count(*) FROM customers)+(SELECT count(*) FROM bookings)+
-   (SELECT count(*) FROM payments)+(SELECT count(*) FROM expenses)+
-   (SELECT count(*) FROM contracts))::text,
+  (SELECT count(*) FROM customers)::text,
+  (SELECT count(*) FROM bookings)::text,
+  (SELECT count(*) FROM payments)::text,
+  (SELECT count(*) FROM expenses)::text,
+  (SELECT count(*) FROM contracts)::text,
   (SELECT count(*) FROM staff)::text,
-  (SELECT count(*) FROM tenant_metadata WHERE tenant_id=:'tenant_id')::text;
+  (SELECT count(*) FROM tenant_metadata WHERE tenant_id=:'tenant_id')::text,
+  COALESCE((SELECT schema_version FROM tenant_metadata WHERE tenant_id=:'tenant_id'),'');
 SQL
 )
-test "$tenant_state" = "0|1|1"
+test "$tenant_state" = "0|0|0|0|0|1|1|0007_tenant_metadata.sql"
 
 isolation=$(psql "$root_url" -v ON_ERROR_STOP=1 -v database_name="$database_name" -v role_name="$role_name" -AtF '|' <<'SQL'
 SELECT
@@ -109,28 +121,44 @@ duplicate_registry=$(psql "$platform_url" -v ON_ERROR_STOP=1 -Atqc "
   ) duplicates")
 test "$duplicate_registry" = "0"
 
-# Keep the full dump/restore stream inside the isolated staging DB machine.
-# The Fly proxy is intentionally used only for short verification queries.
-root_password_b64=$(printf '%s' "$PGPASSWORD" | base64 -w0)
-flyctl ssh console --app "$FLY_DB_APP" -C "sh -lc 'set -eu; \
-  export PGPASSWORD=\$(printf %s $root_password_b64 | base64 -d); \
-  rm -f /tmp/staging_pilot_restore_*.dump; \
-  pg_dump -h 127.0.0.1 -U postgres -d $database_name --format=custom --no-owner --no-privileges -f /tmp/$restore_db.dump; \
-  dropdb -h 127.0.0.1 --if-exists -U postgres $restore_db; \
-  createdb -h 127.0.0.1 -U postgres -O staging_provisioner -T template0 $restore_db; \
-  pg_restore -h 127.0.0.1 -U postgres -d $restore_db --no-owner --no-privileges --exit-on-error /tmp/$restore_db.dump; \
-  rm -f /tmp/$restore_db.dump'"
-start_proxy
-restored=$(psql "postgresql://postgres@127.0.0.1:15432/${restore_db}" -v ON_ERROR_STOP=1 -v tenant_id="$tenant_id" -AtF '|' <<'SQL'
+# Back up the tenant through the staging-only proxy, then verify the artifact in
+# a disposable PostgreSQL 18 container. A same-cluster restore overloads the
+# smallest Fly staging DB, so it is deliberately not used as capacity proof.
+docker run --rm --network host -e PGPASSWORD \
+  -v "$backup_dir:/backup" postgres:18 \
+  pg_dump -h 127.0.0.1 -p 15432 -U postgres -d "$database_name" \
+    --format=custom --no-owner --no-privileges -f "/backup/$backup_name"
+(cd "$backup_dir" && sha256sum "$backup_name" > "${backup_name}.sha256")
+(cd "$backup_dir" && sha256sum --check "${backup_name}.sha256")
+
+docker run -d --name "$local_container" \
+  -e POSTGRES_PASSWORD="$local_password" -p "${local_port}:5432" postgres:18 >/dev/null
+for i in $(seq 1 30); do
+  docker exec "$local_container" pg_isready -U postgres >/dev/null 2>&1 && break
+  test "$i" != 30 || exit 1
+  sleep 2
+done
+PGPASSWORD="$local_password" createdb -h 127.0.0.1 -p "$local_port" -U postgres "$restore_db"
+docker run --rm --network host -e PGPASSWORD="$local_password" \
+  -v "$backup_dir:/backup" postgres:18 \
+  pg_restore -h 127.0.0.1 -p "$local_port" -U postgres -d "$restore_db" \
+    --no-owner --no-privileges --exit-on-error --jobs=1 "/backup/$backup_name"
+restored=$(PGPASSWORD="$local_password" psql \
+  "postgresql://postgres@127.0.0.1:${local_port}/${restore_db}" \
+  -v ON_ERROR_STOP=1 -v tenant_id="$tenant_id" -AtF '|' <<'SQL'
 SELECT
-  ((SELECT count(*) FROM customers)+(SELECT count(*) FROM bookings)+
-   (SELECT count(*) FROM payments)+(SELECT count(*) FROM expenses)+
-   (SELECT count(*) FROM contracts))::text,
+  (SELECT count(*) FROM customers)::text,
+  (SELECT count(*) FROM bookings)::text,
+  (SELECT count(*) FROM payments)::text,
+  (SELECT count(*) FROM expenses)::text,
+  (SELECT count(*) FROM contracts)::text,
   (SELECT count(*) FROM staff)::text,
-  (SELECT count(*) FROM tenant_metadata WHERE tenant_id=:'tenant_id')::text;
+  (SELECT count(*) FROM tenant_metadata WHERE tenant_id=:'tenant_id')::text,
+  COALESCE((SELECT schema_version FROM tenant_metadata WHERE tenant_id=:'tenant_id'),'');
 SQL
 )
 test "$restored" = "$tenant_state"
+backup_checksum=$(cut -d' ' -f1 "$checksum_file")
 
 summary_file="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 {
@@ -141,5 +169,7 @@ summary_file="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
   echo "- Owner membership and empty tenant: verified"
   echo "- Database-per-tenant isolation: verified"
   echo "- Failure/retry attempts: $attempt_count"
-  echo "- Backup/restore: verified in disposable staging database"
+  echo "- Backup checksum (SHA-256): $backup_checksum"
+  echo "- Backup/restore: verified sequentially on isolated PostgreSQL 18"
+  echo "- Capacity note: the smallest permanent staging DB is not used as restore-capacity proof"
 } >> "$summary_file"

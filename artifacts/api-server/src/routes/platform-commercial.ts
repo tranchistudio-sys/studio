@@ -193,7 +193,7 @@ router.get("/platform-admin/api/studios/:tenantId", async (req, res) => {
 router.post("/platform-admin/api/studios/:tenantId/action", requirePlatformCsrf, async (req, res) => {
   const tenantId = String(req.params.tenantId); const action = String(req.body?.action ?? "");
   if (!UUID.test(tenantId)) { res.status(400).json({ error: "Studio không hợp lệ" }); return; }
-  const actor = context(res); const allowed = new Set(["extend","change_plan","suspend","reactivate","mark_setup_paid","activate","retry_provisioning"]);
+  const actor = context(res); const allowed = new Set(["extend","change_plan","suspend","reactivate","mark_setup_paid","waive_setup_fee","activate","retry_provisioning"]);
   if (!allowed.has(action)) { res.status(400).json({ error: "Action không hợp lệ" }); return; }
   try {
     const result = await withPlatformTransaction(async client => {
@@ -246,7 +246,7 @@ router.post("/platform-admin/api/studios/:tenantId/action", requirePlatformCsrf,
         if (selectedPlan.rows.length !== 1) throw new CommercialConflictError("Plan không tồn tại hoặc không hoạt động");
         await client.query("UPDATE subscriptions SET plan_id=$2,updated_at=now() WHERE id=$1", [subscription.id,selectedPlan.rows[0]!.id]);
         await client.query("UPDATE tenants SET plan_id=$2,updated_at=now() WHERE id=$1", [tenantId,selectedPlan.rows[0]!.id]);
-      } else if (action === "mark_setup_paid") {
+      } else if (action === "mark_setup_paid" || action === "waive_setup_fee") {
         requireState(signup.status, ["APPROVED"], "xác nhận setup fee");
         requireState(tenant.rows[0]!.status, ["provisioning"], "xác nhận setup fee");
         if (subscription.setup_fee_amount === null || !/^\d+$/.test(String(subscription.setup_fee_amount))) {
@@ -254,20 +254,25 @@ router.post("/platform-admin/api/studios/:tenantId/action", requirePlatformCsrf,
         }
         const beforePayment = await client.query<{ status:string }>(`SELECT status FROM platform_payments
           WHERE tenant_id=$1 AND payment_type='SETUP_FEE' AND status<>'VOID' FOR UPDATE`, [tenantId]);
+        if (action === "waive_setup_fee" && beforePayment.rows[0]?.status === "PAID") {
+          throw new CommercialConflictError("Setup fee đã PAID; không thể chuyển ngược sang WAIVED");
+        }
+        const requestedStatus = action === "waive_setup_fee" ? "WAIVED" : "PAID";
         const payment = await client.query<{ status:"PAID"|"WAIVED" }>(`INSERT INTO platform_payments
           (id,tenant_id,signup_request_id,subscription_id,payment_type,amount,status,paid_at,created_by)
-          VALUES ($1,$2,$3,$4,'SETUP_FEE',$5,'PAID',now(),$6)
+          VALUES ($1,$2,$3,$4,'SETUP_FEE',$5,$7,CASE WHEN $7='PAID' THEN now() ELSE NULL END,$6)
           ON CONFLICT (tenant_id, payment_type) WHERE tenant_id IS NOT NULL AND payment_type='SETUP_FEE' AND status<>'VOID'
           DO UPDATE SET
-            status=CASE WHEN platform_payments.status='WAIVED' THEN 'WAIVED' ELSE 'PAID' END,
-            paid_at=CASE WHEN platform_payments.status='WAIVED' THEN platform_payments.paid_at ELSE COALESCE(platform_payments.paid_at,now()) END,
+            status=CASE WHEN platform_payments.status='WAIVED' OR EXCLUDED.status='WAIVED' THEN 'WAIVED' ELSE 'PAID' END,
+            paid_at=CASE WHEN platform_payments.status='WAIVED' OR EXCLUDED.status='WAIVED' THEN NULL ELSE COALESCE(platform_payments.paid_at,now()) END,
             updated_at=now()
           RETURNING status`,
-          [randomUUID(),tenantId,signup.id,subscription.id,subscription.setup_fee_amount,actor.userId]);
+          [randomUUID(),tenantId,signup.id,subscription.id,subscription.setup_fee_amount,actor.userId,requestedStatus]);
         const paymentStatus = payment.rows[0]!.status;
         auditMetadata = {
           paymentStatus,
-          paymentResult: paymentStatus === "WAIVED" ? "preserved_waived" :
+          paymentResult: paymentStatus === "WAIVED" ?
+            (beforePayment.rows[0]?.status === "WAIVED" ? "preserved_waived" : "transitioned_to_waived") :
             beforePayment.rows[0]?.status === "PAID" ? "preserved_paid" : "transitioned_to_paid",
         };
       } else if (action === "activate") {

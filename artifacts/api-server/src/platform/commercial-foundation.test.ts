@@ -42,6 +42,11 @@ describe("commercial idempotency and isolation guards", () => {
     expect(routes).toContain("ON CONFLICT (tenant_id, payment_type)");
     expect(routes).toContain("COALESCE(platform_payments.paid_at,now())");
   });
+  it("supports an explicit audited WAIVED setup-fee transition", () => {
+    expect(routes).toContain('action === "waive_setup_fee"');
+    expect(routes).toContain('"transitioned_to_waived"');
+    expect(routes).toContain("Setup fee đã PAID; không thể chuyển ngược sang WAIVED");
+  });
   it("scopes studio detail, payments and subscription actions by tenant id", () => {
     expect(routes).toContain("WHERE t.id=$1 LIMIT 1");
     expect(routes).toContain("WHERE s.tenant_id=$1 AND s.source='DIRECT'");

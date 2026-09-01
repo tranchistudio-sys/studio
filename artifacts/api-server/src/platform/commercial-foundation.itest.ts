@@ -167,15 +167,26 @@ describe("commercial payment and activation invariants", () => {
     expect((await pool.query("SELECT count(*)::int count FROM provisioning_jobs WHERE tenant_id=$1", [tenantId])).rows[0].count).toBe(1);
   });
 
-  it("preserves WAIVED setup semantics and permits activation", async () => {
+  it("creates and preserves WAIVED setup semantics through the commercial API", async () => {
     const id = await createSignup(); const { tenantId } = await approve(id);
-    await pool.query("UPDATE platform_payments SET status='WAIVED',paid_at=NULL WHERE tenant_id=$1", [tenantId]);
+    expect((await action(tenantId!, "waive_setup_fee")).status).toBe(200);
     expect((await action(tenantId!, "mark_setup_paid")).status).toBe(200);
     expect((await pool.query("SELECT status,paid_at FROM platform_payments WHERE tenant_id=$1", [tenantId])).rows[0])
       .toMatchObject({ status:"WAIVED", paid_at:null });
-    const audit = await pool.query("SELECT metadata FROM platform_audit_logs WHERE tenant_id=$1 AND action='commercial.mark_setup_paid'", [tenantId]);
-    expect(audit.rows[0].metadata).toMatchObject({ paymentStatus:"WAIVED", paymentResult:"preserved_waived" });
+    const audit = await pool.query("SELECT action,metadata FROM platform_audit_logs WHERE tenant_id=$1 AND action IN ('commercial.waive_setup_fee','commercial.mark_setup_paid') ORDER BY created_at", [tenantId]);
+    expect(audit.rows).toEqual([
+      { action:"commercial.waive_setup_fee", metadata:expect.objectContaining({ paymentStatus:"WAIVED", paymentResult:"transitioned_to_waived" }) },
+      { action:"commercial.mark_setup_paid", metadata:expect.objectContaining({ paymentStatus:"WAIVED", paymentResult:"preserved_waived" }) },
+    ]);
     expect((await action(tenantId!, "activate")).status).toBe(200);
+  });
+
+  it("does not downgrade a PAID setup fee to WAIVED", async () => {
+    const id = await createSignup(); const { tenantId } = await approve(id);
+    expect((await action(tenantId!, "mark_setup_paid")).status).toBe(200);
+    expect((await action(tenantId!, "waive_setup_fee")).status).toBe(409);
+    expect((await pool.query("SELECT status,paid_at FROM platform_payments WHERE tenant_id=$1", [tenantId])).rows[0])
+      .toMatchObject({ status:"PAID" });
   });
 
   it("rejects commercial mutations for a legacy tenant without signup", async () => {
@@ -185,9 +196,9 @@ describe("commercial payment and activation invariants", () => {
     const attempts = await Promise.all([
       action(tenantId, "extend", { days:30 }), action(tenantId, "change_plan", { planCode:"PRO" }),
       action(tenantId, "suspend"), action(tenantId, "reactivate"),
-      action(tenantId, "mark_setup_paid"), action(tenantId, "activate"),
+      action(tenantId, "mark_setup_paid"), action(tenantId, "waive_setup_fee"), action(tenantId, "activate"),
     ]);
-    expect(attempts.map(response => response.status)).toEqual([409,409,409,409,409,409]);
+    expect(attempts.map(response => response.status)).toEqual([409,409,409,409,409,409,409]);
     expect((await pool.query("SELECT status,plan_id FROM tenants WHERE id=$1", [tenantId])).rows[0]).toMatchObject({ status:"active", plan_id:"legacy" });
     expect((await pool.query("SELECT status,plan_id,current_period_ends_at FROM subscriptions WHERE tenant_id=$1", [tenantId])).rows[0])
       .toMatchObject({ status:"active", plan_id:"legacy", current_period_ends_at:null });

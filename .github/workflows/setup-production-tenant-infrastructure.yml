@@ -66,7 +66,8 @@ jobs:
           CI=true TENANT_MIGRATIONS_DIR="$GITHUB_WORKSPACE/lib/db/migrations" pnpm --filter @workspace/scripts exec tsx run-ci-tenant-template-migrations.mjs
           counts=$(psql "$DATABASE_URL" -Atqc "SELECT (SELECT count(*) FROM customers),(SELECT count(*) FROM bookings),(SELECT count(*) FROM payments),(SELECT count(*) FROM expenses),(SELECT count(*) FROM contracts),(SELECT count(*) FROM staff)")
           [ "$counts" = "0|0|0|0|0|0" ]
-          pg_dump "$DATABASE_URL" --schema-only --no-owner --no-privileges > tenant-template-schema.sql
+          docker run --rm --network host -e TARGET_URL="$DATABASE_URL" postgres:18-alpine \
+            sh -c 'pg_dump "$TARGET_URL" --schema-only --no-owner --no-privileges' > tenant-template-schema.sql
           tar -czf tenant-template-schema.tar.gz tenant-template-schema.sql
       - name: Prepare SSH
         shell: bash

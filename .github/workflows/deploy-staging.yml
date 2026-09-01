@@ -79,11 +79,22 @@ jobs:
           BOOTSTRAP_OWNER_EMAIL: ${{ vars.STAGING_BOOTSTRAP_OWNER_EMAIL }}
         run: |
           set -euo pipefail
-          flyctl proxy 15432:5432 --app "$FLY_DB_APP" >fly-proxy.log 2>&1 &
-          proxy_pid=$!
+          proxy_pid=""
           bootstrap_pid=""
-          trap 'test -z "$bootstrap_pid" || kill "$bootstrap_pid" 2>/dev/null || true; kill "$proxy_pid" 2>/dev/null || true' EXIT
-          for i in $(seq 1 30); do pg_isready -h 127.0.0.1 -p 15432 -U postgres && break; sleep 2; done
+          trap 'test -z "$bootstrap_pid" || kill "$bootstrap_pid" 2>/dev/null || true; test -z "$proxy_pid" || kill "$proxy_pid" 2>/dev/null || true' EXIT
+          start_proxy() {
+            test -z "$proxy_pid" || kill "$proxy_pid" 2>/dev/null || true
+            test -z "$proxy_pid" || wait "$proxy_pid" 2>/dev/null || true
+            flyctl proxy 15432:5432 --app "$FLY_DB_APP" >fly-proxy.log 2>&1 &
+            proxy_pid=$!
+            for i in $(seq 1 30); do
+              pg_isready -h 127.0.0.1 -p 15432 -U postgres && return
+              sleep 2
+            done
+            echo "::error::Could not establish staging database proxy"
+            exit 1
+          }
+          start_proxy
           root_url="postgresql://postgres@127.0.0.1:15432/postgres"
 
           psql "$root_url" -v ON_ERROR_STOP=1 \
@@ -154,6 +165,7 @@ jobs:
             }
             echo "::warning::Transient staging bootstrap failure; retrying once"
             sleep 5
+            start_proxy
           done
           APP_ENV=staging STAGING_PROXY_APP="$FLY_DB_APP" DATABASE_URL="$schema_source_url" \
             TENANT_MIGRATIONS_DIR="$GITHUB_WORKSPACE/lib/db/migrations" \

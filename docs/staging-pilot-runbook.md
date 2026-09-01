@@ -12,11 +12,11 @@ Permanent staging uses only these resources:
 - Runtime roles: `staging_platform` and `staging_legacy`
 - Provisioning role: `staging_provisioner` with `LOGIN CREATEDB CREATEROLE NOSUPERUSER`
 
-Production is not a source, target, fallback, or rollback destination. The template source must be a reviewed schema-only staging secret; it must never point at production. Never paste credentials into a ticket, log, command transcript, or this document.
+Production is not a source, target, fallback, or rollback destination. The template is generated only from repository code on the dedicated staging cluster; it never uses an external schema-source secret. Never paste credentials into a ticket, log, command transcript, or this document.
 
 ## One-time prerequisites
 
-The GitHub environment `staging` must exist. The workflow fails when any required `STAGING_*` secret is absent. No external tenant schema URL is required: the workflow creates `tenant_schema_source_staging` on the dedicated staging cluster, applies the repository Drizzle schema only after an exact environment/host/database identity guard, adds the reviewed schema-only prerequisite for the lazy runtime-managed `wedding_cards` table, runs ordered non-business-seed tenant migrations, verifies all business tables are empty, and copies only its schema into the tenant template. Schema push is forbidden everywhere except this disposable staging source database.
+The GitHub environment `staging` must exist. The workflow fails when any required `STAGING_*` secret is absent. No external tenant schema URL is required: the workflow creates `tenant_schema_source_staging` on the dedicated staging cluster, applies the repository Drizzle schema only after an exact environment/host/database identity guard, adds reviewed schema-only prerequisites, runs the repository development runtime schema bootstrap against that exact disposable database, applies ordered tenant migrations, verifies all business tables are empty, and recreates the tenant template from a schema-only dump. Schema push is forbidden everywhere except this disposable staging source database.
 
 In Google Cloud, add exactly this JavaScript origin to the existing web OAuth client:
 

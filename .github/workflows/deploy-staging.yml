@@ -81,7 +81,8 @@ jobs:
           set -euo pipefail
           flyctl proxy 15432:5432 --app "$FLY_DB_APP" >fly-proxy.log 2>&1 &
           proxy_pid=$!
-          trap 'kill "$proxy_pid" 2>/dev/null || true' EXIT
+          bootstrap_pid=""
+          trap 'test -z "$bootstrap_pid" || kill "$bootstrap_pid" 2>/dev/null || true; kill "$proxy_pid" 2>/dev/null || true' EXIT
           for i in $(seq 1 30); do pg_isready -h 127.0.0.1 -p 15432 -U postgres && break; sleep 2; done
           root_url="postgresql://postgres@127.0.0.1:15432/postgres"
 
@@ -110,28 +111,61 @@ jobs:
           APP_ENV=staging STAGING_PROXY_APP="$FLY_DB_APP" DATABASE_URL="$schema_source_url" \
             pnpm --filter @workspace/db push-force
           psql "$schema_source_url" -v ON_ERROR_STOP=1 -f scripts/staging-schema-prerequisites.sql
+          APP_ENV=staging NODE_ENV=development PORT=5199 \
+            DATABASE_URL="$schema_source_url" DEFAULT_TENANT_DATABASE_URL="$schema_source_url" \
+            PLATFORM_DATABASE_URL="" \
+            node artifacts/api-server/dist/index.mjs >schema-bootstrap.log 2>&1 &
+          bootstrap_pid=$!
+          schema_ready=""
+          for i in $(seq 1 90); do
+            kill -0 "$bootstrap_pid" 2>/dev/null || {
+              sed -n '1,200p' schema-bootstrap.log
+              echo "::error::Repository runtime schema bootstrap exited early"
+              exit 1
+            }
+            schema_ready=$(psql "$schema_source_url" -Atqc "
+              SELECT
+                EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='dresses' AND column_name='sell_price')
+                AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='service_packages' AND column_name='cms_status')
+                AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='gallery_albums')
+                AND NOT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND objid=88442201 AND granted)")
+            test "$schema_ready" = "t" && break
+            sleep 2
+          done
+          test "$schema_ready" = "t" || {
+            sed -n '1,200p' schema-bootstrap.log
+            echo "::error::Repository runtime schema bootstrap did not complete"
+            exit 1
+          }
+          kill "$bootstrap_pid" 2>/dev/null || true
+          wait "$bootstrap_pid" 2>/dev/null || true
+          bootstrap_pid=""
           APP_ENV=staging STAGING_PROXY_APP="$FLY_DB_APP" DATABASE_URL="$schema_source_url" \
             TENANT_MIGRATIONS_DIR="$GITHUB_WORKSPACE/lib/db/migrations" \
             pnpm --filter @workspace/scripts exec tsx run-staging-tenant-migrations.mjs
           source_counts=$(psql "$schema_source_url" -Atqc "SELECT (SELECT count(*) FROM customers)+(SELECT count(*) FROM bookings)+(SELECT count(*) FROM payments)+(SELECT count(*) FROM expenses)+(SELECT count(*) FROM contracts)+(SELECT count(*) FROM staff)")
           test "$source_counts" = "0" || { echo "::error::Generated staging schema source contains business data"; exit 1; }
 
+          psql "$root_url" -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+            WHERE datname IN ('tenant_template_staging','tenant_amazing_staging') AND pid <> pg_backend_pid();
+          DROP DATABASE IF EXISTS tenant_amazing_staging;
+          DROP DATABASE IF EXISTS tenant_template_staging;
+          CREATE DATABASE tenant_template_staging OWNER staging_provisioner TEMPLATE template0;
+          SQL
           template_url="postgresql://postgres@127.0.0.1:15432/tenant_template_staging"
-          initialized=$(psql "$template_url" -Atqc "SELECT to_regclass('public.staff') IS NOT NULL")
-          if [ "$initialized" != "t" ]; then
-            provisioner_template_url="postgresql://staging_provisioner:${PROVISIONING_PASSWORD}@127.0.0.1:15432/tenant_template_staging"
-            docker run --rm --network host \
-              -e PGPASSWORD="$PROVISIONING_PASSWORD" \
-              postgres:18 \
-              pg_dump \
-                --host=127.0.0.1 \
-                --port=15432 \
-                --username=staging_provisioner \
-                --dbname=tenant_schema_source_staging \
-                --schema-only \
-                --no-owner \
-                --no-privileges | psql "$provisioner_template_url" -v ON_ERROR_STOP=1
-          fi
+          provisioner_template_url="postgresql://staging_provisioner:${PROVISIONING_PASSWORD}@127.0.0.1:15432/tenant_template_staging"
+          docker run --rm --network host \
+            -e PGPASSWORD="$PROVISIONING_PASSWORD" \
+            postgres:18 \
+            pg_dump \
+              --host=127.0.0.1 \
+              --port=15432 \
+              --username=staging_provisioner \
+              --dbname=tenant_schema_source_staging \
+              --schema-only \
+              --no-owner \
+              --no-privileges | psql "$provisioner_template_url" -v ON_ERROR_STOP=1
           counts=$(psql "$template_url" -Atqc "SELECT (SELECT count(*) FROM customers)+(SELECT count(*) FROM bookings)+(SELECT count(*) FROM payments)+(SELECT count(*) FROM expenses)+(SELECT count(*) FROM contracts)+(SELECT count(*) FROM staff)")
           test "$counts" = "0" || { echo "::error::Staging template contains business data"; exit 1; }
 
@@ -139,8 +173,7 @@ jobs:
           SELECT pg_terminate_backend(pid)
             FROM pg_stat_activity
             WHERE datname='tenant_template_staging' AND pid <> pg_backend_pid();
-          SELECT 'CREATE DATABASE tenant_amazing_staging OWNER staging_legacy TEMPLATE tenant_template_staging'
-            WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='tenant_amazing_staging') \gexec
+          CREATE DATABASE tenant_amazing_staging OWNER staging_legacy TEMPLATE tenant_template_staging;
           SQL
           legacy_url="postgresql://postgres@127.0.0.1:15432/tenant_amazing_staging"
           psql "$legacy_url" -v ON_ERROR_STOP=1 -c 'REASSIGN OWNED BY staging_provisioner TO staging_legacy'

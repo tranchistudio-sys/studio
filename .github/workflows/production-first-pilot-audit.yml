@@ -1,0 +1,45 @@
+name: Production First Pilot Audit and Backup
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type AUDIT_BACKUP_PRODUCTION
+        required: true
+
+concurrency:
+  group: amazing-studio-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VPS_HOST: 160.250.128.162
+      VPS_USER: deploy
+      VPS_PORT: 22
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Confirm read-only audit and backups
+        run: test "${{ inputs.confirm }}" = "AUDIT_BACKUP_PRODUCTION"
+      - uses: actions/checkout@v4
+      - name: Prepare SSH
+        shell: bash
+        run: |
+          test -n "$VPS_SSH_PRIVATE_KEY"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
+          ssh-keyscan -H -p "$VPS_PORT" "$VPS_HOST" > "$HOME/.ssh/known_hosts"
+      - name: Audit and create verified backups
+        shell: bash
+        run: |
+          scp -P "$VPS_PORT" -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            scripts/audit-backup-production-first-pilot.sh "$VPS_USER@$VPS_HOST:/tmp/audit-backup-production-first-pilot-$GITHUB_RUN_ID.sh"
+          ssh -p "$VPS_PORT" -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" "bash /tmp/audit-backup-production-first-pilot-$GITHUB_RUN_ID.sh; status=\$?; rm -f /tmp/audit-backup-production-first-pilot-$GITHUB_RUN_ID.sh; exit \$status"

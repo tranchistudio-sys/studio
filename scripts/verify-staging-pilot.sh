@@ -117,7 +117,7 @@ flyctl ssh console --app "$FLY_DB_APP" -C "sh -lc 'set -eu; \
   pg_dump -h 127.0.0.1 -U postgres -d $database_name --format=custom --no-owner --no-privileges -f /tmp/$restore_db.dump; \
   dropdb -h 127.0.0.1 --if-exists -U postgres $restore_db; \
   createdb -h 127.0.0.1 -U postgres -O staging_provisioner -T template0 $restore_db; \
-  pg_restore -h 127.0.0.1 -U postgres -d $restore_db --jobs=4 --no-owner --no-privileges --exit-on-error /tmp/$restore_db.dump; \
+  pg_restore -h 127.0.0.1 -U postgres -d $restore_db --no-owner --no-privileges --exit-on-error /tmp/$restore_db.dump; \
   rm -f /tmp/$restore_db.dump'"
 start_proxy
 restored=$(psql "postgresql://postgres@127.0.0.1:15432/${restore_db}" -v ON_ERROR_STOP=1 -v tenant_id="$tenant_id" -AtF '|' <<'SQL'

@@ -317,7 +317,9 @@ async function seedIfEmpty() {
   ]);
 }
 
-seedIfEmpty().catch(console.error);
+const runLegacyPricingSeeds = process.env.SCHEMA_BOOTSTRAP_ONLY !== "1";
+
+if (runLegacyPricingSeeds) seedIfEmpty().catch(console.error);
 
 // ─── Addon: Chụp tiệc cưới ───────────────────────────────────────────────────
 const ADDONS_TIEC_CUOI = JSON.stringify([
@@ -421,7 +423,7 @@ async function seedTiecCuoiIfMissing() {
   console.log("[seed] CHỤP TIỆC CƯỚI — 4 gói đã được thêm.");
 }
 
-seedTiecCuoiIfMissing().catch(console.error);
+if (runLegacyPricingSeeds) seedTiecCuoiIfMissing().catch(console.error);
 
 // ─── Addon: Combo ngày cưới ───────────────────────────────────────────────────
 const ADDONS_COMBO = JSON.stringify([
@@ -594,7 +596,7 @@ async function seedComboIfMissing() {
   console.log("[seed] COMBO CÓ MAKEUP + COMBO KHÔNG MAKEUP — 8 gói đã được thêm.");
 }
 
-seedComboIfMissing().catch(console.error);
+if (runLegacyPricingSeeds) seedComboIfMissing().catch(console.error);
 
 // ─── Seed: Nhóm dịch vụ mới ──────────────────────────────────────────────────
 
@@ -861,11 +863,13 @@ async function seedInAnhIfMissing() {
   console.log("[seed] IN ẢNH — 7 size đã thêm.");
 }
 
-seedQuayPhimIfMissing().catch(console.error);
-seedBeautyIfMissing().catch(console.error);
-seedGiaDinhIfMissing().catch(console.error);
-seedMakeupLeIfMissing().catch(console.error);
-seedInAnhIfMissing().catch(console.error);
+if (runLegacyPricingSeeds) {
+  seedQuayPhimIfMissing().catch(console.error);
+  seedBeautyIfMissing().catch(console.error);
+  seedGiaDinhIfMissing().catch(console.error);
+  seedMakeupLeIfMissing().catch(console.error);
+  seedInAnhIfMissing().catch(console.error);
+}
 
 // ─── Addon: Chụp cổng tại studio ─────────────────────────────────────────────
 const ADDONS_CONG = JSON.stringify([
@@ -1011,7 +1015,7 @@ async function updateGroupSortOrders() {
 
 // These legacy seed/update routines mutate business pricing data, so test and
 // deployment starts that explicitly skip migrations must never invoke them.
-if (process.env.SKIP_STARTUP_MIGRATIONS !== "1") {
+if (process.env.SKIP_STARTUP_MIGRATIONS !== "1" && runLegacyPricingSeeds) {
   seedCongGroup().catch(console.error);
   updateGroupSortOrders().catch(console.error);
 }

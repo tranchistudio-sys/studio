@@ -120,7 +120,7 @@ jobs:
             --dialect postgresql --schema './src/schema/index.ts' | \
             psql "$schema_source_url" -v ON_ERROR_STOP=1
           psql "$schema_source_url" -v ON_ERROR_STOP=1 -f scripts/staging-schema-prerequisites.sql
-          APP_ENV=staging NODE_ENV=development PORT=5199 \
+          APP_ENV=staging NODE_ENV=development SCHEMA_BOOTSTRAP_ONLY=1 PORT=5199 \
             DATABASE_URL="$schema_source_url" DEFAULT_TENANT_DATABASE_URL="$schema_source_url" \
             PLATFORM_DATABASE_URL="" \
             node artifacts/api-server/dist/index.mjs >schema-bootstrap.log 2>&1 &

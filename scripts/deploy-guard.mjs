@@ -85,6 +85,7 @@ const PLATFORM_MIGRATION_ALLOWLIST = new Set([
   "0003_tenant_database_registry_isolation.sql",
   "0004_staff_access_requests.sql",
   "0005_commercial_saas_foundation.sql",
+  "0006_tenant_provisioning_engine.sql",
 ]);
 if (exists(PLATFORM_MIGRATIONS_DIR)) {
   const entries = fs.readdirSync(path.join(ROOT, PLATFORM_MIGRATIONS_DIR));

@@ -109,9 +109,13 @@ router.get("/platform-admin/api/signups", async (_req, res) => {
 
 router.get("/platform-admin/api/studios", async (_req, res) => {
   const q = await getPlatformPool().query(`SELECT t.id,t.name,t.slug,t.status,p.code AS plan_code,
-    s.status AS subscription_status,s.current_period_ends_at,r.health_status AS registry_status
+    s.status AS subscription_status,s.current_period_ends_at,r.health_status AS registry_status,
+    j.status AS provisioning_status,j.step AS provisioning_step,j.failed_step AS provisioning_failed_step,
+    j.error_code AS provisioning_error_code,j.error_message AS provisioning_error_message,j.last_attempted_at AS provisioning_last_attempted_at
     FROM tenants t LEFT JOIN subscriptions s ON s.tenant_id=t.id AND s.status<>'cancelled'
     LEFT JOIN plans p ON p.id=s.plan_id LEFT JOIN tenant_database_registry r ON r.tenant_id=t.id
+    LEFT JOIN LATERAL (SELECT status,step,failed_step,error_code,error_message,last_attempted_at FROM provisioning_jobs
+      WHERE tenant_id=t.id ORDER BY created_at DESC LIMIT 1) j ON true
     ORDER BY t.created_at DESC LIMIT 200`);
   res.json(q.rows);
 });
@@ -174,10 +178,14 @@ router.get("/platform-admin/api/studios/:tenantId", async (req, res) => {
   if (!UUID.test(tenantId)) { res.status(400).json({ error: "Studio không hợp lệ" }); return; }
   const q = await getPlatformPool().query(`SELECT t.*, s.id AS subscription_id, s.status AS subscription_status,
     s.source, s.starts_at, s.current_period_ends_at, p.code AS plan_code, p.setup_fee_amount,
-    r.health_status AS registry_status, d.hostname AS domain
+    r.health_status AS registry_status, d.hostname AS domain,
+    j.status AS provisioning_status,j.step AS provisioning_step,j.failed_step AS provisioning_failed_step,
+    j.error_code AS provisioning_error_code,j.error_message AS provisioning_error_message,j.last_attempted_at AS provisioning_last_attempted_at
     FROM tenants t LEFT JOIN subscriptions s ON s.tenant_id=t.id AND s.status <> 'cancelled'
     LEFT JOIN plans p ON p.id=s.plan_id LEFT JOIN tenant_database_registry r ON r.tenant_id=t.id
-    LEFT JOIN tenant_domains d ON d.tenant_id=t.id AND d.status='active' WHERE t.id=$1 LIMIT 1`, [tenantId]);
+    LEFT JOIN tenant_domains d ON d.tenant_id=t.id AND d.status='active'
+    LEFT JOIN LATERAL (SELECT status,step,failed_step,error_code,error_message,last_attempted_at FROM provisioning_jobs
+      WHERE tenant_id=t.id ORDER BY created_at DESC LIMIT 1) j ON true WHERE t.id=$1 LIMIT 1`, [tenantId]);
   if (!q.rows[0]) { res.status(404).json({ error: "Không tìm thấy studio" }); return; }
   res.json({ ...q.rows[0], entitlements: await getTenantEntitlements(tenantId) });
 });
@@ -185,7 +193,7 @@ router.get("/platform-admin/api/studios/:tenantId", async (req, res) => {
 router.post("/platform-admin/api/studios/:tenantId/action", requirePlatformCsrf, async (req, res) => {
   const tenantId = String(req.params.tenantId); const action = String(req.body?.action ?? "");
   if (!UUID.test(tenantId)) { res.status(400).json({ error: "Studio không hợp lệ" }); return; }
-  const actor = context(res); const allowed = new Set(["extend","change_plan","suspend","reactivate","mark_setup_paid","activate"]);
+  const actor = context(res); const allowed = new Set(["extend","change_plan","suspend","reactivate","mark_setup_paid","activate","retry_provisioning"]);
   if (!allowed.has(action)) { res.status(400).json({ error: "Action không hợp lệ" }); return; }
   try {
     const result = await withPlatformTransaction(async client => {
@@ -195,7 +203,16 @@ router.post("/platform-admin/api/studios/:tenantId/action", requirePlatformCsrf,
       const signup = await getCommercialSignupForUpdate(client, tenantId);
       const subscription = await getCurrentCommercialSubscriptionForUpdate(client, tenantId);
       let auditMetadata: Record<string, unknown> = { days: req.body?.days, planCode: req.body?.planCode };
-      if (action === "suspend" || action === "reactivate") {
+      if (action === "retry_provisioning") {
+        requireState(signup.status,["PROVISIONING"],"thử lại provisioning");
+        requireState(tenant.rows[0]!.status,["provisioning_failed"],"thử lại provisioning");
+        const failed=await client.query<{id:string}>("SELECT id FROM provisioning_jobs WHERE tenant_id=$1 AND status='failed' ORDER BY created_at DESC LIMIT 1 FOR UPDATE",[tenantId]);
+        if(failed.rows.length!==1)throw new CommercialConflictError("Không có provisioning job FAILED để thử lại");
+        await client.query(`UPDATE provisioning_jobs SET status='pending',step='QUEUED',claimed_by=NULL,last_heartbeat_at=NULL,
+          error_code=NULL,error_message=NULL,failed_step=NULL,retry_after=NULL,finished_at=NULL,updated_at=now() WHERE id=$1`,[failed.rows[0]!.id]);
+        await client.query("UPDATE tenants SET status='provisioning',updated_at=now() WHERE id=$1",[tenantId]);
+        auditMetadata={jobId:failed.rows[0]!.id};
+      } else if (action === "suspend" || action === "reactivate") {
         requireState(signup.status, ["ACTIVE"], action === "suspend" ? "tạm khóa" : "mở lại");
         await requireProvisionedRegistry(client, tenantId);
         if (action === "suspend") {

@@ -4,6 +4,7 @@ import healthRouter from "./health";
 import authRouter from "./auth";
 import platformAuthRouter from "./platform-auth";
 import tenantMembersRouter from "./tenant-members";
+import platformCommercialRouter from "./platform-commercial";
 import { businessAuthGuard } from "../middlewares/platform-auth";
 import { signCmsPublicMediaResponses } from "../lib/cms-public-media";
 import customersRouter from "./customers";
@@ -66,6 +67,7 @@ const router: IRouter = Router();
 router.use(platformAuthRouter);
 router.use(authRouter);
 router.use(tenantMembersRouter);
+router.use(platformCommercialRouter);
 
 // Mọi API nghiệp vụ phía dưới mặc định cần phiên hợp lệ, trừ allowlist public
 // theo đúng method/path trong middleware. Chặn các route cũ từng để hở.

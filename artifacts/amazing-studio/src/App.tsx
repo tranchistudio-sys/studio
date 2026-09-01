@@ -47,6 +47,7 @@ import NotFound from "@/pages/not-found";
 import LoginPage from "@/pages/login";
 import MembersPage from "@/pages/members";
 import StudioSelectorPage from "@/pages/studio-selector";
+import PlatformAdminPage from "@/pages/platform-admin";
 import CmsGalleryPage from "@/pages/cms/gallery";
 import CmsPricingPublicPage from "@/pages/cms/pricing-public";
 import CmsCategoriesPage from "@/pages/cms/categories";
@@ -115,6 +116,7 @@ const INTERNAL_PREFIXES = [
   "/my-profile", "/photoshop-jobs", "/attendance",
   "/crm-leads", "/facebook-inbox-ai", "/ai-sale-scripts", "/ai-test", "/claude-sale-test", "/claude-sale-settings", "/claude-sale-monitor", "/claude-sale-reengage", "/sale-learning", "/lulu-human-review", "/lulu-brain-lab", "/sale-scripts", "/auto-post-facebook", "/notifications",
   "/cms",
+  "/platform-admin",
 ];
 
 function isPublicPath(path: string): boolean {
@@ -344,6 +346,9 @@ function LoginRoute() {
   const { completeLogin, authenticated, platformUser, activeTenant, requiresTenantSelection } = useStaffAuth();
   const [, setLocation] = useLocation();
   if (authenticated) {
+    if (platformUser?.platformRole === "PLATFORM_OWNER" && !activeTenant) {
+      return <Redirect to="/platform-admin" />;
+    }
     const needsTenant = authNeedsStudioSelection({
       requiresTenantSelection, platformUser, activeTenant,
     });
@@ -353,6 +358,10 @@ function LoginRoute() {
     <LoginPage
       onLogin={(response) => {
         completeLogin(response);
+        if (response.platformUser?.platformRole === "PLATFORM_OWNER" && !response.activeTenant) {
+          setLocation("/platform-admin");
+          return;
+        }
         const needsSelection = authNeedsStudioSelection(response);
         const destination = needsSelection ? "/select-studio" : popReturnTo();
         // Providers loaded on an anonymous public page cannot all be reliably
@@ -416,9 +425,15 @@ function RouterRoot() {
 
   if (location === "/select-studio") {
     if (!authenticated) return <RedirectToLogin from="/calendar" />;
+    if (platformUser?.platformRole === "PLATFORM_OWNER" && !activeTenant) return <Redirect to="/platform-admin" />;
     if (!requiresTenantSelection && activeTenant && memberships.length <= 1) return <Redirect to={popReturnTo()} />;
     if (!requiresTenantSelection && viewer && !activeTenant) return <Redirect to={popReturnTo()} />;
     return <StudioSelectorPage onSelected={() => setLocation(popReturnTo())} />;
+  }
+
+  if (location === "/platform-admin" || location.startsWith("/platform-admin/")) {
+    if (!authenticated) return <RedirectToLogin from="/platform-admin" />;
+    return <PlatformAdminPage />;
   }
 
   const publicPreview = isPublicPreviewMode();

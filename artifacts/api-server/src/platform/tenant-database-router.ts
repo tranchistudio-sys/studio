@@ -12,6 +12,7 @@ import {
   registryMatchesAmazingRuntime,
   type TenantDatabaseRegistryRow,
 } from "./tenant-database-reference";
+import { assertTenantDatabaseMetadata } from "./tenant-database-metadata";
 
 const { Pool } = pg;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -268,6 +269,19 @@ async function createEntry(resolved: ResolvedRegistry): Promise<PoolEntry> {
       const client = await pool.connect();
       try {
         await client.query("SELECT 1");
+        const metadata = await client.query<{ tenant_id: string }>(
+          `SELECT tenant_id::text FROM tenant_metadata LIMIT 2`,
+        ).catch((error: { code?: string }) => {
+          if (error.code === "42P01" && resolved.record.tenant_slug === "amazing-studio") {
+            return { rows: [] } as { rows: { tenant_id: string }[] };
+          }
+          throw error;
+        });
+        assertTenantDatabaseMetadata(
+          resolved.record.tenant_id,
+          resolved.record.tenant_slug,
+          metadata.rows.map((row) => row.tenant_id),
+        );
       } finally {
         client.release();
       }
@@ -279,6 +293,7 @@ async function createEntry(resolved: ResolvedRegistry): Promise<PoolEntry> {
     return entry;
   });
 }
+
 
 async function entryForTenant(tenantId: string): Promise<PoolEntry> {
   const resolved = await resolveRegistry(tenantId);

@@ -7,7 +7,7 @@
 // Nguyên tắc: deploy là CODE-ONLY. Guard DỪNG build (exit 1) nếu phát hiện
 // bất kỳ dấu hiệu nào có thể dẫn tới DDL/migration tự động trong deploy path:
 //   1. File migration lạ (generated ngoài kế hoạch) trong lib/db/migrations
-//   2. SQL destructive (DROP TABLE/COLUMN/…, TRUNCATE, ALTER … DROP) trong đó
+//   2. SQL destructive (DROP, TRUNCATE, DELETE FROM, ALTER … DROP) trong đó
 //   3. Lệnh drizzle-kit push / db push trong config deploy (.replit, artifact.toml)
 //      hoặc trong các build script
 //   4. scripts/post-merge.sh mất guard opt-in (ai đó revert về push-mặc-định)
@@ -22,10 +22,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { findDestructiveSql, stripSqlCommentsAndStrings } from "./deploy-guard-sql.mjs";
+import { verifyLockedMigration } from "./deploy-guard-policy.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const errors = [];
 const ok = [];
+const legacyExceptions = [];
 
 const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8");
 const exists = (p) => fs.existsSync(path.join(ROOT, p));
@@ -40,10 +43,13 @@ const MIGRATION_ALLOWLIST = new Set([
   "0004_seed_amazing_wedding_gifts.sql",
   "0005_analytics_attribution.sql",
   "0006_cms_home_wedding_intro.sql",
+  "0007_tenant_metadata.sql",
 ]);
-const DESTRUCTIVE_SQL =
-  /\bDROP\s+(TABLE|COLUMN|CONSTRAINT|SCHEMA|INDEX|SEQUENCE|VIEW)\b|\bTRUNCATE\b|\bALTER\s+TABLE\b[^;]*\bDROP\b/i;
-
+// Migration lịch sử đã được review và phát hành trước khi DELETE detection tồn tại.
+// Khoá bằng checksum để bất kỳ chỉnh sửa hay DELETE mới nào vẫn fail-closed.
+const LEGACY_DESTRUCTIVE_MIGRATION_CHECKSUMS = new Map([
+  ["0004_seed_amazing_wedding_gifts.sql", "f54c59b96624037c5581238ba0c16032a5c86c7a921d6768ecc65d971e8b83e6"],
+]);
 if (exists(MIGRATIONS_DIR)) {
   const entries = fs.readdirSync(path.join(ROOT, MIGRATIONS_DIR));
   for (const entry of entries) {
@@ -53,8 +59,15 @@ if (exists(MIGRATIONS_DIR)) {
       );
       continue;
     }
-    const sql = read(`${MIGRATIONS_DIR}/${entry}`);
-    const m = sql.match(DESTRUCTIVE_SQL);
+    const raw = read(`${MIGRATIONS_DIR}/${entry}`);
+    const locked = verifyLockedMigration(entry, raw, LEGACY_DESTRUCTIVE_MIGRATION_CHECKSUMS);
+    if (locked.locked) {
+      if (!locked.valid) errors.push(`${MIGRATIONS_DIR}/${entry}: locked legacy migration checksum mismatch — bất kỳ thay đổi nội dung nào đều bị cấm.`);
+      else legacyExceptions.push(`${MIGRATIONS_DIR}/${entry}: locked legacy checksum verified`);
+      continue;
+    }
+    const sql = stripSqlCommentsAndStrings(raw);
+    const m = findDestructiveSql(sql);
     if (m) {
       errors.push(`${MIGRATIONS_DIR}/${entry}: chứa SQL destructive ("${m[0]}") — cấm tuyệt đối trong deploy path.`);
     }
@@ -71,6 +84,7 @@ const PLATFORM_MIGRATION_ALLOWLIST = new Set([
   "0002_membership_session_revocation.sql",
   "0003_tenant_database_registry_isolation.sql",
   "0004_staff_access_requests.sql",
+  "0005_commercial_saas_foundation.sql",
 ]);
 if (exists(PLATFORM_MIGRATIONS_DIR)) {
   const entries = fs.readdirSync(path.join(ROOT, PLATFORM_MIGRATIONS_DIR));
@@ -79,8 +93,8 @@ if (exists(PLATFORM_MIGRATIONS_DIR)) {
       errors.push(`${PLATFORM_MIGRATIONS_DIR}/${entry}: platform migration ngoài allowlist.`);
       continue;
     }
-    const statementsOnly = read(`${PLATFORM_MIGRATIONS_DIR}/${entry}`).replace(/--.*$/gm, "");
-    const destructive = statementsOnly.match(DESTRUCTIVE_SQL);
+    const statementsOnly = stripSqlCommentsAndStrings(read(`${PLATFORM_MIGRATIONS_DIR}/${entry}`));
+    const destructive = findDestructiveSql(statementsOnly);
     if (destructive) {
       errors.push(
         `${PLATFORM_MIGRATIONS_DIR}/${entry}: chứa SQL destructive ("${destructive[0]}").`,
@@ -166,3 +180,4 @@ if (errors.length) {
 }
 console.log("✅ [deploy-guard] PASS — deploy path sạch (code-only):");
 for (const line of ok) console.log("  ✓ " + line);
+for (const line of legacyExceptions) console.log("  ✓ " + line);

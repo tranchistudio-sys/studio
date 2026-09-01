@@ -59,4 +59,13 @@ describe("TenantProvisioningEngine",()=>{
     expect(f.calls.join("\n")).toContain("SET status='trial'");
     expect(f.calls.join("\n")).toContain("interval '1 month'");
   });
+
+  it("uses an explicit bounded worker lease without changing the one-hour default",async()=>{
+    const staging=fixture();await new TenantProvisioningEngine(staging.pool,staging.provisioner,"worker-staging",120).claimNext();
+    const stagingExpiry=staging.query.mock.calls.find(call=>String(call[0]).includes("WORKER_LEASE_EXPIRED"));
+    expect(stagingExpiry?.[1]).toEqual([120]);
+    const normal=fixture();await new TenantProvisioningEngine(normal.pool,normal.provisioner,"worker-default").claimNext();
+    const normalExpiry=normal.query.mock.calls.find(call=>String(call[0]).includes("WORKER_LEASE_EXPIRED"));
+    expect(normalExpiry?.[1]).toEqual([3600]);
+  });
 });

@@ -15,7 +15,9 @@ function sanitized(error:unknown):{code:string;message:string}{
 }
 
 export class TenantProvisioningEngine{
-  constructor(private readonly platform:Pool,private readonly provisioner:TenantDatabaseProvisioner,private readonly workerId=`worker-${randomUUID()}`){}
+  constructor(private readonly platform:Pool,private readonly provisioner:TenantDatabaseProvisioner,
+    private readonly workerId=`worker-${randomUUID()}`,
+    private readonly leaseSeconds=Math.max(60,Number(process.env.TENANT_PROVISIONING_LEASE_SECONDS??3600)||3600)){}
 
   async claimNext():Promise<Job|null>{
     await this.expireStaleJobs();
@@ -30,8 +32,8 @@ export class TenantProvisioningEngine{
   async expireStaleJobs():Promise<void>{
     await this.platform.query(`WITH expired AS (UPDATE provisioning_jobs SET status='failed',failed_step=COALESCE(step,'UNKNOWN'),step='FAILED',
       error_code='WORKER_LEASE_EXPIRED',error_message='Provisioning worker heartbeat expired',finished_at=now(),updated_at=now()
-      WHERE status='running' AND last_heartbeat_at<now()-interval '1 hour' RETURNING tenant_id)
-      UPDATE tenants SET status='provisioning_failed',updated_at=now() WHERE id IN(SELECT tenant_id FROM expired) AND status='provisioning'`);
+      WHERE status='running' AND last_heartbeat_at<now()-($1::int*interval '1 second') RETURNING tenant_id)
+      UPDATE tenants SET status='provisioning_failed',updated_at=now() WHERE id IN(SELECT tenant_id FROM expired) AND status='provisioning'`,[this.leaseSeconds]);
   }
 
   async processNext():Promise<boolean>{const job=await this.claimNext();if(!job)return false;await this.process(job);return true;}

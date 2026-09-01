@@ -69,7 +69,7 @@ fi
 [ -z "$(sudo -n docker port "$CONTAINER" 2>/dev/null)" ] || die "Tenant PostgreSQL đang expose port; từ chối tiếp tục"
 for i in $(seq 1 30); do sudo -n docker exec "$CONTAINER" pg_isready -U postgres >/dev/null 2>&1 && break; [ "$i" != 30 ] || die "Tenant PostgreSQL không healthy"; sleep 2; done
 
-sudo -n docker exec -e PGPASSWORD="$ROOT_PASSWORD" -e PROVISIONER_PASSWORD="$PROVISIONER_PASSWORD" "$CONTAINER" \
+sudo -n docker exec -i -e PGPASSWORD="$ROOT_PASSWORD" -e PROVISIONER_PASSWORD="$PROVISIONER_PASSWORD" "$CONTAINER" \
   psql -U postgres -d postgres -v ON_ERROR_STOP=1 -v provisioner_pass="$PROVISIONER_PASSWORD" <<'SQL'
 SELECT format('CREATE ROLE amazing_tenant_provisioner LOGIN CREATEDB CREATEROLE NOSUPERUSER PASSWORD %L', :'provisioner_pass')
  WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname='amazing_tenant_provisioner') \gexec

@@ -76,6 +76,11 @@ describe.runIf(enabled)("PostgresTenantDatabaseProvisioner on disposable Postgre
     expect(unchanged.rows[0].current_period_ends_at).toEqual(state.rows[0].current_period_ends_at);
     expect((await platform.query("SELECT tenant_role,status,tenant_staff_id FROM tenant_memberships WHERE tenant_id=$1",[tenantId])).rows[0]).toMatchObject({tenant_role:"OWNER",status:"active",tenant_staff_id:"1"});
     expect((await platform.query("SELECT status FROM tenant_invitations WHERE tenant_id=$1",[tenantId])).rows[0].status).toBe("pending");
+    const admin=new Pool({connectionString:adminUrl,max:1});try{
+      const privileges=await admin.query(`SELECT has_database_privilege($1,$2,'CONNECT') tenant_connect,
+        has_database_privilege('public',$2,'CONNECT') public_connect`,[roleName,databaseName]);
+      expect(privileges.rows[0]).toEqual({tenant_connect:true,public_connect:false});
+    }finally{await admin.end();}
     const tenant=new Pool({connectionString:await store.getTenantDatabaseSecret(createdSecretRef!),max:1});try{
       expect((await tenant.query("SELECT tenant_id::text,schema_version FROM tenant_metadata")).rows[0]).toEqual({tenant_id:tenantId,schema_version:"0007_tenant_metadata.sql"});
       expect((await tenant.query("SELECT (SELECT count(*) FROM customers)::int customers,(SELECT count(*) FROM bookings)::int bookings,(SELECT count(*) FROM staff)::int staff")).rows[0]).toEqual({customers:0,bookings:0,staff:1});

@@ -120,35 +120,41 @@ jobs:
             --dialect postgresql --schema './src/schema/index.ts' | \
             psql "$schema_source_url" -v ON_ERROR_STOP=1
           psql "$schema_source_url" -v ON_ERROR_STOP=1 -f scripts/staging-schema-prerequisites.sql
-          APP_ENV=staging NODE_ENV=development SCHEMA_BOOTSTRAP_ONLY=1 PORT=5199 \
-            DATABASE_URL="$schema_source_url" DEFAULT_TENANT_DATABASE_URL="$schema_source_url" \
-            PLATFORM_DATABASE_URL="" \
-            node artifacts/api-server/dist/index.mjs >schema-bootstrap.log 2>&1 &
-          bootstrap_pid=$!
           schema_ready=""
-          for i in $(seq 1 180); do
-            kill -0 "$bootstrap_pid" 2>/dev/null || {
-              sed -n '1,200p' schema-bootstrap.log
-              echo "::error::Repository runtime schema bootstrap exited early"
+          for bootstrap_attempt in 1 2; do
+            APP_ENV=staging NODE_ENV=development SCHEMA_BOOTSTRAP_ONLY=1 PORT=5199 \
+              DATABASE_URL="$schema_source_url" DEFAULT_TENANT_DATABASE_URL="$schema_source_url" \
+              PLATFORM_DATABASE_URL="" \
+              node artifacts/api-server/dist/index.mjs >"schema-bootstrap-${bootstrap_attempt}.log" 2>&1 &
+            bootstrap_pid=$!
+            for i in $(seq 1 180); do
+              kill -0 "$bootstrap_pid" 2>/dev/null || break
+              schema_ready=$(psql "$schema_source_url" -Atqc "
+                SELECT
+                  EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='dresses' AND column_name='sell_price')
+                  AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='service_packages' AND column_name='cms_status')
+                  AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='gallery_albums')
+                  AND NOT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND objid=88442201 AND granted)" 2>/dev/null || true)
+              test "$schema_ready" = "t" && break
+              sleep 2
+            done
+            if test "$schema_ready" = "t"; then
+              kill "$bootstrap_pid" 2>/dev/null || true
+              wait "$bootstrap_pid" 2>/dev/null || true
+              bootstrap_pid=""
+              break
+            fi
+            sed -n '1,200p' "schema-bootstrap-${bootstrap_attempt}.log"
+            kill "$bootstrap_pid" 2>/dev/null || true
+            wait "$bootstrap_pid" 2>/dev/null || true
+            bootstrap_pid=""
+            test "$bootstrap_attempt" != 2 || {
+              echo "::error::Repository runtime schema bootstrap failed after one staging-only retry"
               exit 1
             }
-            schema_ready=$(psql "$schema_source_url" -Atqc "
-              SELECT
-                EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='dresses' AND column_name='sell_price')
-                AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='service_packages' AND column_name='cms_status')
-                AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='gallery_albums')
-                AND NOT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND objid=88442201 AND granted)" 2>/dev/null || true)
-            test "$schema_ready" = "t" && break
-            sleep 2
+            echo "::warning::Transient staging bootstrap failure; retrying once"
+            sleep 5
           done
-          test "$schema_ready" = "t" || {
-            sed -n '1,200p' schema-bootstrap.log
-            echo "::error::Repository runtime schema bootstrap did not complete"
-            exit 1
-          }
-          kill "$bootstrap_pid" 2>/dev/null || true
-          wait "$bootstrap_pid" 2>/dev/null || true
-          bootstrap_pid=""
           APP_ENV=staging STAGING_PROXY_APP="$FLY_DB_APP" DATABASE_URL="$schema_source_url" \
             TENANT_MIGRATIONS_DIR="$GITHUB_WORKSPACE/lib/db/migrations" \
             pnpm --filter @workspace/scripts exec tsx run-staging-tenant-migrations.mjs

@@ -63,6 +63,10 @@ export class PostgresTenantDatabaseProvisioner implements TenantDatabaseProvisio
     try {
       const exists=await pool.query("SELECT 1 FROM pg_database WHERE datname=$1",[resources.databaseName]);
       if (!exists.rows.length) await pool.query(`CREATE DATABASE ${identifier(resources.databaseName)} OWNER ${identifier(resources.roleName)} TEMPLATE ${identifier(template)}`);
+      // A PostgreSQL database grants CONNECT to PUBLIC by default. Remove that
+      // cross-tenant entry point on both first creation and every safe retry.
+      await pool.query(`REVOKE CONNECT ON DATABASE ${identifier(resources.databaseName)} FROM PUBLIC`);
+      await pool.query(`GRANT CONNECT, TEMPORARY ON DATABASE ${identifier(resources.databaseName)} TO ${identifier(resources.roleName)}`);
       const targetAdmin=new URL(this.adminUrl!);targetAdmin.pathname=`/${resources.databaseName}`;
       const targetPool=new Pool({connectionString:targetAdmin.toString(),max:1});
       try{

@@ -9,17 +9,21 @@ import { TenantProvisioningEngine } from "./tenant-provisioning-engine";
 
 const enabled=process.env.RUN_PROVISIONING_ITEST==="1";
 const {Pool}=pg;const tenantId=randomUUID();const suffix=tenantId.replace(/-/g,"").slice(0,24);const databaseName=`tenant_${suffix}`;const roleName=`tenant_${suffix}_role`;const templateName=`tenant_template_${suffix}`;
-const adminUrl=process.env.TENANT_PROVISIONING_ADMIN_URL??"";
+const adminUrl=process.env.TENANT_PROVISIONING_ADMIN_URL??"";const provisionerRole=`provisioner_${suffix}`;const provisionerPassword="itest_provisioner_password_123456789";
+function provisionerUrl(){const url=new URL(adminUrl);url.username=provisionerRole;url.password=provisionerPassword;url.pathname="/postgres";return url.toString();}
 let createdSecretRef:string|undefined;
 const reviewerId=randomUUID();const signupId=randomUUID();const subscriptionId=randomUUID();const jobId=randomUUID();
-function databaseUrl(name:string){const url=new URL(adminUrl);url.pathname=`/${name}`;return url.toString();}
 function ident(value:string){if(!/^[a-z][a-z0-9_]{0,62}$/.test(value))throw new Error("unsafe test identifier");return `"${value}"`;}
 
 describe.runIf(enabled)("PostgresTenantDatabaseProvisioner on disposable PostgreSQL",()=>{
   beforeAll(async()=>{
     const url=new URL(adminUrl);if(!["127.0.0.1","localhost"].includes(url.hostname)||!url.pathname.endsWith("_test"))throw new Error("Provisioning integration is restricted to local *_test PostgreSQL");
-    const admin=new Pool({connectionString:adminUrl,max:1});try{await admin.query(`CREATE DATABASE ${ident(templateName)} TEMPLATE template0`);}finally{await admin.end();}
-    const template=new Pool({connectionString:databaseUrl(templateName),max:1});try{await template.query(`
+    const admin=new Pool({connectionString:adminUrl,max:1});try{
+      await admin.query(`CREATE ROLE ${ident(provisionerRole)} LOGIN CREATEDB CREATEROLE NOSUPERUSER PASSWORD '${provisionerPassword}'`);
+      await admin.query(`CREATE DATABASE ${ident(templateName)} OWNER ${ident(provisionerRole)} TEMPLATE template0`);
+    }finally{await admin.end();}
+    const templateUrl=new URL(provisionerUrl());templateUrl.pathname=`/${templateName}`;
+    const template=new Pool({connectionString:templateUrl.toString(),max:1});try{await template.query(`
       CREATE TABLE bookings(id serial PRIMARY KEY);CREATE TABLE customers(id serial PRIMARY KEY);
       CREATE TABLE wedding_cards(id serial PRIMARY KEY);CREATE TABLE service_groups(id serial PRIMARY KEY);
       CREATE TABLE cms_home_settings(id serial PRIMARY KEY);
@@ -32,6 +36,7 @@ describe.runIf(enabled)("PostgresTenantDatabaseProvisioner on disposable Postgre
     const admin=new Pool({connectionString:adminUrl,max:1});try{
       for(const name of [databaseName,templateName]){await admin.query("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname=$1 AND pid<>pg_backend_pid()",[name]);await admin.query(`DROP DATABASE IF EXISTS ${ident(name)}`);}
       await admin.query(`DROP ROLE IF EXISTS ${ident(roleName)}`);
+      await admin.query(`DROP ROLE IF EXISTS ${ident(provisionerRole)}`);
       const platform=getPlatformPool();
       await platform.query("DELETE FROM platform_audit_logs WHERE tenant_id=$1 OR actor_user_id=$2",[tenantId,reviewerId]);
       await platform.query("DELETE FROM tenant_invitations WHERE tenant_id=$1",[tenantId]);await platform.query("DELETE FROM tenant_memberships WHERE tenant_id=$1",[tenantId]);
@@ -53,7 +58,7 @@ describe.runIf(enabled)("PostgresTenantDatabaseProvisioner on disposable Postgre
       VALUES($1,$2,$3,$4,'SETUP_FEE',0,'WAIVED','DIRECT',$5)`,[randomUUID(),tenantId,signupId,subscriptionId,reviewerId]);
     await platform.query("INSERT INTO provisioning_jobs(id,tenant_id,status,step) VALUES($1,$2,'pending','QUEUED')",[jobId,tenantId]);
     const store=new EncryptedPlatformTenantSecretStore(platform);
-    const provisioner=new PostgresTenantDatabaseProvisioner(store,runTenantMigrationOrchestrator,adminUrl);
+    const provisioner=new PostgresTenantDatabaseProvisioner(store,runTenantMigrationOrchestrator,provisionerUrl());
     expect(await new TenantProvisioningEngine(platform,provisioner,"itest-worker").processNext()).toBe(true);
     const state=await platform.query(`SELECT t.status tenant_status,s.status subscription_status,s.current_period_start,s.current_period_ends_at,
       signup.status signup_status,j.status job_status,j.step,j.failed_step,j.error_code,j.error_message,r.secret_ref,r.health_status

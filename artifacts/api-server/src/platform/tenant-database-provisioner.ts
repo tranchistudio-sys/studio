@@ -45,8 +45,10 @@ export class PostgresTenantDatabaseProvisioner implements TenantDatabaseProvisio
     if(!/^[A-Za-z0-9_-]{32,128}$/.test(password))throw new Error("Tenant database credential không hợp lệ");
     const pool=new Pool({connectionString:this.adminUrl!,max:1});
     try {
+      const adminRole=decodeURIComponent(new URL(this.adminUrl!).username);identifier(adminRole);
       const exists=await pool.query("SELECT 1 FROM pg_roles WHERE rolname=$1",[roleName]);
       if (!exists.rows.length) await pool.query(`CREATE ROLE ${identifier(roleName)} LOGIN PASSWORD '${password}'`);
+      await pool.query(`GRANT ${identifier(roleName)} TO ${identifier(adminRole)}`);
     } catch(error){if(createdSecret)await this.secrets.deleteUncommittedSecret(secretRef).catch(()=>undefined);throw error;}
     finally { await pool.end(); }
     return {databaseRef:`tenant-${tenantId}`,hostRef,databaseName,roleName,secretRef};
@@ -57,19 +59,23 @@ export class PostgresTenantDatabaseProvisioner implements TenantDatabaseProvisio
     if(!template) throw new Error("TENANT_PROVISIONING_TEMPLATE_DATABASE chưa được cấu hình");
     identifier(template);
     const pool=new Pool({connectionString:this.adminUrl!,max:1});
+    const adminRole=decodeURIComponent(new URL(this.adminUrl!).username);identifier(adminRole);
     try {
       const exists=await pool.query("SELECT 1 FROM pg_database WHERE datname=$1",[resources.databaseName]);
       if (!exists.rows.length) await pool.query(`CREATE DATABASE ${identifier(resources.databaseName)} OWNER ${identifier(resources.roleName)} TEMPLATE ${identifier(template)}`);
-    } finally { await pool.end(); }
-    const targetAdmin=new URL(this.adminUrl!);targetAdmin.pathname=`/${resources.databaseName}`;
-    const targetPool=new Pool({connectionString:targetAdmin.toString(),max:1});
-    try{
-      const objects=await targetPool.query<{relkind:string;relname:string}>(`SELECT c.relkind,c.relname FROM pg_class c
-        JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind=ANY($1::"char"[])`,[["r","p","v","m","f"]]);
-      const commands:Record<string,string>={r:"TABLE",p:"TABLE",v:"VIEW",m:"MATERIALIZED VIEW",f:"FOREIGN TABLE"};
-      for(const object of objects.rows)await targetPool.query(`ALTER ${commands[object.relkind]} public.${identifier(object.relname)} OWNER TO ${identifier(resources.roleName)}`);
+      const targetAdmin=new URL(this.adminUrl!);targetAdmin.pathname=`/${resources.databaseName}`;
+      const targetPool=new Pool({connectionString:targetAdmin.toString(),max:1});
+      try{
+        const objects=await targetPool.query<{relkind:string;relname:string}>(`SELECT c.relkind,c.relname FROM pg_class c
+          JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind=ANY($1::"char"[])`,[["r","p","v","m","f","S"]]);
+        const commands:Record<string,string>={r:"TABLE",p:"TABLE",v:"VIEW",m:"MATERIALIZED VIEW",f:"FOREIGN TABLE",S:"SEQUENCE"};
+        for(const object of objects.rows)await targetPool.query(`ALTER ${commands[object.relkind]} public.${identifier(object.relname)} OWNER TO ${identifier(resources.roleName)}`);
+      }
+      finally{await targetPool.end();}
+    } finally {
+      try { await pool.query(`REVOKE ${identifier(resources.roleName)} FROM ${identifier(adminRole)}`); }
+      finally { await pool.end(); }
     }
-    finally{await targetPool.end();}
   }
   async registerSecret(resources:TenantDatabaseResources):Promise<void>{ await this.secrets.commitTenantDatabaseSecret(resources.secretRef); }
   async runMigrations(resources:TenantDatabaseResources):Promise<string>{ return this.migrate(await this.secrets.getTenantDatabaseSecret(resources.secretRef)); }

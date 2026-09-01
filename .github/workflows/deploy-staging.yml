@@ -1,0 +1,180 @@
+name: Deploy Permanent Staging
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: permanent-staging
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FLY_APP: amazing-studio-staging
+  FLY_DB_APP: amazing-studio-staging-db
+  STAGING_URL: https://amazing-studio-staging.fly.dev
+
+jobs:
+  deploy-staging:
+    environment: staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Require staging-only secrets (no fallback)
+        env:
+          FLY_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          ROOT_PASSWORD: ${{ secrets.STAGING_DB_ROOT_PASSWORD }}
+          PROVISIONING_PASSWORD: ${{ secrets.STAGING_PROVISIONING_PASSWORD }}
+          PLATFORM_PASSWORD: ${{ secrets.STAGING_PLATFORM_DB_PASSWORD }}
+          LEGACY_PASSWORD: ${{ secrets.STAGING_LEGACY_DB_PASSWORD }}
+          MASTER_KEY: ${{ secrets.STAGING_TENANT_SECRET_MASTER_KEY }}
+          SESSION_SECRET: ${{ secrets.STAGING_SESSION_SECRET }}
+          SCHEMA_SOURCE_URL: ${{ secrets.STAGING_SCHEMA_SOURCE_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          for name in FLY_TOKEN ROOT_PASSWORD PROVISIONING_PASSWORD PLATFORM_PASSWORD LEGACY_PASSWORD MASTER_KEY SESSION_SECRET SCHEMA_SOURCE_URL; do
+            if [ -z "${!name}" ]; then echo "::error::Missing required staging secret: $name"; exit 1; fi
+          done
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.34.5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Install and verify before staging mutation
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @workspace/api-server exec vitest run src/platform/tenant-provisioning-safety.test.ts
+          pnpm --filter @workspace/platform-db typecheck
+          pnpm run build:deploy
+
+      - name: Create dedicated staging PostgreSQL cluster if absent
+        env:
+          ROOT_PASSWORD: ${{ secrets.STAGING_DB_ROOT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if flyctl status --app "$FLY_DB_APP" >/dev/null 2>&1; then
+            echo "Dedicated staging database app already exists."
+          else
+            flyctl postgres create --name "$FLY_DB_APP" --org "${{ vars.FLY_ORG || 'personal' }}" \
+              --region sin --vm-size shared-cpu-1x --initial-cluster-size 1 --volume-size 10 \
+              --password "$ROOT_PASSWORD" --detach
+          fi
+
+      - name: Bootstrap isolated platform, template, and legacy fixture databases
+        env:
+          PGPASSWORD: ${{ secrets.STAGING_DB_ROOT_PASSWORD }}
+          PROVISIONING_PASSWORD: ${{ secrets.STAGING_PROVISIONING_PASSWORD }}
+          PLATFORM_PASSWORD: ${{ secrets.STAGING_PLATFORM_DB_PASSWORD }}
+          LEGACY_PASSWORD: ${{ secrets.STAGING_LEGACY_DB_PASSWORD }}
+          SCHEMA_SOURCE_URL: ${{ secrets.STAGING_SCHEMA_SOURCE_DATABASE_URL }}
+          BOOTSTRAP_OWNER_EMAIL: ${{ vars.STAGING_BOOTSTRAP_OWNER_EMAIL }}
+        run: |
+          set -euo pipefail
+          flyctl proxy 15432:5432 --app "$FLY_DB_APP" >fly-proxy.log 2>&1 &
+          proxy_pid=$!
+          trap 'kill "$proxy_pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do pg_isready -h 127.0.0.1 -p 15432 -U postgres && break; sleep 2; done
+          root_url="postgresql://postgres@127.0.0.1:15432/postgres"
+
+          psql "$root_url" -v ON_ERROR_STOP=1 \
+            -v provisioner_pass="$PROVISIONING_PASSWORD" -v platform_pass="$PLATFORM_PASSWORD" -v legacy_pass="$LEGACY_PASSWORD" <<'SQL'
+          SELECT format('CREATE ROLE staging_provisioner LOGIN CREATEDB CREATEROLE NOSUPERUSER PASSWORD %L', :'provisioner_pass')
+            WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname='staging_provisioner') \gexec
+          SELECT format('ALTER ROLE staging_provisioner PASSWORD %L', :'provisioner_pass') \gexec
+          SELECT format('CREATE ROLE staging_platform LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD %L', :'platform_pass')
+            WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname='staging_platform') \gexec
+          SELECT format('ALTER ROLE staging_platform PASSWORD %L', :'platform_pass') \gexec
+          SELECT format('CREATE ROLE staging_legacy LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD %L', :'legacy_pass')
+            WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname='staging_legacy') \gexec
+          SELECT format('ALTER ROLE staging_legacy PASSWORD %L', :'legacy_pass') \gexec
+          SELECT 'CREATE DATABASE amazing_platform_staging OWNER staging_platform TEMPLATE template0'
+            WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='amazing_platform_staging') \gexec
+          SELECT 'CREATE DATABASE tenant_template_staging OWNER staging_provisioner TEMPLATE template0'
+            WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='tenant_template_staging') \gexec
+          SQL
+
+          template_url="postgresql://postgres@127.0.0.1:15432/tenant_template_staging"
+          initialized=$(psql "$template_url" -Atqc "SELECT to_regclass('public.staff') IS NOT NULL")
+          if [ "$initialized" != "t" ]; then
+            provisioner_template_url="postgresql://staging_provisioner:${PROVISIONING_PASSWORD}@127.0.0.1:15432/tenant_template_staging"
+            pg_dump "$SCHEMA_SOURCE_URL" --schema-only --no-owner --no-privileges | psql "$provisioner_template_url" -v ON_ERROR_STOP=1
+          fi
+          counts=$(psql "$template_url" -Atqc "SELECT (SELECT count(*) FROM customers)+(SELECT count(*) FROM bookings)+(SELECT count(*) FROM payments)+(SELECT count(*) FROM expenses)+(SELECT count(*) FROM contracts)+(SELECT count(*) FROM staff)")
+          test "$counts" = "0" || { echo "::error::Staging template contains business data"; exit 1; }
+
+          psql "$root_url" -v ON_ERROR_STOP=1 <<'SQL'
+          SELECT 'CREATE DATABASE tenant_amazing_staging OWNER staging_legacy TEMPLATE tenant_template_staging'
+            WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname='tenant_amazing_staging') \gexec
+          SQL
+          legacy_url="postgresql://postgres@127.0.0.1:15432/tenant_amazing_staging"
+          psql "$legacy_url" -v ON_ERROR_STOP=1 -c 'GRANT USAGE ON SCHEMA public TO staging_legacy; GRANT ALL ON ALL TABLES IN SCHEMA public TO staging_legacy; GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO staging_legacy; GRANT ALL ON ALL FUNCTIONS IN SCHEMA public TO staging_legacy'
+          owner_id=$(psql "$legacy_url" -v ON_ERROR_STOP=1 -v email="$BOOTSTRAP_OWNER_EMAIL" -qAt <<'SQL'
+          INSERT INTO staff(name,phone,email,role,roles,is_active)
+          VALUES('Staging Platform Owner','0000000000',:'email','admin','["admin"]'::jsonb,1)
+          ON CONFLICT DO NOTHING;
+          SELECT id FROM staff WHERE lower(email)=lower(:'email') ORDER BY id LIMIT 1;
+          SQL
+          )
+          test -n "$owner_id" || { echo "::error::Could not create staging owner fixture"; exit 1; }
+          echo "owner_id=$owner_id" >> "$GITHUB_OUTPUT"
+        id: databases
+
+      - name: Apply platform migrations 0001 through 0006 twice
+        env:
+          PGPASSWORD: ${{ secrets.STAGING_DB_ROOT_PASSWORD }}
+          PLATFORM_PASSWORD: ${{ secrets.STAGING_PLATFORM_DB_PASSWORD }}
+        run: |
+          set -euo pipefail
+          flyctl proxy 15432:5432 --app "$FLY_DB_APP" >fly-proxy.log 2>&1 &
+          proxy_pid=$!; trap 'kill "$proxy_pid" 2>/dev/null || true' EXIT; sleep 3
+          export PLATFORM_DATABASE_URL="postgresql://staging_platform:${PLATFORM_PASSWORD}@127.0.0.1:15432/amazing_platform_staging"
+          pnpm --filter @workspace/platform-db migrate
+          pnpm --filter @workspace/platform-db migrate
+
+      - name: Create app and set staging-only runtime secrets
+        env:
+          PROVISIONING_PASSWORD: ${{ secrets.STAGING_PROVISIONING_PASSWORD }}
+          PLATFORM_PASSWORD: ${{ secrets.STAGING_PLATFORM_DB_PASSWORD }}
+          LEGACY_PASSWORD: ${{ secrets.STAGING_LEGACY_DB_PASSWORD }}
+          MASTER_KEY: ${{ secrets.STAGING_TENANT_SECRET_MASTER_KEY }}
+          SESSION_SECRET: ${{ secrets.STAGING_SESSION_SECRET }}
+          GOOGLE_CLIENT_ID: ${{ vars.STAGING_GOOGLE_CLIENT_ID }}
+          BOOTSTRAP_OWNER_EMAIL: ${{ vars.STAGING_BOOTSTRAP_OWNER_EMAIL }}
+          BOOTSTRAP_OWNER_ID: ${{ steps.databases.outputs.owner_id }}
+        run: |
+          set -euo pipefail
+          flyctl status --app "$FLY_APP" >/dev/null 2>&1 || flyctl apps create "$FLY_APP" --org "${{ vars.FLY_ORG || 'personal' }}"
+          host="$FLY_DB_APP.internal"
+          flyctl secrets set --app "$FLY_APP" --stage \
+            DATABASE_URL="postgresql://staging_legacy:${LEGACY_PASSWORD}@${host}:5432/tenant_amazing_staging" \
+            DEFAULT_TENANT_DATABASE_URL="postgresql://staging_legacy:${LEGACY_PASSWORD}@${host}:5432/tenant_amazing_staging" \
+            PLATFORM_DATABASE_URL="postgresql://staging_platform:${PLATFORM_PASSWORD}@${host}:5432/amazing_platform_staging" \
+            TENANT_PROVISIONING_ADMIN_URL="postgresql://staging_provisioner:${PROVISIONING_PASSWORD}@${host}:5432/postgres" \
+            TENANT_SECRET_MASTER_KEY="$MASTER_KEY" SESSION_SECRET="$SESSION_SECRET" \
+            GOOGLE_CLIENT_ID="$GOOGLE_CLIENT_ID" BOOTSTRAP_OWNER_EMAIL="$BOOTSTRAP_OWNER_EMAIL" \
+            BOOTSTRAP_TENANT_STAFF_ID="$BOOTSTRAP_OWNER_ID"
+
+      - name: Deploy permanent staging
+        run: flyctl deploy --app "$FLY_APP" --config fly.staging.toml --remote-only --ha=false --wait-timeout 300
+
+      - name: Verify health and public auth configuration
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 24); do
+            body=$(curl -fsS --max-time 15 "$STAGING_URL/api/healthz" || true)
+            case "$body" in *'"status":"ok"'*) break;; esac
+            test "$i" != 24 || { echo "::error::Staging health check failed"; exit 1; }
+            sleep 10
+          done
+          config=$(curl -fsS --max-time 15 "$STAGING_URL/api/auth/config")
+          jq -e '.platformEnabled == true and .googleEnabled == true' >/dev/null <<<"$config"

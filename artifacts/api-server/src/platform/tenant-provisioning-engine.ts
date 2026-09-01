@@ -22,7 +22,7 @@ export class TenantProvisioningEngine{
     const result=await this.platform.query<Job>(`WITH candidate AS (
       SELECT id FROM provisioning_jobs WHERE status='pending' AND (retry_after IS NULL OR retry_after<=now())
       ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
-      UPDATE provisioning_jobs j SET status='running',claimed_by=$1,correlation_id=COALESCE(correlation_id,id),
+      UPDATE provisioning_jobs j SET status='running',claimed_by=$1,correlation_id=COALESCE(j.correlation_id,j.id),
         attempt_count=attempt_count+1,started_at=COALESCE(started_at,now()),last_attempted_at=now(),last_heartbeat_at=now(),updated_at=now()
       FROM candidate WHERE j.id=candidate.id RETURNING j.id,j.tenant_id,j.safe_retry`,[this.workerId]);
     return result.rows[0]??null;

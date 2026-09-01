@@ -39,10 +39,17 @@ jobs:
       - name: Audit and create verified backups
         shell: bash
         run: |
+          cat > "$RUNNER_TEMP/production-deploy.conf" <<'EOF'
+          DEPLOY_APP_DIR=/opt/amazing-studio/app
+          DEPLOY_RELEASES_DIR=/opt/amazing-studio/releases
+          DEPLOY_COMPOSE_FILE=/opt/amazing-studio/app/06_vps_deployment/docker-compose.yml
+          DEPLOY_HEALTH_URL=https://tranchistudio.com/api/healthz
+          DEPLOY_WEB_URL=https://tranchistudio.com
+          EOF
           scp -P "$VPS_PORT" -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            scripts/audit-backup-production-first-pilot.sh "$VPS_USER@$VPS_HOST:/tmp/audit-backup-production-first-pilot-$GITHUB_RUN_ID.sh"
+            scripts/audit-backup-production-first-pilot.sh "$RUNNER_TEMP/production-deploy.conf" "$VPS_USER@$VPS_HOST:/tmp/"
           ssh -p "$VPS_PORT" -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            "$VPS_USER@$VPS_HOST" "bash /tmp/audit-backup-production-first-pilot-$GITHUB_RUN_ID.sh; status=\$?; rm -f /tmp/audit-backup-production-first-pilot-$GITHUB_RUN_ID.sh; exit \$status"
+            "$VPS_USER@$VPS_HOST" "AMAZING_DEPLOY_CONFIG=/tmp/production-deploy.conf bash /tmp/audit-backup-production-first-pilot.sh; status=\$?; rm -f /tmp/audit-backup-production-first-pilot.sh /tmp/production-deploy.conf; exit \$status"
       - name: Retrieve exact historical migration when recovered
         if: success()
         shell: bash

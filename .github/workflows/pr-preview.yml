@@ -108,7 +108,10 @@ jobs:
             psql "$history_url" -v ON_ERROR_STOP=1 -1 -f "$path"
             checksum=$(sha256sum "$path" | awk '{print $1}')
             psql "$history_url" -v ON_ERROR_STOP=1 -v filename="$file" -v checksum="$checksum" \
-              -c "INSERT INTO platform_schema_migrations(filename,checksum_sha256) VALUES(:'filename',:'checksum')"
+              <<'SQL'
+          INSERT INTO platform_schema_migrations(filename,checksum_sha256)
+          VALUES(:'filename',:'checksum');
+          SQL
           done
           test "$(sha256sum lib/platform-db/migrations/0005_tenant_invitation_permissions.sql | awk '{print $1}')" = \
             "686626a4dd8ee89ace055afdc2ad39471c87b7dbd20f0a46fa12d4c2daaf2dfa"

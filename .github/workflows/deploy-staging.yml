@@ -118,6 +118,7 @@ jobs:
             node scripts/staging-schema-source-guard.mjs
           APP_ENV=staging STAGING_PROXY_APP="$FLY_DB_APP" DATABASE_URL="$schema_source_url" \
             pnpm --filter @workspace/db push-force
+          psql "$schema_source_url" -v ON_ERROR_STOP=1 -f scripts/staging-schema-prerequisites.sql
           APP_ENV=staging STAGING_PROXY_APP="$FLY_DB_APP" DATABASE_URL="$schema_source_url" \
             TENANT_MIGRATIONS_DIR="$GITHUB_WORKSPACE/lib/db/migrations" \
             pnpm --filter @workspace/scripts exec tsx run-staging-tenant-migrations.mjs

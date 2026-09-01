@@ -167,9 +167,23 @@ jobs:
             sleep 5
             start_proxy
           done
-          APP_ENV=staging STAGING_PROXY_APP="$FLY_DB_APP" DATABASE_URL="$schema_source_url" \
-            TENANT_MIGRATIONS_DIR="$GITHUB_WORKSPACE/lib/db/migrations" \
-            pnpm --filter @workspace/scripts exec tsx run-staging-tenant-migrations.mjs
+          migration_ready=""
+          for migration_attempt in 1 2; do
+            start_proxy
+            if APP_ENV=staging STAGING_PROXY_APP="$FLY_DB_APP" DATABASE_URL="$schema_source_url" \
+              TENANT_MIGRATIONS_DIR="$GITHUB_WORKSPACE/lib/db/migrations" \
+              pnpm --filter @workspace/scripts exec tsx run-staging-tenant-migrations.mjs; then
+              migration_ready="yes"
+              break
+            fi
+            test "$migration_attempt" != 2 || break
+            echo "::warning::Transient staging migration connection failure; retrying once"
+          done
+          test "$migration_ready" = "yes" || {
+            echo "::error::Staging tenant migrations failed after one proxy reconnect"
+            exit 1
+          }
+          start_proxy
           source_counts=$(psql "$schema_source_url" -Atqc "SELECT (SELECT count(*) FROM customers)+(SELECT count(*) FROM bookings)+(SELECT count(*) FROM payments)+(SELECT count(*) FROM expenses)+(SELECT count(*) FROM contracts)+(SELECT count(*) FROM staff)")
           test "$source_counts" = "0" || { echo "::error::Generated staging schema source contains business data"; exit 1; }
 
@@ -184,6 +198,7 @@ jobs:
           SQL
           template_url="postgresql://postgres@127.0.0.1:15432/tenant_template_staging"
           provisioner_template_url="postgresql://staging_provisioner:${PROVISIONING_PASSWORD}@127.0.0.1:15432/tenant_template_staging"
+          start_proxy
           docker run --rm --network host \
             -e PGPASSWORD="$PROVISIONING_PASSWORD" \
             postgres:18 \
@@ -195,6 +210,7 @@ jobs:
               --schema-only \
               --no-owner \
               --no-privileges | psql "$provisioner_template_url" -v ON_ERROR_STOP=1
+          start_proxy
           counts=$(psql "$template_url" -Atqc "SELECT (SELECT count(*) FROM customers)+(SELECT count(*) FROM bookings)+(SELECT count(*) FROM payments)+(SELECT count(*) FROM expenses)+(SELECT count(*) FROM contracts)+(SELECT count(*) FROM staff)")
           test "$counts" = "0" || { echo "::error::Staging template contains business data"; exit 1; }
 

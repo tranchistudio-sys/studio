@@ -22,7 +22,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { findDestructiveSql, stripSqlCommentsAndStrings } from "./deploy-guard-sql.mjs";
+import {
+  findDestructiveSql,
+  stripSqlCommentsAndStrings,
+} from "./deploy-guard-sql.mjs";
 import { verifyLockedMigration } from "./deploy-guard-policy.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -48,7 +51,10 @@ const MIGRATION_ALLOWLIST = new Set([
 // Migration lịch sử đã được review và phát hành trước khi DELETE detection tồn tại.
 // Khoá bằng checksum để bất kỳ chỉnh sửa hay DELETE mới nào vẫn fail-closed.
 const LEGACY_DESTRUCTIVE_MIGRATION_CHECKSUMS = new Map([
-  ["0004_seed_amazing_wedding_gifts.sql", "f54c59b96624037c5581238ba0c16032a5c86c7a921d6768ecc65d971e8b83e6"],
+  [
+    "0004_seed_amazing_wedding_gifts.sql",
+    "f54c59b96624037c5581238ba0c16032a5c86c7a921d6768ecc65d971e8b83e6",
+  ],
 ]);
 if (exists(MIGRATIONS_DIR)) {
   const entries = fs.readdirSync(path.join(ROOT, MIGRATIONS_DIR));
@@ -60,19 +66,34 @@ if (exists(MIGRATIONS_DIR)) {
       continue;
     }
     const raw = read(`${MIGRATIONS_DIR}/${entry}`);
-    const locked = verifyLockedMigration(entry, raw, LEGACY_DESTRUCTIVE_MIGRATION_CHECKSUMS);
+    const locked = verifyLockedMigration(
+      entry,
+      raw,
+      LEGACY_DESTRUCTIVE_MIGRATION_CHECKSUMS,
+    );
     if (locked.locked) {
-      if (!locked.valid) errors.push(`${MIGRATIONS_DIR}/${entry}: locked legacy migration checksum mismatch — bất kỳ thay đổi nội dung nào đều bị cấm.`);
-      else legacyExceptions.push(`${MIGRATIONS_DIR}/${entry}: locked legacy checksum verified`);
+      if (!locked.valid)
+        errors.push(
+          `${MIGRATIONS_DIR}/${entry}: locked legacy migration checksum mismatch — bất kỳ thay đổi nội dung nào đều bị cấm.`,
+        );
+      else
+        legacyExceptions.push(
+          `${MIGRATIONS_DIR}/${entry}: locked legacy checksum verified`,
+        );
       continue;
     }
     const sql = stripSqlCommentsAndStrings(raw);
     const m = findDestructiveSql(sql);
     if (m) {
-      errors.push(`${MIGRATIONS_DIR}/${entry}: chứa SQL destructive ("${m[0]}") — cấm tuyệt đối trong deploy path.`);
+      errors.push(
+        `${MIGRATIONS_DIR}/${entry}: chứa SQL destructive ("${m[0]}") — cấm tuyệt đối trong deploy path.`,
+      );
     }
   }
-  if (!errors.length) ok.push(`migrations folder: ${entries.length} file, đúng allowlist, không destructive`);
+  if (!errors.length)
+    ok.push(
+      `migrations folder: ${entries.length} file, đúng allowlist, không destructive`,
+    );
 }
 
 // Platform DB có migration riêng, nhưng chỉ được chạy bằng lệnh explicit
@@ -85,16 +106,42 @@ const PLATFORM_MIGRATION_ALLOWLIST = new Set([
   "0003_tenant_database_registry_isolation.sql",
   "0004_staff_access_requests.sql",
   "0005_commercial_saas_foundation.sql",
+  "0005_tenant_invitation_permissions.sql",
   "0006_tenant_provisioning_engine.sql",
+]);
+const LOCKED_PLATFORM_MIGRATION_CHECKSUMS = new Map([
+  [
+    "0005_tenant_invitation_permissions.sql",
+    "686626a4dd8ee89ace055afdc2ad39471c87b7dbd20f0a46fa12d4c2daaf2dfa",
+  ],
 ]);
 if (exists(PLATFORM_MIGRATIONS_DIR)) {
   const entries = fs.readdirSync(path.join(ROOT, PLATFORM_MIGRATIONS_DIR));
   for (const entry of entries) {
     if (!PLATFORM_MIGRATION_ALLOWLIST.has(entry)) {
-      errors.push(`${PLATFORM_MIGRATIONS_DIR}/${entry}: platform migration ngoài allowlist.`);
+      errors.push(
+        `${PLATFORM_MIGRATIONS_DIR}/${entry}: platform migration ngoài allowlist.`,
+      );
       continue;
     }
-    const statementsOnly = stripSqlCommentsAndStrings(read(`${PLATFORM_MIGRATIONS_DIR}/${entry}`));
+    const raw = read(`${PLATFORM_MIGRATIONS_DIR}/${entry}`);
+    const locked = verifyLockedMigration(
+      entry,
+      raw,
+      LOCKED_PLATFORM_MIGRATION_CHECKSUMS,
+    );
+    if (locked.locked) {
+      if (!locked.valid)
+        errors.push(
+          `${PLATFORM_MIGRATIONS_DIR}/${entry}: historical checksum mismatch.`,
+        );
+      else
+        legacyExceptions.push(
+          `${PLATFORM_MIGRATIONS_DIR}/${entry}: locked historical checksum verified`,
+        );
+      continue;
+    }
+    const statementsOnly = stripSqlCommentsAndStrings(raw);
     const destructive = findDestructiveSql(statementsOnly);
     if (destructive) {
       errors.push(
@@ -102,11 +149,15 @@ if (exists(PLATFORM_MIGRATIONS_DIR)) {
       );
     }
   }
-  if (!errors.length) ok.push(`platform migrations: ${entries.length} file additive, chạy explicit-only`);
+  if (!errors.length)
+    ok.push(
+      `platform migrations: ${entries.length} file additive, chạy explicit-only`,
+    );
 }
 
 // ── 3. Config deploy + build script: không được gọi push/migrate ─────────────
-const PUSH_CMD = /(drizzle[-\s]?kit|--filter\s+db\s+push|\bdb\s+push\b|push-force|\bdrizzle\s+push\b)/i;
+const PUSH_CMD =
+  /(drizzle[-\s]?kit|--filter\s+db\s+push|\bdb\s+push\b|push-force|\bdrizzle\s+push\b)/i;
 
 const DEPLOY_CONFIGS = [
   ".replit",
@@ -117,7 +168,10 @@ const DEPLOY_CONFIGS = [
 for (const f of DEPLOY_CONFIGS) {
   if (!exists(f)) continue;
   const m = read(f).match(PUSH_CMD);
-  if (m) errors.push(`${f}: chứa lệnh push/migrate ("${m[0]}") trong config deploy — deploy phải CODE-ONLY.`);
+  if (m)
+    errors.push(
+      `${f}: chứa lệnh push/migrate ("${m[0]}") trong config deploy — deploy phải CODE-ONLY.`,
+    );
   else ok.push(`${f}: sạch (không push/migrate)`);
 }
 
@@ -133,7 +187,9 @@ for (const [f, keys] of BUILD_SCRIPTS) {
   for (const k of keys) {
     const cmd = scripts[k];
     if (cmd && PUSH_CMD.test(cmd)) {
-      errors.push(`${f} → scripts.${k}: gọi push/migrate ("${cmd}") — cấm trong build path.`);
+      errors.push(
+        `${f} → scripts.${k}: gọi push/migrate ("${cmd}") — cấm trong build path.`,
+      );
     }
   }
   ok.push(`${f}: build scripts sạch`);
@@ -142,8 +198,14 @@ for (const [f, keys] of BUILD_SCRIPTS) {
 const API_ENTRYPOINT = "artifacts/api-server/src/index.ts";
 if (exists(API_ENTRYPOINT)) {
   const entrypoint = read(API_ENTRYPOINT);
-  if (/platform-db\/src\/migrate|@workspace\/platform-db[^\n]*migrate/i.test(entrypoint)) {
-    errors.push(`${API_ENTRYPOINT}: không được import platform migration vào startup.`);
+  if (
+    /platform-db\/src\/migrate|@workspace\/platform-db[^\n]*migrate/i.test(
+      entrypoint,
+    )
+  ) {
+    errors.push(
+      `${API_ENTRYPOINT}: không được import platform migration vào startup.`,
+    );
   } else {
     ok.push(`${API_ENTRYPOINT}: không auto-run platform migration`);
   }
@@ -153,7 +215,10 @@ if (exists(API_ENTRYPOINT)) {
 const POST_MERGE = "scripts/post-merge.sh";
 if (exists(POST_MERGE)) {
   const sh = read(POST_MERGE);
-  if (!sh.includes("DEPLOY-GUARD: db push là OPT-IN") || !sh.includes("ALLOW_DB_PUSH")) {
+  if (
+    !sh.includes("DEPLOY-GUARD: db push là OPT-IN") ||
+    !sh.includes("ALLOW_DB_PUSH")
+  ) {
     errors.push(
       `${POST_MERGE}: mất guard opt-in (marker "DEPLOY-GUARD: db push là OPT-IN" / ALLOW_DB_PUSH) — ai đó đã revert về drizzle-kit push mặc định?`,
     );
@@ -166,7 +231,9 @@ if (exists(POST_MERGE)) {
 const STARTUP_DDL = "artifacts/api-server/src/lib/startup-ddl.ts";
 if (exists(STARTUP_DDL)) {
   if (!read(STARTUP_DDL).includes("ALLOW_STARTUP_DDL_IN_PRODUCTION")) {
-    errors.push(`${STARTUP_DDL}: mất fail-closed production (ALLOW_STARTUP_DDL_IN_PRODUCTION) — DDL có thể tự chạy trên prod nếu quên env.`);
+    errors.push(
+      `${STARTUP_DDL}: mất fail-closed production (ALLOW_STARTUP_DDL_IN_PRODUCTION) — DDL có thể tự chạy trên prod nếu quên env.`,
+    );
   } else {
     ok.push(`${STARTUP_DDL}: production fail-closed`);
   }
@@ -174,9 +241,13 @@ if (exists(STARTUP_DDL)) {
 
 // ── Kết quả ──────────────────────────────────────────────────────────────────
 if (errors.length) {
-  console.error("\n❌ [deploy-guard] BUILD DỪNG — phát hiện nguy cơ DDL/migration trong deploy path:\n");
+  console.error(
+    "\n❌ [deploy-guard] BUILD DỪNG — phát hiện nguy cơ DDL/migration trong deploy path:\n",
+  );
   for (const e of errors) console.error("  • " + e);
-  console.error("\n[deploy-guard] Deploy phải CODE-ONLY. Sửa các mục trên rồi build lại.\n");
+  console.error(
+    "\n[deploy-guard] Deploy phải CODE-ONLY. Sửa các mục trên rồi build lại.\n",
+  );
   process.exit(1);
 }
 console.log("✅ [deploy-guard] PASS — deploy path sạch (code-only):");

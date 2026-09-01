@@ -301,6 +301,9 @@ function cookieFrom(headers: Headers, name: string): string {
     : [headers.get("set-cookie") ?? ""];
   const raw = values.find((value) => value.startsWith(`${name}=`));
   if (!raw) throw new Error(`Response không có cookie ${name}`);
+  if (name === session.LOGIN_CSRF_COOKIE) {
+    expect(raw).toContain(`Path=${session.LOGIN_CSRF_COOKIE_PATH}`);
+  }
   return raw.split(";", 1)[0];
 }
 

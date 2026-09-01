@@ -5,6 +5,7 @@ import type { PlatformRole, PlatformSessionContext, TenantRole, TenantStatus } f
 
 export const PLATFORM_SESSION_COOKIE = "amazing_session";
 export const LOGIN_CSRF_COOKIE = "amazing_login_csrf";
+export const LOGIN_CSRF_COOKIE_PATH = "/api";
 
 export const DEFAULT_SESSION_TTL_HOURS = 24 * 365;
 export const MAX_SESSION_TTL_HOURS = 24 * 365;
@@ -44,7 +45,8 @@ export function issueLoginCsrf(res: Response, existingToken?: unknown): string {
     httpOnly: true,
     secure: cookieSecure(),
     sameSite: "lax",
-    path: "/api/auth",
+    // Shared by /api/auth/* and the public /api/studio-signups endpoint.
+    path: LOGIN_CSRF_COOKIE_PATH,
     maxAge: 10 * 60_000,
   });
   return token;
@@ -71,7 +73,7 @@ export function clearLoginCsrf(res: Response): void {
     httpOnly: true,
     secure: cookieSecure(),
     sameSite: "lax",
-    path: "/api/auth",
+    path: LOGIN_CSRF_COOKIE_PATH,
   });
 }
 

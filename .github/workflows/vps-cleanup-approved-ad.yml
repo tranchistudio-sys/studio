@@ -1,0 +1,206 @@
+name: VPS cleanup approved A-D
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/vps-cleanup-approved-ad.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    name: Dọn VPS A-D có kiểm soát
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    env:
+      VPS_HOST: 160.250.128.162
+      VPS_USER: deploy
+      VPS_PORT: 22
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Kiểm tra khóa SSH
+        shell: bash
+        run: |
+          test -n "$VPS_SSH_PRIVATE_KEY" || {
+            echo "::error::Thiếu VPS_SSH_PRIVATE_KEY"
+            exit 1
+          }
+
+      - name: Chuẩn bị SSH trên runner
+        shell: bash
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
+          ssh-keyscan -H -p "$VPS_PORT" "$VPS_HOST" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Dọn đúng A-D và xác minh production
+        shell: bash
+        run: |
+          ssh -p "$VPS_PORT" -i "$HOME/.ssh/deploy_key" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE_CLEANUP'
+          set -Eeuo pipefail
+
+          section() { printf '\n===== %s =====\n' "$1"; }
+          fail() { echo "[STOP] $*" >&2; exit 1; }
+
+          expected_container_snapshot='amazing-studio-api-1|sha256:37182a6f025acc6c1931dfffec41f0bc73ddfb0760aca226f7d50d31808d5dc8
+          amazing-studio-production-db|sha256:7958605b474b3d264a969cb3a123d6aa00ad1e1fe9da8a69984dabb704d93317
+          amazing-studio-staging-db-1|sha256:9b18b78397054fce88a9552e9d5a3ad5bb7fd258c5b3cc1c5028e46373d6ea8f
+          amazing-studio-web-1|sha256:32deb1982f6d42cb7dc02f42f9f9dfa7f486cf3c9ff3b9bed13f08a815ac0926'
+
+          container_snapshot() {
+            sudo -n docker ps -q | while read -r cid; do
+              sudo -n docker inspect --format '{{.Name}}|{{.Image}}' "$cid" | sed 's#^/##'
+            done | sort
+          }
+
+          protected_path_snapshot() {
+            for path in /srv/amazing-studio/data/object-storage /srv/amazing-studio/data/public; do
+              sudo -n test -d "$path" || fail "Thiếu vùng dữ liệu protected: $path"
+              count=$(sudo -n find "$path" -xdev -type f -printf '.' | wc -c)
+              bytes=$(sudo -n find "$path" -xdev -type f -printf '%s\n' | awk '{s+=$1} END {printf "%.0f", s+0}')
+              printf '%s|files=%s|bytes=%s\n' "$path" "$count" "$bytes"
+            done
+          }
+
+          db_snapshot() {
+            sudo -n docker exec amazing-studio-production-db sh -lc '
+              db="${POSTGRES_DB:-${POSTGRES_USER:-postgres}}"
+              psql -X -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-postgres}" -d "$db" -Atqc "
+                SELECT current_database();
+                SELECT count(*) FROM pg_catalog.pg_tables WHERE schemaname = '\''public'\'';
+                SELECT COALESCE(sum(n_live_tup),0)::bigint FROM pg_stat_user_tables;
+                SELECT pg_database_size(current_database());
+              "
+            '
+          }
+
+          verify_runtime() {
+            actual=$(container_snapshot)
+            [ "$actual" = "$expected_container_snapshot" ] || {
+              printf 'EXPECTED:\n%s\nACTUAL:\n%s\n' "$expected_container_snapshot" "$actual"
+              fail "Danh sách container/image production đã thay đổi"
+            }
+            [ "$(sudo -n docker inspect -f '{{.State.Health.Status}}' amazing-studio-api-1)" = healthy ] || fail "API container không healthy"
+            [ "$(sudo -n docker inspect -f '{{.State.Health.Status}}' amazing-studio-web-1)" = healthy ] || fail "Web container không healthy"
+            [ "$(sudo -n docker inspect -f '{{.State.Running}}' amazing-studio-production-db)" = true ] || fail "Production DB không chạy"
+            [ "$(sudo -n docker inspect -f '{{.State.Health.Status}}' amazing-studio-staging-db-1)" = healthy ] || fail "Staging DB không healthy"
+            curl -fsS --max-time 20 https://tranchistudio.com/ >/dev/null || fail "Website không phản hồi"
+            health=$(curl -fsS --max-time 20 https://tranchistudio.com/api/healthz) || fail "Health API không phản hồi"
+            printf '%s' "$health" | grep -Eqi 'ok|healthy' || fail "Health API không trả trạng thái OK"
+          }
+
+          verify_ref() {
+            ref=$1 expected=$2
+            actual=$(sudo -n docker image inspect --format '{{.Id}}' "$ref" 2>/dev/null) || fail "Thiếu image đã duyệt: $ref"
+            [ "$actual" = "sha256:$expected" ] || fail "Image $ref đổi ID: $actual"
+            if sudo -n docker ps -aq | xargs -r sudo -n docker inspect --format '{{.Image}}' | grep -Fxq "$actual"; then
+              fail "Image $ref đang được container sử dụng"
+            fi
+          }
+
+          exec 9>/tmp/amazing-studio-deploy.lock
+          flock -n 9 || fail "Có tiến trình deploy đang giữ khóa"
+
+          section "PREFLIGHT — CHƯA XÓA"
+          [ "$(sudo -n cat /opt/amazing-studio/DEPLOYED_SHA)" = 99e07ced274c6d009744cfb6b457b82ea74b6c30 ] || fail "DEPLOYED_SHA đã thay đổi"
+          verify_runtime
+          [ "$(sudo -n docker image inspect --format '{{.Id}}' amazing-studio-web:rollback)" = sha256:caff8737cddcf5935743c196ceb23c1347ad1c1ce15dbb275c80497ff9106f05 ] || fail "Web rollback đã thay đổi"
+          [ "$(sudo -n docker image inspect --format '{{.Id}}' amazing-studio-api:platform-auth-rollback)" = sha256:a2879d93855d999f7d9521271534189c23d372fbc6b9aa8a4b090389b29cc601 ] || fail "API rollback đã thay đổi"
+
+          approved_refs='postgres:16-alpine|cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+          postgres:17-alpine|18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+          amazing-studio-api:commit-ddcdfd60fa0f38b2aac9b25ac743635845e56c0f|b11108fcacea13b26018dc0663079b1102f772ce6784b7f183a81759176c4f34
+          amazing-studio-web:commit-ddcdfd60fa0f38b2aac9b25ac743635845e56c0f|2e8b02571de5213af60ab4eacb36c78f9fae73c2835b7877c8e9f7dcb7e57baf
+          amazing-studio-web:rollback-pre-ddcdfd6|6c3163866804aed721e342e9a527562be85a47f91be01412d509e1cf2d8c8c00
+          amazing-studio-web:rollback-pre-e54870d|6c3163866804aed721e342e9a527562be85a47f91be01412d509e1cf2d8c8c00
+          amazing-studio-api:rollback-pre-ddcdfd6|dae843002deec9ebd66bdbfa79eb62c4d6548207e2d47e260de9f85fabc408f7
+          amazing-studio-api:rollback-pre-e54870d|dae843002deec9ebd66bdbfa79eb62c4d6548207e2d47e260de9f85fabc408f7
+          amazing-studio-api:pre-no-avatar-20260807T1530Z|0ba75d6846acb222744ae22fdeba262dcb9be2b21cb767c3705b67ba00031ef3
+          amazing-studio-api:pre-aggregate2-20260807T1515Z|8985f6b5c249ffd2818cfa8c660ef8d7d87732958f2651a8ff92583d9455244c
+          amazing-studio-api:pre-warm-20260807T1505Z|f997c8af8473e9b4f47f61d1046599b6aa30f51a64dc69a9dd525911b1292dbc
+          amazing-studio-api:pre-customer-performance-20260807T1400Z|4fa981c46a1df0db356c9f95628ab8e2a39f8f85591fff312a5d33916e903e8d
+          amazing-studio-api:pre-detail-performance-20260807T1330Z|4fa981c46a1df0db356c9f95628ab8e2a39f8f85591fff312a5d33916e903e8d
+          amazing-studio-api:pre-pool-20260807T1450Z|4fa981c46a1df0db356c9f95628ab8e2a39f8f85591fff312a5d33916e903e8d
+          amazing-studio-api:pre-integrity-20260807T1319Z|78dc6c33617e1028400105abcb815617b2e80641eeaaa31accca38c658fa4d70
+          amazing-studio-api:pre-bookings-parallel-20260807T125000Z|4224ea0ee2ff1288b2749b2ffaaa16a9bd3ee35e559ef8aa9e9a16dd060c6bf3
+          amazing-studio-api:pre-bookings-performance-20260807T124500Z|c40c401bdac4527741c0f408f360473a4f098083782dec8df7b835af4cb099c1
+          amazing-studio-api:pre-shopaikey-20260807|dbc017d49b5fbbffa65585131d09705e508a2afe153f7008fcdf14c702771a29
+          amazing-studio-api:pre-cors-20260807|0a609ac2fa16a5ff4bfce4541d650384b2d0fa5ad890eb857f153231e2ce2bd6
+          amazing-studio-web:pre-month-range-20260807T1440Z|25aea12483107160f8ff0b937d4cfeb9a0e74578079bbe8ca4dfebe15fbcc281
+          postgres:16|95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b'
+
+          approved_dangling='d2d41c547252bd1b3702ff38952affd404778dca36380fbcec302237de50b740
+          7593c809c36abc657aa02ffcaf50ab89bfdd5c13638de7b523e59dc569f6413f
+          5433a714ed2d7b609a2525a091c5b1912ccfd919f34dac483a5b7534c4564fa1
+          ca0bc4b5e3952d14b81515b6a9650557a414f47a440abdb398bcebffe9be6df8
+          b93ad54ee1e8a31e15d83ceeb411a966b6f9fd5f0babdfb1ced025201bdbe447'
+
+          while IFS='|' read -r ref expected; do verify_ref "$ref" "$expected"; done <<EOF
+          $approved_refs
+          EOF
+          while read -r id; do verify_ref "sha256:$id" "$id"; done <<EOF
+          $approved_dangling
+          EOF
+
+          before_used=$(df -B1 --output=used / | tail -1 | tr -d ' ')
+          before_df=$(df -hT /)
+          before_docker=$(sudo -n docker system df)
+          before_paths=$(protected_path_snapshot)
+          before_db=$(db_snapshot)
+          [ -n "$before_db" ] || fail "Không đọc được snapshot database"
+          printf 'DF_BEFORE\n%s\nDOCKER_BEFORE\n%s\nPROTECTED_PATHS_BEFORE\n%s\nDB_BEFORE\n%s\n' "$before_df" "$before_docker" "$before_paths" "$before_db"
+
+          section "A — DOCKER BUILD CACHE"
+          sudo -n docker builder prune --force
+          verify_runtime
+          df -hT /
+          sudo -n docker system df
+
+          section "B — IMAGE ĐÃ DUYỆT, KHÔNG DÙNG --force"
+          while IFS='|' read -r ref expected; do sudo -n docker image rm "$ref"; done <<EOF
+          $approved_refs
+          EOF
+          while read -r id; do sudo -n docker image rm "sha256:$id"; done <<EOF
+          $approved_dangling
+          EOF
+          verify_runtime
+          df -hT /
+          sudo -n docker system df
+
+          section "C — APT CACHE"
+          sudo -n apt-get clean
+          verify_runtime
+          df -hT /
+          sudo -n docker system df
+
+          section "D — JOURNAL CŨ"
+          sudo -n journalctl --vacuum-size=80M
+          verify_runtime
+          df -hT /
+          sudo -n docker system df
+
+          section "XÁC MINH CUỐI"
+          after_paths=$(protected_path_snapshot)
+          after_db=$(db_snapshot)
+          [ "$after_paths" = "$before_paths" ] || fail "Số file/dung lượng vùng upload-media đã thay đổi"
+          [ -n "$after_db" ] || fail "Database không còn truy vấn được"
+          verify_runtime
+          after_used=$(df -B1 --output=used / | tail -1 | tr -d ' ')
+          freed=$((before_used - after_used))
+          printf 'DF_BEFORE\n%s\nDF_AFTER\n' "$before_df"
+          df -hT /
+          printf 'DOCKER_BEFORE\n%s\nDOCKER_AFTER\n' "$before_docker"
+          sudo -n docker system df
+          printf 'EXACT_BYTES_BEFORE=%s\nEXACT_BYTES_AFTER=%s\nEXACT_BYTES_FREED=%s\n' "$before_used" "$after_used" "$freed"
+          printf 'PROTECTED_PATHS_AFTER\n%s\nDB_BEFORE\n%s\nDB_AFTER\n%s\n' "$after_paths" "$before_db" "$after_db"
+          sudo -n journalctl --disk-usage
+          sudo -n du -sh /var/cache/apt
+          echo 'RESULT=SUCCESS_APPROVED_A_D_ONLY'
+          REMOTE_CLEANUP

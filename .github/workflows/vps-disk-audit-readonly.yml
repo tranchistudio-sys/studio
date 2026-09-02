@@ -1,0 +1,194 @@
+name: VPS disk audit (read-only)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/vps-disk-audit-readonly.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Audit VPS dung lượng - chỉ đọc
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    env:
+      VPS_HOST: 160.250.128.162
+      VPS_USER: deploy
+      VPS_PORT: 22
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Kiểm tra khóa SSH
+        shell: bash
+        run: |
+          test -n "$VPS_SSH_PRIVATE_KEY" || {
+            echo "::error::Thiếu VPS_SSH_PRIVATE_KEY"
+            exit 1
+          }
+
+      - name: Chuẩn bị SSH trên runner
+        shell: bash
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
+          ssh-keyscan -H -p "$VPS_PORT" "$VPS_HOST" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Thu thập audit chỉ đọc trên VPS
+        shell: bash
+        run: |
+          ssh -p "$VPS_PORT" -i "$HOME/.ssh/deploy_key" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" 'bash -s' <<'REMOTE_AUDIT'
+          set -u
+
+          section() {
+            printf '\n===== %s =====\n' "$1"
+          }
+
+          run_readonly() {
+            printf '\n$ %s\n' "$*"
+            "$@" 2>&1 || printf '[audit] Lệnh chỉ đọc không thực hiện được (exit=%s)\n' "$?"
+          }
+
+          section "MỐC THỜI GIAN VÀ MÁY CHỦ"
+          run_readonly date -Is
+          run_readonly hostname
+          run_readonly uname -a
+          run_readonly uptime
+
+          section "Ổ ĐĨA VÀ INODE"
+          run_readonly df -hT
+          run_readonly df -ih
+
+          section "DUNG LƯỢNG CẤP 1 TRÊN ROOT - CÙNG FILESYSTEM"
+          printf '\n$ sudo du -x -BM --max-depth=1 / | sort -n\n'
+          sudo -n du -x -BM --max-depth=1 / 2>/dev/null | sort -n || true
+
+          section "PHÂN RÃ CÁC THƯ MỤC LỚN"
+          for target in /var /var/lib /var/lib/docker /var/log /opt /opt/amazing-studio /tmp /var/tmp /home; do
+            if sudo -n test -e "$target"; then
+              printf '\n--- %s ---\n' "$target"
+              sudo -n du -x -BM --max-depth=1 "$target" 2>/dev/null | sort -n || true
+            fi
+          done
+
+          section "PHÂN RÃ VÙNG LỚN CẦN XÁC MINH"
+          for target in \
+            /opt/amazing-studio/migration \
+            /opt/amazing-studio/releases \
+            /opt/amazing-studio/recovery \
+            /opt/amazing-studio/x20-settings-ui-prototype \
+            /opt/amazing-ai-bridge \
+            /srv \
+            /home/deploy \
+            /home/codex; do
+            if sudo -n test -d "$target"; then
+              printf '\n--- %s (max-depth=3) ---\n' "$target"
+              sudo -n du -x -BM --max-depth=3 "$target" 2>/dev/null | sort -n | tail -80 || true
+            fi
+          done
+
+          section "100 FILE LỚN NHẤT TRONG VÙNG KHÔNG PHẢI DATABASE/UPLOAD"
+          for target in /opt/amazing-studio/migration /opt/amazing-studio/releases /opt/amazing-ai-bridge /home/deploy /home/codex; do
+            if sudo -n test -d "$target"; then
+              printf '\n--- %s ---\n' "$target"
+              sudo -n find "$target" -xdev -type f -printf '%s %TY-%Tm-%Td %TH:%TM %p\n' 2>/dev/null \
+                | sort -nr | head -100 || true
+            fi
+          done
+
+          section "HASH BACKUP AMAZING STUDIO - CHỈ ĐỌC"
+          if sudo -n test -d /opt/amazing-studio/backups; then
+            sudo -n find /opt/amazing-studio/backups -xdev -maxdepth 1 -type f -print0 2>/dev/null \
+              | sudo -n xargs -0 -r sha256sum || true
+          fi
+
+          section "PRODUCTION CONTAINERS ĐANG CHẠY"
+          run_readonly sudo -n docker ps --no-trunc --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}'
+          printf '\n$ Running container image IDs\n'
+          sudo -n docker ps -q | while read -r cid; do
+            sudo -n docker inspect --format 'container={{.Name}} image_ref={{.Config.Image}} image_id={{.Image}}' "$cid"
+          done
+
+          section "MOUNTS CỦA CONTAINER ĐANG CHẠY - PROTECTED"
+          sudo -n docker ps -q | while read -r cid; do
+            sudo -n docker inspect --format '{{.Name}}{{range .Mounts}} | type={{.Type}} source={{.Source}} destination={{.Destination}} rw={{.RW}}{{end}}' "$cid"
+          done
+
+          section "DOCKER SYSTEM DF"
+          run_readonly sudo -n docker system df
+          run_readonly sudo -n docker system df -v
+
+          section "DANH SÁCH IMAGE"
+          run_readonly sudo -n docker image ls --no-trunc
+          section "IMAGE DANGLING - ỨNG VIÊN RÁC, CHƯA XÓA"
+          run_readonly sudo -n docker image ls --filter dangling=true --no-trunc
+          section "BUILD CACHE - CHỈ ĐỌC"
+          run_readonly sudo -n docker builder du
+          run_readonly sudo -n docker buildx du
+
+          section "DOCKER VOLUMES - MẶC ĐỊNH PROTECTED"
+          run_readonly sudo -n docker volume ls
+          printf '\n$ Dung lượng từng volume data directory\n'
+          sudo -n sh -c 'for d in /var/lib/docker/volumes/*/_data; do [ -d "$d" ] && du -sh "$d"; done' 2>/dev/null | sort -h || true
+
+          section "RELEASES VÀ SHA PRODUCTION"
+          run_readonly sudo -n cat /opt/amazing-studio/DEPLOYED_SHA
+          if sudo -n test -d /opt/amazing-studio/releases; then
+            printf '\n$ Dung lượng từng release\n'
+            sudo -n du -sh /opt/amazing-studio/releases/* 2>/dev/null | sort -h || true
+          fi
+          run_readonly sudo -n ls -ld /opt/amazing-studio/app /opt/amazing-studio/releases
+
+          section "BACKUP - MẶC ĐỊNH PROTECTED"
+          for d in /opt/amazing-studio/backups /var/backups /backup /backups; do
+            if sudo -n test -d "$d"; then
+              printf '\n--- %s ---\n' "$d"
+              sudo -n find "$d" -xdev -maxdepth 2 -type f -printf '%s %TY-%Tm-%Td %TH:%TM %p\n' 2>/dev/null | sort -nr | head -100 || true
+              sudo -n du -sh "$d" 2>/dev/null || true
+            fi
+          done
+
+          section "UPLOAD/MEDIA/STORAGE - PROTECTED, CHỈ TỔNG HỢP"
+          sudo -n find /opt/amazing-studio -xdev -maxdepth 5 -type d \
+            \( -iname uploads -o -iname upload -o -iname media -o -iname storage -o -iname public \) \
+            -print0 2>/dev/null |
+            while IFS= read -r -d "" d; do
+              sudo -n du -sh "$d" 2>/dev/null || true
+            done
+
+          section "SYSTEM LOGS"
+          run_readonly sudo -n journalctl --disk-usage
+          if sudo -n test -d /var/log; then
+            sudo -n du -x -BM --max-depth=2 /var/log 2>/dev/null | sort -n | tail -50 || true
+          fi
+
+          section "APT CACHE"
+          run_readonly sudo -n du -sh /var/cache/apt /var/lib/apt/lists
+
+          section "TMP - CHỈ TỔNG HỢP, KHÔNG LIỆT KÊ NỘI DUNG"
+          for d in /tmp /var/tmp; do
+            if sudo -n test -d "$d"; then
+              printf '%s total=' "$d"
+              sudo -n du -sh "$d" 2>/dev/null | awk '{print $1}'
+              printf '%s files=' "$d"
+              sudo -n find "$d" -xdev -type f 2>/dev/null | wc -l
+              printf '%s files_older_7d=' "$d"
+              sudo -n find "$d" -xdev -type f -mtime +7 2>/dev/null | wc -l
+              printf '%s files_older_30d=' "$d"
+              sudo -n find "$d" -xdev -type f -mtime +30 2>/dev/null | wc -l
+            fi
+          done
+
+          section "KẾT THÚC AUDIT - KHÔNG CÓ THAO TÁC XÓA/PRUNE/RESTART"
+          run_readonly df -hT
+          run_readonly sudo -n docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Status}}'
+          REMOTE_AUDIT
+
+# Re-audit before approved cleanup A-D — 2026-08-20

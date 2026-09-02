@@ -36,7 +36,9 @@ jobs:
           node-version: 24
           cache: pnpm
       - name: Install locked restore runtime
-        run: pnpm install --frozen-lockfile
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @workspace/api-server build
       - uses: superfly/flyctl-actions/setup-flyctl@master
 
       - name: Enforce staging-only target

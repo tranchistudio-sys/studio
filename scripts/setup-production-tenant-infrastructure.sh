@@ -42,7 +42,11 @@ API_NETWORK=$(sudo -n docker inspect "$API_CID" --format '{{range $name, $_ := .
 PLATFORM_HOST=$(sudo -n docker inspect "$API_CID" --format '{{range .Config.Env}}{{println .}}{{end}}' | sed -n 's/^PLATFORM_DATABASE_URL=//p' | head -n1 | sudo -n docker exec -i "$API_CID" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(new URL(s.trim()).hostname))')
 [ -n "$PLATFORM_HOST" ] || die "Không đọc được host Platform DB"
 
-sudo -n install -d -m 750 -o root -g root /opt/amazing-studio
+# This directory contains non-secret deployment control files that the unprivileged
+# deploy account must be able to traverse. Secret files below remain root-owned
+# and mode 600; tightening the parent to 750 makes deploy.conf and compose appear
+# missing even though they still exist.
+sudo -n install -d -m 755 -o root -g root /opt/amazing-studio
 if ! sudo -n test -s "$SECRETS_FILE"; then
   ROOT_PASSWORD=$(openssl rand -base64 36 | tr -d '\n' | tr '+/' '-_')
   PROVISIONER_PASSWORD=$(openssl rand -base64 36 | tr -d '\n' | tr '+/' '-_')

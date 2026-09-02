@@ -1,15 +1,17 @@
 import { TESTIMONIALS } from "@/lib/public-site-config";
 import { PublicReveal, PublicRevealItem } from "./PublicReveal";
 import { PublicSectionHeader } from "./PublicSectionHeader";
+import { usePublicBranding } from "@/hooks/use-public-branding";
 
 export function PublicTestimonials() {
+  const { view: branding } = usePublicBranding();
   return (
     <PublicReveal stagger className="py-20 sm:py-28 lg:py-32 bg-white">
       <div className="max-w-7xl mx-auto px-5 sm:px-8">
         <PublicSectionHeader
           eyebrow="Đánh giá"
           title="Feedback khách hàng"
-          description="Niềm tin và sự hài lòng của khách hàng là động lực của Amazing Studio."
+          description={`Niềm tin và sự hài lòng của khách hàng là động lực của ${branding.publicName}.`}
         />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-8 sm:gap-12 max-w-5xl mx-auto">
           {TESTIMONIALS.map((t, i) => (

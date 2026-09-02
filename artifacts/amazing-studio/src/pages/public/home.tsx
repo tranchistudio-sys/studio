@@ -16,6 +16,7 @@ import { PublicTestimonials } from "@/components/public/PublicTestimonials";
 import { PublicContactStrip } from "@/components/public/PublicContactStrip";
 import { PublicCta } from "@/components/public/PublicCta";
 import { ResilientImage } from "@/components/public/ResilientImage";
+import { usePublicBranding } from "@/hooks/use-public-branding";
 
 function shuffle<T>(arr: T[]): T[] {
   const a = arr.slice();
@@ -35,6 +36,7 @@ function shuffle<T>(arr: T[]): T[] {
  * 5. Liên hệ (banner CTA + dải liên hệ)
  */
 export default function PublicHomePage() {
+  const { view: branding } = usePublicBranding();
   const { data: homeCms } = usePublicHomeContent();
   const { data: albums = [] } = usePublicGalleryAlbums();
   const { data: galleryCategories = [] } = usePublicGalleryCategories();
@@ -71,7 +73,7 @@ export default function PublicHomePage() {
 
   const footerTitle = homeCms?.footerCtaTitle?.trim() || "Sẵn sàng lưu giữ khoảnh khắc?";
   const footerSubtitle =
-    homeCms?.footerCtaSubtitle?.trim() || "Liên hệ tư vấn miễn phí — Amazing Studio đồng hành cùng bạn.";
+    homeCms?.footerCtaSubtitle?.trim() || `Liên hệ tư vấn miễn phí — ${branding.publicName} đồng hành cùng bạn.`;
   const footerBtnLabel = homeCms?.footerCtaButtonLabel?.trim() || "Liên hệ ngay";
   const footerBtnHref = homeCms?.footerCtaButtonHref?.trim() || "/lien-he";
 

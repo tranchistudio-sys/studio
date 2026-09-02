@@ -5,13 +5,7 @@ import { cn } from "@/lib/utils";
 import { useStaffAuth } from "@/contexts/StaffAuthContext";
 import { PublicAiAdvisor } from "@/components/public-ai-advisor";
 import { playPublicSound, ensurePublicAudioArmed, isPublicSoundMuted, setPublicSoundMuted } from "@/lib/feedback";
-import {
-  STUDIO_ADDRESS,
-  STUDIO_EMAIL,
-  STUDIO_PHONE_DISPLAY,
-} from "@/lib/public-site-config";
-import { useQuery } from "@tanstack/react-query";
-import { publicApiUrl, publicTenantSlugFromPath } from "@/lib/public-tenant";
+import { usePublicBranding } from "@/hooks/use-public-branding";
 
 const PUBLIC_NAV = [
   { href: "/", label: "Trang chủ" },
@@ -29,17 +23,8 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [soundMuted, setSoundMuted] = useState(isPublicSoundMuted);
-  const tenantSlug = publicTenantSlugFromPath();
-  const { data: publicBranding, isError: publicBrandingMissing } = useQuery({
-    queryKey: ["public-branding", tenantSlug],
-    queryFn: async () => {
-      const response = await fetch(publicApiUrl("/api/platform/public-site", tenantSlug));
-      if (!response.ok) throw new Error("Không tìm thấy website studio");
-      return response.json() as Promise<{ publicName: string; phone: string | null; address: string | null; logoUrl: string | null }>;
-    },
-    retry: false,
-  });
-  const publicName = publicBranding?.publicName || (tenantSlug === "amazing-studio" ? "AMAZING" : "STUDIO");
+  const { view: branding, isError: publicBrandingMissing } = usePublicBranding();
+  const { tenantSlug, publicName } = branding;
 
   // Mở "khoá" autoplay sau tương tác đầu tiên (tôn trọng giới hạn trình duyệt).
   useEffect(() => { ensurePublicAudioArmed(); }, []);
@@ -305,17 +290,18 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
             <div>
               <h3 className="font-serif text-xl mb-3 tracking-wide">{publicName}</h3>
               <p className="text-neutral-600 leading-relaxed">
-                Chụp ảnh cưới &amp; cho thuê trang phục cao cấp tại Tây Ninh.
+                {branding.isAmazingLegacy
+                  ? "Chụp ảnh cưới & cho thuê trang phục cao cấp tại Tây Ninh."
+                  : "Chụp ảnh cưới & cho thuê trang phục cao cấp."}
               </p>
             </div>
             <div>
               <h4 className="text-[10px] tracking-[0.3em] uppercase text-neutral-500 mb-3">Liên hệ</h4>
               <p className="text-neutral-700 leading-relaxed">
-                {publicBranding?.address || (tenantSlug === "amazing-studio" ? STUDIO_ADDRESS : "")}
+                {branding.address || "Thông tin đang được cập nhật"}
                 <br />
-                {publicBranding?.phone || (tenantSlug === "amazing-studio" ? STUDIO_PHONE_DISPLAY : "")}
-                <br />
-                {tenantSlug === "amazing-studio" && <a href={`mailto:${STUDIO_EMAIL}`} className="underline hover:text-neutral-900">{STUDIO_EMAIL}</a>}
+                {branding.phoneDisplay || ""}
+                {branding.email && <><br /><a href={`mailto:${branding.email}`} className="underline hover:text-neutral-900">{branding.email}</a></>}
               </p>
             </div>
             <div>

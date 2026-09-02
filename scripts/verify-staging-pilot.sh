@@ -124,26 +124,26 @@ duplicate_registry=$(psql "$platform_url" -v ON_ERROR_STOP=1 -Atqc "
   ) duplicates")
 test "$duplicate_registry" = "0"
 
-# The smallest staging DB cannot hold ACCESS SHARE locks for every tenant table
-# in one pg_dump transaction. Build one tenant-specific artifact sequentially:
-# full schema first, then one table at a time. This keeps the backup complete
-# while limiting each staging transaction to a single table.
+# The smallest staging DB restarts even for a schema-only pg_dump. Build a
+# tenant-specific, portable artifact without asking that server to catalogue the
+# whole schema: trusted repository migrations plus one CSV stream per table.
+# Each read is its own short transaction and the restore uses the exact same
+# migration orchestrator as provisioning.
 mkdir -p "$backup_parts"
-docker run --rm --network host -e PGPASSWORD \
-  -v "$backup_parts:/backup" postgres:18 \
-  pg_dump -h 127.0.0.1 -p 15432 -U postgres -d "$database_name" \
-    --schema-only --format=custom --no-owner --no-privileges -f /backup/000-schema.dump
+mkdir -p "$backup_parts/migrations" "$backup_parts/data"
+for migration in lib/db/migrations/[0-9][0-9][0-9][0-9]_*.sql; do
+  test "$(basename "$migration")" = "0004_seed_amazing_wedding_gifts.sql" && continue
+  cp "$migration" "$backup_parts/migrations/"
+done
 mapfile -t tenant_tables < <(psql "$tenant_url" -v ON_ERROR_STOP=1 -Atqc \
-  "SELECT format('%I.%I',schemaname,tablename) FROM pg_tables WHERE schemaname='public' ORDER BY tablename")
-part=1
+  "SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename<>'tenant_schema_migrations' ORDER BY tablename")
+: > "$backup_parts/data/manifest.tsv"
 for table_name in "${tenant_tables[@]}"; do
-  part=$((part+1))
-  part_name=$(printf '%03d-table.dump' "$part")
-  docker run --rm --network host -e PGPASSWORD \
-    -v "$backup_parts:/backup" postgres:18 \
-    pg_dump -h 127.0.0.1 -p 15432 -U postgres -d "$database_name" \
-      --data-only --table="$table_name" --format=custom --no-owner --no-privileges \
-      -f "/backup/$part_name"
+  [[ "$table_name" =~ ^[a-zA-Z0-9_]+$ ]]
+  csv_name="${table_name}.csv"
+  printf '%s\t%s\n' "$table_name" "$csv_name" >> "$backup_parts/data/manifest.tsv"
+  psql "$tenant_url" -v ON_ERROR_STOP=1 \
+    -c "\\copy public.\"$table_name\" TO '$backup_parts/data/$csv_name' WITH (FORMAT csv, HEADER true)" >/dev/null
 done
 tar -C "$backup_parts" -cf "$backup_file" .
 (cd "$backup_dir" && sha256sum "$backup_name" > "${backup_name}.sha256")
@@ -159,14 +159,35 @@ done
 PGPASSWORD="$local_password" createdb -h 127.0.0.1 -p "$local_port" -U postgres "$restore_db"
 mkdir -p "$restore_parts"
 tar -C "$restore_parts" -xf "$backup_file"
-for archive in "$restore_parts"/*.dump; do
-  docker run --rm --network host -e PGPASSWORD="$local_password" \
-    -v "$restore_parts:/backup" postgres:18 \
-    pg_restore -h 127.0.0.1 -p "$local_port" -U postgres -d "$restore_db" \
-      --no-owner --no-privileges --disable-triggers --exit-on-error --jobs=1 "/backup/$(basename "$archive")"
-done
+restore_url="postgresql://postgres@127.0.0.1:${local_port}/${restore_db}"
+CI=true DATABASE_URL="$restore_url" TENANT_MIGRATIONS_DIR="$restore_parts/migrations" \
+  pnpm --filter @workspace/scripts exec tsx run-ci-tenant-template-migrations.mjs >/dev/null
+while IFS=$'\t' read -r table_name csv_name; do
+  [[ "$table_name" =~ ^[a-zA-Z0-9_]+$ ]]
+  [[ "$csv_name" =~ ^[a-zA-Z0-9_]+\.csv$ ]]
+  PGPASSWORD="$local_password" psql "$restore_url" -v ON_ERROR_STOP=1 \
+    -c "SET session_replication_role=replica" \
+    -c "\\copy public.\"$table_name\" FROM '$restore_parts/data/$csv_name' WITH (FORMAT csv, HEADER true)" >/dev/null
+done < "$restore_parts/data/manifest.tsv"
+# Bring serial/identity sequences forward so the restored database is writable.
+PGPASSWORD="$local_password" psql "$restore_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+DO $$
+DECLARE item record; maximum bigint;
+BEGIN
+  FOR item IN
+    SELECT table_name,column_name,pg_get_serial_sequence(format('%I.%I',table_schema,table_name),column_name) AS sequence_name
+    FROM information_schema.columns
+    WHERE table_schema='public' AND (column_default LIKE 'nextval(%' OR is_identity='YES')
+  LOOP
+    EXECUTE format('SELECT max(%I) FROM %I.%I',item.column_name,'public',item.table_name) INTO maximum;
+    IF item.sequence_name IS NOT NULL AND maximum IS NOT NULL THEN
+      PERFORM setval(item.sequence_name,maximum,true);
+    END IF;
+  END LOOP;
+END $$;
+SQL
 restored=$(PGPASSWORD="$local_password" psql \
-  "postgresql://postgres@127.0.0.1:${local_port}/${restore_db}" \
+  "$restore_url" \
   -v ON_ERROR_STOP=1 -v tenant_id="$tenant_id" -AtF '|' <<'SQL'
 SELECT
   (SELECT count(*) FROM customers)::text,
@@ -192,6 +213,6 @@ summary_file="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
   echo "- Database-per-tenant isolation: verified"
   echo "- Failure/retry attempts: $attempt_count"
   echo "- Backup checksum (SHA-256): $backup_checksum"
-  echo "- Backup/restore: verified sequentially on isolated PostgreSQL 18"
+  echo "- Backup/restore: repository schema + sequential tenant data verified on isolated PostgreSQL 18"
   echo "- Capacity note: the smallest permanent staging DB is not used as restore-capacity proof"
 } >> "$summary_file"

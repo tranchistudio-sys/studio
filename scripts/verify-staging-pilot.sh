@@ -23,6 +23,8 @@ backup_dir="${RUNNER_TEMP:-/tmp}"
 backup_name="pilot-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}-$(date -u +%Y%m%dT%H%M%SZ).dump"
 backup_file="$backup_dir/$backup_name"
 checksum_file="$backup_file.sha256"
+backup_parts="$backup_dir/${backup_name}.parts"
+restore_parts="$backup_dir/${backup_name}.restore"
 local_container="pilot-restore-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
 local_port=25432
 local_password="ci_restore_only_${GITHUB_RUN_ID:-local}_${GITHUB_RUN_ATTEMPT:-1}"
@@ -35,6 +37,7 @@ SELECT format('DROP DATABASE IF EXISTS %I', :'restore_db') \gexec
 SQL
   docker rm -f "$local_container" >/dev/null 2>&1 || true
   rm -f "$backup_file" "$checksum_file"
+  rm -rf "$backup_parts" "$restore_parts"
   kill "$proxy_pid" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -121,13 +124,28 @@ duplicate_registry=$(psql "$platform_url" -v ON_ERROR_STOP=1 -Atqc "
   ) duplicates")
 test "$duplicate_registry" = "0"
 
-# Back up the tenant through the staging-only proxy, then verify the artifact in
-# a disposable PostgreSQL 18 container. A same-cluster restore overloads the
-# smallest Fly staging DB, so it is deliberately not used as capacity proof.
+# The smallest staging DB cannot hold ACCESS SHARE locks for every tenant table
+# in one pg_dump transaction. Build one tenant-specific artifact sequentially:
+# full schema first, then one table at a time. This keeps the backup complete
+# while limiting each staging transaction to a single table.
+mkdir -p "$backup_parts"
 docker run --rm --network host -e PGPASSWORD \
-  -v "$backup_dir:/backup" postgres:18 \
+  -v "$backup_parts:/backup" postgres:18 \
   pg_dump -h 127.0.0.1 -p 15432 -U postgres -d "$database_name" \
-    --format=custom --no-owner --no-privileges -f "/backup/$backup_name"
+    --schema-only --format=custom --no-owner --no-privileges -f /backup/000-schema.dump
+mapfile -t tenant_tables < <(psql "$tenant_url" -v ON_ERROR_STOP=1 -Atqc \
+  "SELECT format('%I.%I',schemaname,tablename) FROM pg_tables WHERE schemaname='public' ORDER BY tablename")
+part=1
+for table_name in "${tenant_tables[@]}"; do
+  part=$((part+1))
+  part_name=$(printf '%03d-table.dump' "$part")
+  docker run --rm --network host -e PGPASSWORD \
+    -v "$backup_parts:/backup" postgres:18 \
+    pg_dump -h 127.0.0.1 -p 15432 -U postgres -d "$database_name" \
+      --data-only --table="$table_name" --format=custom --no-owner --no-privileges \
+      -f "/backup/$part_name"
+done
+tar -C "$backup_parts" -cf "$backup_file" .
 (cd "$backup_dir" && sha256sum "$backup_name" > "${backup_name}.sha256")
 (cd "$backup_dir" && sha256sum --check "${backup_name}.sha256")
 
@@ -139,10 +157,14 @@ for i in $(seq 1 30); do
   sleep 2
 done
 PGPASSWORD="$local_password" createdb -h 127.0.0.1 -p "$local_port" -U postgres "$restore_db"
-docker run --rm --network host -e PGPASSWORD="$local_password" \
-  -v "$backup_dir:/backup" postgres:18 \
-  pg_restore -h 127.0.0.1 -p "$local_port" -U postgres -d "$restore_db" \
-    --no-owner --no-privileges --exit-on-error --jobs=1 "/backup/$backup_name"
+mkdir -p "$restore_parts"
+tar -C "$restore_parts" -xf "$backup_file"
+for archive in "$restore_parts"/*.dump; do
+  docker run --rm --network host -e PGPASSWORD="$local_password" \
+    -v "$restore_parts:/backup" postgres:18 \
+    pg_restore -h 127.0.0.1 -p "$local_port" -U postgres -d "$restore_db" \
+      --no-owner --no-privileges --disable-triggers --exit-on-error --jobs=1 "/backup/$(basename "$archive")"
+done
 restored=$(PGPASSWORD="$local_password" psql \
   "postgresql://postgres@127.0.0.1:${local_port}/${restore_db}" \
   -v ON_ERROR_STOP=1 -v tenant_id="$tenant_id" -AtF '|' <<'SQL'

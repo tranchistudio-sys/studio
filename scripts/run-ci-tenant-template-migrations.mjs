@@ -7,7 +7,10 @@ if (!target.protocol.startsWith("postgres"))
   throw new Error("Template target must be PostgreSQL");
 if (!["127.0.0.1", "localhost"].includes(target.hostname))
   throw new Error("Template target must be local CI PostgreSQL");
-if (target.pathname !== "/tenant_schema_source_staging")
+if (
+  target.pathname !== "/tenant_schema_source_staging" &&
+  !/^\/staging_pilot_restore_[0-9]+_[0-9]+$/.test(target.pathname)
+)
   throw new Error("Unexpected template database");
 
 const version = await runTenantMigrationOrchestrator(target.toString());

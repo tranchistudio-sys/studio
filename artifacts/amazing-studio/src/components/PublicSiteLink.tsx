@@ -1,5 +1,6 @@
 import * as React from "react";
 import { getPublicPreviewUrl, openPublicSite } from "@/lib/public-site-url";
+import { useStaffAuth } from "@/contexts/StaffAuthContext";
 
 type PublicSiteLinkProps = React.ComponentPropsWithoutRef<"a"> & {
   path?: string;
@@ -7,7 +8,9 @@ type PublicSiteLinkProps = React.ComponentPropsWithoutRef<"a"> & {
 
 /** Link that always opens the customer-facing website (never internal /calendar). */
 export function PublicSiteLink({ path = "/", href, onClick, children, ...rest }: PublicSiteLinkProps) {
-  const url = href ?? getPublicPreviewUrl(path);
+  const { activeTenant } = useStaffAuth();
+  const tenantSlug = activeTenant?.slug ?? "amazing-studio";
+  const url = href ?? getPublicPreviewUrl(path, tenantSlug);
   return (
     <a
       {...rest}
@@ -17,7 +20,7 @@ export function PublicSiteLink({ path = "/", href, onClick, children, ...rest }:
       onClick={(e) => {
         e.preventDefault();
         onClick?.(e);
-        openPublicSite(path);
+        openPublicSite(path, tenantSlug);
       }}
     >
       {children}

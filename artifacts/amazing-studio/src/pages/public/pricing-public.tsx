@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Phone, MessageCircle, Loader2 } from "lucide-react";
 import { CMS_BASE } from "@/components/cms-shared";
+import { publicApiUrl, publicTenantSlugFromPath } from "@/lib/public-tenant";
 import { formatVND } from "@/lib/utils";
 import { discountBadgeText, type DiscountResult } from "@/lib/discount";
 import { CONSULTANTS, STUDIO_PHONE, STUDIO_PHONE_DISPLAY } from "@/lib/public-site-config";
@@ -21,9 +22,9 @@ interface PublicPackage {
 
 function usePublicPackages() {
   return useQuery<PublicPackage[]>({
-    queryKey: ["public-packages"],
+    queryKey: ["public-packages", publicTenantSlugFromPath()],
     queryFn: async () => {
-      const r = await fetch(`${CMS_BASE}/api/cms/public/packages`);
+      const r = await fetch(publicApiUrl(`${CMS_BASE}/api/cms/public/packages`));
       if (!r.ok) throw new Error("Lỗi tải bảng giá");
       return r.json();
     },

@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { CMS_BASE } from "@/components/cms-shared";
+import { publicApiUrl, publicTenantSlugFromPath } from "@/lib/public-tenant";
 
 export interface PublicGalleryCategory {
   id: number;
@@ -94,7 +95,7 @@ export interface PublicHomeContent {
 }
 
 async function fetchPublicJson<T>(path: string, label: string): Promise<T> {
-  const url = `${CMS_BASE}${path}`;
+  const url = publicApiUrl(`${CMS_BASE}${path}`);
   const r = await fetch(url);
   const body = await r.json().catch(() => null);
   if (!r.ok) {
@@ -126,8 +127,9 @@ function parseCategoryList(body: unknown): PublicGalleryCategory[] {
 
 /** Concept ảnh — danh mục gallery (CMS Concept ảnh / Danh mục ảnh). */
 export function usePublicGalleryCategories() {
+  const tenant = publicTenantSlugFromPath();
   return useQuery<PublicGalleryCategory[]>({
-    queryKey: ["public-gallery-categories"],
+    queryKey: ["public-gallery-categories", tenant],
     queryFn: async () =>
       parseCategoryList(
         await fetchPublicJson<unknown>("/api/cms/public/gallery/categories", "Danh mục concept"),
@@ -138,8 +140,9 @@ export function usePublicGalleryCategories() {
 
 /** Concept ảnh — album visible từ CMS gallery. */
 export function usePublicGalleryAlbums() {
+  const tenant = publicTenantSlugFromPath();
   return useQuery<PublicAlbum[]>({
-    queryKey: ["public-gallery-albums"],
+    queryKey: ["public-gallery-albums", tenant],
     queryFn: async () =>
       parseAlbumList(
         await fetchPublicJson<unknown>("/api/cms/public/gallery/albums", "Album concept"),
@@ -155,8 +158,9 @@ export function usePublicAlbums() {
 
 /** Trang chủ — nội dung CMS (settings), không dùng gallery albums. */
 export function usePublicHomeContent() {
+  const tenant = publicTenantSlugFromPath();
   return useQuery<PublicHomeContent>({
-    queryKey: ["public-home"],
+    queryKey: ["public-home", tenant],
     queryFn: async () => {
       try {
         return await fetchPublicJson<PublicHomeContent>(
@@ -205,10 +209,11 @@ export function usePublicHomeContent() {
 }
 
 export function usePublicPackages() {
+  const tenant = publicTenantSlugFromPath();
   return useQuery<PublicPackage[]>({
-    queryKey: ["public-packages"],
+    queryKey: ["public-packages", tenant],
     queryFn: async () => {
-      const r = await fetch(`${CMS_BASE}/api/cms/public/packages`);
+      const r = await fetch(publicApiUrl(`${CMS_BASE}/api/cms/public/packages`));
       if (!r.ok) throw new Error("Lỗi tải bảng giá");
       return r.json();
     },
@@ -218,8 +223,9 @@ export function usePublicPackages() {
 /** Cây danh mục Cho thuê đồ (cùng queryKey với trang /cho-thue-do để share cache). */
 export type PublicDressCategory = PublicGalleryCategory;
 export function usePublicDressCategories() {
+  const tenant = publicTenantSlugFromPath();
   return useQuery<PublicDressCategory[]>({
-    queryKey: ["public-categories-dress-tree"],
+    queryKey: ["public-categories-dress-tree", tenant],
     queryFn: async () =>
       parseCategoryList(
         await fetchPublicJson<unknown>("/api/cms/public/categories/dress/tree", "Danh mục cho thuê"),
@@ -229,10 +235,11 @@ export function usePublicDressCategories() {
 }
 
 export function usePublicDresses() {
+  const tenant = publicTenantSlugFromPath();
   return useQuery<PublicDress[]>({
-    queryKey: ["public-dresses"],
+    queryKey: ["public-dresses", tenant],
     queryFn: async () => {
-      const r = await fetch(`${CMS_BASE}/api/cms/public/dresses`);
+      const r = await fetch(publicApiUrl(`${CMS_BASE}/api/cms/public/dresses`));
       if (!r.ok) throw new Error("Lỗi tải sản phẩm");
       return r.json();
     },
@@ -240,11 +247,12 @@ export function usePublicDresses() {
 }
 
 export function usePublicAlbumDetail(slug: string | null) {
+  const tenant = publicTenantSlugFromPath();
   return useQuery({
-    queryKey: ["public-gallery-album", slug],
+    queryKey: ["public-gallery-album", tenant, slug],
     enabled: !!slug,
     queryFn: async () => {
-      const r = await fetch(`${CMS_BASE}/api/cms/public/gallery/albums/${slug}`);
+      const r = await fetch(publicApiUrl(`${CMS_BASE}/api/cms/public/gallery/albums/${slug}`));
       if (!r.ok) throw new Error("Lỗi tải album");
       return r.json() as Promise<{
         id: number;

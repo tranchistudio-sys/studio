@@ -97,6 +97,21 @@ async function createTenantIsolationTables(target: pg.Pool): Promise<void> {
       id SERIAL PRIMARY KEY,
       observed_tenant_slug TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS service_groups (
+      id SERIAL PRIMARY KEY, name TEXT NOT NULL, is_active INTEGER NOT NULL DEFAULT 1,
+      sort_order INTEGER NOT NULL DEFAULT 0, discount_enabled INTEGER NOT NULL DEFAULT 0,
+      discount_type TEXT, discount_value NUMERIC, discount_start_date TIMESTAMPTZ,
+      discount_end_date TIMESTAMPTZ, discount_name TEXT, discount_description TEXT
+    );
+    CREATE TABLE IF NOT EXISTS service_packages (
+      id SERIAL PRIMARY KEY, group_id INTEGER REFERENCES service_groups(id), code TEXT,
+      name TEXT NOT NULL, price NUMERIC NOT NULL DEFAULT 0, short_description TEXT,
+      description TEXT, products TEXT NOT NULL DEFAULT '[]', deleted_at TIMESTAMPTZ,
+      is_public INTEGER NOT NULL DEFAULT 1, cms_status TEXT NOT NULL DEFAULT 'visible',
+      sort_order INTEGER NOT NULL DEFAULT 0, discount_enabled INTEGER NOT NULL DEFAULT 0,
+      discount_type TEXT, discount_value NUMERIC, discount_start_date TIMESTAMPTZ,
+      discount_end_date TIMESTAMPTZ, discount_name TEXT, discount_description TEXT
+    );
     CREATE TABLE IF NOT EXISTS tenant_metadata (
       tenant_id UUID PRIMARY KEY,
       schema_version TEXT NOT NULL,
@@ -112,7 +127,8 @@ async function resetTenantIsolationTables(
 ): Promise<void> {
   await target.query(
     `TRUNCATE TABLE
-       staff, services, golden_hour_campaigns, tenant_isolation_canary, tenant_job_probe
+       staff, services, service_packages, service_groups, golden_hour_campaigns,
+       tenant_isolation_canary, tenant_job_probe
      RESTART IDENTITY CASCADE`,
   );
   await target.query(
@@ -952,6 +968,31 @@ describe.sequential("platform auth PostgreSQL integration", () => {
     expect((await tenantBPool.query("SELECT name FROM golden_hour_campaigns")).rows).toEqual([
       { name: "RAW_TENANT_B" },
     ]);
+  });
+
+  it("public CMS A/B dùng đúng database theo canonical tenant slug và unknown fail closed", async () => {
+    await registerAmazingTenantMappingWithoutOwner();
+    const owner = await bootstrapOwner();
+    await addTenantB(owner);
+    await tenantPool.query(
+      "INSERT INTO service_packages (code,name,price) VALUES ('PUBLIC_A','PUBLIC TENANT A',111)",
+    );
+    await tenantBPool.query(
+      "INSERT INTO service_packages (code,name,price) VALUES ('PUBLIC_B','PUBLIC TENANT B',222)",
+    );
+
+    const [responseA, responseB, unknown] = await Promise.all([
+      fetch(`${baseUrl}/api/cms/public/packages?tenant=amazing-studio`),
+      fetch(`${baseUrl}/api/cms/public/packages?tenant=studio-b`),
+      fetch(`${baseUrl}/api/cms/public/packages?tenant=unknown-studio`),
+    ]);
+
+    expect(responseA.status).toBe(200);
+    expect(responseB.status).toBe(200);
+    expect(unknown.status).toBe(404);
+    expect((await responseA.json() as any[]).map((row) => row.code)).toEqual(["PUBLIC_A"]);
+    expect((await responseB.json() as any[]).map((row) => row.code)).toEqual(["PUBLIC_B"]);
+    expect(await unknown.json()).toMatchObject({ code: "PUBLIC_TENANT_NOT_FOUND" });
   });
 
   it("thiếu registry hoặc secret trả 503, không fallback và không rò cấu hình", async () => {

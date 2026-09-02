@@ -4,6 +4,7 @@ import { Sparkles, X, Send, Loader2, Lock, Wrench, Globe, SearchCheck, SlidersHo
 import { cn } from "@/lib/utils";
 import { getImageSrc } from "@/lib/imageUtils";
 import { playPublicSound } from "@/lib/feedback";
+import { publicApiUrl } from "@/lib/public-tenant";
 
 /**
  * Widget AI tư vấn hình ảnh — nút nổi góc phải, hiện trên mọi trang public.
@@ -192,7 +193,7 @@ export function PublicAiAdvisor() {
   useEffect(() => {
     if (!open || filters) return;
     let alive = true;
-    fetch("/api/cms/public/visual-advisor/meta")
+    fetch(publicApiUrl("/api/cms/public/visual-advisor/meta"))
       .then(r => (r.ok ? r.json() : null))
       .then(d => {
         if (!alive) return;
@@ -214,7 +215,7 @@ export function PublicAiAdvisor() {
     setMessages(m => [...m, { role: "user", text: q }]);
     setLoading(true);
     try {
-      const r = await fetch("/api/cms/public/visual-advisor", {
+      const r = await fetch(publicApiUrl("/api/cms/public/visual-advisor"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

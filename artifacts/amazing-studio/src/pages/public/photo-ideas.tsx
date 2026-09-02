@@ -5,6 +5,7 @@ import {
 import { getCmsImageSrc } from "@/lib/imageUtils";
 import { Tilt3D, STYLE_3D } from "@/components/public-3d";
 import PublicGalleryLightbox from "@/components/public/PublicGalleryLightbox";
+import { publicApiUrl } from "@/lib/public-tenant";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 interface IdeaCategory {
@@ -79,7 +80,7 @@ function PasswordGate({ onUnlocked }: { onUnlocked: (token: string) => void }) {
     if (!password.trim() || loading) return;
     setLoading(true); setError("");
     try {
-      const r = await fetch("/api/public/photo-ideas/verify", {
+      const r = await fetch(publicApiUrl("/api/public/photo-ideas/verify"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password: password.trim() }),
@@ -249,7 +250,7 @@ export default function PublicPhotoIdeasPage() {
   const fetchContent = useCallback(async (t: string) => {
     setLoading(true); setLoadError("");
     try {
-      const r = await fetch("/api/public/photo-ideas", { headers: { "x-ideas-token": t } });
+      const r = await fetch(publicApiUrl("/api/public/photo-ideas"), { headers: { "x-ideas-token": t } });
       if (r.status === 401) {
         clearToken(); setToken(null); setLoaded(false);
         return;

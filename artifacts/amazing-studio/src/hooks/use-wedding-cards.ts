@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { API_BASE } from "@/lib/api-base";
 import { FALLBACK_WEDDING_TEMPLATES, resolveTemplatePreviewUrls } from "@/components/wedding-card/wedding-card-config";
+import { publicApiUrl, publicTenantSlugFromPath } from "@/lib/public-tenant";
 
 const WC_BASE = `${API_BASE}/api/wedding-cards`;
 
@@ -135,7 +136,7 @@ async function fetchTemplates(): Promise<{
   fromApi: boolean;
   apiError?: string;
 }> {
-  const url = `${WC_BASE}/public/templates`;
+  const url = publicApiUrl(`${WC_BASE}/public/templates`);
   try {
     const r = await fetch(url);
     const body: unknown = await r.json().catch(() => null);
@@ -171,8 +172,9 @@ async function fetchTemplates(): Promise<{
 }
 
 export function useWeddingCardTemplates() {
+  const tenant = publicTenantSlugFromPath();
   const query = useQuery({
-    queryKey: ["wedding-card-templates"],
+    queryKey: ["wedding-card-templates", tenant],
     queryFn: fetchTemplates,
     staleTime: 10 * 60 * 1000,
     retry: 2,
@@ -206,46 +208,51 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export function useWeddingCardTemplate(slug: string | undefined) {
+  const tenant = publicTenantSlugFromPath();
   return useQuery({
-    queryKey: ["wedding-card-template", slug],
-    queryFn: () => fetchJson<WeddingCardTemplate>(`${WC_BASE}/public/templates/${slug}`),
+    queryKey: ["wedding-card-template", tenant, slug],
+    queryFn: () => fetchJson<WeddingCardTemplate>(publicApiUrl(`${WC_BASE}/public/templates/${slug}`, tenant)),
     enabled: !!slug,
     staleTime: 5 * 60 * 1000,
   });
 }
 
 export function useWeddingCardBySlug(slug: string | undefined) {
+  const tenant = publicTenantSlugFromPath();
   return useQuery({
-    queryKey: ["wedding-card", slug],
-    queryFn: () => fetchJson<PublicWeddingCard>(`${WC_BASE}/public/${slug}`),
+    queryKey: ["wedding-card", tenant, slug],
+    queryFn: () => fetchJson<PublicWeddingCard>(publicApiUrl(`${WC_BASE}/public/${slug}`, tenant)),
     enabled: !!slug,
   });
 }
 
 export function useWeddingCardGuestEntries(slug: string | undefined) {
+  const tenant = publicTenantSlugFromPath();
   return useQuery({
-    queryKey: ["wedding-card-guests", slug],
-    queryFn: () => fetchJson<GuestEntry[]>(`${WC_BASE}/public/${slug}/guest-entries`),
+    queryKey: ["wedding-card-guests", tenant, slug],
+    queryFn: () => fetchJson<GuestEntry[]>(publicApiUrl(`${WC_BASE}/public/${slug}/guest-entries`, tenant)),
     enabled: !!slug && slug !== "preview",
   });
 }
 
 export function useCreateWeddingCard() {
   const qc = useQueryClient();
+  const tenant = publicTenantSlugFromPath();
   return useMutation({
     mutationFn: (body: CreateWeddingCardInput) =>
       fetchJson<{ id: number; slug: string; url: string; status: string; themeKey: string }>(
-        `${WC_BASE}/public`,
+        publicApiUrl(`${WC_BASE}/public`, tenant),
         { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
       ),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["wedding-card-templates"] });
+      qc.invalidateQueries({ queryKey: ["wedding-card-templates", tenant] });
     },
   });
 }
 
 export function useSubmitGuestEntry(slug: string) {
   const qc = useQueryClient();
+  const tenant = publicTenantSlugFromPath();
   return useMutation({
     mutationFn: (body: {
       guestName?: string | null;
@@ -253,12 +260,12 @@ export function useSubmitGuestEntry(slug: string) {
       attendance?: "yes" | "no" | "unknown";
       guestCount?: number;
     }) =>
-      fetchJson<{ sent: boolean; duplicate?: boolean; createdAt?: string }>(`${WC_BASE}/public/${slug}/guest-entries`, {
+      fetchJson<{ sent: boolean; duplicate?: boolean; createdAt?: string }>(publicApiUrl(`${WC_BASE}/public/${slug}/guest-entries`, tenant), {
         method: "POST",
         headers: { "Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID() }, body: JSON.stringify(body),
       }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["wedding-card-guests", slug] });
+      qc.invalidateQueries({ queryKey: ["wedding-card-guests", tenant, slug] });
     },
   });
 }

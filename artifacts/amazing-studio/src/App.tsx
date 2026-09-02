@@ -81,6 +81,7 @@ import { authNeedsStudioSelection } from "@/lib/auth-types";
 import { AnalyticsRouteTracker } from "@/analytics/AnalyticsRouteTracker";
 import { isAdvertisingTrackingAllowed } from "@/analytics/policy";
 import { hasActiveAnalyticsProviders } from "@/analytics/providers";
+import { publicTenantRoute } from "@/lib/public-tenant";
 
 // Register auth token getter once at app startup so all api-client-react hooks
 // (useListStaff, useListTasks, etc.) automatically include the auth header.
@@ -398,6 +399,7 @@ function RouterRoot() {
   const needsTenant = authNeedsStudioSelection({
     requiresTenantSelection, platformUser, activeTenant, memberships,
   });
+  const publicTenant = publicTenantRoute(location);
 
   if (!authChecked) {
     return (
@@ -422,6 +424,16 @@ function RouterRoot() {
   });
 
   const analyticsTracker = <AnalyticsRouteTracker enabled={advertisingTrackingAllowed} />;
+
+  // Canonical path-based public tenant routing. The nested router strips the
+  // tenant prefix for the existing public pages while preserving it on links.
+  if (publicTenant) {
+    return (
+      <WouterRouter base={publicTenant.base}>
+        {analyticsTracker}<PublicRouter />
+      </WouterRouter>
+    );
+  }
 
   if (location === "/select-studio") {
     if (!authenticated) return <RedirectToLogin from="/calendar" />;

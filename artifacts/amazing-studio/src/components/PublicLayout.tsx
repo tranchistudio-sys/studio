@@ -10,6 +10,8 @@ import {
   STUDIO_EMAIL,
   STUDIO_PHONE_DISPLAY,
 } from "@/lib/public-site-config";
+import { useQuery } from "@tanstack/react-query";
+import { publicApiUrl, publicTenantSlugFromPath } from "@/lib/public-tenant";
 
 const PUBLIC_NAV = [
   { href: "/", label: "Trang chủ" },
@@ -27,6 +29,17 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [soundMuted, setSoundMuted] = useState(isPublicSoundMuted);
+  const tenantSlug = publicTenantSlugFromPath();
+  const { data: publicBranding, isError: publicBrandingMissing } = useQuery({
+    queryKey: ["public-branding", tenantSlug],
+    queryFn: async () => {
+      const response = await fetch(publicApiUrl("/api/platform/public-site", tenantSlug));
+      if (!response.ok) throw new Error("Không tìm thấy website studio");
+      return response.json() as Promise<{ publicName: string; phone: string | null; address: string | null; logoUrl: string | null }>;
+    },
+    retry: false,
+  });
+  const publicName = publicBranding?.publicName || (tenantSlug === "amazing-studio" ? "AMAZING" : "STUDIO");
 
   // Mở "khoá" autoplay sau tương tác đầu tiên (tôn trọng giới hạn trình duyệt).
   useEffect(() => { ensurePublicAudioArmed(); }, []);
@@ -62,6 +75,17 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
   }, [isHomePage, location]);
+
+  if (publicBrandingMissing && tenantSlug !== "amazing-studio") {
+    return (
+      <main className="min-h-screen bg-[#faf9f7] flex items-center justify-center px-6">
+        <section className="max-w-md text-center">
+          <h1 className="font-serif text-3xl text-neutral-900">Không tìm thấy website studio</h1>
+          <p className="mt-3 text-neutral-600">Đường dẫn chưa được kích hoạt hoặc không còn tồn tại.</p>
+        </section>
+      </main>
+    );
+  }
 
   const isActive = (href: string) => {
     if (href === "/") return location === "/" || location === "/trang-chu";
@@ -130,7 +154,7 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
           <div className="min-[540px]:hidden relative flex flex-col items-center py-3">
             <Link href="/" className="flex items-center gap-2 group">
               <span className={cn("font-serif text-xl font-light tracking-wider transition-colors", logoClass)}>
-                AMAZING
+                {publicName}
               </span>
               <span
                 className={cn(
@@ -175,7 +199,7 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
           <div className="hidden min-[540px]:flex items-center justify-between h-16 gap-4">
             <Link href="/" className="flex items-center gap-2 group flex-shrink-0">
               <span className={cn("font-serif text-xl font-light tracking-wider transition-colors", logoClass)}>
-                AMAZING
+                {publicName}
               </span>
               <span
                 className={cn(
@@ -279,7 +303,7 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
         <div className="max-w-7xl mx-auto px-5 sm:px-8 py-16 sm:py-20">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-10 text-sm">
             <div>
-              <h3 className="font-serif text-xl mb-3 tracking-wide">Amazing Studio</h3>
+              <h3 className="font-serif text-xl mb-3 tracking-wide">{publicName}</h3>
               <p className="text-neutral-600 leading-relaxed">
                 Chụp ảnh cưới &amp; cho thuê trang phục cao cấp tại Tây Ninh.
               </p>
@@ -287,13 +311,11 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
             <div>
               <h4 className="text-[10px] tracking-[0.3em] uppercase text-neutral-500 mb-3">Liên hệ</h4>
               <p className="text-neutral-700 leading-relaxed">
-                {STUDIO_ADDRESS}
+                {publicBranding?.address || (tenantSlug === "amazing-studio" ? STUDIO_ADDRESS : "")}
                 <br />
-                {STUDIO_PHONE_DISPLAY}
+                {publicBranding?.phone || (tenantSlug === "amazing-studio" ? STUDIO_PHONE_DISPLAY : "")}
                 <br />
-                <a href={`mailto:${STUDIO_EMAIL}`} className="underline hover:text-neutral-900">
-                  {STUDIO_EMAIL}
-                </a>
+                {tenantSlug === "amazing-studio" && <a href={`mailto:${STUDIO_EMAIL}`} className="underline hover:text-neutral-900">{STUDIO_EMAIL}</a>}
               </p>
             </div>
             <div>
@@ -310,7 +332,7 @@ export function PublicLayout({ children }: { children: React.ReactNode }) {
             </div>
           </div>
           <div className="mt-12 pt-6 border-t border-neutral-200 text-xs text-neutral-500 text-center tracking-wider">
-            © {new Date().getFullYear()} AMAZING STUDIO
+            © {new Date().getFullYear()} {publicName}
           </div>
         </div>
       </footer>

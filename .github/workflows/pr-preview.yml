@@ -25,7 +25,6 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
       DEFAULT_TENANT_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
-      PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
       TENANT_B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_b_test
       SESSION_SECRET: ci-only-session-secret-at-least-32-bytes
       BOOTSTRAP_OWNER_EMAIL: owner@gmail.com
@@ -43,8 +42,18 @@ jobs:
         run: |
           createdb -h 127.0.0.1 -U postgres tenant_amazing_test
           createdb -h 127.0.0.1 -U postgres tenant_b_test
-      - run: pnpm --filter @workspace/platform-db migrate
+      - name: Migrate isolated platform database
+        env:
+          PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
+        run: pnpm --filter @workspace/platform-db migrate
       - run: pnpm --filter @workspace/api-server test
+      - name: Platform auth integration and HTTP E2E
+        env:
+          PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
+          TENANT_PROVISIONING_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
+          TENANT_SECRET_MASTER_KEY: BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=
+          RUN_PROVISIONING_ITEST: "1"
+        run: pnpm --filter @workspace/api-server test:platform
       - name: Preview safety tests
         run: pnpm --filter @workspace/api-server test -- preview-guard preview-net-guard preview-basic-auth
       - run: pnpm --filter @workspace/amazing-studio test

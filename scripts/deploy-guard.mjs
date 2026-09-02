@@ -108,6 +108,7 @@ const PLATFORM_MIGRATION_ALLOWLIST = new Set([
   "0005_commercial_saas_foundation.sql",
   "0005_tenant_invitation_permissions.sql",
   "0006_tenant_provisioning_engine.sql",
+  "0007_platform_admin_commercial_dashboard.sql",
 ]);
 const LOCKED_PLATFORM_MIGRATION_CHECKSUMS = new Map([
   [

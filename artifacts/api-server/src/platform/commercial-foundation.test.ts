@@ -29,6 +29,7 @@ describe("Platform Admin authorization", () => {
 
 describe("commercial idempotency and isolation guards", () => {
   const migration = readFileSync(new URL("../../../../lib/platform-db/migrations/0005_commercial_saas_foundation.sql", import.meta.url), "utf8");
+  const dashboardMigration = readFileSync(new URL("../../../../lib/platform-db/migrations/0007_platform_admin_commercial_dashboard.sql", import.meta.url), "utf8");
   const routes = readFileSync(new URL("../routes/platform-commercial.ts", import.meta.url), "utf8");
   const provisioning = readFileSync(new URL("./tenant-provisioning-engine.ts", import.meta.url), "utf8");
   it("prevents duplicate current subscriptions, setup fees and open provisioning jobs", () => {
@@ -58,6 +59,19 @@ describe("commercial idempotency and isolation guards", () => {
     expect(routes).toContain("WHERE t.id=$1 LIMIT 1");
     expect(routes).toContain("WHERE s.tenant_id=$1 AND s.source='DIRECT'");
     expect(routes).toContain("'tenant',$6,$5::jsonb");
+  });
+  it("adds flexible commercial controls without destructive SQL", () => {
+    expect(dashboardMigration).toContain("commercial_class");
+    expect(dashboardMigration).toContain("custom_price_amount");
+    expect(dashboardMigration).toContain("trial_starts_at");
+    expect(dashboardMigration).toContain("tenant_commercial_notes");
+    expect(containsDestructiveSql(dashboardMigration)).toBe(false);
+  });
+  it("offers audited custom trial, price, setup, class, renew and note actions", () => {
+    for (const action of ["update_trial","update_price","update_setup_fee","change_class","renew","add_note"])
+      expect(routes).toContain(`action === "${action}"`);
+    expect(routes).toContain("make_interval(months=>$2)");
+    expect(routes).toContain("platform_audit_logs");
   });
 });
 

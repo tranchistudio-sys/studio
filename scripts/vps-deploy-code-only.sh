@@ -151,6 +151,14 @@ trap 'rollback 130' INT
 trap 'rollback 143' TERM
 trap 'rollback 129' HUP
 
+# BuildKit caches are disposable and can fill the small production VPS even
+# though application containers, tagged rollback images, and database volumes
+# are healthy. Remove only unused build cache and dangling images; never prune
+# containers, networks, or volumes.
+echo "[deploy] Dọn cache Docker không còn dùng trước khi build"
+sudo -n docker builder prune --force --filter 'until=24h'
+sudo -n docker image prune --force
+
 echo "[deploy] Build image web từ source đã kiểm thử"
 docker compose -f "$RELEASE_COMPOSE" build "$DEPLOY_WEB_SERVICE"
 IMAGE_CHANGED=1

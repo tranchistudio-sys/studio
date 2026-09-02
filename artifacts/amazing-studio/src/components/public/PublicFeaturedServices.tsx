@@ -10,6 +10,7 @@ import {
 } from "@/hooks/use-public-cms";
 import { PublicReveal, PublicRevealItem } from "./PublicReveal";
 import { PublicSectionHeader } from "./PublicSectionHeader";
+import { usePublicBranding } from "@/hooks/use-public-branding";
 
 /**
  * "Dịch Vụ Nổi Bật" — 6 danh mục mẹ từ module Concept ảnh (hiển thị ra ngoài là "Dịch vụ").
@@ -31,10 +32,10 @@ const DESCRIPTION_RULES: Array<{ keywords: string[]; text: string }> = [
   { keywords: ["ky yeu"], text: "Kỷ yếu trẻ trung — giữ lại thanh xuân rực rỡ nhất." },
 ];
 
-function descriptionFor(name: string): string {
+function descriptionFor(name: string, publicName: string): string {
   const n = strip(name);
   const rule = DESCRIPTION_RULES.find((r) => r.keywords.some((k) => n.includes(k)));
-  return rule?.text ?? `Khám phá trọn bộ concept ${name} tại Amazing Studio.`;
+  return rule?.text ?? `Khám phá trọn bộ concept ${name} tại ${publicName}.`;
 }
 
 type Props = {
@@ -45,6 +46,7 @@ type Props = {
 
 export function PublicFeaturedServices({ categories, albums, limit = 6 }: Props) {
   const [, setLocation] = useLocation();
+  const { view: branding } = usePublicBranding();
 
   const cards = useMemo(() => {
     const parents = categories
@@ -69,13 +71,13 @@ export function PublicFeaturedServices({ categories, albums, limit = 6 }: Props)
       return {
         id: cat.id,
         name: cat.name,
-        description: descriptionFor(cat.name),
+        description: descriptionFor(cat.name, branding.publicName),
         image,
         albumCount: branchAlbums.length,
         href: `/bo-anh?categoryId=${cat.id}`,
       };
     });
-  }, [categories, albums, limit]);
+  }, [categories, albums, limit, branding.publicName]);
 
   if (cards.length === 0) return null;
 
@@ -83,9 +85,9 @@ export function PublicFeaturedServices({ categories, albums, limit = 6 }: Props)
     <PublicReveal stagger className="py-16 sm:py-24 bg-white">
       <div className="max-w-7xl mx-auto px-5 sm:px-8">
         <PublicSectionHeader
-          eyebrow="Amazing Studio"
+          eyebrow={branding.publicName}
           title="Dịch Vụ Nổi Bật"
-          description="Những dịch vụ được khách hàng Amazing Studio lựa chọn nhiều nhất."
+          description={`Những dịch vụ được khách hàng ${branding.publicName} lựa chọn nhiều nhất.`}
           className="mb-10 sm:mb-14"
         />
         <div

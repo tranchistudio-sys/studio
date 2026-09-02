@@ -1,13 +1,7 @@
 import { Link } from "wouter";
 import { MessageCircle, Phone, MapPin, Clock } from "lucide-react";
-import {
-  STUDIO_ADDRESS,
-  STUDIO_EMAIL,
-  STUDIO_HOURS,
-  STUDIO_PHONE,
-  STUDIO_PHONE_DISPLAY,
-  CONSULTANTS,
-} from "@/lib/public-site-config";
+import { STUDIO_HOURS, CONSULTANTS } from "@/lib/public-site-config";
+import { usePublicBranding } from "@/hooks/use-public-branding";
 import { openZalo } from "@/lib/public-zalo";
 import { PublicReveal } from "./PublicReveal";
 import { PublicSectionHeader } from "./PublicSectionHeader";
@@ -27,6 +21,8 @@ function ZaloBtn({ phone, className = "" }: { phone: string; className?: string 
 }
 
 export function PublicContactStrip() {
+  const { view: branding } = usePublicBranding();
+  const consultants = branding.isAmazingLegacy ? CONSULTANTS : [];
   return (
     <PublicReveal className="py-20 sm:py-28 lg:py-32 bg-stone-50">
       <div className="max-w-7xl mx-auto px-5 sm:px-8">
@@ -41,16 +37,16 @@ export function PublicContactStrip() {
               <Phone className="w-5 h-5 text-neutral-400 flex-shrink-0 mt-0.5" />
               <div>
                 <p className="text-[10px] tracking-[0.3em] uppercase text-neutral-500 mb-1">Điện thoại</p>
-                <a href={`tel:${STUDIO_PHONE}`} className="text-xl text-neutral-900 hover:opacity-70 transition-opacity">
-                  {STUDIO_PHONE_DISPLAY}
-                </a>
+                {branding.phone ? <a href={`tel:${branding.phone}`} className="text-xl text-neutral-900 hover:opacity-70 transition-opacity">
+                  {branding.phoneDisplay}
+                </a> : <p className="text-neutral-500">Đang cập nhật</p>}
               </div>
             </div>
             <div className="flex gap-4">
               <MapPin className="w-5 h-5 text-neutral-400 flex-shrink-0 mt-0.5" />
               <div>
                 <p className="text-[10px] tracking-[0.3em] uppercase text-neutral-500 mb-1">Địa chỉ</p>
-                <p className="text-neutral-800 leading-relaxed">{STUDIO_ADDRESS}</p>
+                <p className="text-neutral-800 leading-relaxed">{branding.address || "Đang cập nhật"}</p>
               </div>
             </div>
             <div className="flex gap-4">
@@ -60,12 +56,12 @@ export function PublicContactStrip() {
                 <p className="text-neutral-800">{STUDIO_HOURS}</p>
               </div>
             </div>
-            <p className="text-sm text-neutral-600">
+            {branding.email && <p className="text-sm text-neutral-600">
               Email:{" "}
-              <a href={`mailto:${STUDIO_EMAIL}`} className="text-neutral-900 underline hover:opacity-70">
-                {STUDIO_EMAIL}
+              <a href={`mailto:${branding.email}`} className="text-neutral-900 underline hover:opacity-70">
+                {branding.email}
               </a>
-            </p>
+            </p>}
           </div>
 
           <div className="flex flex-col justify-center gap-6">
@@ -73,16 +69,16 @@ export function PublicContactStrip() {
               <PublicCta href="/lien-he" className="flex-1 text-center">
                 Đặt lịch tư vấn
               </PublicCta>
-              <a
-                href={`tel:${STUDIO_PHONE}`}
+              {branding.phone && <a
+                href={`tel:${branding.phone}`}
                 className="btn-public-ghost flex-1 inline-flex items-center justify-center border border-neutral-900 text-neutral-900 text-xs tracking-[0.2em] uppercase px-8 py-3.5 hover:bg-neutral-900 hover:text-white transition-colors text-center"
               >
                 Gọi ngay
-              </a>
+              </a>}
             </div>
-            <div className="space-y-3 pt-2">
+            {consultants.length > 0 && <div className="space-y-3 pt-2">
               <p className="text-[10px] tracking-[0.3em] uppercase text-neutral-500">Nhân viên tư vấn</p>
-              {CONSULTANTS.map((c) => (
+              {consultants.map((c) => (
                 <div
                   key={c.phone}
                   className="flex flex-wrap items-center justify-between gap-3 py-3 border-b border-neutral-200"
@@ -96,7 +92,7 @@ export function PublicContactStrip() {
                   <ZaloBtn phone={c.phone} />
                 </div>
               ))}
-            </div>
+            </div>}
             <Link
               href="/lien-he"
               className="text-xs tracking-[0.25em] uppercase text-neutral-500 hover:text-neutral-900 transition-colors"

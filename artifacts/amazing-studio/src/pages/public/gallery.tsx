@@ -16,6 +16,7 @@ import {
   type PublicGalleryCategory,
 } from "@/hooks/use-public-cms";
 import { cn } from "@/lib/utils";
+import { usePublicBranding } from "@/hooks/use-public-branding";
 
 const PAGE_SIZE = 60;
 const ALL_TAB_KEY = "all" as const;
@@ -340,6 +341,7 @@ export default function PublicGalleryPage() {
 }
 
 function GalleryHero() {
+  const { view: branding } = usePublicBranding();
   return (
     <section className="gallery-hero relative overflow-hidden px-5 sm:px-8 pt-14 sm:pt-20 pb-16 sm:pb-24">
       {/* Orbs gradient mềm bay lơ lửng tạo chiều sâu */}
@@ -349,7 +351,7 @@ function GalleryHero() {
         <div className="pi-float-soft absolute top-1/4 right-1/4 w-48 h-48 rounded-full bg-amber-100/40 blur-3xl" style={{ animationDelay: "3s" }} />
       </div>
       <div className="gallery-hero-watermark" aria-hidden>
-        {GALLERY_PAGE.watermark}
+        {branding.publicName}
       </div>
       <div className="relative z-10 max-w-4xl mx-auto text-center hero-content hero-ready">
         <div className="pi-gate-card inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-neutral-800 via-neutral-900 to-black text-white shadow-[0_18px_38px_-12px_rgba(0,0,0,.45)] mb-6"
@@ -357,7 +359,7 @@ function GalleryHero() {
           <Camera className="w-6 h-6" style={{ transform: "translateZ(18px)" }} />
         </div>
         <p className="text-[10px] sm:text-[11px] tracking-[0.35em] text-neutral-500 uppercase mb-5">
-          {GALLERY_PAGE.eyebrow}
+          {branding.publicName} · Portfolio
         </p>
         <h1 className="font-serif text-4xl sm:text-5xl lg:text-[3.25rem] font-light text-neutral-900 leading-tight mb-3">
           {GALLERY_PAGE.title}
@@ -366,7 +368,9 @@ function GalleryHero() {
           {GALLERY_PAGE.subtitle}
         </p>
         <p className="text-neutral-600 text-sm sm:text-base max-w-lg mx-auto leading-relaxed">
-          {GALLERY_PAGE.description}
+          {branding.isAmazingLegacy
+            ? GALLERY_PAGE.description
+            : `Những concept đẹp nhất ${branding.publicName} giới thiệu tới khách hàng.`}
         </p>
       </div>
     </section>

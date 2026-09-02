@@ -1,5 +1,6 @@
 import { Phone, MapPin, Clock, Mail, User, MessageCircle } from "lucide-react";
 import { playPublicSound } from "@/lib/feedback";
+import { usePublicBranding } from "@/hooks/use-public-branding";
 
 const CONSULTANTS: { name: string; phone: string }[] = [
   { name: "Nhân viên tư vấn 1", phone: "0364902228" },
@@ -62,6 +63,8 @@ function ZaloButton({ phone, className = "" }: { phone: string; className?: stri
 }
 
 export default function PublicContactPage() {
+  const { view: branding } = usePublicBranding();
+  const consultants = branding.isAmazingLegacy ? CONSULTANTS : [];
   return (
     <div className="max-w-7xl mx-auto px-5 sm:px-8 py-16 sm:py-24">
       <header className="text-center mb-12 sm:mb-20">
@@ -85,13 +88,13 @@ export default function PublicContactPage() {
               <h3 className="text-xs tracking-widest uppercase text-neutral-500 mb-1">
                 Điện thoại
               </h3>
-              <a
-                href="tel:0392817079"
+              {branding.phone ? <a
+                href={`tel:${branding.phone}`}
                 onClick={() => playPublicSound("public_contact_clicked")}
                 className="text-lg text-neutral-900 hover:text-neutral-600 transition-colors"
               >
-                0392 817 079
-              </a>
+                {branding.phoneDisplay}
+              </a> : <p className="text-neutral-500">Đang cập nhật</p>}
             </div>
           </div>
 
@@ -101,7 +104,7 @@ export default function PublicContactPage() {
               <h3 className="text-xs tracking-widest uppercase text-neutral-500 mb-1">
                 Địa chỉ
               </h3>
-              <p className="text-neutral-900">Số 80, Hẻm 71, CMT8, KP Hiệp Bình, P. Hiệp Ninh, TP Tây Ninh</p>
+              <p className="text-neutral-900">{branding.address || "Đang cập nhật"}</p>
             </div>
           </div>
 
@@ -118,23 +121,23 @@ export default function PublicContactPage() {
             </div>
           </div>
 
-          <div className="flex gap-4">
+          {branding.email && <div className="flex gap-4">
             <Mail className="w-5 h-5 text-neutral-400 flex-shrink-0 mt-1" />
             <div>
               <h3 className="text-xs tracking-widest uppercase text-neutral-500 mb-1">
                 Email
               </h3>
-              <a href="mailto:tranchistudio@gmail.com" className="text-neutral-900 hover:text-neutral-600 transition-colors">
-                tranchistudio@gmail.com
+              <a href={`mailto:${branding.email}`} className="text-neutral-900 hover:text-neutral-600 transition-colors">
+                {branding.email}
               </a>
             </div>
-          </div>
+          </div>}
 
           {/* Nhân viên tư vấn — giống rental-detail */}
-          <div className="space-y-3 pt-2">
+          {consultants.length > 0 && <div className="space-y-3 pt-2">
             <h2 className="text-base font-semibold text-neutral-900">Nhân viên tư vấn</h2>
             <div className="space-y-3">
-              {CONSULTANTS.map(c => (
+              {consultants.map(c => (
                 <div
                   key={c.phone}
                   className="w-full bg-white border border-neutral-200 rounded-2xl p-2.5 sm:p-3 flex flex-col sm:flex-row items-start sm:items-center gap-2 sm:gap-3 shadow-sm"
@@ -155,7 +158,7 @@ export default function PublicContactPage() {
                 </div>
               ))}
             </div>
-          </div>
+          </div>}
         </div>
 
         {/* Placeholder contact form */}

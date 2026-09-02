@@ -5,8 +5,9 @@ import { CMS_BASE } from "@/components/cms-shared";
 import { publicApiUrl, publicTenantSlugFromPath } from "@/lib/public-tenant";
 import { formatVND } from "@/lib/utils";
 import { discountBadgeText, type DiscountResult } from "@/lib/discount";
-import { CONSULTANTS, STUDIO_PHONE, STUDIO_PHONE_DISPLAY } from "@/lib/public-site-config";
+import { CONSULTANTS } from "@/lib/public-site-config";
 import { openZalo } from "@/lib/public-zalo";
+import { usePublicBranding } from "@/hooks/use-public-branding";
 
 interface PublicPackage {
   id: number;
@@ -32,11 +33,11 @@ function usePublicPackages() {
 }
 
 function ZaloConsultButton({
-  phone = STUDIO_PHONE,
+  phone,
   label = "Tư vấn miễn phí",
   className = "",
 }: {
-  phone?: string;
+  phone: string;
   label?: string;
   className?: string;
 }) {
@@ -53,19 +54,21 @@ function ZaloConsultButton({
 }
 
 function PricingZaloFallback({ message }: { message: string }) {
+  const { view: branding } = usePublicBranding();
+  const consultants = branding.isAmazingLegacy ? CONSULTANTS : [];
   return (
     <div className="max-w-md mx-auto text-center py-12 px-4">
       <p className="text-neutral-600 leading-relaxed mb-8">{message}</p>
-      <ZaloConsultButton className="w-full sm:w-auto" />
-      <p className="mt-4 text-sm text-neutral-500">
+      {branding.phone && <ZaloConsultButton phone={branding.phone} className="w-full sm:w-auto" />}
+      {branding.phone && <p className="mt-4 text-sm text-neutral-500">
         Hoặc gọi{" "}
-        <a href={`tel:${STUDIO_PHONE}`} className="text-neutral-900 font-medium hover:underline">
-          {STUDIO_PHONE_DISPLAY}
+        <a href={`tel:${branding.phone}`} className="text-neutral-900 font-medium hover:underline">
+          {branding.phoneDisplay}
         </a>
-      </p>
-      <div className="mt-10 space-y-3 text-left border-t border-neutral-200 pt-8">
+      </p>}
+      {consultants.length > 0 && <div className="mt-10 space-y-3 text-left border-t border-neutral-200 pt-8">
         <p className="text-[10px] tracking-[0.3em] uppercase text-neutral-500 text-center">Nhân viên tư vấn</p>
-        {CONSULTANTS.map((c) => (
+        {consultants.map((c) => (
           <div
             key={c.phone}
             className="flex flex-wrap items-center justify-between gap-3 py-3 border-b border-neutral-100"
@@ -86,13 +89,14 @@ function PricingZaloFallback({ message }: { message: string }) {
             </button>
           </div>
         ))}
-      </div>
+      </div>}
     </div>
   );
 }
 
 export default function PublicPricingPage() {
   const { data: packages = [], isLoading, error } = usePublicPackages();
+  const { view: branding } = usePublicBranding();
 
   const grouped = useMemo(() => {
     const m = new Map<string, PublicPackage[]>();
@@ -191,9 +195,9 @@ export default function PublicPricingPage() {
                     </ul>
                   )}
 
-                  <div className="flex gap-2 mt-auto">
+                  {branding.phone && <div className="flex gap-2 mt-auto">
                     <a
-                      href={`tel:${STUDIO_PHONE}`}
+                      href={`tel:${branding.phone}`}
                       className="flex-1 flex items-center justify-center gap-1.5 py-2.5 bg-neutral-100 rounded-xl text-xs sm:text-sm font-medium hover:bg-neutral-200 transition-colors"
                     >
                       <Phone className="w-3.5 h-3.5" />
@@ -201,13 +205,13 @@ export default function PublicPricingPage() {
                     </a>
                     <button
                       type="button"
-                      onClick={() => openZalo(STUDIO_PHONE)}
+                      onClick={() => openZalo(branding.phone!)}
                       className="flex-1 flex items-center justify-center gap-1.5 py-2.5 bg-[#0068ff] text-white rounded-xl text-xs sm:text-sm font-medium hover:opacity-90 transition-opacity"
                     >
                       <MessageCircle className="w-3.5 h-3.5" />
                       Tư vấn miễn phí
                     </button>
-                  </div>
+                  </div>}
                 </div>
               ))}
             </div>
@@ -217,7 +221,7 @@ export default function PublicPricingPage() {
 
       {!isLoading && !error && packages.length > 0 && (
         <div className="text-center mt-12 flex flex-col items-center gap-4">
-          <ZaloConsultButton />
+          {branding.phone && <ZaloConsultButton phone={branding.phone} />}
           <p className="text-sm text-neutral-500">
             Xem báo giá chi tiết và đặt lịch qua Zalo — miễn phí tư vấn
           </p>

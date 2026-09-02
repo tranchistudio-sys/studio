@@ -1,0 +1,53 @@
+name: Apply Production Platform Migration 0007
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type APPLY_PLATFORM_0007
+        required: true
+      backup_timestamp:
+        description: Verified production backup timestamp
+        required: true
+
+concurrency:
+  group: amazing-studio-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VPS_HOST: 160.250.128.162
+      VPS_USER: deploy
+      VPS_PORT: 22
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Confirm scoped additive migration
+        run: test "${{ inputs.confirm }}" = "APPLY_PLATFORM_0007"
+      - uses: actions/checkout@v4
+      - name: Validate source migration
+        run: |
+          node scripts/deploy-guard.mjs
+          test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+      - name: Prepare SSH
+        shell: bash
+        run: |
+          test -n "$VPS_SSH_PRIVATE_KEY"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
+          ssh-keyscan -H -p "$VPS_PORT" "$VPS_HOST" > "$HOME/.ssh/known_hosts"
+      - name: Apply canonical migration and verify second run is no-op
+        shell: bash
+        run: |
+          scp -P "$VPS_PORT" -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            scripts/apply-production-platform-migration-0007.sh lib/platform-db/migrations/0007_platform_admin_commercial_dashboard.sql \
+            "$VPS_USER@$VPS_HOST:/tmp/"
+          ssh -p "$VPS_PORT" -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" \
+            "bash /tmp/apply-production-platform-migration-0007.sh /tmp/0007_platform_admin_commercial_dashboard.sql '${{ inputs.backup_timestamp }}' && bash /tmp/apply-production-platform-migration-0007.sh /tmp/0007_platform_admin_commercial_dashboard.sql '${{ inputs.backup_timestamp }}'; status=\$?; rm -f /tmp/apply-production-platform-migration-0007.sh /tmp/0007_platform_admin_commercial_dashboard.sql; exit \$status"

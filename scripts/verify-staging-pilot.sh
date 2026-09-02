@@ -164,7 +164,7 @@ mkdir -p "$restore_parts"
 tar -C "$restore_parts" -xf "$backup_file"
 test "$(cat "$restore_parts/pilot-state.txt")" = "$tenant_id|$tenant_state"
 restore_url="postgresql://postgres@127.0.0.1:${local_port}/${restore_db}"
-CI=true DATABASE_URL="$restore_url" TENANT_MIGRATIONS_DIR="$restore_parts/migrations" \
+CI=true PGPASSWORD="$local_password" DATABASE_URL="$restore_url" TENANT_MIGRATIONS_DIR="$restore_parts/migrations" \
   pnpm --filter @workspace/scripts exec tsx run-ci-tenant-template-migrations.mjs >/dev/null
 while IFS=$'\t' read -r table_name csv_name; do
   [[ "$table_name" =~ ^[a-zA-Z0-9_]+$ ]]

@@ -59,6 +59,20 @@ router.get("/studio-plans", async (_req, res) => {
   } catch { res.status(503).json({ error: "Chưa thể tải bảng giá" }); }
 });
 
+router.get("/platform/public-site", async (req, res) => {
+  const slug = String(req.query?.tenant ?? "").trim().toLowerCase();
+  if (!SLUG.test(slug)) { res.status(404).json({ error: "Không tìm thấy website studio" }); return; }
+  try {
+    const result = await getPlatformPool().query(`SELECT t.id,t.slug,t.name,
+      COALESCE(b.public_name,t.name) AS "publicName",b.logo_url AS "logoUrl",
+      b.phone,b.address,b.primary_color AS "primaryColor"
+      FROM tenants t LEFT JOIN tenant_branding b ON b.tenant_id=t.id
+      WHERE t.slug=$1 AND t.status IN ('active','trial') LIMIT 1`, [slug]);
+    if (!result.rows[0]) { res.status(404).json({ error: "Không tìm thấy website studio" }); return; }
+    res.json(result.rows[0]);
+  } catch { res.status(503).json({ error: "Chưa thể tải thông tin studio" }); }
+});
+
 router.post("/studio-signups", studioSignupRateLimit, async (req, res) => {
   if (!requestIsSameOrigin(req) || !verifyLoginCsrf(req, req.body?.loginCsrfToken)) {
     res.status(403).json({ error: "Phiên đăng ký không hợp lệ", code: "LOGIN_CSRF_INVALID" }); return;

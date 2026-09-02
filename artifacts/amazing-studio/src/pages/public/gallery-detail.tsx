@@ -3,6 +3,7 @@ import { useParams, useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, MessageCircle, User, Play, Camera } from "lucide-react";
 import { CMS_BASE } from "@/components/cms-shared";
+import { publicApiUrl, publicTenantSlugFromPath } from "@/lib/public-tenant";
 import { getCmsImageSrc } from "@/lib/imageUtils";
 import { Tilt3D, STYLE_3D } from "@/components/public-3d";
 import PublicGalleryLightbox from "@/components/public/PublicGalleryLightbox";
@@ -123,9 +124,9 @@ export default function PublicGalleryDetailPage() {
   const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
   const { data: album, isLoading, error } = useQuery<AlbumDetail>({
-    queryKey: ["public-gallery-album", slug],
+    queryKey: ["public-gallery-album", publicTenantSlugFromPath(), slug],
     queryFn: async () => {
-      const r = await fetch(`${CMS_BASE}/api/cms/public/gallery/albums/${encodeURIComponent(slug ?? "")}`);
+      const r = await fetch(publicApiUrl(`${CMS_BASE}/api/cms/public/gallery/albums/${encodeURIComponent(slug ?? "")}`));
       if (!r.ok) throw new Error(r.status === 404 ? "not_found" : "error");
       return r.json();
     },

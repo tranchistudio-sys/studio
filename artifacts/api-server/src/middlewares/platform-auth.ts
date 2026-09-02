@@ -168,6 +168,10 @@ function normalizedPublicHost(req: Request): string | null {
 }
 
 export function configuredPublicTenantSlug(req: Request): string | null {
+  const selector = String(req.query?.tenant ?? req.get("x-public-tenant-slug") ?? "").trim().toLowerCase();
+  if (selector) {
+    return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(selector) ? selector : null;
+  }
   const hostMap = process.env.PUBLIC_TENANT_HOST_MAP?.trim();
   if (hostMap) {
     const host = normalizedPublicHost(req);
@@ -193,9 +197,10 @@ export async function bindTenantDatabaseBySlugForRequest(
   next: NextFunction,
 ): Promise<void> {
   try {
+    res.locals.publicTenantSlug = slug;
     await handOffTenantLease(await acquireTenantDatabaseBySlug(slug), res, next);
   } catch {
-    tenantUnavailable(res);
+    res.status(404).json({ error: "Không tìm thấy website studio", code: "PUBLIC_TENANT_NOT_FOUND" });
   }
 }
 
@@ -212,7 +217,7 @@ export const businessAuthGuard: RequestHandler = async (req, res, next) => {
     }
     const slug = configuredPublicTenantSlug(req);
     if (!slug) {
-      tenantUnavailable(res);
+      res.status(404).json({ error: "Không tìm thấy website studio", code: "PUBLIC_TENANT_NOT_FOUND" });
       return;
     }
     await bindTenantDatabaseBySlugForRequest(slug, res, next);

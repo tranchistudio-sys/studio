@@ -5,12 +5,33 @@ vi.mock("@workspace/db", () => ({
 }));
 
 import {
+  configuredPublicTenantSlug,
   isPublicBusinessRoute,
   requestIsSameOrigin,
   tenantRoleCanAccessBusiness,
 } from "./platform-auth";
 
+function publicRequest(queryTenant?: string, host = "tranchistudio.com") {
+  return {
+    query: queryTenant === undefined ? {} : { tenant: queryTenant },
+    get(name: string) {
+      return name.toLowerCase() === "host" ? host : undefined;
+    },
+  } as any;
+}
+
 describe("default-deny API boundary", () => {
+  it("ưu tiên tenant selector hợp lệ trên public URL", () => {
+    process.env.PUBLIC_TENANT_SLUG = "amazing-studio";
+    expect(configuredPublicTenantSlug(publicRequest("cupid-wedding-da-nang"))).toBe("cupid-wedding-da-nang");
+  });
+
+  it("fail closed với tenant selector sai định dạng", () => {
+    process.env.PUBLIC_TENANT_SLUG = "amazing-studio";
+    expect(configuredPublicTenantSlug(publicRequest("../../amazing-studio"))).toBeNull();
+    expect(configuredPublicTenantSlug(publicRequest("Cupid Wedding"))).toBeNull();
+  });
+
   it("chỉ mở đúng public contract bằng token, không mở legacy ID route", () => {
     expect(isPublicBusinessRoute("GET", "/public/contracts/by-token/opaque-token")).toBe(true);
     expect(isPublicBusinessRoute("POST", "/public/contracts/by-token/opaque-token/sign")).toBe(true);

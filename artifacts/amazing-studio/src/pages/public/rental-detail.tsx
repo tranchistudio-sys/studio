@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import PublicGalleryLightbox from "@/components/public/PublicGalleryLightbox";
 import { CMS_BASE } from "@/components/cms-shared";
+import { publicApiUrl, publicTenantSlugFromPath } from "@/lib/public-tenant";
 import { getCmsImageSrc } from "@/lib/imageUtils";
 import { playPublicSound } from "@/lib/feedback";
 import { formatVND } from "@/lib/utils";
@@ -762,10 +763,10 @@ export default function RentalDetailPage() {
     isLoading,
     error,
   } = useQuery<PublicDressDetail>({
-    queryKey: ["public-dress-detail", slug],
+    queryKey: ["public-dress-detail", publicTenantSlugFromPath(), slug],
     queryFn: async () => {
       const r = await fetch(
-        `${CMS_BASE}/api/cms/public/dresses/slug/${encodeURIComponent(slug ?? "")}`,
+        publicApiUrl(`${CMS_BASE}/api/cms/public/dresses/slug/${encodeURIComponent(slug ?? "")}`),
       );
       if (!r.ok) throw new Error(r.status === 404 ? "not_found" : "error");
       return r.json();
@@ -776,9 +777,9 @@ export default function RentalDetailPage() {
   });
 
   const { data: allDresses = [] } = useQuery<PublicDressListItem[]>({
-    queryKey: ["public-dresses-related"],
+    queryKey: ["public-dresses-related", publicTenantSlugFromPath()],
     queryFn: async () => {
-      const r = await fetch(`${CMS_BASE}/api/cms/public/dresses`);
+      const r = await fetch(publicApiUrl(`${CMS_BASE}/api/cms/public/dresses`));
       if (!r.ok) return [];
       return r.json();
     },

@@ -1,3 +1,5 @@
+import { publicTenantPagePath, publicTenantSlugFromPath } from "@/lib/public-tenant";
+
 /**
  * Public marketing site origin + home path (always "/", never /calendar or /cms).
  */
@@ -36,8 +38,8 @@ export function getPublicSiteHomeUrl(): string {
  * React chưa hydrate) vẫn mở đúng app này với flag ?xem_web=1 thay vì bị
  * bản deploy cũ trên domain khác đá về /calendar.
  */
-export function getPublicPreviewUrl(path = "/"): string {
-  const normalized = path.startsWith("/") ? path : `/${path}`;
+export function getPublicPreviewUrl(path = "/", tenantSlug = publicTenantSlugFromPath()): string {
+  const normalized = publicTenantPagePath(path, tenantSlug);
   if (typeof window !== "undefined" && window.location?.origin) {
     const base = import.meta.env.BASE_URL.replace(/\/$/, "") || "";
     return withPublicPreviewQuery(`${window.location.origin}${base}${normalized}`);
@@ -76,8 +78,8 @@ export function getPublicPageUrl(path: string, options?: { preview?: boolean }):
  * Open public website in a new tab. Uses same origin + preview flag so logged-in
  * staff still see the customer website (not /calendar).
  */
-export function openPublicSite(path = "/"): void {
-  const url = getPublicPreviewUrl(path);
+export function openPublicSite(path = "/", tenantSlug = publicTenantSlugFromPath()): void {
+  const url = getPublicPreviewUrl(path, tenantSlug);
 
   const opened = window.open(url, "_blank", "noopener,noreferrer");
   if (opened) {

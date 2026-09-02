@@ -118,7 +118,7 @@ jobs:
           PLATFORM_DATABASE_URL="$history_url" pnpm --filter @workspace/platform-db migrate
           PLATFORM_DATABASE_URL="$history_url" pnpm --filter @workspace/platform-db migrate
           assertions=$(psql "$history_url" -v ON_ERROR_STOP=1 -Atqc "
-            SELECT count(*)=7 FROM platform_schema_migrations;
+          SELECT count(*)=8 FROM platform_schema_migrations;
             SELECT count(*)=2 FROM plans WHERE (code='STANDARD' AND monthly_price_amount=500000) OR (code='PRO' AND monthly_price_amount=1000000);
             SELECT to_regclass('public.tenant_database_secrets') IS NOT NULL;
             SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='tenant_invitations' AND column_name='permissions' AND data_type='jsonb');")

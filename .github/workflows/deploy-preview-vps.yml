@@ -1,0 +1,158 @@
+name: Deploy fixed VPS Preview
+on:
+  workflow_dispatch:
+    inputs:
+      ref: { description: "Branch, SHA, or PR merge ref", required: true, default: main }
+      confirm: { description: "Type DEPLOY_PREVIEW", required: true }
+concurrency:
+  group: amazing-preview
+  cancel-in-progress: true
+permissions:
+  contents: read
+env:
+  PREVIEW_URL: https://preview.tranchistudio.com
+  VPS_HOST: 160.250.128.162
+  VPS_USER: deploy
+  VPS_PORT: 22
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: postgres, POSTGRES_PASSWORD: postgres, POSTGRES_DB: amazing_platform_test }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d amazing_platform_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
+      DEFAULT_TENANT_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_amazing_test
+      TENANT_B_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/tenant_b_test
+      SESSION_SECRET: ci-preview-verification-only-32-bytes
+      BOOTSTRAP_OWNER_EMAIL: owner@gmail.com
+      BOOTSTRAP_TENANT_STAFF_ID: "1"
+      GOOGLE_CLIENT_ID: test-google-client.apps.googleusercontent.com
+    outputs: { sha: "${{ steps.commit.outputs.sha }}" }
+    steps:
+      - run: test "${{ inputs.confirm }}" = DEPLOY_PREVIEW
+      - id: requested_ref
+        name: Resolve branch, SHA, or PR number
+        run: |
+          requested='${{ inputs.ref }}'
+          case "$requested" in
+            *[!0-9]*) ref="$requested" ;;
+            *) ref="refs/pull/$requested/merge" ;;
+          esac
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with: { ref: "${{ steps.requested_ref.outputs.ref }}" }
+      - id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.34.5 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: Create isolated CI databases
+        env: { PGPASSWORD: postgres }
+        run: |
+          createdb -h 127.0.0.1 -U postgres tenant_amazing_test
+          createdb -h 127.0.0.1 -U postgres tenant_b_test
+      - name: Migrate isolated platform database
+        env:
+          PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
+        run: pnpm --filter @workspace/platform-db migrate
+      - run: pnpm --filter @workspace/api-server test
+      - name: Platform auth integration and HTTP E2E
+        env:
+          PLATFORM_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
+          TENANT_PROVISIONING_ADMIN_URL: postgresql://postgres:postgres@127.0.0.1:5432/amazing_platform_test
+          TENANT_SECRET_MASTER_KEY: BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=
+          RUN_PROVISIONING_ITEST: "1"
+        run: pnpm --filter @workspace/api-server test:platform
+      - run: pnpm --filter @workspace/amazing-studio test
+      - run: pnpm run build:deploy
+      - name: Validate preview-only deployment files
+        env:
+          PREVIEW_IMAGE: amazing-studio-preview:current
+          PREVIEW_DB_PASSWORD: validation-only
+          PREVIEW_SESSION_SECRET: validation-only-session-secret-32-bytes
+          PREVIEW_BASIC_AUTH_PASS: validation-only
+        run: |
+          bash -n scripts/vps-deploy-preview.sh
+          docker compose -f deploy/preview/docker-compose.preview.yml config --quiet
+          grep -q '127.0.0.1:18080:8080' deploy/preview/docker-compose.preview.yml
+          ! grep -R -E 'amazing-studio-production-db|amazing-tenants-prod|/opt/amazing-studio/' deploy/preview scripts/vps-deploy-preview.sh
+  deploy-preview:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: preview
+    env:
+      VPS_SSH_PRIVATE_KEY: "${{ secrets.VPS_SSH_PRIVATE_KEY }}"
+      PREVIEW_DB_PASSWORD: "${{ secrets.VPS_PREVIEW_DB_PASSWORD }}"
+      PREVIEW_SESSION_SECRET: "${{ secrets.PREVIEW_SESSION_SECRET }}"
+      PREVIEW_BASIC_AUTH_USER: "${{ vars.PREVIEW_BASIC_AUTH_USER || 'amazing' }}"
+      PREVIEW_BASIC_AUTH_PASS: "${{ secrets.PREVIEW_BASIC_AUTH_PASS }}"
+      PREVIEW_LOGIN_USERNAME: "${{ vars.PREVIEW_LOGIN_USERNAME || 'preview-owner' }}"
+      PREVIEW_LOGIN_PASSWORD: "${{ secrets.PREVIEW_LOGIN_PASSWORD }}"
+      DEPLOY_SHA: "${{ needs.verify.outputs.sha }}"
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: "${{ needs.verify.outputs.sha }}" }
+      - name: Require preview-only secrets
+        run: |
+          test -n "$VPS_SSH_PRIVATE_KEY" || { echo "::error::Missing preview secret VPS_SSH_PRIVATE_KEY"; exit 1; }
+          for name in PREVIEW_DB_PASSWORD PREVIEW_SESSION_SECRET PREVIEW_BASIC_AUTH_PASS PREVIEW_LOGIN_PASSWORD; do
+            test -n "${!name}" || { echo "::error::Missing preview secret $name"; exit 1; }
+            [[ "${!name}" != *$'\n'* && "${!name}" != *$'\r'* ]] || { echo "::error::$name must be single-line"; exit 1; }
+          done
+          for name in PREVIEW_DB_PASSWORD PREVIEW_SESSION_SECRET PREVIEW_BASIC_AUTH_PASS PREVIEW_LOGIN_PASSWORD; do
+            [[ "${!name}" =~ ^[A-Za-z0-9_-]{24,}$ ]] || {
+              echo "::error::$name must be URL-safe and at least 24 characters"; exit 1;
+            }
+          done
+          [[ "$PREVIEW_BASIC_AUTH_USER" =~ ^[A-Za-z0-9_-]{3,32}$ ]]
+          [[ "$PREVIEW_LOGIN_USERNAME" =~ ^[A-Za-z0-9_-]{3,32}$ ]]
+      - name: Prepare SSH
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
+          ssh-keygen -y -f "$HOME/.ssh/deploy_key" >/dev/null
+          ssh-keyscan -H -p "$VPS_PORT" "$VPS_HOST" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+      - name: Package tested commit and preview environment
+        run: |
+          git archive --format=tar.gz --output="$RUNNER_TEMP/preview-source.tar.gz" "$DEPLOY_SHA"
+          umask 077
+          {
+            echo "PREVIEW_IMAGE=amazing-studio-preview:current"
+            echo "PREVIEW_DB_PASSWORD=$PREVIEW_DB_PASSWORD"
+            echo "PREVIEW_SESSION_SECRET=$PREVIEW_SESSION_SECRET"
+            echo "PREVIEW_BASIC_AUTH_USER=$PREVIEW_BASIC_AUTH_USER"
+            echo "PREVIEW_BASIC_AUTH_PASS=$PREVIEW_BASIC_AUTH_PASS"
+            echo "PREVIEW_LOGIN_USERNAME=$PREVIEW_LOGIN_USERNAME"
+            echo "PREVIEW_LOGIN_PASSWORD=$PREVIEW_LOGIN_PASSWORD"
+          } > "$RUNNER_TEMP/preview.env"
+      - name: Copy preview-only artifacts
+        run: |
+          for item in \
+            "$RUNNER_TEMP/preview-source.tar.gz:/tmp/amazing-preview-source-$GITHUB_RUN_ID.tar.gz" \
+            "$RUNNER_TEMP/preview.env:/tmp/amazing-preview-$GITHUB_RUN_ID.env" \
+            "scripts/vps-deploy-preview.sh:/tmp/amazing-preview-deploy-$GITHUB_RUN_ID.sh"; do
+            src=${item%%:*}; dst=${item#*:}
+            scp -P "$VPS_PORT" -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes "$src" "$VPS_USER@$VPS_HOST:$dst"
+          done
+      - name: Deploy and rollback Preview only
+        run: |
+          ssh -p "$VPS_PORT" -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes "$VPS_USER@$VPS_HOST" \
+            "bash /tmp/amazing-preview-deploy-$GITHUB_RUN_ID.sh '$DEPLOY_SHA' '/tmp/amazing-preview-source-$GITHUB_RUN_ID.tar.gz' '/tmp/amazing-preview-$GITHUB_RUN_ID.env'; status=\$?; rm -f /tmp/amazing-preview-deploy-$GITHUB_RUN_ID.sh /tmp/amazing-preview-source-$GITHUB_RUN_ID.tar.gz /tmp/amazing-preview-$GITHUB_RUN_ID.env; exit \$status"
+      - name: Public health and Basic Auth smoke checks
+        run: |
+          curl -fsS --max-time 15 "$PREVIEW_URL/api/healthz" | grep -q '"status":"ok"'
+          test "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "$PREVIEW_URL/")" = 401
+          curl -fsS --max-time 20 -u "$PREVIEW_BASIC_AUTH_USER:$PREVIEW_BASIC_AUTH_PASS" "$PREVIEW_URL/" | grep -q 'id="root"'
+      - run: echo "Preview $DEPLOY_SHA is ready at $PREVIEW_URL" >> "$GITHUB_STEP_SUMMARY"

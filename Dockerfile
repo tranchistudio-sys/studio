@@ -1,6 +1,6 @@
-# Dockerfile — CHỈ dùng cho BẢN XEM THỬ theo Pull Request (Fly.io review app).
+# Dockerfile — CHỈ dùng cho fixed Preview slot (VPS; legacy Fly rollback compatible).
 #
-# Production của Amazing Studio vẫn chạy trên Replit như cũ, KHÔNG dùng file này.
+# Production chạy bằng image/compose riêng và KHÔNG dùng file này.
 #
 # Một container = TOÀN BỘ app: backend Express phục vụ luôn frontend đã build
 # (xem artifacts/api-server/src/lib/serve-frontend.ts — "Cách C", single origin),

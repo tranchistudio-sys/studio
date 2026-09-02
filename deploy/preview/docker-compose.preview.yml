@@ -1,0 +1,68 @@
+name: amazing-preview
+services:
+  db:
+    image: postgres:18-alpine
+    container_name: amazing-preview-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: preview
+      POSTGRES_PASSWORD: ${PREVIEW_DB_PASSWORD:?required}
+      POSTGRES_DB: amazing_preview
+    volumes:
+      - amazing-preview-postgres:/var/lib/postgresql
+    networks: [preview-private]
+    cpus: 0.50
+    mem_limit: 512m
+    pids_limit: 128
+    logging: { driver: json-file, options: { max-size: 10m, max-file: "3" } }
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U preview -d amazing_preview"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+  app:
+    image: ${PREVIEW_IMAGE:?required}
+    container_name: amazing-preview-app
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      NODE_ENV: production
+      APP_ENV: preview
+      PORT: "8080"
+      PREVIEW_MODE: "1"
+      DATABASE_URL: postgresql://preview:${PREVIEW_DB_PASSWORD}@db:5432/amazing_preview
+      DEFAULT_TENANT_DATABASE_URL: postgresql://preview:${PREVIEW_DB_PASSWORD}@db:5432/amazing_preview
+      PREVIEW_DB_HOST_ALLOWLIST: db/amazing_preview
+      SESSION_SECRET: ${PREVIEW_SESSION_SECRET:?required}
+      PREVIEW_BASIC_AUTH_USER: ${PREVIEW_BASIC_AUTH_USER:-amazing}
+      PREVIEW_BASIC_AUTH_PASS: ${PREVIEW_BASIC_AUTH_PASS:?required}
+      PUBLIC_APP_URL: https://preview.tranchistudio.com
+      CORS_ALLOWED_ORIGINS: https://preview.tranchistudio.com
+      PREVIEW_NET_ALLOW: ""
+      LOCAL_OBJECT_STORAGE_DIR: /app/data/object-storage
+      LEGACY_FB_BOT_ENABLED: "false"
+      CLAUDE_FB_BOT_ENABLED: "false"
+      FB_AUTO_REPLY_ENABLED: "false"
+      ENABLE_AUTO_POST_FACEBOOK: "false"
+      AUTOPOST_DRY_RUN: "true"
+      ENABLE_AI_FOLLOWUP: "false"
+      ENABLE_AI_TEST_FOLLOWUP: "false"
+      ENABLE_TENANT_PROVISIONING_WORKER: "false"
+    volumes: [amazing-preview-objects:/app/data/object-storage]
+    ports: ["127.0.0.1:18080:8080"]
+    networks: [preview-private]
+    cpus: 0.75
+    mem_limit: 768m
+    pids_limit: 256
+    logging: { driver: json-file, options: { max-size: 10m, max-file: "3" } }
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/api/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+networks:
+  preview-private: { name: amazing-studio-preview-net, internal: true }
+volumes:
+  amazing-preview-postgres: { name: amazing-studio-preview-postgres }
+  amazing-preview-objects: { name: amazing-studio-preview-objects }

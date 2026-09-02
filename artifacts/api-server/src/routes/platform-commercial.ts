@@ -6,7 +6,6 @@ import { requirePlatformOwner } from "../middlewares/platform-owner";
 import { verifyLoginCsrf } from "../platform/session";
 import type { PlatformSessionContext } from "../platform/types";
 import { getTenantEntitlements } from "../platform/entitlements";
-import { createLoginRateLimit } from "../lib/login-rate-limit";
 
 const router: IRouter = Router();
 const UUID = /^[0-9a-f]{8}-[0-9a-f-]{27}$/i;
@@ -16,10 +15,6 @@ const PHONE = /^[0-9+(). -]{8,20}$/;
 const plan = (v: unknown) => v === "STANDARD" || v === "PRO" ? v : null;
 const context = (res: Parameters<typeof requirePlatformOwner>[1]) => res.locals.platformAuth as PlatformSessionContext;
 const CURRENT_SUBSCRIPTION_STATUSES = ["trial", "active", "past_due", "suspended"] as const;
-const studioSignupRateLimit = createLoginRateLimit({
-  bucketPrefix: "studio-signup", maxAttempts: 10, windowMs: 15 * 60_000,
-  errorMessage: "Bạn gửi quá nhiều yêu cầu đăng ký. Vui lòng chờ rồi thử lại.",
-});
 
 class CommercialConflictError extends Error {}
 type TransactionClient = Parameters<Parameters<typeof withPlatformTransaction>[0]>[0];
@@ -73,7 +68,7 @@ router.get("/platform/public-site", async (req, res) => {
   } catch { res.status(503).json({ error: "Chưa thể tải thông tin studio" }); }
 });
 
-router.post("/studio-signups", studioSignupRateLimit, async (req, res) => {
+router.post("/studio-signups", async (req, res) => {
   if (!requestIsSameOrigin(req) || !verifyLoginCsrf(req, req.body?.loginCsrfToken)) {
     res.status(403).json({ error: "Phiên đăng ký không hợp lệ", code: "LOGIN_CSRF_INVALID" }); return;
   }
@@ -97,7 +92,11 @@ router.post("/studio-signups", studioSignupRateLimit, async (req, res) => {
       [id, ownerName, studioName, phone, email, address, requestedSlug, requestedPlanCode]);
     res.status(201).json({ id, status: "PENDING", message: "Đã gửi đăng ký. Chúng tôi sẽ liên hệ để xác nhận." });
   } catch (error: unknown) {
-    if ((error as { code?: string }).code === "23505") { res.status(409).json({ error: "Slug này đang có yêu cầu xử lý" }); return; }
+    // Repeated taps/submissions are intentionally idempotent for the public
+    // form. Never expose whether another requester owns the same address.
+    if ((error as { code?: string }).code === "23505") {
+      res.status(200).json({ accepted: true, duplicate: true }); return;
+    }
     res.status(503).json({ error: "Chưa thể nhận đăng ký" });
   }
 });

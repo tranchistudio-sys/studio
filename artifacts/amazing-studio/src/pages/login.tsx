@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
-import { ArrowLeft, Building2, Camera, CheckCircle2, Eye, EyeOff, Loader2, UserPlus } from "lucide-react";
+import { ArrowLeft, Building2, Camera, CheckCircle2, CircleHelp, Eye, EyeOff, Loader2, UserPlus } from "lucide-react";
 import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton";
 import { API_BASE } from "@/lib/api-base";
 import { normalizeAuthResponse, type AuthConfig, type AuthResponse } from "@/lib/auth-types";
@@ -54,6 +54,8 @@ export default function LoginPage({ onLogin }: Props) {
   const [studioSignupOpen, setStudioSignupOpen] = useState(false);
   const [studioSignupBusy, setStudioSignupBusy] = useState(false);
   const [studioSignupSuccess, setStudioSignupSuccess] = useState("");
+  const [emailHelpOpen, setEmailHelpOpen] = useState(false);
+  const [webAddressHelpOpen, setWebAddressHelpOpen] = useState(false);
   const [publicPlans, setPublicPlans] = useState<PublicPlan[] | null>(null);
   const [studioSignup, setStudioSignup] = useState({ ownerName: "", studioName: "", phone: "", email: "", address: "", requestedSlug: "", requestedPlanCode: "STANDARD" });
   const submittingRef = useRef(false);
@@ -317,10 +319,46 @@ export default function LoginPage({ onLogin }: Props) {
               <p className="mb-4 mt-1 text-center text-xs text-muted-foreground">Dùng thử miễn phí tháng đầu sau khi kích hoạt. Gửi yêu cầu để Platform Owner liên hệ và duyệt.</p>
               {studioSignupSuccess ? <div className="rounded-xl bg-emerald-50 p-4 text-center text-sm text-emerald-700"><CheckCircle2 className="mx-auto mb-2 h-6 w-6" />{studioSignupSuccess}</div> :
               <form onSubmit={handleStudioSignup} className="space-y-3">
-                {([['ownerName','Tên chủ studio'],['studioName','Tên studio'],['phone','Số điện thoại'],['email','Email'],['address','Địa chỉ (không bắt buộc)'],['requestedSlug','Slug mong muốn, ví dụ abc-wedding']] as const).map(([key,label]) =>
-                  <input key={key} aria-label={label} placeholder={label} required={key !== 'address'} type={key === 'email' ? 'email' : 'text'}
+                {([['ownerName','Tên chủ studio'],['studioName','Tên studio'],['phone','Số điện thoại']] as const).map(([key,label]) =>
+                  <input key={key} aria-label={label} placeholder={label} required type="text"
                     value={studioSignup[key]} onChange={event => setStudioSignup(value => ({ ...value, [key]: event.target.value }))}
                     className="h-10 w-full rounded-xl border bg-white px-3 text-sm" />)}
+                <div>
+                  <div className="flex items-center gap-2">
+                    <input aria-label="Gmail đăng nhập" placeholder="Gmail dùng để đăng nhập ứng dụng" required type="email"
+                      value={studioSignup.email} onChange={event => setStudioSignup(value => ({ ...value, email: event.target.value }))}
+                      className="h-10 min-w-0 flex-1 rounded-xl border bg-white px-3 text-sm" />
+                    <button type="button" aria-label="Hướng dẫn Gmail đăng nhập" aria-expanded={emailHelpOpen}
+                      title="Bấm để xem hướng dẫn" onClick={() => setEmailHelpOpen(value => !value)}
+                      className="group relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-purple-200 bg-white text-purple-700">
+                      <CircleHelp className="h-5 w-5" />
+                      <span className="pointer-events-none absolute bottom-full right-0 z-10 mb-2 hidden w-64 rounded-lg bg-slate-900 p-3 text-left text-xs font-normal text-white shadow-lg group-hover:block">
+                        Gmail này chính là tài khoản chủ studio dùng để đăng nhập vào ứng dụng sau khi được duyệt và kích hoạt. Hãy nhập đúng Gmail đang sử dụng.
+                      </span>
+                    </button>
+                  </div>
+                  {emailHelpOpen && <p role="status" className="mt-2 rounded-lg bg-purple-100 p-3 text-xs text-purple-900">Gmail này chính là <b>tài khoản đăng nhập của chủ studio</b> sau khi được duyệt và kích hoạt. Hãy nhập đúng Gmail đang sử dụng.</p>}
+                </div>
+                <input aria-label="Địa chỉ (không bắt buộc)" placeholder="Địa chỉ (không bắt buộc)" type="text"
+                  value={studioSignup.address} onChange={event => setStudioSignup(value => ({ ...value, address: event.target.value }))}
+                  className="h-10 w-full rounded-xl border bg-white px-3 text-sm" />
+                <div className="relative">
+                  <div className="flex items-center gap-2">
+                    <input aria-label="Tên địa chỉ trang web" placeholder="Tên địa chỉ trang web, ví dụ cupid-wedding-da-nang" required
+                      value={studioSignup.requestedSlug} onChange={event => setStudioSignup(value => ({ ...value, requestedSlug: event.target.value
+                        .toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') }))}
+                      className="h-10 min-w-0 flex-1 rounded-xl border bg-white px-3 text-sm" />
+                    <button type="button" aria-label="Hướng dẫn tên địa chỉ trang web" aria-expanded={webAddressHelpOpen}
+                      title="Bấm để xem hướng dẫn" onClick={() => setWebAddressHelpOpen(value => !value)}
+                      className="group relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-purple-200 bg-white text-purple-700">
+                      <CircleHelp className="h-5 w-5" />
+                      <span className="pointer-events-none absolute bottom-full right-0 z-10 mb-2 hidden w-64 rounded-lg bg-slate-900 p-3 text-left text-xs font-normal text-white shadow-lg group-hover:block">
+                        Đây là tên nằm trong đường dẫn website riêng của studio. Ví dụ: cupid-wedding-da-nang. Hệ thống sẽ tự bỏ dấu, đổi chữ thường và thay khoảng trắng bằng dấu gạch ngang.
+                      </span>
+                    </button>
+                  </div>
+                  {webAddressHelpOpen && <p role="status" className="mt-2 rounded-lg bg-purple-100 p-3 text-xs text-purple-900">Đây là tên nằm trong đường dẫn website riêng của studio. Ví dụ: <b>cupid-wedding-da-nang</b>. Hệ thống tự bỏ dấu, đổi chữ thường và thay khoảng trắng bằng dấu gạch ngang.</p>}
+                </div>
                 <select aria-label="Gói mong muốn" value={studioSignup.requestedPlanCode}
                   onChange={event => setStudioSignup(value => ({ ...value, requestedPlanCode: event.target.value }))}
                   className="h-10 w-full rounded-xl border bg-white px-3 text-sm">

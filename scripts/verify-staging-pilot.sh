@@ -26,9 +26,11 @@ checksum_file="$backup_file.sha256"
 backup_parts="$backup_dir/${backup_name}.parts"
 restore_parts="$backup_dir/${backup_name}.restore"
 local_container="pilot-restore-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
+local_bootstrap_pid=""
 local_port=25432
 local_password="ci_restore_only_${GITHUB_RUN_ID:-local}_${GITHUB_RUN_ATTEMPT:-1}"
 cleanup() {
+  test -z "$local_bootstrap_pid" || kill "$local_bootstrap_pid" 2>/dev/null || true
   psql "postgresql://postgres@127.0.0.1:15432/postgres" -v ON_ERROR_STOP=1 \
     -v restore_db="$restore_db" <<'SQL' >/dev/null 2>&1 || true
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity
@@ -131,6 +133,9 @@ test "$duplicate_registry" = "0"
 # migration orchestrator as provisioning.
 mkdir -p "$backup_parts"
 mkdir -p "$backup_parts/migrations" "$backup_parts/data"
+pnpm --filter @workspace/db exec drizzle-kit export \
+  --dialect postgresql --schema './src/schema/index.ts' > "$backup_parts/base-schema.sql"
+cp scripts/staging-schema-prerequisites.sql "$backup_parts/schema-prerequisites.sql"
 for migration in lib/db/migrations/[0-9][0-9][0-9][0-9]_*.sql; do
   test "$(basename "$migration")" = "0004_seed_amazing_wedding_gifts.sql" && continue
   cp "$migration" "$backup_parts/migrations/"
@@ -164,6 +169,31 @@ mkdir -p "$restore_parts"
 tar -C "$restore_parts" -xf "$backup_file"
 test "$(cat "$restore_parts/pilot-state.txt")" = "$tenant_id|$tenant_state"
 restore_url="postgresql://postgres@127.0.0.1:${local_port}/${restore_db}"
+PGPASSWORD="$local_password" psql "$restore_url" -v ON_ERROR_STOP=1 \
+  -f "$restore_parts/base-schema.sql" -f "$restore_parts/schema-prerequisites.sql" >/dev/null
+APP_ENV=staging NODE_ENV=development SCHEMA_BOOTSTRAP_ONLY=1 PORT=5299 \
+  PGPASSWORD="$local_password" DATABASE_URL="$restore_url" DEFAULT_TENANT_DATABASE_URL="$restore_url" \
+  PLATFORM_DATABASE_URL="" node artifacts/api-server/dist/index.mjs >"$restore_parts/schema-bootstrap.log" 2>&1 &
+local_bootstrap_pid=$!
+schema_ready=""
+for i in $(seq 1 120); do
+  schema_ready=$(PGPASSWORD="$local_password" psql "$restore_url" -Atqc "
+    SELECT
+      EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='dresses' AND column_name='sell_price')
+      AND EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='service_packages' AND column_name='cms_status')
+      AND EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='gallery_albums')
+      AND NOT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND objid=88442201 AND granted)" 2>/dev/null || true)
+  test "$schema_ready" = "t" && break
+  kill -0 "$local_bootstrap_pid" 2>/dev/null || break
+  sleep 1
+done
+if test "$schema_ready" != "t"; then
+  sed -n '1,200p' "$restore_parts/schema-bootstrap.log"
+  exit 1
+fi
+kill "$local_bootstrap_pid" 2>/dev/null || true
+wait "$local_bootstrap_pid" 2>/dev/null || true
+local_bootstrap_pid=""
 CI=true PGPASSWORD="$local_password" DATABASE_URL="$restore_url" TENANT_MIGRATIONS_DIR="$restore_parts/migrations" \
   pnpm --filter @workspace/scripts exec tsx run-ci-tenant-template-migrations.mjs >/dev/null
 while IFS=$'\t' read -r table_name csv_name; do

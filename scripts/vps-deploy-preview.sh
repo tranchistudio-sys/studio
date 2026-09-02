@@ -57,7 +57,7 @@ WHERE NOT EXISTS (SELECT 1 FROM staff WHERE username=:'login');
 SQL
 docker compose --project-name "$project" --env-file "$env_file" -f "$compose" up -d --no-build db app
 for attempt in $(seq 1 30); do
-  body=$(curl -fsS --max-time 5 http://127.0.0.1:18080/api/healthz 2>/dev/null || true)
+  body=$(curl -fsS --max-time 5 http://172.30.0.3:8080/api/healthz 2>/dev/null || true)
   [[ "$body" == *'"status":"ok"'* ]] && break
   (( attempt < 30 )) || { echo "Preview health failed" >&2; false; }
   sleep 5

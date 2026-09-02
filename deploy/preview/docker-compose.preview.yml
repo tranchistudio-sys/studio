@@ -10,7 +10,8 @@ services:
       POSTGRES_DB: amazing_preview
     volumes:
       - amazing-preview-postgres:/var/lib/postgresql
-    networks: [preview-private]
+    networks:
+      preview-private: { ipv4_address: 172.30.0.2 }
     cpus: 0.50
     mem_limit: 512m
     pids_limit: 128
@@ -50,8 +51,8 @@ services:
       ENABLE_AI_TEST_FOLLOWUP: "false"
       ENABLE_TENANT_PROVISIONING_WORKER: "false"
     volumes: [amazing-preview-objects:/app/data/object-storage]
-    ports: ["127.0.0.1:18080:8080"]
-    networks: [preview-private]
+    networks:
+      preview-private: { ipv4_address: 172.30.0.3 }
     cpus: 0.75
     mem_limit: 768m
     pids_limit: 256
@@ -62,7 +63,11 @@ services:
       timeout: 5s
       retries: 12
 networks:
-  preview-private: { name: amazing-studio-preview-net, internal: true }
+  preview-private:
+    name: amazing-studio-preview-net-v2
+    internal: true
+    ipam:
+      config: [{ subnet: 172.30.0.0/24 }]
 volumes:
   amazing-preview-postgres: { name: amazing-studio-preview-postgres }
   amazing-preview-objects: { name: amazing-studio-preview-objects }

@@ -83,7 +83,8 @@ jobs:
         run: |
           bash -n scripts/vps-deploy-preview.sh
           docker compose -f deploy/preview/docker-compose.preview.yml config --quiet
-          grep -q '127.0.0.1:18080:8080' deploy/preview/docker-compose.preview.yml
+          grep -q 'ipv4_address: 172.30.0.3' deploy/preview/docker-compose.preview.yml
+          grep -q 'subnet: 172.30.0.0/24' deploy/preview/docker-compose.preview.yml
           ! grep -R -E 'amazing-studio-production-db|amazing-tenants-prod|/opt/amazing-studio/' deploy/preview scripts/vps-deploy-preview.sh
   deploy-preview:
     needs: verify

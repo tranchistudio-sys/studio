@@ -5,7 +5,8 @@ database: `preview.tranchistudio.com`, `/opt/amazing-studio-preview`,
 `amazing-preview`, and `amazing-studio-preview-postgres`.
 
 Production under `/opt/amazing-studio` is never referenced. The workflow carries
-no production database or integration secrets. An internal Docker network and
+no production database or integration secrets. An internal Docker network with a
+fixed app address for the host Nginx proxy and
 the application Preview guards block outbound production integrations.
 
 ## One-time OWNER setup after merge approval

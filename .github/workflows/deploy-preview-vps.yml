@@ -96,25 +96,32 @@ jobs:
       PREVIEW_SESSION_SECRET: "${{ secrets.PREVIEW_SESSION_SECRET }}"
       PREVIEW_BASIC_AUTH_USER: "${{ vars.PREVIEW_BASIC_AUTH_USER || 'amazing' }}"
       PREVIEW_BASIC_AUTH_PASS: "${{ secrets.PREVIEW_BASIC_AUTH_PASS }}"
+      PREVIEW_LOGIN_USERNAME: "${{ vars.PREVIEW_LOGIN_USERNAME || 'preview-owner' }}"
+      PREVIEW_LOGIN_PASSWORD: "${{ secrets.PREVIEW_LOGIN_PASSWORD }}"
       DEPLOY_SHA: "${{ needs.verify.outputs.sha }}"
     steps:
       - uses: actions/checkout@v4
         with: { ref: "${{ needs.verify.outputs.sha }}" }
       - name: Require preview-only secrets
         run: |
-          for name in VPS_SSH_PRIVATE_KEY PREVIEW_DB_PASSWORD PREVIEW_SESSION_SECRET PREVIEW_BASIC_AUTH_PASS; do
+          test -n "$VPS_SSH_PRIVATE_KEY" || { echo "::error::Missing preview secret VPS_SSH_PRIVATE_KEY"; exit 1; }
+          for name in PREVIEW_DB_PASSWORD PREVIEW_SESSION_SECRET PREVIEW_BASIC_AUTH_PASS PREVIEW_LOGIN_PASSWORD; do
             test -n "${!name}" || { echo "::error::Missing preview secret $name"; exit 1; }
             [[ "${!name}" != *$'\n'* && "${!name}" != *$'\r'* ]] || { echo "::error::$name must be single-line"; exit 1; }
           done
-          [[ "$PREVIEW_DB_PASSWORD" =~ ^[A-Za-z0-9_-]{24,}$ ]] || {
-            echo "::error::VPS_PREVIEW_DB_PASSWORD must be URL-safe and at least 24 characters"
-            exit 1
-          }
+          for name in PREVIEW_DB_PASSWORD PREVIEW_SESSION_SECRET PREVIEW_BASIC_AUTH_PASS PREVIEW_LOGIN_PASSWORD; do
+            [[ "${!name}" =~ ^[A-Za-z0-9_-]{24,}$ ]] || {
+              echo "::error::$name must be URL-safe and at least 24 characters"; exit 1;
+            }
+          done
+          [[ "$PREVIEW_BASIC_AUTH_USER" =~ ^[A-Za-z0-9_-]{3,32}$ ]]
+          [[ "$PREVIEW_LOGIN_USERNAME" =~ ^[A-Za-z0-9_-]{3,32}$ ]]
       - name: Prepare SSH
         run: |
           install -d -m 700 "$HOME/.ssh"
           printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
           chmod 600 "$HOME/.ssh/deploy_key"
+          ssh-keygen -y -f "$HOME/.ssh/deploy_key" >/dev/null
           ssh-keyscan -H -p "$VPS_PORT" "$VPS_HOST" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/known_hosts"
       - name: Package tested commit and preview environment
@@ -127,6 +134,8 @@ jobs:
             echo "PREVIEW_SESSION_SECRET=$PREVIEW_SESSION_SECRET"
             echo "PREVIEW_BASIC_AUTH_USER=$PREVIEW_BASIC_AUTH_USER"
             echo "PREVIEW_BASIC_AUTH_PASS=$PREVIEW_BASIC_AUTH_PASS"
+            echo "PREVIEW_LOGIN_USERNAME=$PREVIEW_LOGIN_USERNAME"
+            echo "PREVIEW_LOGIN_PASSWORD=$PREVIEW_LOGIN_PASSWORD"
           } > "$RUNNER_TEMP/preview.env"
       - name: Copy preview-only artifacts
         run: |

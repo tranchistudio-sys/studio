@@ -13,6 +13,11 @@ import { validateCmsPublicMediaWrite } from "../lib/cms-public-media";
 
 const router: IRouter = Router();
 
+function isLegacyTenantSchemaError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "42703" || code === "42P01";
+}
+
 // Prevent an editor from pasting a private payment/evidence object into any
 // field that is later returned by a public CMS endpoint.
 router.use("/cms", validateCmsPublicMediaWrite);
@@ -1553,7 +1558,12 @@ router.get("/cms/public/dresses", async (_req, res) => {
     }));
     await attachGoldenHour(items);
     res.json(items);
-  } catch (e) { res.status(500).json({ error: String(e) }); }
+  } catch (e) {
+    // Older tenant templates can lack optional presentation columns. Keep the
+    // tenant website safely empty; never fall back to Amazing's database.
+    if (isLegacyTenantSchemaError(e)) { res.json([]); return; }
+    res.status(500).json({ error: "Chưa thể tải trang phục" });
+  }
 });
 
 // ─── Public packages for /bang-gia ───────────────────────────────────────────
@@ -1596,7 +1606,10 @@ router.get("/cms/public/packages", async (_req, res) => {
         discount,
       };
     }));
-  } catch (e) { res.status(500).json({ error: String(e) }); }
+  } catch (e) {
+    if (isLegacyTenantSchemaError(e)) { res.json([]); return; }
+    res.status(500).json({ error: "Chưa thể tải bảng giá" });
+  }
 });
 
 // Public dress detail by slug
@@ -1938,7 +1951,10 @@ async function readHomeSettings(): Promise<HomeContent> {
 router.get("/cms/public/home", async (_req, res) => {
   try {
     res.json(await readHomeSettings());
-  } catch (e) { res.status(500).json({ error: String(e) }); }
+  } catch (e) {
+    if (isLegacyTenantSchemaError(e)) { res.json({ ...EMPTY_HOME }); return; }
+    res.status(500).json({ error: "Chưa thể tải trang chủ" });
+  }
 });
 
 // Admin — đọc cài đặt trang chủ

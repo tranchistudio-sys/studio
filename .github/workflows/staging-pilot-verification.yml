@@ -30,6 +30,13 @@ jobs:
       PILOT_EMAIL: ${{ inputs.pilot_email }}
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install locked restore runtime
+        run: pnpm install --frozen-lockfile
       - uses: superfly/flyctl-actions/setup-flyctl@master
 
       - name: Enforce staging-only target

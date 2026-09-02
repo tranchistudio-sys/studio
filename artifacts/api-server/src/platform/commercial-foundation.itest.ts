@@ -22,10 +22,10 @@ let server: http.Server;
 let baseUrl = "";
 let signupSequence = 0;
 const pool = getPlatformPool();
-const migrationUrls = [1,2,3,4,5,6].map(number => new URL(
+const migrationUrls = [1,2,3,4,5,6,7].map(number => new URL(
   `../../../../lib/platform-db/migrations/000${number}_${[
     "platform_foundation", "membership_session_revocation", "tenant_database_registry_isolation",
-    "staff_access_requests", "commercial_saas_foundation", "tenant_provisioning_engine",
+    "staff_access_requests", "commercial_saas_foundation", "tenant_provisioning_engine", "platform_admin_commercial_dashboard",
   ][number - 1]}.sql`, import.meta.url));
 const migrationSql = migrationUrls.map(url => readFileSync(url, "utf8"));
 
@@ -221,6 +221,25 @@ describe("commercial payment and activation invariants", () => {
     expect((await pool.query("SELECT count(*)::int count FROM platform_payments WHERE tenant_id=$1", [tenantId])).rows[0].count).toBe(0);
     expect((await pool.query("SELECT count(*)::int count FROM provisioning_jobs WHERE tenant_id=$1", [tenantId])).rows[0].count).toBe(0);
   });
+
+  it("persists custom setup, trial, price, class, renewal payment and notes with audit", async () => {
+    const approved=await approve(await createSignup()); const tenantId=approved.tenantId!;
+    expect((await action(tenantId,"update_setup_fee",{amount:450000,status:"WAIVED",note:"pilot"})).status).toBe(200);
+    await makeCommercialActive(tenantId);
+    await pool.query("UPDATE subscriptions SET status='trial' WHERE tenant_id=$1",[tenantId]);
+    expect((await action(tenantId,"update_trial",{trialStart:"2026-09-02",months:3,reason:"partner pilot"})).status).toBe(200);
+    expect((await action(tenantId,"update_price",{basePriceAmount:1000000,customPriceAmount:750000,note:"partner price"})).status).toBe(200);
+    expect((await action(tenantId,"change_class",{commercialClass:"PARTNER",reason:"launch partner"})).status).toBe(200);
+    expect((await action(tenantId,"add_note",{note:"Owner prefers bank transfer"})).status).toBe(200);
+    expect((await action(tenantId,"renew",{months:3,amount:2250000,paymentMethod:"BANK_TRANSFER"})).status).toBe(200);
+    const subscription=(await pool.query("SELECT custom_price_amount,commercial_class,trial_ends_at FROM subscriptions WHERE tenant_id=$1",[tenantId])).rows[0];
+    expect(subscription).toMatchObject({custom_price_amount:"750000",commercial_class:"PARTNER"});
+    expect(new Date(subscription.trial_ends_at).toISOString()).toBe("2026-12-02T00:00:00.000Z");
+    expect((await pool.query("SELECT count(*)::int count FROM tenant_commercial_notes WHERE tenant_id=$1",[tenantId])).rows[0].count).toBe(1);
+    expect((await pool.query("SELECT amount,status,payment_method FROM platform_payments WHERE tenant_id=$1 AND payment_type='SUBSCRIPTION'",[tenantId])).rows[0])
+      .toMatchObject({amount:"2250000",status:"PAID",payment_method:"BANK_TRANSFER"});
+    expect((await pool.query("SELECT count(*)::int count FROM platform_audit_logs WHERE tenant_id=$1 AND action IN ('commercial.update_trial','commercial.update_price','commercial.change_class','commercial.add_note','commercial.renew')",[tenantId])).rows[0].count).toBe(5);
+  });
 });
 
 describe("commercial subscription isolation and state machine", () => {
@@ -282,6 +301,16 @@ describe("commercial subscription isolation and state machine", () => {
 });
 
 describe("migration preflight", () => {
+  it("runs the dashboard migration twice and preserves its flexible commercial schema", async () => {
+    await withMigrationSchema(async client => {
+      await client.query(migrationSql[4]!); await client.query(migrationSql[5]!);
+      await client.query(migrationSql[6]!); await client.query(migrationSql[6]!);
+      const columns=await client.query(`SELECT column_name FROM information_schema.columns
+        WHERE table_schema=current_schema() AND table_name='subscriptions'
+        AND column_name IN ('commercial_class','custom_price_amount','trial_starts_at') ORDER BY column_name`);
+      expect(columns.rows.map(row=>row.column_name)).toEqual(["commercial_class","custom_price_amount","trial_starts_at"]);
+    });
+  });
   it("runs the complete 0005 migration on a clean schema and is idempotent", async () => {
     await withMigrationSchema(async client => {
       await client.query(migrationSql[4]!); await client.query(migrationSql[4]!);

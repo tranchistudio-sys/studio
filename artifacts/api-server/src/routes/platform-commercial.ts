@@ -15,6 +15,17 @@ const PHONE = /^[0-9+(). -]{8,20}$/;
 const plan = (v: unknown) => v === "STANDARD" || v === "PRO" ? v : null;
 const context = (res: Parameters<typeof requirePlatformOwner>[1]) => res.locals.platformAuth as PlatformSessionContext;
 const CURRENT_SUBSCRIPTION_STATUSES = ["trial", "active", "past_due", "suspended"] as const;
+const COMMERCIAL_CLASSES = new Set(["TRIAL","STANDARD","PRO","CUSTOM","VIP","PARTNER","FREE"]);
+const money = (value: unknown, label: string) => {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 1_000_000_000) throw new Error(`${label} không hợp lệ`);
+  return parsed;
+};
+const optionalDate = (value: unknown, label: string) => {
+  const parsed = new Date(String(value ?? ""));
+  if (!String(value ?? "") || Number.isNaN(parsed.getTime())) throw new Error(`${label} không hợp lệ`);
+  return parsed;
+};
 
 class CommercialConflictError extends Error {}
 type TransactionClient = Parameters<Parameters<typeof withPlatformTransaction>[0]>[0];
@@ -28,7 +39,7 @@ async function getCommercialSignupForUpdate(client: TransactionClient, tenantId:
 
 async function getCurrentCommercialSubscriptionForUpdate(client: TransactionClient, tenantId: string) {
   const result = await client.query<{ id:string; status:string; plan_id:string; setup_fee_amount:string|null; period_active:boolean }>(
-    `SELECT s.id,s.status,s.plan_id,p.setup_fee_amount,(s.current_period_ends_at > now()) AS period_active
+    `SELECT s.id,s.status,s.plan_id,COALESCE(s.setup_fee_override_amount,p.setup_fee_amount) AS setup_fee_amount,(s.current_period_ends_at > now()) AS period_active
        FROM subscriptions s JOIN plans p ON p.id=s.plan_id
       WHERE s.tenant_id=$1 AND s.source='DIRECT' AND s.status = ANY($2::text[])
       FOR UPDATE OF s`, [tenantId, CURRENT_SUBSCRIPTION_STATUSES]);
@@ -106,13 +117,24 @@ router.use("/platform-admin/api", requirePlatformSession, requirePlatformOwner);
 router.get("/platform-admin/api/dashboard", async (_req, res) => {
   const q = await getPlatformPool().query(`SELECT
     count(*) FILTER (WHERE status='PENDING')::int AS pending_signups,
-    (SELECT count(*)::int FROM tenants WHERE status IN ('active','trial')) AS active_studios,
-    (SELECT count(*)::int FROM subscriptions WHERE current_period_ends_at < now()) AS expired_studios,
+    (SELECT count(*)::int FROM tenants) AS total_studios,
+    (SELECT count(*)::int FROM subscriptions WHERE status='trial' AND current_period_ends_at>now()) AS trial_studios,
+    (SELECT count(*)::int FROM subscriptions WHERE status='active' AND current_period_ends_at>now()) AS paid_studios,
+    (SELECT count(*)::int FROM subscriptions WHERE current_period_ends_at BETWEEN now() AND now()+interval '7 days') AS expiring_studios,
+    (SELECT count(*)::int FROM subscriptions WHERE status='past_due' OR (status IN ('trial','active') AND current_period_ends_at<now())) AS overdue_studios,
+    (SELECT count(*)::int FROM tenants WHERE status='suspended') AS suspended_studios,
     (SELECT count(*)::int FROM subscriptions s JOIN plans p ON p.id=s.plan_id WHERE upper(COALESCE(p.code,p.id))='STANDARD' AND s.status IN ('trial','active')) AS standard_count,
     (SELECT count(*)::int FROM subscriptions s JOIN plans p ON p.id=s.plan_id WHERE upper(COALESCE(p.code,p.id))='PRO' AND s.status IN ('trial','active')) AS pro_count,
-    (SELECT count(*)::int FROM provisioning_jobs WHERE status IN ('failed','cleanup_required')) AS provisioning_failed
+    (SELECT count(*)::int FROM provisioning_jobs WHERE status IN ('failed','cleanup_required')) AS provisioning_failed,
+    (SELECT COALESCE(sum(amount),0)::bigint FROM platform_payments WHERE payment_type='SUBSCRIPTION' AND status='PAID' AND paid_at>=date_trunc('month',now())) AS monthly_revenue
     FROM studio_signup_requests`);
   res.json(q.rows[0]);
+});
+
+router.get("/platform-admin/api/plans", async (_req, res) => {
+  const q=await getPlatformPool().query(`SELECT id,code,name,setup_fee_amount,monthly_price_amount,currency,features,is_active
+    FROM plans ORDER BY is_active DESC,monthly_price_amount NULLS LAST,name`);
+  res.json(q.rows);
 });
 
 router.get("/platform-admin/api/signups", async (_req, res) => {
@@ -121,12 +143,20 @@ router.get("/platform-admin/api/signups", async (_req, res) => {
 });
 
 router.get("/platform-admin/api/studios", async (_req, res) => {
-  const q = await getPlatformPool().query(`SELECT t.id,t.name,t.slug,t.status,p.code AS plan_code,
-    s.status AS subscription_status,s.current_period_ends_at,r.health_status AS registry_status,
+  const q = await getPlatformPool().query(`SELECT t.id,t.name,t.slug,t.status,t.created_at,p.code AS plan_code,
+    s.status AS subscription_status,s.current_period_start,s.current_period_ends_at,s.trial_starts_at,s.trial_ends_at,
+    s.base_price_amount,s.custom_price_amount,COALESCE(s.custom_price_amount,s.base_price_amount,p.monthly_price_amount) AS effective_price_amount,
+    s.setup_fee_override_amount,CASE WHEN signup.id IS NULL THEN NULL ELSE s.commercial_class END AS commercial_class,s.commercial_note,r.health_status AS registry_status,
     j.status AS provisioning_status,j.step AS provisioning_step,j.failed_step AS provisioning_failed_step,
-    j.error_code AS provisioning_error_code,j.error_message AS provisioning_error_message,j.last_attempted_at AS provisioning_last_attempted_at
+    j.error_code AS provisioning_error_code,j.error_message AS provisioning_error_message,j.last_attempted_at AS provisioning_last_attempted_at,
+    signup.owner_name,signup.phone,signup.email,signup.address,signup.id IS NULL AS is_legacy,
+    CASE WHEN setup.refunded_at IS NOT NULL THEN 'REFUNDED' ELSE setup.status END AS setup_status,setup.amount AS setup_amount,setup.paid_at AS setup_paid_at,
+    login.last_login_at
     FROM tenants t LEFT JOIN subscriptions s ON s.tenant_id=t.id AND s.status<>'cancelled'
     LEFT JOIN plans p ON p.id=s.plan_id LEFT JOIN tenant_database_registry r ON r.tenant_id=t.id
+    LEFT JOIN studio_signup_requests signup ON signup.tenant_id=t.id
+    LEFT JOIN LATERAL (SELECT status,amount,paid_at,refunded_at FROM platform_payments WHERE tenant_id=t.id AND payment_type='SETUP_FEE' AND status<>'VOID' ORDER BY created_at DESC LIMIT 1) setup ON true
+    LEFT JOIN LATERAL (SELECT max(COALESCE(m.last_login_at,u.last_login_at)) AS last_login_at FROM tenant_memberships m JOIN platform_users u ON u.id=m.user_id WHERE m.tenant_id=t.id) login ON true
     LEFT JOIN LATERAL (SELECT status,step,failed_step,error_code,error_message,last_attempted_at FROM provisioning_jobs
       WHERE tenant_id=t.id ORDER BY created_at DESC LIMIT 1) j ON true
     ORDER BY t.created_at DESC LIMIT 200`);
@@ -227,23 +257,35 @@ router.get("/platform-admin/api/studios/:tenantId", async (req, res) => {
   const tenantId = String(req.params.tenantId);
   if (!UUID.test(tenantId)) { res.status(400).json({ error: "Studio không hợp lệ" }); return; }
   const q = await getPlatformPool().query(`SELECT t.*, s.id AS subscription_id, s.status AS subscription_status,
-    s.source, s.starts_at, s.current_period_ends_at, p.code AS plan_code, p.setup_fee_amount,
-    r.health_status AS registry_status, d.hostname AS domain,
+    s.source,s.starts_at,s.current_period_start,s.current_period_ends_at,s.trial_starts_at,s.trial_ends_at,
+    s.base_price_amount,s.custom_price_amount,COALESCE(s.custom_price_amount,s.base_price_amount,p.monthly_price_amount) AS effective_price_amount,
+    CASE WHEN signup.id IS NULL THEN NULL ELSE s.commercial_class END AS commercial_class,s.commercial_note,p.code AS plan_code,COALESCE(s.setup_fee_override_amount,p.setup_fee_amount) AS setup_fee_amount,
+    r.health_status AS registry_status,d.hostname AS domain,signup.owner_name,signup.phone,signup.email,signup.address,
+    signup.id IS NULL AS is_legacy,CASE WHEN setup.refunded_at IS NOT NULL THEN 'REFUNDED' ELSE setup.status END AS setup_status,setup.amount AS setup_amount,setup.paid_at AS setup_paid_at,
     j.status AS provisioning_status,j.step AS provisioning_step,j.failed_step AS provisioning_failed_step,
     j.error_code AS provisioning_error_code,j.error_message AS provisioning_error_message,j.last_attempted_at AS provisioning_last_attempted_at
     FROM tenants t LEFT JOIN subscriptions s ON s.tenant_id=t.id AND s.status <> 'cancelled'
     LEFT JOIN plans p ON p.id=s.plan_id LEFT JOIN tenant_database_registry r ON r.tenant_id=t.id
     LEFT JOIN tenant_domains d ON d.tenant_id=t.id AND d.status='active'
+    LEFT JOIN studio_signup_requests signup ON signup.tenant_id=t.id
+    LEFT JOIN LATERAL (SELECT status,amount,paid_at,refunded_at FROM platform_payments WHERE tenant_id=t.id AND payment_type='SETUP_FEE' AND status<>'VOID' ORDER BY created_at DESC LIMIT 1) setup ON true
     LEFT JOIN LATERAL (SELECT status,step,failed_step,error_code,error_message,last_attempted_at FROM provisioning_jobs
       WHERE tenant_id=t.id ORDER BY created_at DESC LIMIT 1) j ON true WHERE t.id=$1 LIMIT 1`, [tenantId]);
   if (!q.rows[0]) { res.status(404).json({ error: "Không tìm thấy studio" }); return; }
-  res.json({ ...q.rows[0], entitlements: await getTenantEntitlements(tenantId) });
+  const [payments,audit,notes]=await Promise.all([
+    getPlatformPool().query(`SELECT id,payment_type,amount,currency,status,paid_at,payment_method,period_start,period_end,refunded_at,note,created_at
+      FROM platform_payments WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 100`,[tenantId]),
+    getPlatformPool().query(`SELECT id,action,metadata,created_at FROM platform_audit_logs WHERE tenant_id=$1 ORDER BY created_at DESC LIMIT 100`,[tenantId]),
+    getPlatformPool().query(`SELECT n.id,n.note,n.created_at,u.display_name AS author FROM tenant_commercial_notes n
+      LEFT JOIN platform_users u ON u.id=n.created_by WHERE n.tenant_id=$1 ORDER BY n.created_at DESC LIMIT 100`,[tenantId]),
+  ]);
+  res.json({ ...q.rows[0], entitlements: await getTenantEntitlements(tenantId), payments:payments.rows,audit:audit.rows,notes:notes.rows });
 });
 
 router.post("/platform-admin/api/studios/:tenantId/action", requirePlatformCsrf, async (req, res) => {
   const tenantId = String(req.params.tenantId); const action = String(req.body?.action ?? "");
   if (!UUID.test(tenantId)) { res.status(400).json({ error: "Studio không hợp lệ" }); return; }
-  const actor = context(res); const allowed = new Set(["extend","change_plan","suspend","reactivate","mark_setup_paid","waive_setup_fee","activate","retry_provisioning"]);
+  const actor = context(res); const allowed = new Set(["extend","renew","update_trial","update_price","update_setup_fee","change_class","add_note","change_plan","suspend","reactivate","mark_setup_paid","waive_setup_fee","activate","retry_provisioning"]);
   if (!allowed.has(action)) { res.status(400).json({ error: "Action không hợp lệ" }); return; }
   try {
     const result = await withPlatformTransaction(async client => {
@@ -253,7 +295,64 @@ router.post("/platform-admin/api/studios/:tenantId/action", requirePlatformCsrf,
       const signup = await getCommercialSignupForUpdate(client, tenantId);
       const subscription = await getCurrentCommercialSubscriptionForUpdate(client, tenantId);
       let auditMetadata: Record<string, unknown> = { days: req.body?.days, planCode: req.body?.planCode };
-      if (action === "retry_provisioning") {
+      if (action === "add_note") {
+        const note=String(req.body?.note??"").trim();
+        if(note.length<1||note.length>2000)throw new Error("Ghi chú phải từ 1 đến 2.000 ký tự");
+        await client.query("INSERT INTO tenant_commercial_notes(id,tenant_id,note,created_by) VALUES($1,$2,$3,$4)",[randomUUID(),tenantId,note,actor.userId]);
+        auditMetadata={noteLength:note.length};
+      } else if (action === "change_class") {
+        const commercialClass=String(req.body?.commercialClass??"").toUpperCase();
+        if(!COMMERCIAL_CLASSES.has(commercialClass))throw new Error("Phân loại thương mại không hợp lệ");
+        const before=(await client.query<{commercial_class:string}>("SELECT commercial_class FROM subscriptions WHERE id=$1",[subscription.id])).rows[0]!.commercial_class;
+        await client.query("UPDATE subscriptions SET commercial_class=$2,updated_at=now() WHERE id=$1",[subscription.id,commercialClass]);
+        auditMetadata={before,after:commercialClass,reason:String(req.body?.reason??"").slice(0,500)};
+      } else if (action === "update_price") {
+        const custom=req.body?.customPriceAmount===null||req.body?.customPriceAmount===""?null:money(req.body?.customPriceAmount,"Giá riêng");
+        const base=req.body?.basePriceAmount===undefined?null:money(req.body?.basePriceAmount,"Giá gốc");
+        const before=(await client.query("SELECT base_price_amount,custom_price_amount FROM subscriptions WHERE id=$1",[subscription.id])).rows[0];
+        await client.query(`UPDATE subscriptions SET base_price_amount=COALESCE($2,base_price_amount),custom_price_amount=$3,
+          commercial_note=COALESCE(NULLIF($4,''),commercial_note),updated_at=now() WHERE id=$1`,[subscription.id,base,custom,String(req.body?.note??"").trim()]);
+        auditMetadata={before,after:{basePriceAmount:base,customPriceAmount:custom},reason:String(req.body?.reason??"").slice(0,500)};
+      } else if (action === "update_trial") {
+        requireState(subscription.status,["trial"],"đổi thời gian dùng thử");
+        const start=optionalDate(req.body?.trialStart,"Ngày bắt đầu trial");
+        let end:Date;
+        const months=Number(req.body?.months??0);
+        if(Number.isInteger(months)&&[1,3,6,12].includes(months)){
+          end=new Date(start); end.setUTCMonth(end.getUTCMonth()+months);
+        } else end=optionalDate(req.body?.trialEnd,"Ngày kết thúc trial");
+        if(end<=start)throw new Error("Ngày kết thúc trial phải sau ngày bắt đầu");
+        const before=(await client.query("SELECT trial_starts_at,trial_ends_at,current_period_ends_at FROM subscriptions WHERE id=$1",[subscription.id])).rows[0];
+        await client.query(`UPDATE subscriptions SET trial_starts_at=$2,trial_ends_at=$3,current_period_start=$2,current_period_ends_at=$3,
+          commercial_class='TRIAL',updated_at=now() WHERE id=$1`,[subscription.id,start,end]);
+        await client.query("UPDATE tenants SET trial_ends_at=$2,updated_at=now() WHERE id=$1",[tenantId,end]);
+        auditMetadata={before,after:{trialStart:start.toISOString(),trialEnd:end.toISOString()},reason:String(req.body?.reason??"").slice(0,500)};
+      } else if (action === "update_setup_fee") {
+        requireState(signup.status,["APPROVED","ACTIVE"],"cập nhật phí khởi tạo");
+        const amount=money(req.body?.amount,"Phí khởi tạo");
+        const status=String(req.body?.status??"PENDING").toUpperCase();
+        if(!["PENDING","PAID","WAIVED","REFUNDED"].includes(status))throw new Error("Trạng thái phí khởi tạo không hợp lệ");
+        const before=(await client.query("SELECT amount,status,refunded_at FROM platform_payments WHERE tenant_id=$1 AND payment_type='SETUP_FEE' AND status<>'VOID' FOR UPDATE",[tenantId])).rows[0]??null;
+        if(before?.status==="PAID"&&status==="WAIVED")throw new CommercialConflictError("Phí khởi tạo đã thu; không thể đổi thành miễn phí");
+        if(status==="REFUNDED"&&before?.status!=="PAID")throw new CommercialConflictError("Chỉ hoàn tiền cho phí khởi tạo đã PAID");
+        await client.query("UPDATE subscriptions SET setup_fee_override_amount=$2,updated_at=now() WHERE id=$1",[subscription.id,amount]);
+        await client.query(`UPDATE platform_payments SET amount=$2,status=CASE WHEN $3='REFUNDED' THEN status ELSE $3 END,
+          paid_at=CASE WHEN $3 IN ('PAID','REFUNDED') THEN COALESCE(paid_at,now()) ELSE NULL END,
+          refunded_at=CASE WHEN $3='REFUNDED' THEN now() ELSE NULL END,
+          note=COALESCE(NULLIF($4,''),note),updated_at=now() WHERE tenant_id=$1 AND payment_type='SETUP_FEE' AND status<>'VOID'`,[tenantId,amount,status,String(req.body?.note??"").trim()]);
+        auditMetadata={before,after:{amount,status},reason:String(req.body?.reason??"").slice(0,500)};
+      } else if (action === "renew") {
+        requireState(signup.status,["ACTIVE"],"gia hạn"); requireState(tenant.rows[0]!.status,["active","suspended"],"gia hạn");
+        await requireProvisionedRegistry(client,tenantId);
+        const months=Number(req.body?.months??1); if(!Number.isInteger(months)||months<1||months>24)throw new Error("Số tháng gia hạn không hợp lệ");
+        const amount=money(req.body?.amount,"Số tiền");
+        const period=(await client.query<{start:Date;end:Date}>(`SELECT GREATEST(COALESCE(current_period_ends_at,now()),now()) AS start,
+          GREATEST(COALESCE(current_period_ends_at,now()),now()) + make_interval(months=>$2) AS end FROM subscriptions WHERE id=$1`,[subscription.id,months])).rows[0]!;
+        await client.query("UPDATE subscriptions SET current_period_start=$2,current_period_ends_at=$3,status='active',updated_at=now() WHERE id=$1",[subscription.id,period.start,period.end]);
+        await client.query(`INSERT INTO platform_payments(id,tenant_id,subscription_id,payment_type,amount,status,paid_at,payment_method,period_start,period_end,note,created_by)
+          VALUES($1,$2,$3,'SUBSCRIPTION',$4,'PAID',now(),$5,$6,$7,$8,$9)`,[randomUUID(),tenantId,subscription.id,amount,String(req.body?.paymentMethod??"manual"),period.start,period.end,String(req.body?.note??"").trim()||null,actor.userId]);
+        auditMetadata={months,amount,periodStart:period.start,periodEnd:period.end,paymentMethod:req.body?.paymentMethod};
+      } else if (action === "retry_provisioning") {
         requireState(signup.status,["PROVISIONING"],"thử lại provisioning");
         requireState(tenant.rows[0]!.status,["provisioning_failed"],"thử lại provisioning");
         const failed=await client.query<{id:string}>("SELECT id FROM provisioning_jobs WHERE tenant_id=$1 AND status='failed' ORDER BY created_at DESC LIMIT 1 FOR UPDATE",[tenantId]);

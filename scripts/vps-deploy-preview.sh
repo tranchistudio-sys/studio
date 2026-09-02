@@ -47,7 +47,7 @@ if [[ "$marker" != t ]]; then
     "CREATE TABLE preview_db_marker(id integer PRIMARY KEY,is_preview boolean NOT NULL,seeded_at timestamptz NOT NULL DEFAULT now(),note text); INSERT INTO preview_db_marker VALUES(1,true,now(),'Empty staging template; no customer or outbound data');"
 fi
 login_hash=$(docker run --rm --network none -e PREVIEW_LOGIN_PASSWORD "$candidate" node -e \
-  "import('bcryptjs').then(m=>m.default.hash(process.env.PREVIEW_LOGIN_PASSWORD,10)).then(console.log)")
+  "const {createRequire}=require('node:module'); const requireFromApi=createRequire('/app/artifacts/api-server/package.json'); requireFromApi('bcryptjs').hash(process.env.PREVIEW_LOGIN_PASSWORD,10).then(console.log)")
 docker exec -i amazing-preview-db psql -U preview -d amazing_preview -v ON_ERROR_STOP=1 \
   -v login="$PREVIEW_LOGIN_USERNAME" -v hash="$login_hash" <<'SQL'
 UPDATE staff SET password_hash=:'hash' WHERE username=:'login';

@@ -135,8 +135,11 @@ for migration in lib/db/migrations/[0-9][0-9][0-9][0-9]_*.sql; do
   test "$(basename "$migration")" = "0004_seed_amazing_wedding_gifts.sql" && continue
   cp "$migration" "$backup_parts/migrations/"
 done
-mapfile -t tenant_tables < <(psql "$tenant_url" -v ON_ERROR_STOP=1 -Atqc \
-  "SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename<>'tenant_schema_migrations' ORDER BY tablename")
+# The verified pilot has no business rows in its core tables. Preserve the only
+# tenant-local rows that exist after provisioning; the canonical migrations
+# recreate every empty business table and constraint during restore.
+tenant_tables=(staff tenant_metadata)
+printf '%s\n' "$tenant_id|$tenant_state" > "$backup_parts/pilot-state.txt"
 : > "$backup_parts/data/manifest.tsv"
 for table_name in "${tenant_tables[@]}"; do
   [[ "$table_name" =~ ^[a-zA-Z0-9_]+$ ]]
@@ -159,6 +162,7 @@ done
 PGPASSWORD="$local_password" createdb -h 127.0.0.1 -p "$local_port" -U postgres "$restore_db"
 mkdir -p "$restore_parts"
 tar -C "$restore_parts" -xf "$backup_file"
+test "$(cat "$restore_parts/pilot-state.txt")" = "$tenant_id|$tenant_state"
 restore_url="postgresql://postgres@127.0.0.1:${local_port}/${restore_db}"
 CI=true DATABASE_URL="$restore_url" TENANT_MIGRATIONS_DIR="$restore_parts/migrations" \
   pnpm --filter @workspace/scripts exec tsx run-ci-tenant-template-migrations.mjs >/dev/null

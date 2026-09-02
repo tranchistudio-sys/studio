@@ -1,0 +1,46 @@
+name: Recover Production Control Plane
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type RECOVER_PRODUCTION_CONTROL_PLANE
+        required: true
+
+concurrency:
+  group: amazing-studio-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VPS_HOST: 160.250.128.162
+      VPS_USER: deploy
+      VPS_PORT: 22
+      VPS_SSH_PRIVATE_KEY: ${{ secrets.VPS_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Confirm scoped recovery
+        run: test "${{ inputs.confirm }}" = "RECOVER_PRODUCTION_CONTROL_PLANE"
+      - uses: actions/checkout@v4
+      - name: Prepare SSH
+        shell: bash
+        run: |
+          test -n "$VPS_SSH_PRIVATE_KEY"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$VPS_SSH_PRIVATE_KEY" > "$HOME/.ssh/deploy_key"
+          chmod 600 "$HOME/.ssh/deploy_key"
+          ssh-keyscan -H -p "$VPS_PORT" "$VPS_HOST" > "$HOME/.ssh/known_hosts"
+      - name: Restore traversal, validate compose, and back up controls
+        shell: bash
+        run: |
+          scp -P "$VPS_PORT" -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            scripts/recover-production-control-plane.sh "$VPS_USER@$VPS_HOST:/tmp/"
+          ssh -p "$VPS_PORT" -i "$HOME/.ssh/deploy_key" -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" \
+            "bash /tmp/recover-production-control-plane.sh; status=\$?; rm -f /tmp/recover-production-control-plane.sh; exit \$status"

@@ -317,10 +317,13 @@ export default function LoginPage({ onLogin }: Props) {
               <p className="mb-4 mt-1 text-center text-xs text-muted-foreground">Dùng thử miễn phí tháng đầu sau khi kích hoạt. Gửi yêu cầu để Platform Owner liên hệ và duyệt.</p>
               {studioSignupSuccess ? <div className="rounded-xl bg-emerald-50 p-4 text-center text-sm text-emerald-700"><CheckCircle2 className="mx-auto mb-2 h-6 w-6" />{studioSignupSuccess}</div> :
               <form onSubmit={handleStudioSignup} className="space-y-3">
-                {([['ownerName','Tên chủ studio'],['studioName','Tên studio'],['phone','Số điện thoại'],['email','Email'],['address','Địa chỉ (không bắt buộc)'],['requestedSlug','Slug mong muốn, ví dụ abc-wedding']] as const).map(([key,label]) =>
+                {([['ownerName','Tên chủ studio'],['studioName','Tên studio'],['phone','Số điện thoại'],['email','Email'],['address','Địa chỉ (không bắt buộc)'],['requestedSlug','Tên địa chỉ trang web, ví dụ cupid-wedding-da-nang']] as const).map(([key,label]) =>
                   <input key={key} aria-label={label} placeholder={label} required={key !== 'address'} type={key === 'email' ? 'email' : 'text'}
-                    value={studioSignup[key]} onChange={event => setStudioSignup(value => ({ ...value, [key]: event.target.value }))}
+                    value={studioSignup[key]} onChange={event => setStudioSignup(value => ({ ...value, [key]: key === 'requestedSlug'
+                      ? event.target.value.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+                      : event.target.value }))}
                     className="h-10 w-full rounded-xl border bg-white px-3 text-sm" />)}
+                <p className="-mt-1 text-xs text-muted-foreground">Đây là phần riêng trong đường dẫn website của studio. Chỉ dùng chữ thường, số và dấu gạch ngang.</p>
                 <select aria-label="Gói mong muốn" value={studioSignup.requestedPlanCode}
                   onChange={event => setStudioSignup(value => ({ ...value, requestedPlanCode: event.target.value }))}
                   className="h-10 w-full rounded-xl border bg-white px-3 text-sm">

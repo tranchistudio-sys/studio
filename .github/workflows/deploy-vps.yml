@@ -156,6 +156,20 @@ jobs:
           ssh-keyscan -H -p "$VPS_PORT" "$VPS_HOST" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/known_hosts"
 
+      - name: Giải phóng cache deploy an toàn trên VPS
+        shell: bash
+        run: |
+          ssh -p "$VPS_PORT" -i "$HOME/.ssh/deploy_key" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            "$VPS_USER@$VPS_HOST" '
+              rm -f /tmp/amazing-vps-deploy-*.sh /tmp/amazing-vps-deploy-api-*.sh /tmp/amazing-studio-source-*.tar.gz
+              sudo -n docker builder prune -af
+              sudo -n docker image prune -f
+              available=$(df -Pk /tmp | awk "NR==2 {print \$4}")
+              echo "Dung lượng trống /tmp: ${available} KiB"
+              test "${available:-0}" -ge 524288
+            '
+
       - name: Đóng gói đúng commit đã kiểm thử
         shell: bash
         run: |

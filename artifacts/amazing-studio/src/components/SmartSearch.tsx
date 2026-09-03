@@ -17,6 +17,9 @@ type BookingResult = {
   status: string;
   totalAmount: number;
   customerId: number;
+  contractId: number | null;
+  contractCode: string | null;
+  serviceCount: number;
 };
 
 type CustomerResult = {
@@ -111,7 +114,7 @@ export function SmartSearch() {
           onChange={e => { setQuery(e.target.value); setOpen(true); }}
           onFocus={() => query.length >= 2 && setOpen(true)}
           onKeyDown={e => { if (e.key === "Escape") clear(); }}
-          placeholder="Tìm tên, SĐT, mã đơn..."
+          placeholder="Tìm tên, SĐT, mã đơn, mã hợp đồng, dịch vụ..."
           className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground min-w-0"
         />
         {query && (
@@ -128,8 +131,7 @@ export function SmartSearch() {
           ) : !hasResults ? (
             <div className="py-6 text-center">
               <Search className="w-6 h-6 mx-auto mb-2 text-muted-foreground/30" />
-              <p className="text-sm text-muted-foreground">Không tìm thấy kết quả</p>
-              <p className="text-xs text-muted-foreground/60 mt-0.5">Thử tên, SĐT hoặc mã đơn hàng</p>
+              <p className="text-sm text-muted-foreground">Không tìm thấy khách, đơn hàng hoặc hợp đồng phù hợp.</p>
             </div>
           ) : (
             <div className="max-h-[70vh] sm:max-h-96 overflow-y-auto">
@@ -172,11 +174,14 @@ export function SmartSearch() {
                           <div className="flex items-center gap-1.5">
                             <span className="font-semibold text-sm truncate">{b.customerName}</span>
                             {b.orderCode && <span className="text-[10px] text-muted-foreground shrink-0 font-mono">{b.orderCode}</span>}
+                            {b.contractCode && <span className="text-[10px] text-primary shrink-0 font-mono">• {b.contractCode}</span>}
                           </div>
                           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5 text-xs text-muted-foreground">
                             {b.customerPhone && <span className="flex items-center gap-1"><Phone className="w-2.5 h-2.5" />{b.customerPhone}</span>}
                             <span className="flex items-center gap-1"><Calendar className="w-2.5 h-2.5" />{formatShootDate(b.shootDate)}</span>
                             {b.totalAmount > 0 && <span className="font-medium text-foreground/70">{formatVND(b.totalAmount)}</span>}
+                            {b.serviceCount > 1 && <span>{b.serviceCount} dịch vụ</span>}
+                            {b.packageType && <span className="truncate max-w-full">{b.packageType}</span>}
                           </div>
                         </div>
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground font-medium flex-shrink-0">

@@ -19,7 +19,8 @@ import { getCallerRole } from "./auth";
  */
 const router: IRouter = Router();
 
-// Cap tập ứng viên (chấm điểm ở JS rất nhẹ). Đặt rộng để token phổ biến/nhiều SĐT trùng số không
+// Cap tập ứng viên (chấm điểm ở JS rất nhẹ). Mỗi row là MỘT root booking/family,
+// nên multi-service không tạo duplicate trong kết quả.
 // cắt mất match tốt-nhưng-cũ TRƯỚC khi xếp hạng (review #3). Studio-scale vài nghìn đơn ⇒ dư sức.
 const CANDIDATE_LIMIT = 400;
 const CUSTOMER_CANDIDATE_LIMIT = 200;
@@ -53,11 +54,11 @@ router.get("/search", async (req, res) => {
 
     // ── Query BOOKING (chạy song song với customers) ─────────────────────────
     const runBookings = async (): Promise<unknown[]> => {
-      // blob = gộp các trường text để token match "ở bất kỳ đâu" (tên/mã/gói/địa điểm/ghi chú).
+      // blob = gộp customer + root/child code + contract code + tên dịch vụ.
       const blob =
-        `immutable_unaccent(coalesce(c.name,'')||' '||${EFF_ORDER_CODE_SQL}||' '||` +
-        "coalesce(b.service_label,'')||' '||coalesce(b.package_type,'')||' '||" +
-        "coalesce(b.location,'')||' '||coalesce(b.notes,''))";
+        `immutable_unaccent(coalesce(c.name,'')||' '||coalesce(f.root_order_code,'')||' '||` +
+        "coalesce(f.child_codes,'')||' '||coalesce(f.contract_codes,'')||' '||" +
+        "coalesce(f.service_names,'')||' '||coalesce(f.location,'')||' '||coalesce(f.notes,''))";
 
       const p: string[] = [];
       const or: string[] = [];
@@ -71,31 +72,59 @@ router.get("/search", async (req, res) => {
       }
       if (qDigits.length >= 1) {
         p.push(`%${qDigits}%`);
-        or.push(`(regexp_replace(${EFF_ORDER_CODE_SQL}, '[^0-9]', '', 'g') ILIKE $${p.length})`);
+        or.push(`(regexp_replace(coalesce(f.root_order_code,'')||' '||coalesce(f.child_codes,'')||' '||coalesce(f.contract_codes,''), '[^0-9 ]', '', 'g') ILIKE $${p.length})`);
       }
       if (or.length === 0) return [];
 
       const r = await pool.query(
-        `SELECT b.id, b.order_code, b.shoot_date, b.package_type, b.service_label,
-                b.location, b.notes, b.status, b.total_amount, b.customer_id,
-                c.name AS customer_name, c.phone AS customer_phone
-         FROM bookings b
-         JOIN customers c ON b.customer_id = c.id
-         WHERE b.deleted_at IS NULL AND b.status <> 'temp_quote' AND (${or.join(" OR ")})
-         ORDER BY b.created_at DESC
+        `WITH family_rows AS (
+           SELECT root.id, ${EFF_ORDER_CODE_SQL.replaceAll("b.", "root.")} AS root_order_code,
+                  root.shoot_date, root.package_type, root.service_label, root.location,
+                  root.notes, root.status, root.total_amount, root.customer_id, root.created_at,
+                  string_agg(DISTINCT coalesce(nullif(ch.order_code,''), 'DH' || lpad(ch.id::text, 4, '0')), ' ') FILTER (WHERE ch.id IS NOT NULL) AS child_codes,
+                  string_agg(DISTINCT trim(coalesce(ch.service_label,'') || ' ' || coalesce(ch.package_type,'')), ' ') FILTER (WHERE ch.id IS NOT NULL) AS service_names,
+                  count(DISTINCT ch.id)::int AS service_count
+           FROM bookings root
+           LEFT JOIN bookings ch ON ch.parent_id = root.id AND ch.deleted_at IS NULL AND ch.status <> 'cancelled'
+           WHERE root.parent_id IS NULL AND root.deleted_at IS NULL AND root.status <> 'temp_quote'
+           GROUP BY root.id
+         ), f AS (
+           SELECT fr.*, ca.contract_codes, ca.contracts
+           FROM family_rows fr
+           LEFT JOIN LATERAL (
+             SELECT string_agg(DISTINCT ct.contract_code, ' ') AS contract_codes,
+                    json_agg(json_build_object('id', ct.id, 'code', ct.contract_code) ORDER BY ct.created_at DESC) AS contracts
+             FROM contracts ct
+             JOIN bookings cb ON cb.id = ct.booking_id
+             WHERE coalesce(cb.parent_id, cb.id) = fr.id
+           ) ca ON true
+         )
+         SELECT f.*, c.name AS customer_name, c.phone AS customer_phone
+         FROM f JOIN customers c ON f.customer_id = c.id
+         WHERE (${or.join(" OR ")})
+         ORDER BY f.created_at DESC
          LIMIT ${CANDIDATE_LIMIT}`,
         p,
       );
       return r.rows
         .map((row: Record<string, unknown>) => {
-          const orderCode = displayOrderCode(row.order_code, row.id as number);
+          const orderCode = displayOrderCode(row.root_order_code, row.id as number);
+          const contracts = Array.isArray(row.contracts)
+            ? row.contracts as Array<{ id?: number; code?: string }>
+            : [];
+          const normalizedQueryCode = normalizeSearchText(normalizeSearchText(q).replace(/\s+/g, ""));
+          const matchedContract = contracts.find((ct) =>
+            normalizeSearchText(ct.code).replace(/\s+/g, "").includes(normalizedQueryCode),
+          ) ?? contracts[0];
           // location/notes CHỈ dùng để chấm điểm (khớp địa điểm/ghi chú), KHÔNG trả ra payload.
           const score = scoreSearchResult(q, {
             customerName: row.customer_name as string,
             customerPhone: row.customer_phone as string,
             orderCode,
+            childOrderCodes: row.child_codes as string,
+            contractCodes: row.contract_codes as string,
             serviceLabel: row.service_label as string,
-            packageType: row.package_type as string,
+            packageType: (row.service_names as string) || (row.package_type as string),
             location: row.location as string,
             notes: row.notes as string,
           });
@@ -104,11 +133,14 @@ router.get("/search", async (req, res) => {
             item: {
               id: row.id as number,
               orderCode,
+              contractId: matchedContract?.id ?? null,
+              contractCode: matchedContract?.code ?? null,
               customerName: (row.customer_name as string) ?? "",
               customerPhone: (row.customer_phone as string) ?? "",
               shootDate: row.shoot_date as string,
-              packageType: (row.package_type as string) ?? "",
+              packageType: (row.service_names as string) || (row.package_type as string) || "",
               serviceLabel: (row.service_label as string) ?? null,
+              serviceCount: Number(row.service_count ?? 0) || 1,
               status: (row.status as string) ?? "",
               totalAmount: Number(row.total_amount ?? 0),
               customerId: row.customer_id as number,

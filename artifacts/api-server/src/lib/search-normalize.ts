@@ -49,6 +49,8 @@ export type SearchableRow = {
   customerName?: string | null;
   customerPhone?: string | null;
   orderCode?: string | null;
+  childOrderCodes?: string | null;
+  contractCodes?: string | null;
   serviceLabel?: string | null;
   packageType?: string | null;
   location?: string | null;
@@ -70,10 +72,15 @@ export function scoreSearchResult(queryRaw: string, row: SearchableRow): number 
   const name = normalizeSearchText(row.customerName);
   const phoneDigits = normalizePhone(row.customerPhone);
   const code = normalizeOrderCode(row.orderCode);
+  const childCodes = normalizeSearchText(row.childOrderCodes);
+  const contractCodes = String(row.contractCodes ?? "")
+    .split(/\s+/)
+    .map(normalizeOrderCode)
+    .filter(Boolean);
   // Số chính của mã đơn (bỏ tiền tố chữ + hậu tố con): "DH0184"→"184", "DH184-2"→"184".
   const codeMainDigits = normalizePhone(code.split("-")[0]);
   const blob = normalizeSearchText(
-    [row.customerName, row.orderCode, row.serviceLabel, row.packageType, row.location, row.notes]
+    [row.customerName, row.orderCode, row.childOrderCodes, row.contractCodes, row.serviceLabel, row.packageType, row.location, row.notes]
       .filter(Boolean)
       .join(" "),
   );
@@ -89,7 +96,7 @@ export function scoreSearchResult(queryRaw: string, row: SearchableRow): number 
 
   // ── SĐT (query có đủ số mới xét, tránh nhiễu) ──
   if (qDigits.length >= 3 && phoneDigits) {
-    if (phoneDigits === qDigits) bump(96);
+    if (phoneDigits === qDigits) bump(108);
     else if (phoneDigits.startsWith(qDigits)) bump(80);
     else if (phoneDigits.endsWith(qDigits)) bump(76); // gõ 4 số cuối
     else if (phoneDigits.includes(qDigits)) bump(62);
@@ -97,14 +104,25 @@ export function scoreSearchResult(queryRaw: string, row: SearchableRow): number 
 
   // ── Mã đơn ──
   if (qCode && code) {
-    if (code === qCode) bump(92);
-    else if (code.startsWith(qCode)) bump(72);
+    if (code === qCode) bump(116);
+    else if (code.startsWith(qCode)) bump(90);
     else if (code.includes(qCode)) bump(56);
   }
+  for (const contractCode of contractCodes) {
+    if (contractCode === qCode) bump(130);
+    else if (contractCode.startsWith(qCode)) bump(94);
+    else if (contractCode.includes(qCode)) bump(68);
+    const contractDigits = normalizePhone(contractCode);
+    if (qDigits.length >= 2 && contractDigits) {
+      if (contractDigits === qDigits) bump(128);
+      else if (contractDigits.endsWith(qDigits)) bump(84);
+    }
+  }
+  if (qCode && childCodes.includes(normalizeSearchText(qCode))) bump(114);
   // Gõ TOÀN SỐ khớp phần số chính của mã đơn (vd "184" ⇒ DH0184) — ưu tiên hơn SĐT chỉ chứa số đó,
   // vì mã đơn "DH184" không thể prefix/exact với query "184" (vướng tiền tố "DH").
   if (qDigits.length >= 2 && codeMainDigits) {
-    if (codeMainDigits === qDigits) bump(90);
+    if (codeMainDigits === qDigits) bump(112);
     else if (codeMainDigits.endsWith(qDigits)) bump(70);
   }
 

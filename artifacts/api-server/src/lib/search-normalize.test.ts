@@ -100,4 +100,21 @@ describe("scoreSearchResult — các case chủ yêu cầu", () => {
     const phoneHas184 = { orderCode: "DH0500", customerName: "Ai Khac", customerPhone: "0918412345" };
     expect(scoreSearchResult("184", dh0184)).toBeGreaterThan(scoreSearchResult("184", phoneHas184));
   });
+  it("should_search_by_contract_code, case-insensitive và bỏ khoảng trắng", () => {
+    const row = { orderCode: "DH0404", contractCodes: "HD0102" };
+    expect(scoreSearchResult("HD0102", row)).toBe(130);
+    expect(scoreSearchResult("hd 0102", row)).toBe(130);
+  });
+  it("should_search_by_partial_contract_code_when_safe", () => {
+    expect(scoreSearchResult("0102", { contractCodes: "HD0102" })).toBeGreaterThan(0);
+  });
+  it("should_rank_exact_contract_match_first", () => {
+    const exact = scoreSearchResult("HD0102", { contractCodes: "HD0102", customerPhone: "0900000000" });
+    const weak = scoreSearchResult("HD0102", { customerName: "Khách HD0102 khác" });
+    expect(exact).toBeGreaterThan(weak);
+  });
+  it("should_search_by_service_name và child booking code", () => {
+    expect(scoreSearchResult("makeup gold", { packageType: "Combo Makeup Gold" })).toBeGreaterThan(0);
+    expect(scoreSearchResult("BG0017-2", { childOrderCodes: "BG0017-1 BG0017-2" })).toBeGreaterThan(0);
+  });
 });

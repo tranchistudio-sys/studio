@@ -951,6 +951,42 @@ describe.sequential("platform auth PostgreSQL integration", () => {
     ]);
   });
 
+  it("should_not_return_other_tenant_records_from_smart_search", async () => {
+    const owner = await bootstrapOwner();
+    const tenantAId = owner.payload.activeTenant!.id;
+    const tenantB = await addTenantB(owner);
+    const tenantACookie = `${session.PLATFORM_SESSION_COOKIE}=${owner.res.state.sessionCookie!}`;
+
+    const customer = await tenantBPool.query<{ id: number }>(
+      "INSERT INTO customers (name, phone) VALUES ('ONLY TENANT B', '0900000999') RETURNING id",
+    );
+    const booking = await tenantBPool.query<{ id: number }>(
+      `INSERT INTO bookings
+         (order_code, customer_id, shoot_date, package_type, total_amount, deposit_amount)
+       VALUES ('DH-TENANT-B', $1, '2027-01-01', 'Secret service B', 1000000, 0)
+       RETURNING id`,
+      [customer.rows[0].id],
+    );
+    await tenantBPool.query(
+      `INSERT INTO contracts
+         (contract_code, booking_id, customer_id, title, content, total_value)
+       VALUES ('HD-TENANT-B-ONLY', $1, $2, 'Tenant B contract', '', 1000000)`,
+      [booking.rows[0].id, customer.rows[0].id],
+    );
+
+    const tenantAResponse = await fetch(`${baseUrl}/api/search?q=HD-TENANT-B-ONLY`, {
+      headers: authenticatedHeaders(tenantACookie, undefined, tenantAId),
+    });
+    const tenantBResponse = await fetch(`${baseUrl}/api/search?q=HD-TENANT-B-ONLY`, {
+      headers: authenticatedHeaders(tenantB.cookie, undefined, tenantB.tenantId),
+    });
+
+    expect(tenantAResponse.status).toBe(200);
+    expect(await tenantAResponse.json()).toEqual({ bookings: [], customers: [] });
+    expect(tenantBResponse.status).toBe(200);
+    expect((await tenantBResponse.json() as { bookings: unknown[] }).bookings).toHaveLength(1);
+  });
+
   it("thiếu registry hoặc secret trả 503, không fallback và không rò cấu hình", async () => {
     const owner = await bootstrapOwner();
     const tenantAId = owner.payload.activeTenant!.id;

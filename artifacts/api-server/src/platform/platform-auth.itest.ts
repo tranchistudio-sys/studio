@@ -42,6 +42,9 @@ function databaseReference(raw: string): { hostRef: string; databaseName: string
 
 async function createTenantIsolationTables(target: pg.Pool): Promise<void> {
   await target.query(`
+    CREATE OR REPLACE FUNCTION immutable_unaccent(input TEXT)
+    RETURNS TEXT LANGUAGE SQL IMMUTABLE PARALLEL SAFE
+    AS $$ SELECT lower(input) $$;
     CREATE TABLE IF NOT EXISTS staff (
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
@@ -101,6 +104,39 @@ async function createTenantIsolationTables(target: pg.Pool): Promise<void> {
       tenant_id UUID PRIMARY KEY,
       schema_version TEXT NOT NULL,
       provisioned_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS customers (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      phone TEXT,
+      address TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS bookings (
+      id SERIAL PRIMARY KEY,
+      order_code TEXT,
+      customer_id INTEGER NOT NULL REFERENCES customers(id),
+      parent_id INTEGER REFERENCES bookings(id),
+      shoot_date DATE,
+      package_type TEXT,
+      service_label TEXT,
+      location TEXT,
+      notes TEXT,
+      status TEXT NOT NULL DEFAULT 'confirmed',
+      total_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+      deposit_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
+      deleted_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    CREATE TABLE IF NOT EXISTS contracts (
+      id SERIAL PRIMARY KEY,
+      contract_code TEXT NOT NULL,
+      booking_id INTEGER NOT NULL REFERENCES bookings(id),
+      customer_id INTEGER NOT NULL REFERENCES customers(id),
+      title TEXT,
+      content TEXT,
+      total_value NUMERIC(12,2) NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
     )
   `);
 }
@@ -112,7 +148,8 @@ async function resetTenantIsolationTables(
 ): Promise<void> {
   await target.query(
     `TRUNCATE TABLE
-       staff, services, golden_hour_campaigns, tenant_isolation_canary, tenant_job_probe
+       staff, services, golden_hour_campaigns, tenant_isolation_canary, tenant_job_probe,
+       contracts, bookings, customers
      RESTART IDENTITY CASCADE`,
   );
   await target.query(

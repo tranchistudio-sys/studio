@@ -77,6 +77,30 @@ function makeLivePayload(): ContractPayload {
   };
 }
 
+function makeService(bookingId: number, totalAmount: number, name = `Dịch vụ ${bookingId}`): ContractPayload["services"][number] {
+  return {
+    bookingId,
+    orderCode: `DH${String(bookingId).padStart(4, "0")}`,
+    serviceLabel: name,
+    shootDate: "2027-01-17",
+    shootTime: "07:00",
+    location: null,
+    totalAmount,
+    surcharges: [],
+    items: [{
+      name,
+      description: null,
+      notes: null,
+      price: totalAmount,
+      deductions: [],
+      surcharges: [],
+      photoName: null,
+      makeupName: null,
+    }],
+    occurrences: [],
+  };
+}
+
 describe("projectToShape — so sánh legacy-safe theo key của snapshot ĐÃ LƯU", () => {
   it("bỏ key mới (customer/schedule/description) khi snapshot cũ không có", () => {
     const fresh = { a: 1, b: 2, nested: { x: 1, y: 2 } };
@@ -220,6 +244,92 @@ describe("applySignedSnapshotForDisplay — đóng băng bản ĐÃ KÝ", () => 
       totalAmount: 6_500_000,
       paidAmount: 1_000_000,
       remainingAmount: 5_500_000,
+    });
+  });
+});
+
+describe("multi-service signed contract regression — arbitrary service count", () => {
+  function signedWithOneService() {
+    const live = makeLivePayload();
+    live.services = [makeService(101, 2_500_000)];
+    live.money = { totalAmount: 2_500_000, discountAmount: 0, paidAmount: 0, remainingAmount: 2_500_000 };
+    const snapshot = buildSignedSnapshot(live) as Record<string, unknown>;
+    return { live, snapshot };
+  }
+
+  it.each([
+    { count: 1, prices: [] },
+    { count: 2, prices: [4_000_000] },
+    { count: 3, prices: [4_000_000, 1_500_000] },
+    { count: 10, prices: Array.from({ length: 9 }, (_, i) => (i + 1) * 100_000) },
+  ])("preserves all services when a signed booking grows to $count service(s)", ({ count, prices }) => {
+    const { live, snapshot } = signedWithOneService();
+    prices.forEach((price, i) => live.services.push(makeService(102 + i, price)));
+    live.money.totalAmount = live.services.reduce((sum, service) => sum + service.totalAmount, 0);
+
+    const displayed = applySignedSnapshotForDisplay(live, snapshot);
+    expect(displayed.services).toHaveLength(count);
+    expect(displayed.services.map((service) => service.bookingId)).toEqual(live.services.map((service) => service.bookingId));
+    expect(displayed.money.totalAmount).toBe(live.money.totalAmount);
+  });
+
+  it("keeps A, then adds B and C without losing or duplicating earlier services", () => {
+    const { live, snapshot } = signedWithOneService();
+    live.services.push(makeService(102, 4_000_000), makeService(103, 1_500_000));
+    live.money.totalAmount = 8_000_000;
+
+    const displayed = applySignedSnapshotForDisplay(live, snapshot);
+    expect(displayed.services.map((service) => service.bookingId)).toEqual([101, 102, 103]);
+    expect(new Set(displayed.services.map((service) => service.bookingId)).size).toBe(3);
+    expect(displayed.money.totalAmount).toBe(8_000_000);
+  });
+
+  it("is idempotent across repeated payload generation and does not mutate live input", () => {
+    const { live, snapshot } = signedWithOneService();
+    live.services.push(makeService(102, 4_000_000));
+    live.money = { totalAmount: 6_500_000, discountAmount: 0, paidAmount: 1_000_000, remainingAmount: 5_500_000 };
+    const before = structuredClone(live);
+
+    const results = Array.from({ length: 10 }, () => applySignedSnapshotForDisplay(live, snapshot));
+    expect(results.every((result) => JSON.stringify(result) === JSON.stringify(results[0]))).toBe(true);
+    expect(results.every((result) => result.services.length === 2)).toBe(true);
+    expect(live).toEqual(before);
+  });
+
+  it("uses stable bookingId identity when two distinct services have the same name", () => {
+    const live = makeLivePayload();
+    live.services = [makeService(101, 2_500_000, "Gói truyền thống")];
+    live.money = { totalAmount: 2_500_000, discountAmount: 0, paidAmount: 0, remainingAmount: 2_500_000 };
+    const snapshot = buildSignedSnapshot(live) as Record<string, unknown>;
+    live.services.push(makeService(102, 4_000_000, "Gói truyền thống"));
+    live.money.totalAmount = 6_500_000;
+
+    const displayed = applySignedSnapshotForDisplay(live, snapshot);
+    expect(displayed.services.map((service) => service.bookingId)).toEqual([101, 102]);
+    expect(displayed.services.map((service) => service.serviceLabel)).toEqual(["Gói truyền thống", "Gói truyền thống"]);
+  });
+
+  it("keeps current discount, surcharge-bearing service total, multiple payments and remaining formula unchanged", () => {
+    const { live, snapshot } = signedWithOneService();
+    snapshot.discountAmount = 500_000;
+    live.services.push({
+      ...makeService(102, 4_500_000),
+      surcharges: [{ name: "Phí di chuyển", amount: 500_000 }],
+    });
+    live.money = { totalAmount: 7_000_000, discountAmount: 500_000, paidAmount: 1_500_000, remainingAmount: 5_000_000 };
+    live.payments = [
+      { paidAt: null, paidDate: "2026-09-01", amount: 500_000, paymentMethod: "cash", paymentType: "deposit", proofImages: [], collectorName: null, notes: null },
+      { paidAt: null, paidDate: "2026-09-02", amount: 1_000_000, paymentMethod: "bank", paymentType: "payment", proofImages: [], collectorName: null, notes: null },
+    ];
+
+    const displayed = applySignedSnapshotForDisplay(live, snapshot);
+    expect(displayed.services[1].surcharges).toEqual([{ name: "Phí di chuyển", amount: 500_000 }]);
+    expect(displayed.payments).toHaveLength(2);
+    expect(displayed.money).toEqual({
+      totalAmount: 7_000_000,
+      discountAmount: 500_000,
+      paidAmount: 1_500_000,
+      remainingAmount: 5_000_000,
     });
   });
 });

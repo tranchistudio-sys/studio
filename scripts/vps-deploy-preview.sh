@@ -25,6 +25,14 @@ rollback_preview() {
 trap rollback_preview ERR
 docker build --label com.amazing-studio.scope=preview --label "com.amazing-studio.commit=$sha" -t "$candidate" -f "$release/Dockerfile" "$release"
 docker image tag "$candidate" "$current"
+# One-time Preview-only migration from the legacy internal network.  Compose
+# cannot remove that network while the old Preview app still owns an endpoint.
+# The named DB volume is deliberately left intact and production names are not
+# referenced here.
+if docker network inspect amazing-studio-preview-net >/dev/null 2>&1 \
+  && ! docker network inspect amazing-studio-preview-net-v2 >/dev/null 2>&1; then
+  docker rm -f amazing-preview-app >/dev/null 2>&1 || true
+fi
 docker compose --project-name "$project" --env-file "$env_file" -f "$compose" up -d --no-build db
 for attempt in $(seq 1 30); do
   docker exec amazing-preview-db pg_isready -U preview -d amazing_preview >/dev/null 2>&1 && break

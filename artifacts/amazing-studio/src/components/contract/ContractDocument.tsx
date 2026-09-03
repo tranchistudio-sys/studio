@@ -193,6 +193,9 @@ export default function ContractDocument({
                 <div className="border-l-4 border-[#222] pl-4 py-2 mb-3">
                   <div className="font-bold text-[#111]">
                     📋 {svc.serviceLabel || `Dịch vụ ${serviceDisplayOrdinal(svc, idx)}`}
+                    {svc.addedAfterSign ? (
+                      <span className="ml-2 text-[11px] font-semibold text-[#777] italic">(bổ sung sau khi ký)</span>
+                    ) : null}
                   </div>
                   {/* Ngày giờ chụp nổi bật — khách nhìn là thấy, không lộn ngày.
                       Dịch vụ nhiều ngày: hiện ĐỦ chip Ngày 1/Ngày 2… ngay tại đây. */}

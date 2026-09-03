@@ -42,6 +42,8 @@ export type ContractService = {
     /** Ngày studio thêm SAU khi khách ký — vẫn hiện, nhưng ghi chú rõ là bổ sung. */
     addedAfterSign?: boolean;
   }[];
+  /** Dịch vụ được bổ sung vào cùng hợp đồng sau lần ký gần nhất. */
+  addedAfterSign?: boolean;
 };
 
 export type ContractPaymentRow = {

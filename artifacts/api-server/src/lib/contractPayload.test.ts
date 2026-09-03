@@ -182,6 +182,46 @@ describe("applySignedSnapshotForDisplay — đóng băng bản ĐÃ KÝ", () => 
     // v1 không có customer → giữ live
     expect(frozen.customer.name).toBe("Chị Hoa");
   });
+
+  it("REGRESSION HD0144: dịch vụ con thêm sau ký vẫn hiện đủ và được cộng vào tổng/còn lại", () => {
+    const live = makeLivePayload();
+    live.services[0].totalAmount = 4_000_000;
+    live.services[0].items[0].price = 4_000_000;
+    live.money = { totalAmount: 4_000_000, discountAmount: 0, paidAmount: 1_000_000, remainingAmount: 3_000_000 };
+    const snap = buildSignedSnapshot(live) as Record<string, unknown>;
+
+    live.services.push({
+      bookingId: 11,
+      orderCode: "DH0010-1",
+      serviceLabel: "Gói truyền thống (tiệc + lễ)",
+      shootDate: "2027-01-17",
+      shootTime: "07:00",
+      location: null,
+      totalAmount: 2_500_000,
+      surcharges: [],
+      items: [{
+        name: "Gói truyền thống",
+        description: null,
+        notes: null,
+        price: 2_500_000,
+        deductions: [],
+        surcharges: [],
+        photoName: null,
+        makeupName: null,
+      }],
+      occurrences: [],
+    });
+    live.money = { totalAmount: 6_500_000, discountAmount: 0, paidAmount: 1_000_000, remainingAmount: 5_500_000 };
+
+    const displayed = applySignedSnapshotForDisplay(live, snap);
+    expect(displayed.services.map((s) => s.bookingId)).toEqual([10, 11]);
+    expect(displayed.services[1].addedAfterSign).toBe(true);
+    expect(displayed.money).toMatchObject({
+      totalAmount: 6_500_000,
+      paidAmount: 1_000_000,
+      remainingAmount: 5_500_000,
+    });
+  });
 });
 
 describe("Ngày thực hiện phụ trên hợp đồng (ngày hiện ngay tại dòng dịch vụ)", () => {

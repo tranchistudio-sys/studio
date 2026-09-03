@@ -78,6 +78,8 @@ export type ContractService = {
      */
     addedAfterSign?: boolean;
   }[];
+  /** Dịch vụ được thêm vào cùng booking family sau lần ký gần nhất. */
+  addedAfterSign?: boolean;
 };
 
 export type ContractPaymentRow = {
@@ -465,7 +467,7 @@ export function applySignedSnapshotForDisplay(
     : [];
   const occFromSchedule = splitSnapshotSchedule(storedSchedule, snapServices ?? []);
 
-  const services: ContractService[] = snapServices
+  const signedServices: ContractService[] = snapServices
     ? snapServices.map((snap) => {
         const liveSvc = snap.bookingId != null ? liveByBookingId.get(snap.bookingId) : undefined;
         const liveItemsByName = new Map((liveSvc?.items ?? []).map((i) => [i.name, i]));
@@ -511,7 +513,25 @@ export function applySignedSnapshotForDisplay(
       })
     : live.services;
 
-  const snapTotal = typeof stored.totalAmount === "number" ? stored.totalAmount : live.money.totalAmount;
+  // Snapshot cũ chỉ chứa các dịch vụ tồn tại ở thời điểm ký. Nếu studio thêm một
+  // dịch vụ con mới vào cùng hợp đồng sau đó, không được để cơ chế đóng băng làm
+  // nó biến mất khỏi hóa đơn. Giữ nguyên các dòng đã ký, chỉ nối những bookingId
+  // mới từ live (tương tự quy tắc ngày thực hiện bổ sung).
+  const signedBookingIds = new Set(
+    (snapServices ?? [])
+      .map((s) => s.bookingId)
+      .filter((id): id is number => typeof id === "number"),
+  );
+  const addedServices: ContractService[] = snapServices
+    ? live.services
+        .filter((s) => !signedBookingIds.has(s.bookingId))
+        .map((s) => ({ ...s, addedAfterSign: true }))
+    : [];
+  const services = [...signedServices, ...addedServices];
+
+  const signedTotal = typeof stored.totalAmount === "number" ? stored.totalAmount : live.money.totalAmount;
+  // Tổng phần đã ký vẫn đóng băng; dịch vụ mới chỉ được cộng đúng một lần.
+  const snapTotal = signedTotal + addedServices.reduce((sum, s) => sum + money(s.totalAmount), 0);
   const snapDiscount = typeof stored.discountAmount === "number" ? stored.discountAmount : live.money.discountAmount;
   const snapCustomer =
     stored.customer && typeof stored.customer === "object"

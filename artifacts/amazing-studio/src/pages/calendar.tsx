@@ -55,6 +55,7 @@ import { applyStatusOverride } from "@/lib/effective-status";
 import OutfitBookingSection, { type OutfitDraft } from "@/components/outfit-booking-section";
 import { splitOutfitsBySub, planOutfitSync, mapDressRowToDraft, dedupeParentOutfits, moveOutfitsOnSubRemove } from "@/lib/outfit-per-service";
 import { defaultNewOccurrence, findOccurrenceConflict, occurrenceRowConflict } from "@/lib/occurrence-form";
+import { cascadeContractDateToServices } from "@/lib/booking-date-cascade";
 import AdditionalServicesSection, { validateAdditionalServicesForm, type AdditionalServiceLine, newAdditionalServiceLine } from "@/components/additional-services-section";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
@@ -1409,15 +1410,6 @@ function ShowFormPanel({
   const [location, setLocation] = useState(booking?.location ?? "");
   const [status, setStatus] = useState(booking?.status ?? "confirmed");
 
-  const handleShootDateChange = (newVal: string) => {
-    setShootDateLocal(newVal);
-    try {
-      const parsed = parseISO(newVal);
-      if (!isNaN(parsed.getTime())) onDateChange(parsed);
-    } catch { /* ignore */ }
-  };
-
-
   const [deposit, setDeposit] = useState(booking?.depositAmount?.toString() ?? "0");
   const [depositMethod, setDepositMethod] = useState<"cash" | "bank_transfer">("cash");
   // ── Sửa tiền cọc NGAY TRÊN FORM (nguyên tắc UX: người dùng sửa KẾT QUẢ, hệ
@@ -1751,6 +1743,18 @@ function ShowFormPanel({
   }) : [makeSubDraft(format(date, "yyyy-MM-dd"), initialTime)]);
   const updateSubDraft = (id: string, patch: Partial<SubServiceDraft>) =>
     setSubDrafts(p => p.map(s => s.id === id ? { ...s, ...patch } : s));
+  const handleShootDateChange = (newVal: string) => {
+    // Form hợp đồng gộp có ngày tổng và ngày riêng từng dịch vụ. Trước đây đổi
+    // ngày tổng chỉ đổi ô phía trên, khiến dịch vụ vẫn nằm ở ngày cũ trên Calendar
+    // (HD0054 / DH0240-1). Chỉ cascade các dịch vụ đang bám ngày cũ; dịch vụ có
+    // lịch riêng khác vẫn giữ nguyên.
+    setSubDrafts(drafts => cascadeContractDateToServices(drafts, shootDate, newVal));
+    setShootDateLocal(newVal);
+    try {
+      const parsed = parseISO(newVal);
+      if (!isNaN(parsed.getTime())) onDateChange(parsed);
+    } catch { /* ignore */ }
+  };
   /**
    * "+ Thêm dịch vụ" trên đơn đang sửa mà đơn CHƯA phải hợp đồng gộp.
    *

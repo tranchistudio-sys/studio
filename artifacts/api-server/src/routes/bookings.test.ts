@@ -153,24 +153,27 @@ describe("temp quote family status SQL", () => {
     const query = buildTempQuoteFamilyStatusUpdate({
       rootId: 100,
       bookingId: 101,
+      customerId: 99,
       rootCode: "DH0375",
       nextStatus: "temp_quote",
     });
-    expect(query.values).toEqual([100, 101, "DH0375"]);
+    expect(query.values).toEqual([100, 101, 99, "DH0375"]);
     expect(query.text).toContain("status = 'temp_quote'");
     expect(query.text).toContain("$3");
-    expect(query.text).not.toContain("$4");
+    expect(query.text).not.toContain("$5");
+    expect(query.text).toContain("customer_id = $3");
   });
 
   it("binds the target status when switching a temp quote back to official", () => {
     const query = buildTempQuoteFamilyStatusUpdate({
       rootId: 100,
       bookingId: 101,
+      customerId: 99,
       rootCode: "BG0037",
       nextStatus: "confirmed",
     });
-    expect(query.values).toEqual([100, 101, "BG0037", "confirmed"]);
-    expect(query.text).toContain("status = $4");
+    expect(query.values).toEqual([100, 101, 99, "BG0037", "confirmed"]);
+    expect(query.text).toContain("status = $5");
   });
 });
 

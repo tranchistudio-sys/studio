@@ -36,12 +36,14 @@ const router: IRouter = Router();
 export function buildTempQuoteFamilyStatusUpdate(args: {
   rootId: number;
   bookingId: number;
+  customerId: number;
   rootCode: string;
   nextStatus: string;
 }) {
   const familyWhere = `
     (id = $1 OR parent_id = $1
-      OR ($3 <> '' AND (order_code = $3 OR order_code LIKE ($3 || '-%'))))
+      OR ($4 <> '' AND customer_id = $3
+        AND (order_code = $4 OR order_code LIKE ($4 || '-%'))))
     AND id <> $2
     AND deleted_at IS NULL
     AND COALESCE(status, '') <> 'cancelled'`;
@@ -51,15 +53,15 @@ export function buildTempQuoteFamilyStatusUpdate(args: {
         WHERE ${familyWhere}
           AND COALESCE(status, '') <> 'temp_quote'
         RETURNING id`,
-      values: [args.rootId, args.bookingId, args.rootCode] as unknown[],
+      values: [args.rootId, args.bookingId, args.customerId, args.rootCode] as unknown[],
     };
   }
   return {
-    text: `UPDATE bookings SET status = $4
+    text: `UPDATE bookings SET status = $5
       WHERE ${familyWhere}
         AND status = 'temp_quote'
       RETURNING id`,
-    values: [args.rootId, args.bookingId, args.rootCode, args.nextStatus] as unknown[],
+    values: [args.rootId, args.bookingId, args.customerId, args.rootCode, args.nextStatus] as unknown[],
   };
 }
 
@@ -1186,6 +1188,7 @@ router.get("/bookings/:id", async (req, res) => {
 });
 
 router.put("/bookings/:id", async (req, res) => {
+  let updateStage = "start";
   try {
   // PHẢI là câu lệnh đầu tiên: handler này GHI vào DB (cột nhắc thuê đồ của đơn
   // cha) từ rất sớm, trong khi verifyToken phía dưới chỉ dùng để ghi log "ai sửa"
@@ -1496,6 +1499,7 @@ router.put("/bookings/:id", async (req, res) => {
   // Run all changes in a single DB transaction: deposit payment upsert + booking update + recalculate
   const client = await pool.connect();
   try {
+    updateStage = "begin";
     await client.query("BEGIN");
 
     // ── 1. Upsert/delete deposit payment record (only if depositAmount is in body) ──
@@ -1679,6 +1683,7 @@ router.put("/bookings/:id", async (req, res) => {
     // an toàn cho dữ liệu cũ từng bị lệch liên kết: cùng khách + cùng mã hợp đồng
     // vẫn phải bật/tắt đồng bộ, không được xanh một dịch vụ và tím dịch vụ khác.
     if (crossesTempBoundary) {
+      updateStage = "temp-quote-family";
       const rootId = oldBooking.parentId ?? id;
       const rootCode = String(oldBooking.orderCode || "").replace(/-\d+$/, "");
       // Bật: cả nhà về temp_quote. Tắt: mọi thành viên temp_quote nhận cùng trạng thái mới.
@@ -1687,6 +1692,7 @@ router.put("/bookings/:id", async (req, res) => {
       const familyUpdate = buildTempQuoteFamilyStatusUpdate({
         rootId,
         bookingId: id,
+        customerId: oldBooking.customerId,
         rootCode,
         nextStatus: willTempQuote ? "temp_quote" : String(newStatusRaw),
       });
@@ -1694,7 +1700,9 @@ router.put("/bookings/:id", async (req, res) => {
       tempToggledFamilyIds = r.rows.map((x) => x.id);
     }
 
+    updateStage = "commit";
     await client.query("COMMIT");
+    updateStage = "post-commit";
 
     const customerId = updateResult.rows[0].customer_id;
 
@@ -2010,7 +2018,9 @@ router.put("/bookings/:id", async (req, res) => {
       remainingAmount,
     });
   } catch (e) {
-    await client.query("ROLLBACK");
+    if (updateStage !== "post-commit") {
+      await client.query("ROLLBACK").catch(() => undefined);
+    }
     throw e;
   } finally {
     client.release();
@@ -2019,8 +2029,11 @@ router.put("/bookings/:id", async (req, res) => {
     if (err instanceof AdditionalServicesValidationError) {
       return res.status(400).json({ error: err.message, errors: err.errors });
     }
-    console.error("PUT /bookings/:id error:", err);
-    res.status(500).json({ error: "Lỗi hệ thống khi cập nhật đơn hàng" });
+    console.error(`PUT /bookings/:id error [${updateStage}]:`, err);
+    res.status(500).json({
+      error: "Lỗi hệ thống khi cập nhật đơn hàng",
+      errorCode: `BOOKING_UPDATE_${updateStage.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}`,
+    });
   }
 });
 

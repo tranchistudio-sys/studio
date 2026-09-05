@@ -20,19 +20,8 @@ type FamilyMoney = { paid: number; remaining: number };
 
 function familyMoneyMap(snap: AllocationSnapshot): Map<number, FamilyMoney> {
   const map = new Map<number, FamilyMoney>();
-  for (const m of snap.members) {
-    const cur = map.get(m.rootId) ?? { paid: 0, remaining: 0 };
-    cur.paid += m.allocPaid;
-    cur.remaining += m.debt;
-    map.set(m.rootId, cur);
-  }
-  // Tiền trả DƯ vẫn là tiền thật đã thu — cộng vào "đã trả" hiển thị (không tụt số).
-  for (const fam of snap.families.values()) {
-    if (fam.overpayment > 0) {
-      const cur = map.get(fam.rootId) ?? { paid: 0, remaining: 0 };
-      cur.paid += fam.overpayment;
-      map.set(fam.rootId, cur);
-    }
+  for (const [rootId, summary] of snap.paymentSummaries) {
+    map.set(rootId, { paid: summary.paid, remaining: summary.remaining });
   }
   return map;
 }
@@ -47,7 +36,7 @@ function applyFamilyMoney<T extends { id?: unknown; bookingId?: unknown; paidAmo
   const rawId = row[bookingIdField];
   if (rawId == null) return row;
   const id = Number(rawId);
-  const root = snap.byId.get(id)?.rootId ?? id;
+  const root = snap.familyRootByBookingId.get(id) ?? id;
   const money = fm.get(root);
   if (!money) return { ...row, paidAmount: 0, remainingAmount: 0 };
   return { ...row, paidAmount: money.paid, remainingAmount: money.remaining };

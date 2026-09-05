@@ -44,7 +44,9 @@ export type MoneyBookingInput = {
 };
 
 export type MoneyPaymentInput = {
-  amount: number | string | null | undefined;
+  id?: number | null;
+  bookingId?: number | null;
+  amount?: number | string | null;
   paymentType?: string | null; // 'payment' | 'deposit' | 'ad_hoc' | 'refund'
   status?: string | null; // 'active' | 'voided'
 };
@@ -79,6 +81,38 @@ export function sumCollected(payments: readonly MoneyPaymentInput[]): number {
 
 export function sumRefunded(payments: readonly MoneyPaymentInput[]): number {
   return payments.reduce((s, p) => (isRefundPayment(p) ? s + money(p.amount) : s), 0);
+}
+
+export type FamilyPaymentSummary = BookingMoney & {
+  overpayment: number;
+  paymentCount: number;
+};
+
+/**
+ * Tổng tiền THỰC THU của một gia đình hợp đồng, độc lập với việc các dịch vụ có
+ * được tính vào doanh thu hay không. Caller truyền đúng root + tập id cha/con;
+ * mỗi payment id chỉ được tính một lần, kể cả khi tập dữ liệu đầu vào bị lặp.
+ */
+export function computeFamilyPaymentSummary(
+  contract: MoneyBookingInput,
+  familyBookingIds: ReadonlySet<number>,
+  payments: readonly MoneyPaymentInput[],
+): FamilyPaymentSummary {
+  const seenPaymentIds = new Set<number>();
+  const familyPayments = payments.filter((payment) => {
+    if (payment.bookingId == null || !familyBookingIds.has(Number(payment.bookingId))) return false;
+    if (payment.id == null) return true;
+    const id = Number(payment.id);
+    if (seenPaymentIds.has(id)) return false;
+    seenPaymentIds.add(id);
+    return true;
+  });
+  const base = computeBookingMoney(contract, familyPayments);
+  return {
+    ...base,
+    overpayment: Math.max(0, base.paid - base.net),
+    paymentCount: familyPayments.filter(isCollectedPayment).length,
+  };
 }
 
 // ─── Tính bộ tiền chuẩn cho 1 booking ────────────────────────────────────────

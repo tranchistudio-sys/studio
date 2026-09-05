@@ -6,6 +6,7 @@ import {
   sumCollected,
   sumRefunded,
   computeBookingMoney,
+  computeFamilyPaymentSummary,
   commissionForStaff,
   isRevenueCountable,
   isSelfLiveBooking,
@@ -16,6 +17,62 @@ import {
   type CountableBookingInput,
   type MoneyPaymentInput,
 } from "./booking-money";
+
+describe("computeFamilyPaymentSummary — tiền thực thu của cả hợp đồng", () => {
+  const contract = { totalAmount: 7_500_000, discountAmount: 0 };
+  const ids = new Set([10, 11, 12]);
+
+  it("cộng payment ở cha, con và cả hai nhưng chỉ một lần cho mỗi payment id", () => {
+    const result = computeFamilyPaymentSummary(contract, ids, [
+      { id: 1, bookingId: 10, amount: 1_000_000, paymentType: "deposit", status: "active" },
+      { id: 2, bookingId: 11, amount: 2_000_000, paymentType: "payment", status: "active" },
+      { id: 2, bookingId: 11, amount: 2_000_000, paymentType: "payment", status: "active" },
+      { id: 3, bookingId: 99, amount: 9_000_000, paymentType: "payment", status: "active" },
+    ]);
+    expect(result).toMatchObject({ paid: 3_000_000, remaining: 4_500_000, paymentCount: 2 });
+  });
+
+  it.each(["confirmed", "temp_quote", "empty-parent", "all-children-deleted"])(
+    "không phụ thuộc trạng thái/cấu trúc doanh thu: %s",
+    () => {
+      const result = computeFamilyPaymentSummary(contract, ids, [
+        { id: 1, bookingId: 10, amount: 1_000_000, paymentType: "deposit", status: "active" },
+      ]);
+      expect(result).toMatchObject({ net: 7_500_000, paid: 1_000_000, remaining: 6_500_000 });
+    },
+  );
+
+  it("loại voided, refund, ad_hoc và không lấy payment ngoài gia đình", () => {
+    const result = computeFamilyPaymentSummary(contract, ids, [
+      { id: 1, bookingId: 10, amount: 1_000_000, paymentType: "payment", status: "voided" },
+      { id: 2, bookingId: 11, amount: 1_000_000, paymentType: "refund", status: "active" },
+      { id: 3, bookingId: 12, amount: 1_000_000, paymentType: "ad_hoc", status: "active" },
+      { id: 4, bookingId: 88, amount: 1_000_000, paymentType: "payment", status: "active" },
+    ]);
+    expect(result).toMatchObject({ paid: 0, remaining: 7_500_000, paymentCount: 0 });
+  });
+
+  it.each([
+    ["không thu", 0, 7_500_000, 0],
+    ["thu một phần", 1_000_000, 6_500_000, 0],
+    ["thu đủ", 7_500_000, 0, 0],
+    ["thu dư", 8_000_000, 0, 500_000],
+  ])("tính đúng %s", (_name, paid, remaining, overpayment) => {
+    const payments = paid ? [{ id: 1, bookingId: 10, amount: paid, paymentType: "payment", status: "active" }] : [];
+    expect(computeFamilyPaymentSummary(contract, ids, payments)).toMatchObject({ paid, remaining, overpayment });
+  });
+
+  it("giữ số chuẩn DH0209", () => {
+    expect(computeFamilyPaymentSummary(
+      { totalAmount: 13_600_000, discountAmount: 0 },
+      new Set([288, 289, 290, 291]),
+      [
+        { id: 201, bookingId: 288, amount: 1_000_000, paymentType: "deposit", status: "active" },
+        { id: 290, bookingId: 288, amount: 5_000_000, paymentType: "payment", status: "active" },
+      ],
+    )).toMatchObject({ net: 13_600_000, paid: 6_000_000, remaining: 7_600_000 });
+  });
+});
 
 describe("money() — parse số tiền an toàn", () => {
   it("nhận number/string, loại NaN/null về 0", () => {

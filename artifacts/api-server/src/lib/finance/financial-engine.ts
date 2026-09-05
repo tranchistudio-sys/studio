@@ -41,10 +41,12 @@ import { pool } from "@workspace/db";
 import {
   revenueCountableSql,
   allocateFamilies,
+  computeFamilyPaymentSummary,
   money,
   type AllocBookingInput,
   type AllocPaymentInput,
   type FamilyAllocation,
+  type FamilyPaymentSummary,
 } from "../booking-money";
 import { paymentNotOnEmptyParentSql } from "../parent-contract";
 import { getSchemaFlags } from "../schema-compat";
@@ -99,6 +101,10 @@ export type AllocationSnapshot = {
   byId: Map<number, AllocatedBooking>;
   /** Breakdown mức gia đình (totalDeposit / eligibleServiceCount / overpayment). */
   families: Map<number, FamilyAllocation>;
+  /** Tiền thực thu theo cha + mọi booking con, không phụ thuộc bộ lọc doanh thu. */
+  paymentSummaries: Map<number, FamilyPaymentSummary>;
+  /** Tra root cho cả booking không countable (temp_quote/xóa/cha rỗng). */
+  familyRootByBookingId: Map<number, number>;
 };
 
 /**
@@ -168,6 +174,25 @@ export async function engineAllocationSnapshot(): Promise<AllocationSnapshot> {
   }));
 
   const families = allocateFamilies(allocBookings, allocPayments);
+  const familyRootByBookingId = new Map<number, number>();
+  const familyIdsByRoot = new Map<number, Set<number>>();
+  for (const booking of allocBookings) {
+    const rootId = booking.parentId ?? booking.id;
+    familyRootByBookingId.set(booking.id, rootId);
+    const ids = familyIdsByRoot.get(rootId) ?? new Set<number>();
+    ids.add(booking.id);
+    familyIdsByRoot.set(rootId, ids);
+  }
+  const bookingById = new Map(allocBookings.map((booking) => [booking.id, booking]));
+  const paymentSummaries = new Map<number, FamilyPaymentSummary>();
+  for (const [rootId, ids] of familyIdsByRoot) {
+    const root = bookingById.get(rootId);
+    if (!root) continue;
+    paymentSummaries.set(rootId, computeFamilyPaymentSummary({
+      totalAmount: root.totalAmount,
+      discountAmount: root.discountAmount,
+    }, ids, allocPayments));
+  }
   const rowById = new Map(allocBookings.map(b => [b.id, b.row]));
   const members: AllocatedBooking[] = [];
   for (const fam of families.values()) {
@@ -198,7 +223,13 @@ export async function engineAllocationSnapshot(): Promise<AllocationSnapshot> {
       });
     }
   }
-  return { members, byId: new Map(members.map(m => [m.bookingId, m])), families };
+  return {
+    members,
+    byId: new Map(members.map(m => [m.bookingId, m])),
+    families,
+    paymentSummaries,
+    familyRootByBookingId,
+  };
 }
 
 /** Σ nợ của một tập member id (id không có trong snapshot đóng góp 0). */

@@ -2,7 +2,7 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { db, pool } from "@workspace/db";
 import { bookingsTable, customersTable, paymentsTable, expensesTable, tasksTable, staffTable, servicePackagesTable, packageItemsTable, photoshopJobsTable, servicesTable, bookingChangeLogTable, contractsTable, bookingDressesTable, bookingItemsTable, staffJobEarningsTable, staffAllowancesTable, attendanceLogsTable, bookingOccurrencesTable } from "@workspace/db/schema";
 import { eq, and, desc, inArray, or, ilike, sql, asc, gte, lte, isNull, ne } from "drizzle-orm";
-import { isCollectedPayment, money } from "../lib/booking-money";
+import { computeFamilyPaymentSummary } from "../lib/booking-money";
 import { engineAllocationSnapshot } from "../lib/finance/financial-engine";
 import { resolveBookingTotal, summarizeItemsForLog } from "../lib/booking-total";
 import { verifyToken, getCallerRole } from "./auth";
@@ -321,46 +321,9 @@ router.get("/bookings", async (req, res) => {
     ? await baseQuery.limit(10)
     : await baseQuery;
 
-  const allPayments = await db.select().from(paymentsTable);
-
-  // ── Build paidByBookingId map (tổng payments theo booking_id, loại voided) ─
-  const paidByBookingId: Record<number, number> = {};
-  for (const p of allPayments) {
-    // Nguồn tiền chuẩn: "đã thu" loại phiếu hoàn (refund), phiếu hủy (voided), thu lẻ (ad_hoc).
-    if (p.bookingId != null && isCollectedPayment(p)) {
-      paidByBookingId[p.bookingId] = (paidByBookingId[p.bookingId] ?? 0) + money(p.amount);
-    }
-  }
-
-  // ── Build bookingInfoMap để tra cứu totalAmount/discountAmount của parent ─
-  // Cần cho child booking để tính remainingAmount theo parent
-  const bookingInfoMap: Record<number, { totalAmount: number; discountAmount: number }> = {};
-  for (const r of rows) {
-    bookingInfoMap[r.id] = {
-      totalAmount:    parseFloat(r.totalAmount),
-      discountAmount: parseFloat(r.discountAmount ?? "0"),
-    };
-  }
-
-  // Hardening: nếu query có filter (status, search...), parent booking có thể
-  // không có trong rows. Fetch bổ sung các parent còn thiếu từ DB.
-  const missingParentIds = [...new Set(
-    rows
-      .filter(r => r.parentId != null && !bookingInfoMap[r.parentId])
-      .map(r => r.parentId as number)
-  )];
-  if (missingParentIds.length > 0) {
-    const parentRows = await db
-      .select({ id: bookingsTable.id, totalAmount: bookingsTable.totalAmount, discountAmount: bookingsTable.discountAmount })
-      .from(bookingsTable)
-      .where(inArray(bookingsTable.id, missingParentIds));
-    for (const pr of parentRows) {
-      bookingInfoMap[pr.id] = {
-        totalAmount:    parseFloat(pr.totalAmount),
-        discountAmount: parseFloat(pr.discountAmount ?? "0"),
-      };
-    }
-  }
+  // Cùng snapshot tiền gia đình với Calendar và màn Thu tiền: gồm phiếu ở cha +
+  // mọi booking con, không phụ thuộc trạng thái tính doanh thu của hợp đồng.
+  const paymentSnapshot = await engineAllocationSnapshot();
 
   // Fetch all task rows for bookings — JOIN staff để lấy tên assignee
   const taskAggRows = await db
@@ -489,19 +452,10 @@ router.get("/bookings", async (req, res) => {
     let paidAmount: number;
     let remainingAmount: number;
 
-    if (b.parentId != null) {
-      // Child booking → paidAmount từ parent's payments
-      paidAmount = paidByBookingId[b.parentId] ?? 0;
-      // remainingAmount = parent.totalAmount - parent.discountAmount - parentPaidAmount
-      const parentInfo = bookingInfoMap[b.parentId];
-      const parentTotal    = parentInfo?.totalAmount    ?? totalAmount;
-      const parentDiscount = parentInfo?.discountAmount ?? discountAmt;
-      remainingAmount = Math.max(0, parentTotal - parentDiscount - paidAmount);
-    } else {
-      // Standalone hoặc parent booking → dùng payments của chính nó
-      paidAmount = paidByBookingId[b.id] ?? 0;
-      remainingAmount = Math.max(0, totalAmount - discountAmt - paidAmount);
-    }
+    const rootId = paymentSnapshot.familyRootByBookingId.get(b.id) ?? b.parentId ?? b.id;
+    const familyMoney = paymentSnapshot.paymentSummaries.get(rootId);
+    paidAmount = familyMoney?.paid ?? 0;
+    remainingAmount = familyMoney?.remaining ?? Math.max(0, totalAmount - discountAmt - paidAmount);
 
     const reqRoles = (b.requiredRoles as string[]) ?? [];
     const covRoles = [...(coveredRolesMap[b.id] ?? new Set<string>())];
@@ -912,13 +866,14 @@ router.get("/bookings/:id/allocation", async (req, res) => {
     const id = parseInt(req.params.id);
     if (!Number.isFinite(id)) return res.status(400).json({ error: "id không hợp lệ" });
     const snap = await engineAllocationSnapshot();
-    const rootId = snap.byId.get(id)?.rootId ?? (snap.families.has(id) ? id : null);
+    const rootId = snap.familyRootByBookingId.get(id) ?? null;
     if (rootId == null) {
       // Đơn không countable (báo giá tạm/hủy/thùng rác...) hoặc không tồn tại →
       // không có phân bổ; FE fallback về hành vi thu tiền thẳng như cũ.
       return res.json({ rootId: id, services: [], totalDeposit: 0, contractDiscount: 0, overpayment: 0, totalNet: 0, totalAllocPaid: 0, totalRemaining: 0 });
     }
     const fam = snap.families.get(rootId);
+    const paymentSummary = snap.paymentSummaries.get(rootId);
     const members = snap.members
       .filter(m => m.rootId === rootId)
       .sort((a, b) => {
@@ -949,10 +904,14 @@ router.get("/bookings/:id/allocation", async (req, res) => {
       totalDeposit: fam?.totalDeposit ?? 0,
       canonicalDepositPaymentId: fam?.canonicalDepositPaymentId ?? null,
       contractDiscount: fam?.contractDiscount ?? 0,
-      overpayment: fam?.overpayment ?? 0,
-      totalNet: services.reduce((s, x) => s + x.net, 0),
-      totalAllocPaid: services.reduce((s, x) => s + x.allocPaid, 0),
-      totalRemaining: services.reduce((s, x) => s + x.remaining, 0),
+      overpayment: paymentSummary?.overpayment ?? fam?.overpayment ?? 0,
+      totalNet: paymentSummary?.net ?? services.reduce((s, x) => s + x.net, 0),
+      // Giữ contract API hiện hữu: totalAllocPaid là phần đã thu tới NET,
+      // overpayment tách riêng; frontend cộng hai field để ra tổng tiền thực thu.
+      totalAllocPaid: paymentSummary
+        ? paymentSummary.paid - paymentSummary.overpayment
+        : services.reduce((s, x) => s + x.allocPaid, 0),
+      totalRemaining: paymentSummary?.remaining ?? services.reduce((s, x) => s + x.remaining, 0),
       services,
     });
   } catch (err) {
@@ -980,7 +939,14 @@ router.get("/bookings/:id", async (req, res) => {
   if (!row) return res.status(404).json({ error: "Không tìm thấy đơn hàng" });
 
   const paymentBookingId = row.parentId ?? id;
-  const payments = await db.select().from(paymentsTable).where(eq(paymentsTable.bookingId, paymentBookingId));
+  const familyBookingRows = await db
+    .select({ id: bookingsTable.id })
+    .from(bookingsTable)
+    .where(or(eq(bookingsTable.id, paymentBookingId), eq(bookingsTable.parentId, paymentBookingId)));
+  const familyBookingIds = familyBookingRows.map((booking) => booking.id);
+  const payments = familyBookingIds.length > 0
+    ? await db.select().from(paymentsTable).where(inArray(paymentsTable.bookingId, familyBookingIds))
+    : [];
 
   // Ngày thực hiện phụ (dịch vụ nhiều ngày) của CHÍNH đơn này — thuần lịch, không tiền.
   // Tương thích ngược: DB chưa migrate (thiếu bảng) → coi như không có ngày phụ.
@@ -1051,9 +1017,15 @@ router.get("/bookings/:id", async (req, res) => {
     .leftJoin(staffTable, eq(tasksTable.assigneeId, staffTable.id))
     .where(eq(tasksTable.bookingId, id));
 
-  const paidAmount = payments
-    .filter(isCollectedPayment)
-    .reduce((s, p) => s + money(p.amount), 0);
+  const paymentContract = row.parentId
+    ? (await db.select(bookingFieldsFor(schemaFlags)).from(bookingsTable).innerJoin(customersTable, eq(bookingsTable.customerId, customersTable.id)).where(eq(bookingsTable.id, row.parentId)))[0]
+    : row;
+  const familyMoney = computeFamilyPaymentSummary(
+    paymentContract ?? row,
+    new Set(familyBookingIds),
+    payments,
+  );
+  const paidAmount = familyMoney.paid;
   const totalAmount = parseFloat(row.totalAmount);
   const discountAmt = parseFloat(row.discountAmount ?? "0");
   const totalExpenses = expenses.reduce((s, e) => s + parseFloat(e.amount), 0);
@@ -1121,10 +1093,7 @@ router.get("/bookings/:id", async (req, res) => {
       .where(eq(bookingsTable.id, row.parentId));
 
     if (parentRow) {
-      const parentPayments = await db.select().from(paymentsTable).where(eq(paymentsTable.bookingId, parentRow.id));
-      const parentPaid = parentPayments
-    .filter(isCollectedPayment)
-    .reduce((s, p) => s + money(p.amount), 0);
+      const parentPaid = familyMoney.paid;
       const parentTotal = parseFloat(parentRow.totalAmount);
       const parentDiscount = parseFloat(parentRow.discountAmount ?? "0");
       parentContract = {

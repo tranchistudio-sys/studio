@@ -1564,8 +1564,8 @@ function ShowFormPanel({
   const [proofWarning, setProofWarning] = useState("");
   const [saving, setSaving] = useState(false);
   // ── Báo giá tạm tính — MỘT toggle duy nhất, nguồn chân lý = bookings.status.
-  // Tạo mới: bật để lưu thành báo giá (mã BG, không countable). Sửa: admin bật/
-  // tắt bất kỳ lúc nào — backend flip cả GIA ĐÌNH (cha + con) trong 1 transaction.
+  // Tạo mới: bật để lưu thành báo giá (mã BG, không countable). Sửa: nhân viên
+  // đã đăng nhập cũng được bật/tắt — backend flip cả GIA ĐÌNH (cha + con) trong 1 transaction.
   // Không khóa, không tạo/xóa record, đổi qua lại bao nhiêu lần cũng được.
   const [tempQuoteMode, setTempQuoteMode] = useState(booking?.status === "temp_quote");
   const initialTempQuoteRef = useRef(booking?.status === "temp_quote");
@@ -2775,9 +2775,8 @@ function ShowFormPanel({
             {format(shootDateObj, "EEEE, dd/MM/yyyy", { locale: vi })} · {subDrafts[0]?.shootTime ?? initialTime}
           </p>
         </div>
-        {/* Toggle Báo giá tạm — luôn thao tác được (edit: admin), không bao giờ khóa. */}
-        {(!isEdit || isAdmin) && (
-          <label className={`flex min-h-11 items-center gap-3 flex-shrink-0 cursor-pointer select-none rounded-xl border px-3 py-2 transition-colors ${tempQuoteMode ? "border-purple-300 bg-purple-50" : "border-border bg-muted/40"}`}>
+        {/* Toggle Báo giá tạm — nhân viên được chủ studio giao đơn cũng có thể thao tác. */}
+        <label className={`flex min-h-11 items-center gap-3 flex-shrink-0 cursor-pointer select-none rounded-xl border px-3 py-2 transition-colors ${tempQuoteMode ? "border-purple-300 bg-purple-50" : "border-border bg-muted/40"}`}>
             <span className={`text-sm font-bold whitespace-nowrap ${tempQuoteMode ? "text-purple-600" : "text-foreground"}`}>
               {tempQuoteMode ? "Báo giá tạm tính" : "Booking chính thức"}
             </span>
@@ -2791,8 +2790,7 @@ function ShowFormPanel({
                 setStatus(prev => checked ? "temp_quote" : (prev === "temp_quote" ? "confirmed" : prev));
               }}
             />
-          </label>
-        )}
+        </label>
         {isEdit && (
           <button
             onClick={() => { if (confirm("Đưa show này vào thùng rác? Admin có thể phục hồi lại từ Thùng rác Booking.")) deleteMutation.mutate(); }}
@@ -4334,7 +4332,7 @@ function ShowDetailPanel({
           </span>
           {/* Toggle Báo giá tạm NGAY TẠI ĐÂY — không bắt mở form sửa (nguyên tắc
               UX: người dùng sửa KẾT QUẢ tại chỗ, hệ thống tự chạy quy trình). */}
-          {isAdmin && effectiveStatus !== "cancelled" && (
+          {effectiveStatus !== "cancelled" && (
             <button
               type="button"
               disabled={tempToggleBusy}

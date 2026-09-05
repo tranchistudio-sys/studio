@@ -14,6 +14,7 @@ import { queuePurchaseForPayment, queueScheduleForBooking } from "../lib/analyti
 import { sanitizeAttribution } from "../lib/analytics/analytics-data";
 import { getSchemaFlags, bookingColumnsCompat, type SchemaFlags } from "../lib/schema-compat";
 import { bookingRequiresPostProduction } from "../lib/post-production-eligibility";
+import { canViewBookingFinancials } from "../lib/financial-permissions";
 import {
   sanitizeAdditionalServices,
   validateAdditionalServices,
@@ -932,6 +933,9 @@ router.get("/bookings/:id", async (req, res) => {
   try {
   // Chặn TRƯỚC khi chạm DB: không rò PII, và id có/không tồn tại đều 401 như nhau.
   if (!(await ensureAuth(req, res))) return;
+  const callerRole = await getCallerRole(req.headers.authorization);
+  const mayViewFinancials = canViewBookingFinancials(callerRole);
+  const mayViewStudioCosts = callerRole === "admin";
   const id = parseInt(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ error: "id không hợp lệ" });
   const schemaFlags = await getSchemaFlags();
@@ -1128,16 +1132,16 @@ router.get("/bookings/:id", async (req, res) => {
   res.json({
     ...row,
     items: normalizeItemStaff(row.items),
-    totalAmount,
+    totalAmount: mayViewFinancials ? totalAmount : undefined,
     depositAmount: parseFloat(row.depositAmount),
-    paidAmount,
-    discountAmount: discountAmt,
-    remainingAmount: detailRemainingAmount,
-    totalExpenses,
-    grossProfit: totalAmount - totalExpenses,
+    paidAmount: mayViewFinancials ? paidAmount : undefined,
+    discountAmount: mayViewFinancials ? discountAmt : undefined,
+    remainingAmount: mayViewFinancials ? detailRemainingAmount : undefined,
+    totalExpenses: mayViewStudioCosts ? totalExpenses : undefined,
+    grossProfit: mayViewStudioCosts ? totalAmount - totalExpenses : undefined,
     createdByStaffName,
-    payments: payments.map(p => ({ ...p, amount: parseFloat(p.amount) })),
-    expenses: expenses.map(e => ({ ...e, amount: parseFloat(e.amount) })),
+    payments: mayViewFinancials ? payments.map(p => ({ ...p, amount: parseFloat(p.amount) })) : [],
+    expenses: mayViewStudioCosts ? expenses.map(e => ({ ...e, amount: parseFloat(e.amount) })) : [],
     tasks,
     taskAssignees,
     siblings,

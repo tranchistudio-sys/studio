@@ -1362,7 +1362,7 @@ export default function PaymentsPage() {
   } = useQuery<MonthlyData>({
     queryKey: ["payments-overview", selectedMonthKey, overviewViewMode],
     queryFn: () => fetchJson(`/api/payments/monthly-list?month=${selectedMonthKey}&viewMode=${overviewViewMode}`),
-    enabled: preset !== "all" && !!selectedMonthKey,
+    enabled: effectiveIsAdmin && preset !== "all" && !!selectedMonthKey,
     staleTime: 30_000,
   });
 
@@ -1375,12 +1375,14 @@ export default function PaymentsPage() {
       else params.set("period", period);
       return fetchJson(`/api/payments/recent?${params.toString()}`);
     },
+    enabled: effectiveIsAdmin,
     staleTime: 0,
   });
 
   const refetchPaymentsSection = useCallback(async () => {
+    if (!effectiveIsAdmin) return;
     await Promise.all([refetchRecent(), refetchOverview()]);
-  }, [refetchRecent, refetchOverview]);
+  }, [effectiveIsAdmin, refetchRecent, refetchOverview]);
 
   const recentPayments  = recentData?.payments  ?? [];
   const recentSummary   = recentData?.summary   ?? { count: 0, total: 0 };
@@ -1710,7 +1712,7 @@ export default function PaymentsPage() {
         }),
       });
       await refetchHistory();
-      await refetchRecent();
+      await refetchPaymentsSection();
       await refreshSelectedBooking(selectedBooking);
       await qc.invalidateQueries({ queryKey: ["payments-monthly-list"] });
       qc.invalidateQueries({ queryKey: ["booking", selectedBooking.id] });
@@ -1744,7 +1746,7 @@ export default function PaymentsPage() {
     mutationFn: (id: number) => authFetch(`/api/payments/${id}`, { method: "DELETE" }),
     onSuccess: async () => {
       await refetchHistory();
-      await refetchRecent();
+      await refetchPaymentsSection();
       if (selectedBooking) await refreshSelectedBooking(selectedBooking);
     },
   });
@@ -1795,7 +1797,7 @@ export default function PaymentsPage() {
       qc.invalidateQueries({ queryKey: ["payment-suggestions"] });
       qc.invalidateQueries({ queryKey: ["bookings"] });
       await refetchHistory();
-      await refetchRecent();
+      await refetchPaymentsSection();
       if (selectedBooking) await refreshSelectedBooking(selectedBooking);
     } catch {
       setVoidError("Lỗi khi huỷ phiếu. Vui lòng thử lại.");
@@ -1927,7 +1929,7 @@ export default function PaymentsPage() {
           adHocCategory: null,
         }),
       });
-      await refetchRecent();
+      await refetchPaymentsSection();
       qc.invalidateQueries({ queryKey: ["payments-recent"] });
       qc.invalidateQueries({ queryKey: ["payments-monthly-list"] });
       qc.invalidateQueries({ queryKey: ["payments-overview"] });
@@ -1954,7 +1956,7 @@ export default function PaymentsPage() {
     try {
       const r = await fetchJson<{ message?: string }>("/api/payments/sync-deposits", { method: "POST" });
       alert(r.message);
-      await refetchRecent();
+      await refetchPaymentsSection();
       qc.invalidateQueries({ queryKey: ["payment-suggestions"] });
     } catch {
       alert("Có lỗi khi đồng bộ, thử lại");
@@ -2023,10 +2025,12 @@ export default function PaymentsPage() {
       </div>
 
       {/* ── Danh sách theo tháng ─────────────────── */}
-      <MonthlyListSection effectiveIsAdmin={effectiveIsAdmin} onSelectBooking={handleSelectBooking} onVoid={openVoidDialog} defaultMonthKey={defaultMonthKey} />
+      {effectiveIsAdmin && (
+        <MonthlyListSection effectiveIsAdmin onSelectBooking={handleSelectBooking} onVoid={openVoidDialog} defaultMonthKey={defaultMonthKey} />
+      )}
 
       {/* ── Lịch sử thu gần đây ──────────────────── */}
-      <div className="bg-card border border-border rounded-2xl overflow-hidden">
+      {effectiveIsAdmin && <div className="bg-card border border-border rounded-2xl overflow-hidden">
         {/* Header */}
         <div className="px-4 pt-4 pb-3 border-b border-border/60">
           <div className="flex items-center justify-between flex-wrap gap-2">
@@ -2180,7 +2184,7 @@ export default function PaymentsPage() {
             </>
           )}
         </div>
-      </div>
+      </div>}
 
       {/* ── Sheet thu tiền ────────────────────────── */}
       <Sheet open={sheetOpen} onOpenChange={handleSheetOpenChange}>

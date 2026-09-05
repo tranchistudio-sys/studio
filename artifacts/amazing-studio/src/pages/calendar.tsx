@@ -4065,6 +4065,20 @@ function ShowDetailPanel({
     return (a.shootDate || "").localeCompare(b.shootDate || "");
   });
   const parentContract: (Booking & { remainingAmount: number; paidAmount: number }) | null = (fullDetail?.parentContract as (Booking & { remainingAmount: number; paidAmount: number })) ?? null;
+  type BookingAllocationSummary = {
+    totalAllocPaid: number;
+    totalRemaining: number;
+    overpayment: number;
+  };
+  const { data: allocationSummary } = useQuery<BookingAllocationSummary>({
+    queryKey: ["booking-allocation", booking.id],
+    queryFn: async () => {
+      const response = await authFetch(`${BASE}/api/bookings/${booking.id}/allocation`);
+      if (!response.ok) throw new Error("Không thể tải phân bổ thanh toán");
+      return response.json();
+    },
+    staleTime: 0,
+  });
 
   // ── Booking dresses (outfits) for this booking ───────────────────────────
   type BookingDress = { id: number; booking_id: number; dress_id: number; outfit_code: string | null; outfit_name: string | null; outfit_image: string | null; category: string | null; size: string | null; rental_price: string | null; pickup_date: string | null; return_date: string | null; status: string | null; note: string | null };
@@ -4119,7 +4133,7 @@ function ShowDetailPanel({
   const stEff = STATUS[effectiveStatus as keyof typeof STATUS] ?? STATUS.pending;
 
   // ── Payment history for this booking ─────────────────────────────────────
-  type BookingPayment = { id?: number; amount?: number; paymentMethod?: string; paymentType?: string; collectorName?: string; notes?: string; paidAt?: string; paidDate?: string; proofImageUrl?: string | null; proofImageUrls?: string[] };
+  type BookingPayment = { id?: number; amount?: number; paymentMethod?: string; paymentType?: string; status?: string | null; collectorName?: string; notes?: string; paidAt?: string; paidDate?: string; proofImageUrl?: string | null; proofImageUrls?: string[] };
   const paymentTargetId = fullDetail?.parentContract?.id ?? booking.parentId ?? booking.id;
   const { data: paymentHistory = [] } = useQuery<BookingPayment[]>({
     queryKey: ["payments", paymentTargetId],
@@ -4127,6 +4141,14 @@ function ShowDetailPanel({
     queryFn: () => authFetch(`${BASE}/api/payments?bookingId=${paymentTargetId}&family=1`).then(r => r.ok ? r.json() : []),
     staleTime: 0,
   });
+  const collectedPaymentHistory = useMemo(() => [...paymentHistory]
+    .filter(p => p.paymentType !== "refund" && (p.status ?? "active") !== "voided")
+    .sort((a, b) => {
+      const ad = String(a.paidDate ?? a.paidAt ?? "");
+      const bd = String(b.paidDate ?? b.paidAt ?? "");
+      if (ad !== bd) return ad.localeCompare(bd);
+      return Number(a.id ?? 0) - Number(b.id ?? 0);
+    }), [paymentHistory]);
 
   type ChildRemovalLog = { id: number; bookingId: number; fieldChanged: string; oldValue: string | null; reason: string | null; changedByName: string | null; createdAt: string };
   const parentIdForLog = parentContract?.id ?? (booking.isParentContract ? booking.id : null);
@@ -4667,16 +4689,23 @@ function ShowDetailPanel({
                 const allSvc = sortServicesByEventDate(siblings.length > 0 ? siblings : [booking]);
                 const cTotal = Number(contractSrc.totalAmount ?? 0) || 0;
                 const cDiscount = Number(contractSrc.discountAmount ?? 0) || 0;
-                const cPaid = parentContract
+                // Đọc số đã thu/còn nợ từ allocator tài chính chuẩn của backend.
+                // Fallback chỉ dùng trong lúc query đang tải để không làm trống UI.
+                const fallbackPaid = parentContract
                   ? Number(parentContract.paidAmount ?? 0) || 0
-                  : paymentHistory.reduce((s, p) => s + (p.amount ?? 0), 0);
+                  : collectedPaymentHistory.reduce((s, p) => s + (p.amount ?? 0), 0);
+                const cPaid = allocationSummary
+                  ? allocationSummary.totalAllocPaid + Math.max(0, allocationSummary.overpayment || 0)
+                  : fallbackPaid;
                 const cAfterDiscount = Math.max(0, cTotal - cDiscount);
-                const cRemaining = Math.max(0, cAfterDiscount - cPaid);
+                const cRemaining = allocationSummary
+                  ? Math.max(0, allocationSummary.totalRemaining)
+                  : Math.max(0, cAfterDiscount - cPaid);
                 return (
                   <div className="rounded-xl border border-border/50 overflow-hidden bg-white dark:bg-card">
                     <div className="px-3 py-2 border-b border-border/40 bg-gray-50 dark:bg-muted/20 flex items-center justify-between">
                       <p className="text-[10px] font-bold uppercase tracking-wider text-foreground/70">
-                        {isAdmin ? (allSvc.length > 1 ? `💰 Thanh toán (${allSvc.length} dịch vụ)` : "💰 Thanh toán") : (allSvc.length > 1 ? `📋 Dịch vụ (${allSvc.length})` : "📋 Dịch vụ")}
+                        {allSvc.length > 1 ? `💰 Tổng thanh toán (${allSvc.length} dịch vụ)` : "💰 Tổng thanh toán"}
                         {(parentContract?.orderCode || booking.orderCode) && <span className="ml-2 font-mono text-primary">{parentContract?.orderCode || booking.orderCode}</span>}
                       </p>
                       {isAdmin && onEditAllSiblings && parentContract && (
@@ -4689,6 +4718,35 @@ function ShowDetailPanel({
                           <Pencil className="w-3.5 h-3.5" />
                         </button>
                       )}
+                    </div>
+                    <div className="px-3 py-3 space-y-1.5 bg-rose-50/70 dark:bg-rose-950/10 border-b border-border/40" data-testid="booking-payment-summary">
+                      <p className="text-[11px] font-black uppercase tracking-wider text-foreground/70">Thanh toán hợp đồng</p>
+                      <div className="flex justify-between text-sm">
+                        <span className="font-semibold text-foreground">Tổng giá trị hợp đồng</span>
+                        <span className="font-bold text-base">{fmtVND(cTotal)}</span>
+                      </div>
+                      {cDiscount > 0 && (
+                        <div className="flex justify-between text-sm">
+                          <span className="text-muted-foreground">Giảm giá chung hợp đồng</span>
+                          <span className="font-semibold text-amber-600">-{fmtVND(cDiscount)}</span>
+                        </div>
+                      )}
+                      <div className="flex justify-between text-sm">
+                        <span className="text-muted-foreground">Đã thanh toán</span>
+                        <span className="font-semibold text-emerald-600">{fmtVND(cPaid)}</span>
+                      </div>
+                      <div className="flex justify-between items-center text-sm border-t border-border/50 pt-2 mt-1">
+                        <span className="font-black text-foreground">Còn phải thu</span>
+                        <span className={`font-black text-xl ${cRemaining > 0 ? "text-destructive" : "text-emerald-600"}`}>
+                          {cRemaining > 0 ? fmtVND(cRemaining) : "✓ Đã thanh toán đủ"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-xs">
+                        <span className="text-muted-foreground">Trạng thái</span>
+                        <span className="font-semibold">
+                          {cPaid <= 0 ? "Chưa thanh toán" : cRemaining > 0 ? "Thanh toán một phần" : "Đã thanh toán đủ"}
+                        </span>
+                      </div>
                     </div>
                     <div className="divide-y divide-border/30">
                       {allSvc.map((svc, svcIdx) => {
@@ -4873,7 +4931,7 @@ function ShowDetailPanel({
                                 ))}
                               </div>
                             )}
-                            {isCurrent && !svcCollapsed && isAdmin && (
+                            {isCurrent && !svcCollapsed && (
                               <ServicePriceBreakdown
                                 basePrice={svcBasePrice}
                                 surcharges={allSurcharges}
@@ -4952,49 +5010,17 @@ function ShowDetailPanel({
                           </div>
                         );
                       })}
-                      {isAdmin && (
-                        <div className="px-3 py-2.5 space-y-1.5 bg-gray-50/60 dark:bg-muted/10">
-                          <div className="flex justify-between text-sm">
-                            <span className="font-semibold text-foreground">Tổng tiền các dịch vụ</span>
-                            <span className="font-bold text-base">{fmtVND(cTotal)}</span>
-                          </div>
-                          {cDiscount > 0 && (
-                            <div className="flex justify-between text-sm">
-                              <span className="text-muted-foreground">Giảm giá chung hợp đồng</span>
-                              <span className="font-semibold text-amber-600">-{fmtVND(cDiscount)}</span>
-                            </div>
-                          )}
-                          {cDiscount > 0 && (
-                            <>
-                              <div className="border-t border-dashed border-border/40" />
-                              <div className="flex justify-between text-sm">
-                                <span className="font-semibold text-foreground">Tổng sau giảm</span>
-                                <span className="font-bold">{fmtVND(cAfterDiscount)}</span>
-                              </div>
-                            </>
-                          )}
-                          <div className="flex justify-between text-sm">
-                            <span className="text-muted-foreground">Đã cọc / Đã thu</span>
-                            <span className="font-semibold text-emerald-600">{fmtVND(cPaid)}</span>
-                          </div>
-                          <div className="flex justify-between text-sm border-t border-border/40 pt-1.5">
-                            <span className="font-semibold text-foreground">Còn lại</span>
-                            <span className={`font-bold text-base ${cRemaining > 0 ? "text-destructive" : "text-emerald-600"}`}>
-                              {fmtVND(cRemaining)}
-                            </span>
-                          </div>
-                        </div>
-                      )}
-                      {isAdmin && paymentHistory.length > 0 && (
+                      {collectedPaymentHistory.length > 0 && (
                         <div className="px-3 py-2.5 space-y-2">
-                          <p className="text-[10px] font-bold uppercase tracking-wider text-foreground/60">📜 Lịch sử thanh toán ({paymentHistory.length} lần)</p>
+                          <p className="text-[10px] font-bold uppercase tracking-wider text-foreground/60">📜 Lịch sử thanh toán ({collectedPaymentHistory.length} lần)</p>
                           <div className="overflow-x-auto -mx-1">
-                            <table className="w-full text-xs min-w-[400px]">
+                            <table className="w-full text-xs min-w-[520px]">
                               <thead>
                                 <tr className="border-b border-border/40">
                                   <th className="text-left py-1.5 pr-2 font-semibold text-muted-foreground">Ngày</th>
                                   <th className="text-left py-1.5 pr-2 font-semibold text-muted-foreground">Hình thức</th>
                                   <th className="text-left py-1.5 pr-2 font-semibold text-muted-foreground">Người thu</th>
+                                  <th className="text-left py-1.5 pr-2 font-semibold text-muted-foreground">Ghi chú</th>
                                   <th className="text-right py-1.5 pr-2 font-semibold text-muted-foreground">Số tiền</th>
                                   <th className="text-right py-1.5 font-semibold text-muted-foreground">Còn lại</th>
                                 </tr>
@@ -5002,7 +5028,7 @@ function ShowDetailPanel({
                               <tbody>
                                 {(() => {
                                   let rPaid = 0;
-                                  return paymentHistory.map((p, i) => {
+                                  return collectedPaymentHistory.map((p, i) => {
                                     rPaid += (p.amount ?? 0);
                                     const rowRem = Math.max(0, cAfterDiscount - rPaid);
                                     const dateStr = p.paidDate ? safeFormatDate(p.paidDate) : safeFormatDate(p.paidAt);
@@ -5016,12 +5042,13 @@ function ShowDetailPanel({
                                           <td className="py-1.5 pr-2 text-muted-foreground">{dateStr}</td>
                                           <td className="py-1.5 pr-2 text-muted-foreground">{method}</td>
                                           <td className="py-1.5 pr-2 text-muted-foreground">{p.collectorName || "—"}</td>
+                                          <td className="py-1.5 pr-2 text-muted-foreground">{p.notes || "—"}</td>
                                           <td className="py-1.5 pr-2 text-right font-semibold text-emerald-700">+{fmtVND(p.amount ?? 0)}</td>
                                           <td className="py-1.5 text-right font-medium">{fmtVND(rowRem)}</td>
                                         </tr>
                                         {proofUrls.length > 0 && (
                                           <tr className="border-b border-border/20">
-                                            <td colSpan={5} className="pb-2 pt-0.5">
+                                            <td colSpan={6} className="pb-2 pt-0.5">
                                               <div className="flex items-center gap-1.5 flex-wrap">
                                                 <span className="text-[10px] text-muted-foreground">🧾 Bằng chứng:</span>
                                                 {proofUrls.map((u, idx) => {

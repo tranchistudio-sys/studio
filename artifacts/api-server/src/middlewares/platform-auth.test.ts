@@ -41,6 +41,14 @@ describe("default-deny API boundary", () => {
     expect(tenantRoleCanAccessBusiness("STAFF", "PUT", "/settings")).toBe(false);
     expect(tenantRoleCanAccessBusiness("STAFF", "POST", "/staff")).toBe(false);
     expect(tenantRoleCanAccessBusiness("STAFF", "GET", "/calendar")).toBe(true);
+    expect(tenantRoleCanAccessBusiness("STAFF", "GET", "/revenue/v2/monthly")).toBe(false);
+    expect(tenantRoleCanAccessBusiness("STAFF", "GET", "/dashboard/simple")).toBe(false);
+    expect(tenantRoleCanAccessBusiness("STAFF", "GET", "/dashboard/stats")).toBe(false);
+    expect(tenantRoleCanAccessBusiness("STAFF", "GET", "/payments/recent")).toBe(false);
+    expect(tenantRoleCanAccessBusiness("STAFF", "GET", "/payments/monthly-list")).toBe(false);
+    expect(tenantRoleCanAccessBusiness("STAFF", "GET", "/payments/export")).toBe(false);
+    expect(tenantRoleCanAccessBusiness("STAFF", "POST", "/payments")).toBe(true);
+    expect(tenantRoleCanAccessBusiness("STAFF", "GET", "/bookings/123")).toBe(true);
     expect(tenantRoleCanAccessBusiness("ADMIN", "POST", "/salary-rates")).toBe(true);
   });
 

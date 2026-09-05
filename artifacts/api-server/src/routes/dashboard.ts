@@ -428,7 +428,7 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
           overdueJobs: opsKPIs.overdueJobs,
           completedJobs: opsKPIs.completedJobs,
         },
-        breakdown: { byService },
+        breakdown: { byService: isAdmin ? byService : [] },
         debts: { topDebtors: isAdmin ? topDebtors : [] },
         upcomingBookings: [],
       });
@@ -809,13 +809,13 @@ router.get("/dashboard/v2", async (req, res): Promise<void> => {
         overdueJobs: opsKPIs.overdueJobs,
         completedJobs: opsKPIs.completedJobs,
       },
-      charts: {
+      charts: isAdmin ? {
         booked: chartBooked,
         collected: chartCollected,
-      },
+      } : { booked: [], collected: [] },
       breakdown: {
-        byService,
-        byCategory,
+        byService: isAdmin ? byService : [],
+        byCategory: isAdmin ? byCategory : [],
       },
       debts: {
         topDebtors: isAdmin ? topDebtors : [],

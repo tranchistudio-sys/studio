@@ -21,6 +21,7 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 const STAFF_BLOCKED_ALL_PREFIXES = [
   "/accounting",
+  "/revenue",
   "/salary-rates",
   "/salary-overrides",
   "/staff-rates",
@@ -28,6 +29,14 @@ const STAFF_BLOCKED_ALL_PREFIXES = [
   "/service-splits",
   "/check-ai-key",
 ] as const;
+
+const STAFF_BLOCKED_ALL_PATHS = new Set([
+  "/dashboard/stats",
+  "/dashboard/simple",
+  "/payments/recent",
+  "/payments/monthly-list",
+  "/payments/export",
+]);
 
 const STAFF_BLOCKED_WRITE_PREFIXES = [
   "/settings",
@@ -47,6 +56,7 @@ export function tenantRoleCanAccessBusiness(
   const normalizedPath = path.toLowerCase();
   if (tenantRole === "OWNER" || tenantRole === "ADMIN") return true;
   if (tenantRole !== "STAFF") return false;
+  if (STAFF_BLOCKED_ALL_PATHS.has(normalizedPath)) return false;
   if (STAFF_BLOCKED_ALL_PREFIXES.some((prefix) => normalizedPath === prefix || normalizedPath.startsWith(`${prefix}/`))) {
     return false;
   }
@@ -247,6 +257,15 @@ export const businessAuthGuard: RequestHandler = async (req, res, next) => {
         }
         if (!tenantRoleCanAccessBusiness(context.tenantRole, req.method, req.path)) {
           res.status(403).json({ error: "Role trong studio không có quyền sử dụng chức năng này" });
+          return;
+        }
+        if (
+          context.tenantRole === "STAFF" &&
+          req.method.toUpperCase() === "GET" &&
+          req.path.toLowerCase() === "/payments" &&
+          !req.query.bookingId && !req.query.rentalId
+        ) {
+          res.status(403).json({ error: "Nhân viên chỉ được xem lịch sử thanh toán của từng đơn" });
           return;
         }
         if (!SAFE_METHODS.has(req.method) && !requestIsSameOrigin(req)) {

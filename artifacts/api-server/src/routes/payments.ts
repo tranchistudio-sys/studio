@@ -9,6 +9,7 @@ import { notEmptyParentSql } from "../lib/parent-contract";
 import { engineAllocationSnapshot, type AllocationSnapshot } from "../lib/finance/financial-engine";
 import { capLegacyAdmin } from "../lib/legacy-auth-token";
 import { queuePurchaseForPayment } from "../lib/analytics/meta-capi";
+import { normalizeCollectionAmount } from "../lib/financial-permissions";
 
 const router: IRouter = Router();
 
@@ -388,6 +389,10 @@ router.post("/payments", async (req, res) => {
     payerName, payerPhone, description, adHocCategory,
   } = req.body;
   const callerId = verifyToken(req.headers.authorization);
+  const numericAmount = normalizeCollectionAmount(amount);
+  if (numericAmount === null) {
+    return res.status(400).json({ error: "Số tiền thu phải lớn hơn 0" });
+  }
 
   // Task #390: nếu không có bookingId/rentalId → mặc định coi là phiếu thu lẻ (ad_hoc).
   // Phiếu ad_hoc KHÔNG bao giờ recalc booking.paidAmount.
@@ -404,7 +409,7 @@ router.post("/payments", async (req, res) => {
     .values({
       bookingId:     effectivePaymentType === "ad_hoc" ? null : (bookingId || null),
       rentalId:      effectivePaymentType === "ad_hoc" ? null : (rentalId  || null),
-      amount:        String(amount),
+      amount:        String(numericAmount),
       paymentMethod,
       paymentType:   effectivePaymentType,
       collectorName: collectorName || null,

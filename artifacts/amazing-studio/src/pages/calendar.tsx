@@ -7773,7 +7773,9 @@ function CalendarPageInner() {
     return (
       <div className="flex flex-col -m-4 sm:-m-6" style={{ height: "calc(100vh - 60px)" }}>
         <ShowFormPanel
-          key={`${editingBooking?.id ?? "new"}-${format(selectedDate, "yyyy-MM-dd")}-${selectedTime}`}
+          // Ngày/giờ đang chỉnh là state của form, không phải identity. Đưa chúng
+          // vào key khiến đổi ngày remount form và nạp lại lịch dịch vụ cũ.
+          key={editingBooking?.id ?? "new"}
           date={selectedDate}
           initialTime={selectedTime}
           onDateChange={d => { setSelectedDate(d); setCurrentDate(d); }}

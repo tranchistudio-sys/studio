@@ -161,6 +161,7 @@ type Booking = {
   // event, mỗi event mang nhãn "Ngày k/n — label" + key riêng. KHÔNG gửi lên server.
   _occLabel?: string | null;
   _occKey?: string;
+  collectionCheckpoints?: Record<string, "collected" | "due" | "final_due">;
 };
 type BookingOccurrence = { id: number; shootDate: string; shootTime: string | null; label: string | null; sortOrder: number };
 // Draft ngày phụ trong form (id âm = chưa lưu; id dương = occurrence thật trong DB).
@@ -6175,6 +6176,14 @@ function MonthDayCell({
             const extrasTitle = extraParts.join(" · ");
 
             const { bar: chipBar } = getStaffColors(b, allStaff);
+            const checkpointState = b.collectionCheckpoints?.[format(date, "yyyy-MM-dd")];
+            const checkpointTitle = checkpointState === "collected"
+              ? "Đã thu đợt này"
+              : checkpointState === "final_due"
+                ? "Còn tiền phải thu"
+                : checkpointState === "due"
+                  ? "Đến hạn thu tiền"
+                : undefined;
 
             // Sizes — tinh chỉnh: nhỏ gọn hơn nhưng vẫn đọc rõ; auto scale theo viewport
             const cardPad = isComfort ? "px-1.5 py-1" : "px-1.5 py-1";
@@ -6191,6 +6200,15 @@ function MonthDayCell({
               >
                 {/* 1. Giờ + 2. Tên khách + 3. VIP crown */}
                 <div className={`flex items-baseline gap-1 ${isComfort ? "flex-wrap" : "leading-tight"}`}>
+                  {checkpointState && (
+                    <span
+                      aria-label={checkpointTitle}
+                      title={checkpointTitle}
+                      className={`inline-block w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full flex-shrink-0 self-center ring-1 ring-white/80 ${
+                        checkpointState === "collected" ? "bg-emerald-500" : "bg-red-500"
+                      }`}
+                    />
+                  )}
                   {hourStr && <span className={`${timeCls} flex-shrink-0`}>{hourStr}</span>}
                   {isPriorityRank(b.customerRank) && (
                     <Crown className={`${isComfort ? "w-3 h-3" : "w-2.5 h-2.5"} text-amber-600 flex-shrink-0 self-center`} />

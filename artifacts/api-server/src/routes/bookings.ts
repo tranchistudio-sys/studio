@@ -15,6 +15,7 @@ import { sanitizeAttribution } from "../lib/analytics/analytics-data";
 import { getSchemaFlags, bookingColumnsCompat, type SchemaFlags } from "../lib/schema-compat";
 import { bookingRequiresPostProduction } from "../lib/post-production-eligibility";
 import { canViewBookingFinancials } from "../lib/financial-permissions";
+import { deriveCollectionCheckpoints, serializeCheckpointStates, todayInVietnam } from "../lib/payment-checkpoints";
 import {
   sanitizeAdditionalServices,
   validateAdditionalServices,
@@ -441,6 +442,38 @@ router.get("/bookings", async (req, res) => {
     }
   }
 
+  // Read-only Calendar projection: payment checkpoint dots. This reads the same
+  // payment rows as contract finance, but never writes/allocates them in DB.
+  const checkpointBookingIds = rows.map((row) => row.id);
+  const checkpointPayments = checkpointBookingIds.length > 0
+    ? await db
+        .select({
+          id: paymentsTable.id,
+          bookingId: paymentsTable.bookingId,
+          amount: paymentsTable.amount,
+          paymentType: paymentsTable.paymentType,
+          status: paymentsTable.status,
+          paidDate: paymentsTable.paidDate,
+          paidAt: paymentsTable.paidAt,
+        })
+        .from(paymentsTable)
+        .where(inArray(paymentsTable.bookingId, checkpointBookingIds))
+    : [];
+  const checkpointStates = serializeCheckpointStates(deriveCollectionCheckpoints(
+    rows.map((row) => ({
+      id: row.id,
+      parentId: row.parentId,
+      isParentContract: row.isParentContract,
+      status: row.status,
+      shootDate: row.shootDate,
+      totalAmount: row.totalAmount,
+      discountAmount: row.discountAmount,
+      occurrences: occByBookingId[row.id] ?? [],
+    })),
+    checkpointPayments,
+    todayInVietnam(),
+  ));
+
   let bookings = rows.map((b) => {
     const totalAmount = parseFloat(b.totalAmount);
     const discountAmt = parseFloat(b.discountAmount ?? "0");
@@ -490,6 +523,7 @@ router.get("/bookings", async (req, res) => {
       progressStatus: bProgressStatus,
       shootDuration,
       occurrences: occByBookingId[b.id] ?? [],
+      collectionCheckpoints: checkpointStates[b.id] ?? {},
     };
   });
 

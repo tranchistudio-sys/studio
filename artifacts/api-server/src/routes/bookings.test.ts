@@ -34,7 +34,7 @@ vi.mock("drizzle-orm", () => ({
   lte: vi.fn(),
 }));
 
-import { sanitizeDeductions, normalizeItemStaffLock } from "./bookings.js";
+import { buildTempQuoteFamilyStatusUpdate, sanitizeDeductions, normalizeItemStaffLock } from "./bookings.js";
 import { sanitizeAdditionalServices, validateAdditionalServices } from "@workspace/db/additional-services";
 import { assertAdditionalServicesValid, AdditionalServicesValidationError } from "../lib/additional-services.js";
 
@@ -145,6 +145,32 @@ describe("sumActivePayments logic", () => {
       .filter((p) => (p.status ?? "active") !== "voided")
       .reduce((s, p) => s + parseFloat(p.amount), 0);
     expect(paid).toBe(1000000);
+  });
+});
+
+describe("temp quote family status SQL", () => {
+  it("uses contiguous bind parameters when switching a contract to temp_quote", () => {
+    const query = buildTempQuoteFamilyStatusUpdate({
+      rootId: 100,
+      bookingId: 101,
+      rootCode: "DH0375",
+      nextStatus: "temp_quote",
+    });
+    expect(query.values).toEqual([100, 101, "DH0375"]);
+    expect(query.text).toContain("status = 'temp_quote'");
+    expect(query.text).toContain("$3");
+    expect(query.text).not.toContain("$4");
+  });
+
+  it("binds the target status when switching a temp quote back to official", () => {
+    const query = buildTempQuoteFamilyStatusUpdate({
+      rootId: 100,
+      bookingId: 101,
+      rootCode: "BG0037",
+      nextStatus: "confirmed",
+    });
+    expect(query.values).toEqual([100, 101, "BG0037", "confirmed"]);
+    expect(query.text).toContain("status = $4");
   });
 });
 

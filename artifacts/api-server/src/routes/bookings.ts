@@ -33,6 +33,36 @@ import {
 
 const router: IRouter = Router();
 
+export function buildTempQuoteFamilyStatusUpdate(args: {
+  rootId: number;
+  bookingId: number;
+  rootCode: string;
+  nextStatus: string;
+}) {
+  const familyWhere = `
+    (id = $1 OR parent_id = $1
+      OR ($3 <> '' AND (order_code = $3 OR order_code LIKE ($3 || '-%'))))
+    AND id <> $2
+    AND deleted_at IS NULL
+    AND COALESCE(status, '') <> 'cancelled'`;
+  if (args.nextStatus === "temp_quote") {
+    return {
+      text: `UPDATE bookings SET status = 'temp_quote'
+        WHERE ${familyWhere}
+          AND COALESCE(status, '') <> 'temp_quote'
+        RETURNING id`,
+      values: [args.rootId, args.bookingId, args.rootCode] as unknown[],
+    };
+  }
+  return {
+    text: `UPDATE bookings SET status = $4
+      WHERE ${familyWhere}
+        AND status = 'temp_quote'
+      RETURNING id`,
+    values: [args.rootId, args.bookingId, args.rootCode, args.nextStatus] as unknown[],
+  };
+}
+
 /**
  * Yêu cầu caller ĐÃ ĐĂNG NHẬP hợp lệ (staff HOẶC admin, tài khoản còn hoạt động).
  * Dùng cho các endpoint ĐỌC dữ liệu đơn hàng — payload có tên khách, SĐT, ghi chú
@@ -1651,34 +1681,17 @@ router.put("/bookings/:id", async (req, res) => {
     if (crossesTempBoundary) {
       const rootId = oldBooking.parentId ?? id;
       const rootCode = String(oldBooking.orderCode || "").replace(/-\d+$/, "");
-      const familyWhere = `
-        (id = $1 OR parent_id = $1
-          OR ($4 <> '' AND (order_code = $4 OR order_code LIKE ($4 || '-%'))))
-        AND id <> $2
-        AND deleted_at IS NULL
-        AND COALESCE(status, '') <> 'cancelled'`;
-      if (willTempQuote) {
-        // BẬT: cả nhà về temp_quote (trừ đơn đã hủy/đã xóa — giữ nguyên trạng thái đó).
-        const r = await client.query<{ id: number }>(
-          `UPDATE bookings SET status = 'temp_quote'
-           WHERE ${familyWhere}
-             AND COALESCE(status, '') <> 'temp_quote'
-           RETURNING id`,
-          [rootId, id, "temp_quote", rootCode]
-        );
-        tempToggledFamilyIds = r.rows.map((x) => x.id);
-      } else {
-        // TẮT: mọi thành viên đang temp_quote nhận CÙNG trạng thái mới → cả nhà
-        // countable trở lại một lần, deterministic.
-        const r = await client.query<{ id: number }>(
-          `UPDATE bookings SET status = $3
-           WHERE ${familyWhere}
-             AND status = 'temp_quote'
-           RETURNING id`,
-          [rootId, id, newStatusRaw, rootCode]
-        );
-        tempToggledFamilyIds = r.rows.map((x) => x.id);
-      }
+      // Bật: cả nhà về temp_quote. Tắt: mọi thành viên temp_quote nhận cùng trạng thái mới.
+      // Builder giữ placeholder liên tục ($1..$N), tránh PostgreSQL lỗi kiểu dữ liệu do
+      // bỏ trống $3 trong nhánh bật (nguyên nhân công tắc bấm Lưu nhưng không đổi màu).
+      const familyUpdate = buildTempQuoteFamilyStatusUpdate({
+        rootId,
+        bookingId: id,
+        rootCode,
+        nextStatus: willTempQuote ? "temp_quote" : String(newStatusRaw),
+      });
+      const r = await client.query<{ id: number }>(familyUpdate.text, familyUpdate.values);
+      tempToggledFamilyIds = r.rows.map((x) => x.id);
     }
 
     await client.query("COMMIT");

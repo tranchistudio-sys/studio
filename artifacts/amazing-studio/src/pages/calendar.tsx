@@ -2393,7 +2393,7 @@ function ShowFormPanel({
             const ptsName = allStaff.find(s => s.id === photoshopId)?.name ?? "";
             editMultiAssignedStaff.push({ id: genId(), role: "photoshop", staffId: photoshopId, staffName: ptsName, castAmount: 0, taskKey: photoshopTask || "mac_dinh" });
           }
-          await authFetch(`${BASE}/api/bookings/${booking.id}`, {
+          const parentRes = await authFetch(`${BASE}/api/bookings/${booking.id}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -2414,6 +2414,10 @@ function ShowFormPanel({
                 : {}),
             }),
           });
+          if (!parentRes.ok) {
+            const errBody = await parentRes.json().catch(() => null);
+            throw new Error(errBody?.error || "Lỗi cập nhật trạng thái hợp đồng");
+          }
         }
         // Invalidate MỘT LẦN sau khi toàn bộ chuỗi lưu xong — phủ cả hợp đồng,
         // khách hàng, thu tiền, tìm kiếm, dashboard (trước đây thiếu → màn khác

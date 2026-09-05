@@ -162,6 +162,12 @@ jobs:
           ssh -p "$VPS_PORT" -i "$HOME/.ssh/deploy_key" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
             "$VPS_USER@$VPS_HOST" '
+              if [ ! -r /opt/amazing-studio/app/06_vps_deployment/docker-compose.yml ]; then
+                deployed_sha=$(cat /opt/amazing-studio/DEPLOYED_SHA)
+                test -r "/opt/amazing-studio/releases/$deployed_sha/06_vps_deployment/docker-compose.yml"
+                sudo -n install -d -m 755 /opt/amazing-studio/app
+                sudo -n cp -a "/opt/amazing-studio/releases/$deployed_sha/06_vps_deployment" /opt/amazing-studio/app/
+              fi
               rm -f /tmp/amazing-vps-deploy-*.sh /tmp/amazing-vps-deploy-api-*.sh /tmp/amazing-studio-source-*.tar.gz
               sudo -n docker builder prune -af
               sudo -n docker image prune -f

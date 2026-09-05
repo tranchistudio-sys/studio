@@ -2031,7 +2031,7 @@ router.put("/bookings/:id", async (req, res) => {
     }
     console.error(`PUT /bookings/:id error [${updateStage}]:`, err);
     res.status(500).json({
-      error: "Lỗi hệ thống khi cập nhật đơn hàng",
+      error: `Lỗi hệ thống khi cập nhật đơn hàng (${updateStage})`,
       errorCode: `BOOKING_UPDATE_${updateStage.toUpperCase().replace(/[^A-Z0-9]+/g, "_")}`,
     });
   }

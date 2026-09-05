@@ -156,14 +156,6 @@ jobs:
           ssh-keyscan -H -p "$VPS_PORT" "$VPS_HOST" > "$HOME/.ssh/known_hosts"
           chmod 600 "$HOME/.ssh/known_hosts"
 
-      - name: Chẩn đoán lỗi cập nhật booking trước deploy
-        shell: bash
-        run: |
-          ssh -p "$VPS_PORT" -i "$HOME/.ssh/deploy_key" \
-            -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            "$VPS_USER@$VPS_HOST" \
-            "sudo -n docker compose -f /opt/amazing-studio/app/06_vps_deployment/docker-compose.yml -f /opt/amazing-studio/platform-auth.override.yml logs --since 20m --tail 500 web 2>&1 | grep -A 12 -B 2 'PUT /bookings/:id error' | tail -80 || true"
-
       - name: Giải phóng cache deploy an toàn trên VPS
         shell: bash
         run: |
